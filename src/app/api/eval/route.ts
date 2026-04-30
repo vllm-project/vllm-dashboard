@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { load } from "js-yaml";
 import { queryDatabricks } from "@/lib/databricks";
 
 export interface EvalMetric {
@@ -24,6 +25,7 @@ export interface EvalRow {
   metrics: EvalMetric[];
   config: Record<string, unknown>;
   model_args: Record<string, unknown>;
+  image: string | null;
   // From buildkite metadata on newer ingest format. May be null for older rows.
   buildkite_build_id: string | null;
   buildkite_build_number: string | null;
@@ -59,12 +61,91 @@ interface LmEvalMessage extends LmEvalCore {
   data?: LmEvalCore;
   task?: string;
   workload?: string;
+  source_file?: string;
   buildkite_build_id?: string;
   buildkite_build_number?: string;
   buildkite_build_url?: string;
   buildkite_commit?: string;
   buildkite_branch?: string;
   buildkite_pipeline_slug?: string;
+}
+
+const PERF_EVAL_RAW_BASE =
+  "https://raw.githubusercontent.com/vllm-project/perf-eval";
+const DEFAULT_VLLM_IMAGE = "vllm/vllm-openai:latest";
+const workloadImageCache = new Map<string, Promise<string | null>>();
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function workloadFromSourceFile(sourceFile?: string): string | null {
+  const match = sourceFile?.match(/^results\/([^/]+)/);
+  return match?.[1] ?? null;
+}
+
+function workloadPathCandidates(workload: string): string[] {
+  const base = workload.trim().replace(/\.ya?ml$/, "");
+  const underscored = base.replace(/-/g, "_");
+  return [...new Set([base, underscored])].map((name) => `workloads/${name}.yaml`);
+}
+
+async function resolveWorkloadImage(
+  commit: string,
+  workload: string
+): Promise<string | null> {
+  for (const path of workloadPathCandidates(workload)) {
+    const response = await fetch(`${PERF_EVAL_RAW_BASE}/${commit}/${path}`);
+    if (response.status === 404) continue;
+    if (!response.ok) continue;
+
+    const parsed = recordValue(load(await response.text()));
+    const vllm = recordValue(parsed.vllm);
+    return stringValue(vllm.image) ?? DEFAULT_VLLM_IMAGE;
+  }
+  return null;
+}
+
+function getWorkloadImage(commit: string, workload: string) {
+  const key = `${commit}|${workload}`;
+  let cached = workloadImageCache.get(key);
+  if (!cached) {
+    cached = resolveWorkloadImage(commit, workload).catch((error) => {
+      console.warn("Failed to resolve eval workload image:", error);
+      return null;
+    });
+    workloadImageCache.set(key, cached);
+  }
+  return cached;
+}
+
+function imageFromMessage(
+  raw: LmEvalMessage,
+  core: LmEvalCore,
+  taskName: string
+): string | null {
+  const rawRecord = raw as Record<string, unknown>;
+  const coreRecord = core as Record<string, unknown>;
+  const taskConfig = core.configs?.[taskName] ?? {};
+  const metadata = recordValue(taskConfig.metadata);
+  const modelArgs = core.config?.model_args ?? {};
+
+  return (
+    stringValue(rawRecord.image) ??
+    stringValue(rawRecord.vllm_image) ??
+    stringValue(rawRecord.docker_image) ??
+    stringValue(coreRecord.image) ??
+    stringValue(coreRecord.vllm_image) ??
+    stringValue(coreRecord.docker_image) ??
+    stringValue(modelArgs.image) ??
+    stringValue(metadata.image)
+  );
 }
 
 function parseMetrics(
@@ -150,6 +231,8 @@ export async function GET(request: NextRequest) {
         const metrics = parseMetrics(taskResults, hib);
         const epoch = core.date ?? 0;
 
+        const workload = raw.workload ?? workloadFromSourceFile(raw.source_file);
+
         out.push({
           ingest_ts: r.ingest_ts,
           run_epoch: epoch,
@@ -168,15 +251,23 @@ export async function GET(request: NextRequest) {
           metrics,
           config: core.configs?.[taskName] ?? {},
           model_args: core.config?.model_args ?? {},
+          image: imageFromMessage(raw, core, taskName),
           buildkite_build_id: raw.buildkite_build_id ?? null,
           buildkite_build_number: raw.buildkite_build_number ?? null,
           buildkite_build_url: raw.buildkite_build_url ?? null,
           buildkite_commit: raw.buildkite_commit ?? null,
           buildkite_branch: raw.buildkite_branch ?? null,
-          workload: raw.workload ?? null,
+          workload,
         });
       }
     }
+
+    await Promise.all(
+      out.map(async (row) => {
+        if (row.image || !row.buildkite_commit || !row.workload) return;
+        row.image = await getWorkloadImage(row.buildkite_commit, row.workload);
+      })
+    );
 
     return NextResponse.json({ rows: out });
   } catch (error) {

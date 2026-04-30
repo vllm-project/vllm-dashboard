@@ -40,6 +40,7 @@ interface EvalRow {
   metrics: EvalMetric[];
   config: Record<string, unknown>;
   model_args: Record<string, unknown>;
+  image: string | null;
   buildkite_build_id: string | null;
   buildkite_build_number: string | null;
   buildkite_build_url: string | null;
@@ -445,6 +446,11 @@ function SamplesDrawer({
                 </a>
               ) : null}
               <span className="font-mono">{shortCommit(row.buildkite_commit, row.git_hash)}</span>
+              {row.image ? (
+                <span className="font-mono" title={row.image}>
+                  image: {row.image}
+                </span>
+              ) : null}
               <span>{formatTime(row.run_date)}</span>
             </div>
           </div>
@@ -547,6 +553,7 @@ function LeaderboardTable({
             <tr>
               <th className="px-4 py-2 text-left">When</th>
               <th className="px-4 py-2 text-left">Commit</th>
+              <th className="px-4 py-2 text-left">Image</th>
               <th className="px-4 py-2 text-left">Model</th>
               <th className="px-4 py-2 text-left">Task</th>
               <th className="px-4 py-2 text-right">{metric} ({filter})</th>
@@ -588,6 +595,11 @@ function LeaderboardTable({
                     ) : (
                       shortCommit(r.buildkite_commit, r.git_hash)
                     )}
+                  </td>
+                  <td className="max-w-[260px] px-4 py-2 font-mono text-xs text-zinc-500">
+                    <span className="block truncate" title={r.image ?? undefined}>
+                      {r.image ?? "—"}
+                    </span>
                   </td>
                   <td className="px-4 py-2 font-mono text-xs">{r.model}</td>
                   <td className="px-4 py-2">{r.task}</td>
