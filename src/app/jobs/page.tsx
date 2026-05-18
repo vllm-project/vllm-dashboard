@@ -50,36 +50,6 @@ interface FiltersResponse {
   error?: string;
 }
 
-interface LatestBuildJob {
-  name: string;
-  state: string;
-  web_url: string;
-  started_at: string;
-  finished_at: string;
-  soft_failed: string;
-  category?: "new" | "recurring" | "unknown";
-}
-
-interface LatestBuildInfo {
-  id: string;
-  number: string;
-  state: string;
-  branch: string;
-  commit: string;
-  created_at: string;
-  finished_at: string;
-  web_url: string;
-  message: string;
-}
-
-interface LatestFailuresResponse {
-  build: LatestBuildInfo | null;
-  previousBuild: LatestBuildInfo | null;
-  failedJobs: LatestBuildJob[];
-  fixedJobs: LatestBuildJob[];
-  error?: string;
-}
-
 function formatDuration(secs: number): string {
   if (secs < 60) return `${secs}s`;
   const m = Math.floor(secs / 60);
@@ -145,185 +115,6 @@ function JobBadges({ name, hasSoftFail }: { name: string; hasSoftFail: boolean }
   );
 }
 
-function BuildInfo({ build, label }: { build: LatestBuildInfo; label?: string }) {
-  return (
-    <div className="flex items-center gap-4">
-      {label && <span className="text-sm font-medium">{label}</span>}
-      <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
-        build.state === "passed"
-          ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
-          : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400"
-      }`}>
-        {build.state}
-      </span>
-      <span className="text-sm text-zinc-500 dark:text-zinc-400">
-        Build #{build.number}
-      </span>
-      <span className="font-mono text-sm text-zinc-500 dark:text-zinc-400" title={build.commit}>
-        {build.commit?.slice(0, 7)}
-      </span>
-      <span className="text-sm text-zinc-500 dark:text-zinc-400">
-        {new Date(build.created_at).toLocaleString()}
-      </span>
-      {build.web_url && (
-        <a
-          href={build.web_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-sm text-blue-600 hover:underline dark:text-blue-400"
-        >
-          View build
-        </a>
-      )}
-    </div>
-  );
-}
-
-function FailureCategoryTable({
-  title,
-  titleColor,
-  jobs,
-  emptyMessage,
-}: {
-  title: string;
-  titleColor: string;
-  jobs: LatestBuildJob[];
-  emptyMessage: string;
-}) {
-  return (
-    <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-      <div className={jobs.length > 0 ? "border-b border-zinc-200 px-5 py-3 dark:border-zinc-800" : "px-5 py-3"}>
-        <span className={`text-sm font-medium ${titleColor}`}>{title}</span>
-      </div>
-      {jobs.length > 0 ? (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                <th className="px-5 py-2 font-medium">#</th>
-                <th className="px-5 py-2 font-medium">Job</th>
-                <th className="px-5 py-2 font-medium">Link</th>
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.map((job, i) => (
-                <tr key={`${job.name}-${i}`} className="border-b border-zinc-100 dark:border-zinc-800/50">
-                  <td className="px-5 py-2 text-zinc-400">{i + 1}</td>
-                  <td className="px-5 py-2 font-medium">
-                    {job.name}
-                    <JobBadges name={job.name} hasSoftFail={job.soft_failed === "true"} />
-                  </td>
-                  <td className="px-5 py-2">
-                    {job.web_url && (
-                      <a
-                        href={job.web_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline dark:text-blue-400"
-                      >
-                        View log
-                      </a>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="px-5 pb-3 text-sm text-zinc-400">{emptyMessage}</div>
-      )}
-    </div>
-  );
-}
-
-/* ── Full CI Failure Tracker sub-tab ── */
-function LatestFullCITab() {
-  const { data, isLoading } = useSWR<LatestFailuresResponse>(
-    `/api/jobs/latest-failures`,
-    fetcher,
-    { refreshInterval: 5 * 60 * 1000 }
-  );
-
-  if (isLoading) {
-    return (
-      <div className="flex h-64 items-center justify-center text-zinc-400">
-        Loading latest Full CI run...
-      </div>
-    );
-  }
-
-  if (!data?.build) {
-    return (
-      <div className="flex h-64 items-center justify-center text-zinc-400">
-        No Full CI build found.
-      </div>
-    );
-  }
-
-  const { build, previousBuild, failedJobs, fixedJobs } = data;
-  const newFailures = failedJobs.filter((j) => j.category === "new");
-  const recurringFailures = failedJobs.filter((j) => j.category === "recurring");
-
-  return (
-    <div className="space-y-6">
-      <BuildInfo build={build} label="Latest" />
-      {previousBuild && (
-        <BuildInfo build={previousBuild} label="Previous" />
-      )}
-
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label="Total Failures"
-          value={failedJobs.length}
-          color={failedJobs.length > 0 ? "red" : "green"}
-        />
-        <StatCard
-          label="New Failures"
-          value={newFailures.length}
-          color={newFailures.length > 0 ? "red" : "green"}
-        />
-        <StatCard
-          label="Recurring Failures"
-          value={recurringFailures.length}
-          color={recurringFailures.length > 0 ? "yellow" : "green"}
-        />
-        <StatCard
-          label="Fixed Since Previous"
-          value={fixedJobs.length}
-          color={fixedJobs.length > 0 ? "green" : undefined}
-        />
-      </div>
-
-      {/* New failures */}
-      <FailureCategoryTable
-        title={`New Failures (${newFailures.length})`}
-        titleColor="text-red-600 dark:text-red-400"
-        jobs={newFailures}
-        emptyMessage="No new failures"
-      />
-
-      {/* Recurring failures */}
-      <FailureCategoryTable
-        title={`Recurring Failures (${recurringFailures.length})`}
-        titleColor="text-orange-600 dark:text-orange-400"
-        jobs={recurringFailures}
-        emptyMessage="No recurring failures"
-      />
-
-      {/* Fixed jobs */}
-      <FailureCategoryTable
-        title={`Fixed Since Previous (${fixedJobs.length})`}
-        titleColor="text-emerald-600 dark:text-emerald-400"
-        jobs={fixedJobs}
-        emptyMessage="No jobs were fixed"
-      />
-    </div>
-  );
-}
-
-/* ── Job Analysis sub-tab ── */
 function JobAnalysisTab({
   pipeline,
   branch,
@@ -707,7 +498,6 @@ function JobAnalysisTab({
 
 /* ── Main page ── */
 export default function JobsPage() {
-  const [topTab, setTopTab] = useState<"latest" | "analysis">("latest");
   const [pipeline, setPipeline] = useState("CI");
   const [branch, setBranch] = useState("main");
   const [startDate, setStartDate] = useState(daysAgo(14));
@@ -722,68 +512,38 @@ export default function JobsPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">Jobs</h1>
-        {topTab === "analysis" && (
-          <div className="flex gap-3">
-            <SearchableSelect
-              label="Pipeline"
-              value={pipeline}
-              onChange={setPipeline}
-              options={filters?.pipelines ?? []}
-              allLabel="All Pipelines"
-            />
-            <SearchableSelect
-              label="Branch"
-              value={branch}
-              onChange={setBranch}
-              options={filters?.branches ?? []}
-              allLabel="All Branches"
-            />
-            <DateRangePicker
-              startDate={startDate}
-              endDate={endDate}
-              onChange={(s, e) => {
-                setStartDate(s);
-                setEndDate(e);
-              }}
-            />
-          </div>
-        )}
+        <div className="flex gap-3">
+          <SearchableSelect
+            label="Pipeline"
+            value={pipeline}
+            onChange={setPipeline}
+            options={filters?.pipelines ?? []}
+            allLabel="All Pipelines"
+          />
+          <SearchableSelect
+            label="Branch"
+            value={branch}
+            onChange={setBranch}
+            options={filters?.branches ?? []}
+            allLabel="All Branches"
+          />
+          <DateRangePicker
+            startDate={startDate}
+            endDate={endDate}
+            onChange={(s, e) => {
+              setStartDate(s);
+              setEndDate(e);
+            }}
+          />
+        </div>
       </div>
 
-      <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
-        <button
-          onClick={() => setTopTab("latest")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            topTab === "latest"
-              ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
-              : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
-          }`}
-        >
-          Full CI Failure Tracker
-        </button>
-        <button
-          onClick={() => setTopTab("analysis")}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            topTab === "analysis"
-              ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
-              : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
-          }`}
-        >
-          Job Analysis
-        </button>
-      </div>
-
-      {topTab === "latest" && (
-        <LatestFullCITab />
-      )}
-      {topTab === "analysis" && (
-        <JobAnalysisTab
-          pipeline={pipeline}
-          branch={branch}
-          startDate={startDate}
-          endDate={endDate}
-        />
-      )}
+      <JobAnalysisTab
+        pipeline={pipeline}
+        branch={branch}
+        startDate={startDate}
+        endDate={endDate}
+      />
     </div>
   );
 }
