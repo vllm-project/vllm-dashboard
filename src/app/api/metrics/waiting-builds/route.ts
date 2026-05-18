@@ -1,10 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 
+const cache = new Map<string, { data: unknown; expiry: number }>();
+const CACHE_TTL_MS = 60_000;
+
 export async function GET(request: NextRequest) {
   const queue = request.nextUrl.searchParams.get("queue");
   if (!queue) {
     return NextResponse.json({ error: "queue parameter required" }, { status: 400 });
+  }
+
+  const cached = cache.get(queue);
+  if (cached && Date.now() < cached.expiry) {
+    return NextResponse.json(cached.data);
   }
 
   try {
@@ -46,7 +54,10 @@ export async function GET(request: NextRequest) {
       ORDER BY w.waiting_jobs DESC
     `);
 
-    return NextResponse.json({ builds: rows });
+    const result = { builds: rows };
+    cache.set(queue, { data: result, expiry: Date.now() + CACHE_TTL_MS });
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to fetch waiting builds:", error);
     return NextResponse.json(
