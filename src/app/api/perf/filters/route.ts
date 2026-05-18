@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
+import { getCached, setCache } from "@/lib/api-cache";
+
+const TTL = 300_000;
 
 function isIsoDate(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}/.test(s);
@@ -10,6 +13,10 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const start = searchParams.get("start");
     const end = searchParams.get("end");
+
+    const cacheKey = `perf:filters:${start}:${end}`;
+    const cached = getCached(cacheKey);
+    if (cached) return NextResponse.json(cached);
 
     const conditions = ["message:model IS NOT NULL"];
     if (start && isIsoDate(start)) {
@@ -46,7 +53,10 @@ export async function GET(request: Request) {
     const precisions = [...new Set(rows.map((r) => r.precision).filter(Boolean))].sort();
     const images = [...new Set(rows.map((r) => r.image).filter(Boolean))].sort();
 
-    return NextResponse.json({ models, devices, tps, concs, precisions, images });
+    const result = { models, devices, tps, concs, precisions, images };
+    setCache(cacheKey, result, TTL);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to fetch perf filters:", error);
     return NextResponse.json({ error: "Failed to fetch filters" }, { status: 500 });

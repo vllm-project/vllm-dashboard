@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
+import { getCached, setCache } from "@/lib/api-cache";
+
+const TTL = 60_000;
 
 export async function GET(request: NextRequest) {
   try {
@@ -8,6 +11,10 @@ export async function GET(request: NextRequest) {
     const device = sp.get("device");
     const tp = sp.get("tp");
     const conc = sp.get("conc");
+
+    const cacheKey = `perf:${model}:${device}:${tp}:${conc}`;
+    const cached = getCached(cacheKey);
+    if (cached) return NextResponse.json(cached);
 
     const conditions = ["message:model IS NOT NULL"];
     if (model) conditions.push(`message:model::STRING = '${model.replace(/'/g, "''")}'`);
@@ -48,7 +55,10 @@ export async function GET(request: NextRequest) {
       ORDER BY message:date::STRING ASC, message:conc::INT ASC
     `);
 
-    return NextResponse.json({ rows });
+    const result = { rows };
+    setCache(cacheKey, result, TTL);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to fetch perf data:", error);
     return NextResponse.json({ error: "Failed to fetch performance data" }, { status: 500 });

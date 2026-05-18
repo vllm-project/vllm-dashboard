@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
+import { getCached, setCache } from "@/lib/api-cache";
+
+const TTL = 60_000;
 
 export async function GET(request: NextRequest) {
   try {
@@ -8,6 +11,10 @@ export async function GET(request: NextRequest) {
     const queue = searchParams.get("queue");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
+
+    const cacheKey = `queue:${pipeline}:${queue}:${startDate}:${endDate}`;
+    const cached = getCached(cacheKey);
+    if (cached) return NextResponse.json(cached);
 
     const conditions = [
       "j._fivetran_deleted = false",
@@ -108,11 +115,14 @@ export async function GET(request: NextRequest) {
       `),
     ]);
 
-    return NextResponse.json({
+    const result = {
       queueStats,
       dailyWaitTime,
       queueNames: queueNames.map((q) => (q as Record<string, string>).queue),
-    });
+    };
+    setCache(cacheKey, result, TTL);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to fetch queue data:", error);
     return NextResponse.json(

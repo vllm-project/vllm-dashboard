@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
+import { getCached, setCache } from "@/lib/api-cache";
+
+const TTL = 15_000;
 
 export async function GET(request: NextRequest) {
   try {
@@ -10,15 +13,17 @@ export async function GET(request: NextRequest) {
       720,
     );
     const queue = searchParams.get("queue") || null;
-    const cutoff = new Date(Date.now() - hours * 3600 * 1000);
+    const cacheKey = `metrics:${hours}:${queue ?? "all"}`;
+    const cached = getCached(cacheKey);
+    if (cached) return NextResponse.json(cached);
 
-    // For short windows, return raw snapshots (5-min resolution is fine).
-    // For longer windows, aggregate to reduce data volume.
-    let snapshots;
+    const cutoff = new Date(Date.now() - hours * 3600 * 1000);
+    const latestCutoff = new Date(Date.now() - 2 * 3600 * 1000);
+
+    let snapshotsQuery;
     if (hours <= 6) {
-      // Raw 5-min snapshots
-      snapshots = queue
-        ? await db`
+      snapshotsQuery = queue
+        ? db`
             SELECT polled_at AS time_bucket, queue,
               agents_idle, agents_busy, agents_total,
               jobs_scheduled, jobs_running, jobs_waiting, jobs_total,
@@ -27,7 +32,7 @@ export async function GET(request: NextRequest) {
             WHERE polled_at >= ${cutoff} AND queue = ${queue}
             ORDER BY polled_at
           `
-        : await db`
+        : db`
             SELECT polled_at AS time_bucket, queue,
               agents_idle, agents_busy, agents_total,
               jobs_scheduled, jobs_running, jobs_waiting, jobs_total,
@@ -37,13 +42,11 @@ export async function GET(request: NextRequest) {
             ORDER BY polled_at
           `;
     } else {
-      // Aggregate into time buckets
-      // ≤24h: 15-min, ≤7d: 1-hour, >7d: 6-hour
       const bucketMinutes = hours <= 24 ? 15 : hours <= 168 ? 60 : 360;
       const epochBucket = `to_timestamp(FLOOR(EXTRACT(epoch FROM polled_at) / ${bucketMinutes * 60}) * ${bucketMinutes * 60})`;
 
-      snapshots = queue
-        ? await db.unsafe(
+      snapshotsQuery = queue
+        ? db.unsafe(
             `SELECT ${epochBucket} AS time_bucket, queue,
               ROUND(AVG(agents_idle))::int AS agents_idle,
               ROUND(AVG(agents_busy))::int AS agents_busy,
@@ -61,7 +64,7 @@ export async function GET(request: NextRequest) {
             ORDER BY time_bucket`,
             [cutoff, queue],
           )
-        : await db.unsafe(
+        : db.unsafe(
             `SELECT ${epochBucket} AS time_bucket, queue,
               ROUND(AVG(agents_idle))::int AS agents_idle,
               ROUND(AVG(agents_busy))::int AS agents_busy,
@@ -81,42 +84,44 @@ export async function GET(request: NextRequest) {
           );
     }
 
-    // Distinct queue names
-    const queueRows = await db`
-      SELECT DISTINCT queue FROM queue_snapshots
-      WHERE polled_at >= ${cutoff}
-      ORDER BY queue
-    `;
+    const [snapshots, queueRows, latest] = await Promise.all([
+      snapshotsQuery,
+      db`
+        SELECT DISTINCT queue FROM queue_snapshots
+        WHERE polled_at >= ${cutoff}
+        ORDER BY queue
+      `,
+      db`
+        SELECT
+          a.queue, a.polled_at,
+          a.agents_idle, a.agents_busy, a.agents_total,
+          a.jobs_scheduled, a.jobs_running, a.jobs_waiting, a.jobs_total,
+          CASE WHEN a.jobs_scheduled + a.jobs_waiting > 0 THEN w.p50_wait_secs ELSE NULL END AS p50_wait_secs,
+          CASE WHEN a.jobs_scheduled + a.jobs_waiting > 0 THEN w.p90_wait_secs ELSE NULL END AS p90_wait_secs,
+          CASE WHEN a.jobs_scheduled + a.jobs_waiting > 0 THEN w.p95_wait_secs ELSE NULL END AS p95_wait_secs
+        FROM (
+          SELECT DISTINCT ON (queue) *
+          FROM queue_snapshots
+          WHERE polled_at >= ${latestCutoff}
+          ORDER BY queue, polled_at DESC
+        ) a
+        LEFT JOIN (
+          SELECT DISTINCT ON (queue) queue, p50_wait_secs, p90_wait_secs, p95_wait_secs
+          FROM queue_snapshots
+          WHERE polled_at >= ${latestCutoff} AND p90_wait_secs IS NOT NULL
+          ORDER BY queue, polled_at DESC
+        ) w ON a.queue = w.queue
+      `,
+    ]);
 
-    // Latest snapshot per queue for stat cards
-    // Use most recent row for agent/job counts, but pull wait times
-    // from the most recent row that has them (poll-agents doesn't write wait times)
-    const latest = await db`
-      SELECT
-        a.queue, a.polled_at,
-        a.agents_idle, a.agents_busy, a.agents_total,
-        a.jobs_scheduled, a.jobs_running, a.jobs_waiting, a.jobs_total,
-        CASE WHEN a.jobs_scheduled + a.jobs_waiting > 0 THEN w.p50_wait_secs ELSE NULL END AS p50_wait_secs,
-        CASE WHEN a.jobs_scheduled + a.jobs_waiting > 0 THEN w.p90_wait_secs ELSE NULL END AS p90_wait_secs,
-        CASE WHEN a.jobs_scheduled + a.jobs_waiting > 0 THEN w.p95_wait_secs ELSE NULL END AS p95_wait_secs
-      FROM (
-        SELECT DISTINCT ON (queue) *
-        FROM queue_snapshots
-        ORDER BY queue, polled_at DESC
-      ) a
-      LEFT JOIN (
-        SELECT DISTINCT ON (queue) queue, p50_wait_secs, p90_wait_secs, p95_wait_secs
-        FROM queue_snapshots
-        WHERE p90_wait_secs IS NOT NULL
-        ORDER BY queue, polled_at DESC
-      ) w ON a.queue = w.queue
-    `;
-
-    return NextResponse.json({
+    const result = {
       snapshots,
       queues: queueRows.map((r) => r.queue),
       latest,
-    });
+    };
+    setCache(cacheKey, result, TTL);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to fetch metrics:", error);
     return NextResponse.json(

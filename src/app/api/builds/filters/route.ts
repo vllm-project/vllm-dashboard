@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
+import { getCached, setCache } from "@/lib/api-cache";
+
+const TTL = 300_000;
 
 export async function GET() {
   try {
+    const cacheKey = "builds:filters";
+    const cached = getCached(cacheKey);
+    if (cached) return NextResponse.json(cached);
+
     const [pipelines, branches] = await Promise.all([
       queryDatabricks(`
         SELECT DISTINCT p.name
@@ -19,10 +26,13 @@ export async function GET() {
       `),
     ]);
 
-    return NextResponse.json({
+    const result = {
       pipelines: pipelines.map((p) => (p as Record<string, unknown>).name as string),
       branches: branches.map((b) => (b as Record<string, unknown>).branch as string),
-    });
+    };
+    setCache(cacheKey, result, TTL);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to fetch filters:", error);
     return NextResponse.json(

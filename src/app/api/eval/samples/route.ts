@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
+import { getCached, setCache } from "@/lib/api-cache";
 
 export interface EvalSample {
   doc_id: number;
@@ -81,6 +82,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Missing build_id" }, { status: 400 });
     }
 
+    const cacheKey = `eval:samples:${buildId}:${taskParam}:${workloadParam}:${correct}:${limit}`;
+    const cached = getCached(cacheKey);
+    if (cached) return NextResponse.json(cached);
+
     const escBuild = buildId.replace(/'/g, "''");
     const escTask = taskParam ? taskParam.replace(/'/g, "''") : null;
     const escWorkload = workloadParam ? workloadParam.replace(/'/g, "''") : null;
@@ -155,13 +160,16 @@ export async function GET(request: NextRequest) {
     const correctCount = Number(countRows[0]?.correct ?? 0);
     const incorrectCount = Number(countRows[0]?.incorrect ?? 0);
 
-    return NextResponse.json({
+    const result = {
       samples,
       total: correctCount + incorrectCount,
       correct: correctCount,
       incorrect: incorrectCount,
       truncated,
-    });
+    };
+    setCache(cacheKey, result, 60_000);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to fetch eval samples:", error);
     return NextResponse.json(

@@ -36,6 +36,10 @@ export async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_snapshots_polled_queue
     ON queue_snapshots (polled_at DESC, queue)
   `;
+  await db`
+    CREATE INDEX IF NOT EXISTS idx_snapshots_queue_polled
+    ON queue_snapshots (queue, polled_at DESC)
+  `;
   // Add wait time columns if table already exists without them
   for (const col of ["p50_wait_secs", "p90_wait_secs", "p95_wait_secs"]) {
     await db.unsafe(`

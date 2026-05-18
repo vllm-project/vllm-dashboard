@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { loadEvalRows, type EvalRow } from "@/lib/eval-data";
+import { getCached, setCache } from "@/lib/api-cache";
 import {
   buildSummary,
   compareEvalRows,
@@ -153,9 +154,9 @@ async function loadFullCIBuilds(commits: string[]): Promise<Map<string, BuildRow
   return out;
 }
 
-async function loadFailedJobs(buildIds: string[]): Promise<Map<string, JobRow[]>> {
-  if (buildIds.length === 0) return new Map();
-  const inList = buildIds.map((id) => `'${escapeSqlString(id)}'`).join(", ");
+async function loadFailedJobsByCommit(commits: string[]): Promise<Map<string, JobRow[]>> {
+  if (commits.length === 0) return new Map();
+  const inList = commits.map((c) => `'${escapeSqlString(c)}'`).join(", ");
   const jobs = await queryDatabricks<JobRow>(`
     SELECT
       j.build_id,
@@ -166,7 +167,14 @@ async function loadFailedJobs(buildIds: string[]): Promise<Map<string, JobRow[]>
       j.finished_at,
       j.soft_failed
     FROM vllm_data_warehouse.buildkite.build_job AS j
-    WHERE j.build_id IN (${inList})
+    INNER JOIN vllm_data_warehouse.buildkite.build AS b ON j.build_id = b.id
+    INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p ON b.pipeline_id = p.id
+    WHERE b._fivetran_deleted = false
+      AND p.name = 'CI'
+      AND b.branch = 'main'
+      AND b.message LIKE '%Full CI%'
+      AND b.state IN ('passed', 'failed')
+      AND b.commit IN (${inList})
       AND j._fivetran_deleted = false
       AND j.type = 'script'
       AND j.state IN ('failed', 'failing', 'broken', 'timed_out')
@@ -236,6 +244,8 @@ function groupEvalByImage(rows: EvalRow[]): Map<string, EvalRow[]> {
   return out;
 }
 
+const TTL = 60_000;
+
 export async function GET(request: NextRequest) {
   try {
     const sp = request.nextUrl.searchParams;
@@ -246,8 +256,10 @@ export async function GET(request: NextRequest) {
     const perfThreshold = parseThreshold(sp.get("perf_threshold"), 0.02);
     const evalSigma = parseThreshold(sp.get("eval_sigma"), 2);
 
-    // We need limit + 1 nightlies so the oldest one can still be compared against
-    // its predecessor; we trim back to `limit` in the response.
+    const cacheKey = `nightly:${limit}:${perfThreshold}:${evalSigma}`;
+    const cached = getCached(cacheKey);
+    if (cached) return NextResponse.json(cached);
+
     const nightlies = await loadNightlyCommits(limit + 1);
     if (nightlies.length === 0) {
       return NextResponse.json({ nightlies: [], generatedAt: new Date().toISOString() });
@@ -256,14 +268,12 @@ export async function GET(request: NextRequest) {
     const allCommits = nightlies.map((n) => n.commit);
     const allImages = nightlies.map((n) => n.image);
 
-    const [builds, perfRows, evalRows] = await Promise.all([
+    const [builds, perfRows, evalRows, jobsByBuild] = await Promise.all([
       loadFullCIBuilds(allCommits),
       loadPerfRowsByImages(allImages),
       loadEvalRows({ images: allImages }),
+      loadFailedJobsByCommit(allCommits),
     ]);
-
-    const buildIds = [...builds.values()].map((b) => b.id);
-    const jobsByBuild = await loadFailedJobs(buildIds);
 
     const perfByImage = groupPerfByImage(perfRows);
     const evalByImage = groupEvalByImage(evalRows);
@@ -341,11 +351,14 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    return NextResponse.json({
+    const result = {
       nightlies: entries,
       thresholds: { perf: perfThreshold, evalSigma },
       generatedAt: new Date().toISOString(),
-    });
+    };
+    setCache(cacheKey, result, TTL);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to load nightly summary:", error);
     return NextResponse.json(

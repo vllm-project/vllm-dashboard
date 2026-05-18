@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
+import { getCached, setCache } from "@/lib/api-cache";
+
+const TTL = 60_000;
 
 export async function GET(request: NextRequest) {
   try {
@@ -13,6 +16,10 @@ export async function GET(request: NextRequest) {
     if (!jobName) {
       return NextResponse.json({ error: "jobName is required" }, { status: 400 });
     }
+
+    const cacheKey = `jobs:runs:${jobName}:${pipeline}:${branch}:${startDate}:${endDate}`;
+    const cached = getCached(cacheKey);
+    if (cached) return NextResponse.json(cached);
 
     const conditions = [
       "j._fivetran_deleted = false",
@@ -51,7 +58,10 @@ export async function GET(request: NextRequest) {
       ORDER BY b.created_at ASC
     `);
 
-    return NextResponse.json({ runs });
+    const result = { runs };
+    setCache(cacheKey, result, TTL);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to fetch job runs:", error);
     return NextResponse.json(

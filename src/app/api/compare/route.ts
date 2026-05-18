@@ -8,6 +8,7 @@ import {
   parseThreshold,
   sortDeltas,
 } from "@/lib/compare";
+import { getCached, setCache } from "@/lib/api-cache";
 
 export async function GET(request: NextRequest) {
   try {
@@ -27,6 +28,10 @@ export async function GET(request: NextRequest) {
     const perfThreshold = parseThreshold(sp.get("perf_threshold"), 0.02);
     const evalSigma = parseThreshold(sp.get("eval_sigma"), 2);
 
+    const cacheKey = `compare:${baseline}:${candidate}:${model}:${device}:${task}`;
+    const cached = getCached(cacheKey);
+    if (cached) return NextResponse.json(cached);
+
     const [perfRows, evalRows] = await Promise.all([
       loadPerfRows({ baseline, candidate, model, device }),
       loadEvalRows({ model, task, images: [baseline, candidate] }),
@@ -39,7 +44,7 @@ export async function GET(request: NextRequest) {
       .filter((delta) => delta.status === "regression")
       .slice(0, 25);
 
-    return NextResponse.json({
+    const result = {
       baseline,
       candidate,
       thresholds: {
@@ -59,7 +64,10 @@ export async function GET(request: NextRequest) {
         missingCandidate: evalData.missingCandidate,
       },
       generatedAt: new Date().toISOString(),
-    });
+    };
+    setCache(cacheKey, result, 60_000);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to compare images:", error);
     return NextResponse.json(

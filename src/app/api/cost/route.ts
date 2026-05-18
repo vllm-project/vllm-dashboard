@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getQueueCost } from "@/lib/queue-costs";
+import { getCached, setCache } from "@/lib/api-cache";
 
 export const maxDuration = 55;
+const TTL = 60_000;
 
 export async function GET(request: NextRequest) {
   try {
@@ -11,6 +13,10 @@ export async function GET(request: NextRequest) {
     const branch = searchParams.get("branch");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
+
+    const cacheKey = `cost:${pipeline}:${branch}:${startDate}:${endDate}`;
+    const cached = getCached(cacheKey);
+    if (cached) return NextResponse.json(cached);
 
     const conditions = [
       "j._fivetran_deleted = false",
@@ -177,12 +183,15 @@ export async function GET(request: NextRequest) {
       }))
       .sort((a, b) => b.total_cost - a.total_cost);
 
-    return NextResponse.json({
+    const result = {
       byQueue: queueWithCost,
       dailyCostByQueue,
       byBuild,
       byJob,
-    });
+    };
+    setCache(cacheKey, result, TTL);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to fetch cost data:", error);
     return NextResponse.json(

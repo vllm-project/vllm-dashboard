@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { resolveEvalImage } from "@/lib/eval-images";
 import { queryDatabricks } from "@/lib/databricks";
+import { getCached, setCache } from "@/lib/api-cache";
 
 interface RawRow {
   m: string;
@@ -28,6 +29,8 @@ function parseDateParam(s: string | null): number | null {
   return Math.floor(ms / 1000);
 }
 
+const TTL = 300_000;
+
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
@@ -38,6 +41,10 @@ export async function GET(request: Request) {
     if (endEpoch !== null && endRaw && /^\d{4}-\d{2}-\d{2}$/.test(endRaw)) {
       endEpoch += 24 * 3600 - 1;
     }
+
+    const cacheKey = `eval:filters:${searchParams.get("start")}:${searchParams.get("end")}`;
+    const cached = getCached(cacheKey);
+    if (cached) return NextResponse.json(cached);
 
     const conditions = [
       "(message:results IS NOT NULL OR message:data:results IS NOT NULL)",
@@ -97,13 +104,16 @@ export async function GET(request: Request) {
 
     await Promise.all(imageLookups);
 
-    return NextResponse.json({
+    const result = {
       models: [...models].sort(),
       tasks: [...tasks].sort(),
       images: [...images].sort(),
       filters: [...filters].sort(),
       metrics: [...metrics].sort(),
-    });
+    };
+    setCache(cacheKey, result, TTL);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to fetch eval filters:", error);
     return NextResponse.json(

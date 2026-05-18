@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { aggregateJobsByGroup } from "@/lib/test-groups";
+import { getCached, setCache } from "@/lib/api-cache";
 
 const PAGE_SIZE = 50;
+const TTL = 30_000;
 
 export async function GET(request: NextRequest) {
   try {
@@ -12,6 +14,10 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
     const page = Math.max(0, parseInt(searchParams.get("page") ?? "0", 10));
+
+    const cacheKey = `builds:${pipeline}:${branch}:${startDate}:${endDate}:${page}`;
+    const cached = getCached(cacheKey);
+    if (cached) return NextResponse.json(cached);
 
     // Build WHERE clauses
     const conditions = ["b._fivetran_deleted = false"];
@@ -129,12 +135,15 @@ export async function GET(request: NextRequest) {
     const passRate =
       passed + failed > 0 ? Math.round((passed / (passed + failed)) * 100) : 0;
 
-    return NextResponse.json({
+    const result = {
       builds: buildsWithGroups,
       buildDurations,
       summary: { total, passed, failed, passRate },
       pagination: { page, pageSize: PAGE_SIZE, totalPages: Math.ceil(total / PAGE_SIZE) },
-    });
+    };
+    setCache(cacheKey, result, TTL);
+
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Failed to fetch builds:", error);
     return NextResponse.json(
