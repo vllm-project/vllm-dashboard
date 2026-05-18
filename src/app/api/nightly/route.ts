@@ -154,9 +154,9 @@ async function loadFullCIBuilds(commits: string[]): Promise<Map<string, BuildRow
   return out;
 }
 
-async function loadFailedJobs(buildIds: string[]): Promise<Map<string, JobRow[]>> {
-  if (buildIds.length === 0) return new Map();
-  const inList = buildIds.map((id) => `'${escapeSqlString(id)}'`).join(", ");
+async function loadFailedJobsByCommit(commits: string[]): Promise<Map<string, JobRow[]>> {
+  if (commits.length === 0) return new Map();
+  const inList = commits.map((c) => `'${escapeSqlString(c)}'`).join(", ");
   const jobs = await queryDatabricks<JobRow>(`
     SELECT
       j.build_id,
@@ -167,7 +167,14 @@ async function loadFailedJobs(buildIds: string[]): Promise<Map<string, JobRow[]>
       j.finished_at,
       j.soft_failed
     FROM vllm_data_warehouse.buildkite.build_job AS j
-    WHERE j.build_id IN (${inList})
+    INNER JOIN vllm_data_warehouse.buildkite.build AS b ON j.build_id = b.id
+    INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p ON b.pipeline_id = p.id
+    WHERE b._fivetran_deleted = false
+      AND p.name = 'CI'
+      AND b.branch = 'main'
+      AND b.message LIKE '%Full CI%'
+      AND b.state IN ('passed', 'failed')
+      AND b.commit IN (${inList})
       AND j._fivetran_deleted = false
       AND j.type = 'script'
       AND j.state IN ('failed', 'failing', 'broken', 'timed_out')
@@ -261,14 +268,12 @@ export async function GET(request: NextRequest) {
     const allCommits = nightlies.map((n) => n.commit);
     const allImages = nightlies.map((n) => n.image);
 
-    const [builds, perfRows, evalRows] = await Promise.all([
+    const [builds, perfRows, evalRows, jobsByBuild] = await Promise.all([
       loadFullCIBuilds(allCommits),
       loadPerfRowsByImages(allImages),
       loadEvalRows({ images: allImages }),
+      loadFailedJobsByCommit(allCommits),
     ]);
-
-    const buildIds = [...builds.values()].map((b) => b.id);
-    const jobsByBuild = await loadFailedJobs(buildIds);
 
     const perfByImage = groupPerfByImage(perfRows);
     const evalByImage = groupEvalByImage(evalRows);
