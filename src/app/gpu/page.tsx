@@ -45,62 +45,74 @@ function formatMemory(mb: number): string {
   return `${Math.round(mb)} MB`;
 }
 
+function gpuType(name: string | null): string {
+  if (!name) return "Unknown";
+  const match = name.match(/\b(A100|H100|H200|B200|B100|L40S?|A10G?|T4|V100|GB200|GB300)\b/i);
+  return match ? match[1].toUpperCase() : name;
+}
+
 export default function GpuPage() {
-  const [hostname, setHostname] = useState("");
+  const [gpuTypeFilter, setGpuTypeFilter] = useState("");
   const [hours, setHours] = useState(24);
 
-  const url = `/api/gpu?hours=${hours}${hostname ? `&hostname=${encodeURIComponent(hostname)}` : ""}`;
+  const url = `/api/gpu?hours=${hours}`;
   const { data, error, isLoading } = useSWR<GpuResponse>(url, fetcher, {
     refreshInterval: 60_000,
   });
 
-  const chartDataByGpu = useMemo(() => {
-    const snapshots = data?.snapshots ?? [];
-    if (snapshots.length === 0) return new Map<string, Array<{ time: number; mem_pct: number }>>();
-
-    const grouped = new Map<string, Array<{ time: number; mem_pct: number }>>();
-
-    for (const row of snapshots) {
-      const key = `${row.hostname}:gpu${row.gpu_index}`;
-      if (!grouped.has(key)) grouped.set(key, []);
-      grouped.get(key)!.push({
-        time: new Date(row.time_bucket).getTime(),
-        mem_pct: row.mem_total_mb > 0 ? Math.round((Number(row.mem_used_mb) / Number(row.mem_total_mb)) * 100) : 0,
-      });
-    }
-
-    for (const arr of grouped.values()) {
-      arr.sort((a, b) => a.time - b.time);
-    }
-
-    return grouped;
+  const gpuTypes = useMemo(() => {
+    const latest = data?.latest ?? [];
+    const types = new Set(latest.map((g) => gpuType(g.gpu_name)));
+    return [...types].sort();
   }, [data]);
 
-  const avgChartData = useMemo(() => {
-    const snapshots = data?.snapshots ?? [];
-    if (snapshots.length === 0) return [];
+  const filtered = useMemo(() => {
+    const latest = data?.latest ?? [];
+    if (!gpuTypeFilter) return latest;
+    return latest.filter((g) => gpuType(g.gpu_name) === gpuTypeFilter);
+  }, [data, gpuTypeFilter]);
 
-    const targetHost = hostname || null;
-    const bucketMap = new Map<number, { memPctSum: number; count: number }>();
+  const filteredHosts = useMemo(() => {
+    return [...new Set(filtered.map((g) => g.hostname))].sort();
+  }, [filtered]);
+
+  const chartData = useMemo(() => {
+    const snapshots = data?.snapshots ?? [];
+    if (snapshots.length === 0) return { data: [] as Array<Record<string, number>>, hosts: [] as string[] };
+
+    const relevantHosts = new Set(filteredHosts);
+
+    const bucketMap = new Map<number, Map<string, { memPctSum: number; count: number }>>();
 
     for (const row of snapshots) {
-      if (targetHost && row.hostname !== targetHost) continue;
+      if (!relevantHosts.has(row.hostname)) continue;
+      if (gpuTypeFilter && gpuType(row.gpu_name) !== gpuTypeFilter) continue;
+
       const t = new Date(row.time_bucket).getTime();
-      if (!bucketMap.has(t)) bucketMap.set(t, { memPctSum: 0, count: 0 });
-      const entry = bucketMap.get(t)!;
+      if (!bucketMap.has(t)) bucketMap.set(t, new Map());
+      const hostMap = bucketMap.get(t)!;
+      if (!hostMap.has(row.hostname)) hostMap.set(row.hostname, { memPctSum: 0, count: 0 });
+      const entry = hostMap.get(row.hostname)!;
       entry.memPctSum += row.mem_total_mb > 0 ? (Number(row.mem_used_mb) / Number(row.mem_total_mb)) * 100 : 0;
       entry.count++;
     }
 
-    return [...bucketMap.entries()]
-      .map(([time, v]) => ({
-        time,
-        mem_pct: Math.round(v.memPctSum / v.count),
-      }))
+    const hosts = [...relevantHosts].sort();
+    const rows = [...bucketMap.entries()]
+      .map(([time, hostMap]) => {
+        const row: Record<string, number> = { time };
+        for (const host of hosts) {
+          const entry = hostMap.get(host);
+          if (entry) row[host] = Math.round(entry.memPctSum / entry.count);
+        }
+        return row;
+      })
       .sort((a, b) => a.time - b.time);
-  }, [data, hostname]);
 
-  const tickInterval = Math.max(1, Math.floor(avgChartData.length / 10));
+    return { data: rows, hosts };
+  }, [data, filteredHosts, gpuTypeFilter]);
+
+  const tickInterval = Math.max(1, Math.floor(chartData.data.length / 10));
 
   function formatXTick(t: number): string {
     const d = new Date(t);
@@ -128,15 +140,37 @@ export default function GpuPage() {
     );
   }
 
-  const latest = data?.latest ?? [];
-  const filtered = hostname ? latest.filter((g) => g.hostname === hostname) : latest;
   const totalGpus = filtered.length;
   const avgMemPct = totalGpus > 0
     ? Math.round(filtered.reduce((s, g) => s + (g.mem_total_mb > 0 ? (g.mem_used_mb / g.mem_total_mb) * 100 : 0), 0) / totalGpus)
     : 0;
   const totalMemUsedGb = filtered.reduce((s, g) => s + g.mem_used_mb, 0) / 1024;
   const totalMemGb = filtered.reduce((s, g) => s + g.mem_total_mb, 0) / 1024;
-  const uniqueHosts = new Set(filtered.map((g) => g.hostname)).size;
+  const uniqueHosts = filteredHosts.length;
+
+  // Aggregate per-host for the table
+  const hostRows = useMemo(() => {
+    const map = new Map<string, { hostname: string; gpuType: string; gpuCount: number; memUsedMb: number; memTotalMb: number; lastSeen: string }>();
+    for (const g of filtered) {
+      const existing = map.get(g.hostname);
+      if (!existing) {
+        map.set(g.hostname, {
+          hostname: g.hostname,
+          gpuType: gpuType(g.gpu_name),
+          gpuCount: 1,
+          memUsedMb: g.mem_used_mb,
+          memTotalMb: g.mem_total_mb,
+          lastSeen: g.reported_at,
+        });
+      } else {
+        existing.gpuCount++;
+        existing.memUsedMb += g.mem_used_mb;
+        existing.memTotalMb += g.mem_total_mb;
+        if (g.reported_at > existing.lastSeen) existing.lastSeen = g.reported_at;
+      }
+    }
+    return [...map.values()].sort((a, b) => a.hostname.localeCompare(b.hostname));
+  }, [filtered]);
 
   return (
     <div className="space-y-6">
@@ -144,11 +178,11 @@ export default function GpuPage() {
         <h1 className="text-2xl font-semibold">GPU Memory</h1>
         <div className="flex gap-3">
           <SearchableSelect
-            label="Host"
-            value={hostname}
-            onChange={setHostname}
-            options={data?.hostnames ?? []}
-            allLabel="All Hosts"
+            label="GPU Type"
+            value={gpuTypeFilter}
+            onChange={setGpuTypeFilter}
+            options={gpuTypes}
+            allLabel="All Types"
           />
           <div className="flex gap-1 rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700">
             {HOURS_OPTIONS.map((opt) => (
@@ -188,47 +222,24 @@ export default function GpuPage() {
         />
       </div>
 
-      {/* Average memory chart */}
+      {/* Per-host memory chart */}
       <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
         <h3 className="mb-4 text-sm font-medium text-zinc-500 dark:text-zinc-400">
-          Average Memory Utilization{hostname ? ` — ${hostname}` : ""}
+          Memory Utilization by Host
         </h3>
         <GpuMemChart
-          data={avgChartData}
+          data={chartData.data}
+          hosts={chartData.hosts}
           formatXTick={formatXTick}
           tickInterval={tickInterval}
         />
       </div>
 
-      {/* Per-GPU charts when a host is selected */}
-      {hostname && chartDataByGpu.size > 1 && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {[...chartDataByGpu.entries()].map(([key, gpuData]) => {
-            const gpuTickInterval = Math.max(1, Math.floor(gpuData.length / 8));
-            return (
-              <div
-                key={key}
-                className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950"
-              >
-                <h3 className="mb-4 text-sm font-medium text-zinc-500 dark:text-zinc-400">
-                  {key}
-                </h3>
-                <GpuMemChart
-                  data={gpuData}
-                  formatXTick={formatXTick}
-                  tickInterval={gpuTickInterval}
-                />
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* GPU detail table */}
+      {/* Host summary table */}
       <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
         <div className="border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
           <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-            GPU Memory Status
+            Host Summary
           </h3>
         </div>
         <div className="overflow-x-auto">
@@ -236,41 +247,39 @@ export default function GpuPage() {
             <thead>
               <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
                 <th className="px-5 py-2.5 font-medium">Host</th>
-                <th className="px-5 py-2.5 font-medium">GPU</th>
-                <th className="px-5 py-2.5 font-medium">Model</th>
+                <th className="px-5 py-2.5 font-medium">GPU Type</th>
+                <th className="px-5 py-2.5 font-medium">GPUs</th>
                 <th className="px-5 py-2.5 font-medium">Memory</th>
                 <th className="px-5 py-2.5 font-medium">Last Seen</th>
               </tr>
             </thead>
             <tbody>
-              {filtered
-                .sort((a, b) => a.hostname.localeCompare(b.hostname) || a.gpu_index - b.gpu_index)
-                .map((g) => {
-                  const memPct = g.mem_total_mb > 0 ? Math.round((g.mem_used_mb / g.mem_total_mb) * 100) : 0;
-                  const ago = Math.round((Date.now() - new Date(g.reported_at).getTime()) / 60_000);
-                  const stale = ago > 5;
-                  return (
-                    <tr
-                      key={`${g.hostname}-${g.gpu_index}`}
-                      className={`border-b border-zinc-100 last:border-0 dark:border-zinc-800/50 ${stale ? "opacity-50" : ""}`}
-                    >
-                      <td className="px-5 py-2.5 font-medium">{g.hostname}</td>
-                      <td className="px-5 py-2.5">{g.gpu_index}</td>
-                      <td className="px-5 py-2.5 text-zinc-500 dark:text-zinc-400">{g.gpu_name ?? "—"}</td>
-                      <td className="px-5 py-2.5">
-                        <span className={memPct > 90 ? "font-medium text-red-600 dark:text-red-400" : ""}>
-                          {formatMemory(g.mem_used_mb)}
-                        </span>
-                        <span className="text-zinc-400"> / {formatMemory(g.mem_total_mb)}</span>
-                        <span className="ml-1 text-xs text-zinc-400">({memPct}%)</span>
-                      </td>
-                      <td className={`whitespace-nowrap px-5 py-2.5 text-zinc-500 dark:text-zinc-400 ${stale ? "text-yellow-600 dark:text-yellow-400" : ""}`}>
-                        {stale ? `${ago}m ago` : "just now"}
-                      </td>
-                    </tr>
-                  );
-                })}
-              {filtered.length === 0 && (
+              {hostRows.map((h) => {
+                const memPct = h.memTotalMb > 0 ? Math.round((h.memUsedMb / h.memTotalMb) * 100) : 0;
+                const ago = Math.round((Date.now() - new Date(h.lastSeen).getTime()) / 60_000);
+                const stale = ago > 5;
+                return (
+                  <tr
+                    key={h.hostname}
+                    className={`border-b border-zinc-100 last:border-0 dark:border-zinc-800/50 ${stale ? "opacity-50" : ""}`}
+                  >
+                    <td className="px-5 py-2.5 font-medium">{h.hostname}</td>
+                    <td className="px-5 py-2.5">{h.gpuType}</td>
+                    <td className="px-5 py-2.5">{h.gpuCount}</td>
+                    <td className="px-5 py-2.5">
+                      <span className={memPct > 90 ? "font-medium text-red-600 dark:text-red-400" : ""}>
+                        {formatMemory(h.memUsedMb)}
+                      </span>
+                      <span className="text-zinc-400"> / {formatMemory(h.memTotalMb)}</span>
+                      <span className="ml-1 text-xs text-zinc-400">({memPct}%)</span>
+                    </td>
+                    <td className={`whitespace-nowrap px-5 py-2.5 text-zinc-500 dark:text-zinc-400 ${stale ? "text-yellow-600 dark:text-yellow-400" : ""}`}>
+                      {stale ? `${ago}m ago` : "just now"}
+                    </td>
+                  </tr>
+                );
+              })}
+              {hostRows.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-5 py-8 text-center text-zinc-400">
                     No GPU data found. Deploy the reporting script to start collecting metrics.
