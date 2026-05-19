@@ -84,6 +84,18 @@ export default function BuildsPage() {
     return [...groups].sort();
   }, [builds]);
 
+  const jobToGroup = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const build of builds) {
+      for (const g of build.testGroups ?? []) {
+        for (const j of g.jobs) {
+          if (!map.has(j.name)) map.set(j.name, g.group);
+        }
+      }
+    }
+    return map;
+  }, [builds]);
+
   const availableJobNames = useMemo(() => {
     const jobs = new Set<string>();
     const groupFilter = selectedGroups.size > 0 ? selectedGroups : null;
@@ -187,7 +199,16 @@ export default function BuildsPage() {
           <MultiSelect
             label="Jobs"
             selected={selectedJobs}
-            onChange={(v) => { setSelectedJobs(v); setPage(0); }}
+            onChange={(v) => {
+              setSelectedJobs(v);
+              setPage(0);
+              const groups = new Set(selectedGroups);
+              for (const name of v) {
+                const group = jobToGroup.get(name);
+                if (group) groups.add(group);
+              }
+              if (groups.size !== selectedGroups.size) setSelectedGroups(groups);
+            }}
             options={availableJobNames}
             placeholder="All Jobs"
           />
