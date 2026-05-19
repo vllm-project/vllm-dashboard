@@ -37,6 +37,10 @@ export async function GET(request: NextRequest) {
       conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
     }
     const where = conditions.join(" AND ");
+    const hasDateRange = startDate || endDate;
+    const recencyHaving = hasDateRange
+      ? ""
+      : "\n        HAVING MAX(b.created_at) >= CURRENT_DATE - INTERVAL 7 DAY";
 
     const joinClause = `
       FROM vllm_data_warehouse.buildkite.build_job AS j
@@ -89,8 +93,7 @@ export async function GET(request: NextRequest) {
           ROUND(MAX(TIMESTAMPDIFF(SECOND, j.runnable_at, j.started_at))) AS max_wait
         ${joinClause}
         WHERE ${where}
-        GROUP BY SUBSTRING(r.rule, 7)
-        HAVING MAX(b.created_at) >= CURRENT_DATE - INTERVAL 7 DAY
+        GROUP BY SUBSTRING(r.rule, 7)${recencyHaving}
         ORDER BY p50_wait DESC
       `),
       // Wait time trend with adaptive intervals (per queue)

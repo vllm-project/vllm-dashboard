@@ -35,6 +35,10 @@ export async function GET(request: NextRequest) {
       conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
     }
     const where = conditions.join(" AND ");
+    const hasDateRange = startDate || endDate;
+    const recencyHaving = hasDateRange
+      ? ""
+      : "\n          AND MAX(b.created_at) >= CURRENT_DATE - INTERVAL 7 DAY";
 
     const [failureRanking, durationStats] = await Promise.all([
       queryDatabricks(`
@@ -55,8 +59,7 @@ export async function GET(request: NextRequest) {
         WHERE ${where}
           AND j.state IN ('passed', 'failed', 'failing', 'broken', 'timed_out')
         GROUP BY j.name
-        HAVING SUM(CASE WHEN j.state IN ('failed', 'failing', 'broken', 'timed_out') THEN 1 ELSE 0 END) > 0
-          AND MAX(b.created_at) >= CURRENT_DATE - INTERVAL 7 DAY
+        HAVING SUM(CASE WHEN j.state IN ('failed', 'failing', 'broken', 'timed_out') THEN 1 ELSE 0 END) > 0${recencyHaving}
         ORDER BY failure_rate DESC, failures DESC
       `),
       queryDatabricks(`
@@ -75,7 +78,7 @@ export async function GET(request: NextRequest) {
           AND j.finished_at IS NOT NULL
           AND j.state = 'passed'
         GROUP BY j.name
-        HAVING MAX(b.created_at) >= CURRENT_DATE - INTERVAL 7 DAY
+        HAVING COUNT(*) > 0${recencyHaving}
         ORDER BY p50_duration DESC
       `),
     ]);
