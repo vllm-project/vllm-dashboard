@@ -150,6 +150,27 @@ function shortCommit(row: {
   return s ? s.slice(0, 7) : "—";
 }
 
+function primaryMetric(rows: EvalRow[]): { metric: string; filter: string } | null {
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    for (const m of r.metrics) {
+      const key = `${m.name}\0${m.filter}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  let best: string | null = null;
+  let bestCount = 0;
+  for (const [key, count] of counts) {
+    if (count > bestCount) {
+      best = key;
+      bestCount = count;
+    }
+  }
+  if (!best) return null;
+  const [metric, filter] = best.split("\0");
+  return { metric, filter };
+}
+
 function pickMetric(row: EvalRow, metric: string, filter: string): EvalMetric | null {
   return (
     row.metrics.find((m) => m.name === metric && m.filter === filter) ?? null
@@ -158,18 +179,19 @@ function pickMetric(row: EvalRow, metric: string, filter: string): EvalMetric | 
 
 function ScoreChart({
   rows,
-  metric,
-  filter,
   task,
 }: {
   rows: EvalRow[];
-  metric: string;
-  filter: string;
   task: string;
 }) {
   const dark = useDarkMode();
 
+  const pm = useMemo(() => primaryMetric(rows), [rows]);
+  const metric = pm?.metric ?? "";
+  const filter = pm?.filter ?? "";
+
   const traces = useMemo(() => {
+    if (!metric || !filter) return [];
     const groups = new Map<string, EvalRow[]>();
     for (const r of rows) {
       if (!groups.has(r.model)) groups.set(r.model, []);
@@ -226,7 +248,7 @@ function ScoreChart({
   if (traces.length === 0) {
     return (
       <div className="flex h-[420px] items-center justify-center rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700">
-        <span className="text-sm text-zinc-400">No data for this metric/filter combination.</span>
+        <span className="text-sm text-zinc-400">No data for {task}.</span>
       </div>
     );
   }
@@ -394,16 +416,16 @@ function SampleItem({ sample }: { sample: EvalSample }) {
 
 function SamplesDrawer({
   row,
-  metric,
-  filter,
   onClose,
 }: {
   row: EvalRow;
-  metric: string;
-  filter: string;
   onClose: () => void;
 }) {
   const [correctness, setCorrectness] = useState<"all" | "correct" | "incorrect">("all");
+
+  const m = row.metrics[0] ?? null;
+  const metric = m?.name ?? "";
+  const filter = m?.filter ?? "";
 
   const params = new URLSearchParams();
   params.set("build_id", row.buildkite_build_id ?? "");
@@ -426,7 +448,6 @@ function SamplesDrawer({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const m = pickMetric(row, metric, filter);
   const samples = data?.samples ?? [];
 
   return (
@@ -440,13 +461,15 @@ function SamplesDrawer({
               <span className="font-mono text-sm text-zinc-500">{row.model}</span>
             </div>
             <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
-              <span>
-                {metric} ({filter}):{" "}
-                <span className="font-medium text-zinc-700 dark:text-zinc-300">
-                  {m ? formatPct(m.value) : "—"}
+              {m && (
+                <span>
+                  {metric} ({filter}):{" "}
+                  <span className="font-medium text-zinc-700 dark:text-zinc-300">
+                    {formatPct(m.value)}
+                  </span>
+                  <span> ± {(m.stderr * 100).toFixed(2)}%</span>
                 </span>
-                {m ? <span> ± {(m.stderr * 100).toFixed(2)}%</span> : null}
-              </span>
+              )}
               <span>{row.n_shot}-shot · {row.n_samples} samples</span>
               {row.buildkite_build_url && row.buildkite_build_number ? (
                 <a
@@ -537,13 +560,9 @@ function SamplesDrawer({
 
 function LeaderboardTable({
   rows,
-  metric,
-  filter,
   onSelect,
 }: {
   rows: EvalRow[];
-  metric: string;
-  filter: string;
   onSelect: (row: EvalRow) => void;
 }) {
   const allRuns = useMemo(() => {
@@ -569,7 +588,7 @@ function LeaderboardTable({
               <th className="px-4 py-2 text-left">Image</th>
               <th className="px-4 py-2 text-left">Model</th>
               <th className="px-4 py-2 text-left">Task</th>
-              <th className="px-4 py-2 text-right">{metric} ({filter})</th>
+              <th className="px-4 py-2 text-right">Score</th>
               <th className="px-4 py-2 text-right">± stderr</th>
               <th className="px-4 py-2 text-right">n-shot</th>
               <th className="px-4 py-2 text-right">samples</th>
@@ -578,7 +597,7 @@ function LeaderboardTable({
           </thead>
           <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
             {allRuns.map((r) => {
-              const m = pickMetric(r, metric, filter);
+              const m = r.metrics[0] ?? null;
               const clickable = !!r.buildkite_build_id;
               return (
                 <tr
@@ -616,7 +635,7 @@ function LeaderboardTable({
                   </td>
                   <td className="px-4 py-2 font-mono text-xs">{r.model}</td>
                   <td className="px-4 py-2">{r.task}</td>
-                  <td className="px-4 py-2 text-right font-medium">
+                  <td className="px-4 py-2 text-right font-medium" title={m ? `${m.name} (${m.filter})` : undefined}>
                     {m ? formatPct(m.value) : "—"}
                   </td>
                   <td className="px-4 py-2 text-right text-zinc-500">
@@ -639,12 +658,8 @@ function LeaderboardTable({
 
 function LatestStatCards({
   rows,
-  metric,
-  filter,
 }: {
   rows: EvalRow[];
-  metric: string;
-  filter: string;
 }) {
   const cards = useMemo(() => {
     const byKey = new Map<string, EvalRow[]>();
@@ -659,8 +674,7 @@ function LatestStatCards({
       model: string;
       latest: EvalRow;
       prev: EvalRow | null;
-      m: EvalMetric | null;
-      prevM: EvalMetric | null;
+      pm: { metric: string; filter: string } | null;
     }[] = [];
     for (const [key, runs] of byKey) {
       const sorted = [...runs].sort((a, b) => b.run_epoch - a.run_epoch);
@@ -672,30 +686,32 @@ function LatestStatCards({
         model: latest.model,
         latest,
         prev,
-        m: pickMetric(latest, metric, filter),
-        prevM: prev ? pickMetric(prev, metric, filter) : null,
+        pm: primaryMetric(runs),
       });
     }
     return out.sort((a, b) => a.task.localeCompare(b.task));
-  }, [rows, metric, filter]);
+  }, [rows]);
 
   if (cards.length === 0) return null;
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {cards.map((c) => {
-        if (!c.m) return null;
+        if (!c.pm) return null;
+        const m = pickMetric(c.latest, c.pm.metric, c.pm.filter);
+        const prevM = c.prev ? pickMetric(c.prev, c.pm.metric, c.pm.filter) : null;
+        if (!m) return null;
         let color: "default" | "green" | "red" | "yellow" = "default";
         const commit = shortCommit(c.latest);
         let detail = `n=${c.latest.n_samples}, ${c.latest.n_shot}-shot, ${commit}`;
-        if (c.prevM) {
-          const delta = c.m.value - c.prevM.value;
-          const sigma = Math.sqrt(c.m.stderr ** 2 + c.prevM.stderr ** 2);
+        if (prevM) {
+          const delta = m.value - prevM.value;
+          const sigma = Math.sqrt(m.stderr ** 2 + prevM.stderr ** 2);
           const zish = sigma > 0 ? Math.abs(delta) / sigma : 0;
           const dir = delta >= 0 ? "↑" : "↓";
           const sign = delta >= 0 ? "+" : "";
           detail = `${dir} ${sign}${(delta * 100).toFixed(2)}pp vs prev (${zish.toFixed(1)}σ)`;
-          if (c.m.higher_is_better) {
+          if (m.higher_is_better) {
             if (delta < 0 && zish > 2) color = "red";
             else if (delta > 0 && zish > 2) color = "green";
             else color = "yellow";
@@ -709,7 +725,7 @@ function LatestStatCards({
           <StatCard
             key={c.key}
             label={`${c.task} — ${c.model.split("/").pop()}`}
-            value={formatPct(c.m.value)}
+            value={formatPct(m.value)}
             detail={detail}
             color={color}
           />
@@ -723,14 +739,9 @@ export default function EvalPage() {
   const [model, setModel] = useState("");
   const [task, setTask] = useState("");
   const [image, setImage] = useState("");
-  const [metric, setMetric] = useState("");
-  const [filter, setFilter] = useState("");
   const [selectedRow, setSelectedRow] = useState<EvalRow | null>(null);
 
   const { data: filters } = useSWR<FiltersResponse>("/api/eval/filters", fetcher);
-
-  const selectedMetric = metric || filters?.metrics?.[0] || "";
-  const selectedFilter = filter || filters?.filters?.[0] || "";
 
   const params = new URLSearchParams();
   if (model) params.set("model", model);
@@ -783,20 +794,6 @@ export default function EvalPage() {
           options={filters?.images ?? []}
           allLabel="All Images"
         />
-        <SearchableSelect
-          label="Metric"
-          value={selectedMetric}
-          onChange={setMetric}
-          options={filters?.metrics ?? []}
-          allLabel="Pick metric"
-        />
-        <SearchableSelect
-          label="Filter"
-          value={selectedFilter}
-          onChange={setFilter}
-          options={filters?.filters ?? []}
-          allLabel="Pick filter"
-        />
       </div>
 
       {isLoading && (
@@ -814,17 +811,15 @@ export default function EvalPage() {
         </div>
       )}
 
-      {!isLoading && rows.length > 0 && selectedMetric && selectedFilter && (
+      {!isLoading && rows.length > 0 && (
         <>
-          <LatestStatCards rows={rows} metric={selectedMetric} filter={selectedFilter} />
+          <LatestStatCards rows={rows} />
 
           <div className="grid grid-cols-1 gap-5">
             {tasksInData.map((t) => (
               <ScoreChart
                 key={t}
                 rows={rows.filter((r) => r.task === t)}
-                metric={selectedMetric}
-                filter={selectedFilter}
                 task={t}
               />
             ))}
@@ -832,8 +827,6 @@ export default function EvalPage() {
 
           <LeaderboardTable
             rows={rows}
-            metric={selectedMetric}
-            filter={selectedFilter}
             onSelect={setSelectedRow}
           />
         </>
@@ -842,8 +835,6 @@ export default function EvalPage() {
       {selectedRow && (
         <SamplesDrawer
           row={selectedRow}
-          metric={selectedMetric}
-          filter={selectedFilter}
           onClose={() => setSelectedRow(null)}
         />
       )}
