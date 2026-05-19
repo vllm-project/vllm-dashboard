@@ -4,7 +4,7 @@ import { useState, useMemo } from "react";
 import useSWR from "swr";
 import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
-import { GpuUtilChart } from "@/components/gpu-util-chart";
+import { GpuMemChart } from "@/components/gpu-util-chart";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -13,24 +13,16 @@ interface GpuSnapshot {
   hostname: string;
   gpu_index: number;
   gpu_name: string | null;
-  gpu_util: number;
   mem_used_mb: number;
   mem_total_mb: number;
-  temperature_c: number | null;
-  power_draw_w: number | null;
-  power_limit_w: number | null;
 }
 
 interface GpuLatest {
   hostname: string;
   gpu_index: number;
   gpu_name: string | null;
-  gpu_util: number;
   mem_used_mb: number;
   mem_total_mb: number;
-  temperature_c: number | null;
-  power_draw_w: number | null;
-  power_limit_w: number | null;
   reported_at: string;
 }
 
@@ -64,18 +56,16 @@ export default function GpuPage() {
 
   const chartDataByGpu = useMemo(() => {
     const snapshots = data?.snapshots ?? [];
-    if (snapshots.length === 0) return new Map<string, Array<{ time: number; gpu_util: number; mem_pct: number; temperature_c: number | null }>>();
+    if (snapshots.length === 0) return new Map<string, Array<{ time: number; mem_pct: number }>>();
 
-    const grouped = new Map<string, Array<{ time: number; gpu_util: number; mem_pct: number; temperature_c: number | null }>>();
+    const grouped = new Map<string, Array<{ time: number; mem_pct: number }>>();
 
     for (const row of snapshots) {
       const key = `${row.hostname}:gpu${row.gpu_index}`;
       if (!grouped.has(key)) grouped.set(key, []);
       grouped.get(key)!.push({
         time: new Date(row.time_bucket).getTime(),
-        gpu_util: Number(row.gpu_util),
         mem_pct: row.mem_total_mb > 0 ? Math.round((Number(row.mem_used_mb) / Number(row.mem_total_mb)) * 100) : 0,
-        temperature_c: row.temperature_c != null ? Number(row.temperature_c) : null,
       });
     }
 
@@ -91,28 +81,21 @@ export default function GpuPage() {
     if (snapshots.length === 0) return [];
 
     const targetHost = hostname || null;
-    const bucketMap = new Map<number, { utilSum: number; memPctSum: number; tempSum: number; tempCount: number; count: number }>();
+    const bucketMap = new Map<number, { memPctSum: number; count: number }>();
 
     for (const row of snapshots) {
       if (targetHost && row.hostname !== targetHost) continue;
       const t = new Date(row.time_bucket).getTime();
-      if (!bucketMap.has(t)) bucketMap.set(t, { utilSum: 0, memPctSum: 0, tempSum: 0, tempCount: 0, count: 0 });
+      if (!bucketMap.has(t)) bucketMap.set(t, { memPctSum: 0, count: 0 });
       const entry = bucketMap.get(t)!;
-      entry.utilSum += Number(row.gpu_util);
       entry.memPctSum += row.mem_total_mb > 0 ? (Number(row.mem_used_mb) / Number(row.mem_total_mb)) * 100 : 0;
-      if (row.temperature_c != null) {
-        entry.tempSum += Number(row.temperature_c);
-        entry.tempCount++;
-      }
       entry.count++;
     }
 
     return [...bucketMap.entries()]
       .map(([time, v]) => ({
         time,
-        gpu_util: Math.round((v.utilSum / v.count) * 10) / 10,
         mem_pct: Math.round(v.memPctSum / v.count),
-        temperature_c: v.tempCount > 0 ? Math.round(v.tempSum / v.tempCount) : null,
       }))
       .sort((a, b) => a.time - b.time);
   }, [data, hostname]);
@@ -148,17 +131,17 @@ export default function GpuPage() {
   const latest = data?.latest ?? [];
   const filtered = hostname ? latest.filter((g) => g.hostname === hostname) : latest;
   const totalGpus = filtered.length;
-  const avgUtil = totalGpus > 0 ? Math.round(filtered.reduce((s, g) => s + g.gpu_util, 0) / totalGpus) : 0;
   const avgMemPct = totalGpus > 0
     ? Math.round(filtered.reduce((s, g) => s + (g.mem_total_mb > 0 ? (g.mem_used_mb / g.mem_total_mb) * 100 : 0), 0) / totalGpus)
     : 0;
+  const totalMemUsedGb = filtered.reduce((s, g) => s + g.mem_used_mb, 0) / 1024;
+  const totalMemGb = filtered.reduce((s, g) => s + g.mem_total_mb, 0) / 1024;
   const uniqueHosts = new Set(filtered.map((g) => g.hostname)).size;
-  const maxTemp = filtered.reduce((m, g) => Math.max(m, g.temperature_c ?? 0), 0);
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-semibold">GPU Utilization</h1>
+        <h1 className="text-2xl font-semibold">GPU Memory</h1>
         <div className="flex gap-3">
           <SearchableSelect
             label="Host"
@@ -186,39 +169,31 @@ export default function GpuPage() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Nodes" value={uniqueHosts} detail={`${totalGpus} GPUs total`} />
         <StatCard
-          label="Avg GPU Util"
-          value={`${avgUtil}%`}
-          color={avgUtil > 90 ? "green" : avgUtil < 30 ? "yellow" : "default"}
-        />
-        <StatCard
-          label="Avg Mem Used"
+          label="Avg Memory Used"
           value={`${avgMemPct}%`}
-          color={avgMemPct > 90 ? "red" : "default"}
+          color={avgMemPct > 90 ? "red" : avgMemPct > 70 ? "yellow" : "default"}
         />
         <StatCard
-          label="Max Temp"
-          value={maxTemp > 0 ? `${maxTemp}°C` : "—"}
-          color={maxTemp > 85 ? "red" : maxTemp > 75 ? "yellow" : "default"}
+          label="Memory Used"
+          value={`${totalMemUsedGb.toFixed(0)} GB`}
+          detail={`of ${totalMemGb.toFixed(0)} GB total`}
         />
         <StatCard
-          label="Total Power"
-          value={
-            filtered.some((g) => g.power_draw_w != null)
-              ? `${Math.round(filtered.reduce((s, g) => s + (g.power_draw_w ?? 0), 0))} W`
-              : "—"
-          }
+          label="Memory Free"
+          value={`${(totalMemGb - totalMemUsedGb).toFixed(0)} GB`}
+          color={(totalMemGb - totalMemUsedGb) < 50 ? "yellow" : "default"}
         />
       </div>
 
-      {/* Average utilization chart */}
+      {/* Average memory chart */}
       <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
         <h3 className="mb-4 text-sm font-medium text-zinc-500 dark:text-zinc-400">
-          Average GPU Utilization{hostname ? ` — ${hostname}` : ""}
+          Average Memory Utilization{hostname ? ` — ${hostname}` : ""}
         </h3>
-        <GpuUtilChart
+        <GpuMemChart
           data={avgChartData}
           formatXTick={formatXTick}
           tickInterval={tickInterval}
@@ -238,7 +213,7 @@ export default function GpuPage() {
                 <h3 className="mb-4 text-sm font-medium text-zinc-500 dark:text-zinc-400">
                   {key}
                 </h3>
-                <GpuUtilChart
+                <GpuMemChart
                   data={gpuData}
                   formatXTick={formatXTick}
                   tickInterval={gpuTickInterval}
@@ -253,7 +228,7 @@ export default function GpuPage() {
       <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
         <div className="border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
           <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-            GPU Status
+            GPU Memory Status
           </h3>
         </div>
         <div className="overflow-x-auto">
@@ -263,10 +238,7 @@ export default function GpuPage() {
                 <th className="px-5 py-2.5 font-medium">Host</th>
                 <th className="px-5 py-2.5 font-medium">GPU</th>
                 <th className="px-5 py-2.5 font-medium">Model</th>
-                <th className="px-5 py-2.5 font-medium">Util</th>
                 <th className="px-5 py-2.5 font-medium">Memory</th>
-                <th className="px-5 py-2.5 font-medium">Temp</th>
-                <th className="px-5 py-2.5 font-medium">Power</th>
                 <th className="px-5 py-2.5 font-medium">Last Seen</th>
               </tr>
             </thead>
@@ -285,32 +257,12 @@ export default function GpuPage() {
                       <td className="px-5 py-2.5 font-medium">{g.hostname}</td>
                       <td className="px-5 py-2.5">{g.gpu_index}</td>
                       <td className="px-5 py-2.5 text-zinc-500 dark:text-zinc-400">{g.gpu_name ?? "—"}</td>
-                      <td className={`px-5 py-2.5 font-medium ${
-                        g.gpu_util > 80 ? "text-emerald-600 dark:text-emerald-400"
-                          : g.gpu_util < 20 ? "text-yellow-600 dark:text-yellow-400"
-                          : ""
-                      }`}>
-                        {g.gpu_util}%
-                      </td>
                       <td className="px-5 py-2.5">
                         <span className={memPct > 90 ? "font-medium text-red-600 dark:text-red-400" : ""}>
                           {formatMemory(g.mem_used_mb)}
                         </span>
                         <span className="text-zinc-400"> / {formatMemory(g.mem_total_mb)}</span>
                         <span className="ml-1 text-xs text-zinc-400">({memPct}%)</span>
-                      </td>
-                      <td className={`px-5 py-2.5 ${
-                        (g.temperature_c ?? 0) > 85 ? "text-red-600 dark:text-red-400"
-                          : (g.temperature_c ?? 0) > 75 ? "text-yellow-600 dark:text-yellow-400"
-                          : ""
-                      }`}>
-                        {g.temperature_c != null ? `${g.temperature_c}°C` : "—"}
-                      </td>
-                      <td className="px-5 py-2.5">
-                        {g.power_draw_w != null
-                          ? `${g.power_draw_w}W${g.power_limit_w ? ` / ${g.power_limit_w}W` : ""}`
-                          : "—"
-                        }
                       </td>
                       <td className={`whitespace-nowrap px-5 py-2.5 text-zinc-500 dark:text-zinc-400 ${stale ? "text-yellow-600 dark:text-yellow-400" : ""}`}>
                         {stale ? `${ago}m ago` : "just now"}
@@ -320,7 +272,7 @@ export default function GpuPage() {
                 })}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-5 py-8 text-center text-zinc-400">
+                  <td colSpan={5} className="px-5 py-8 text-center text-zinc-400">
                     No GPU data found. Deploy the reporting script to start collecting metrics.
                   </td>
                 </tr>

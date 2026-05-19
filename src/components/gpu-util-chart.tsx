@@ -1,24 +1,22 @@
 "use client";
 
 import {
-  ComposedChart,
+  AreaChart,
   Area,
-  Line,
   XAxis,
   YAxis,
   Tooltip,
-  Legend,
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
 
-interface GpuUtilChartProps {
-  data: Array<{ time: number; gpu_util: number; mem_pct: number; temperature_c: number | null }>;
+interface GpuMemChartProps {
+  data: Array<{ time: number; mem_pct: number }>;
   formatXTick: (t: number) => string;
   tickInterval: number;
 }
 
-function GpuTooltip({
+function MemTooltip({
   active,
   payload,
   label,
@@ -49,16 +47,14 @@ function GpuTooltip({
             />
             {p.name}
           </span>
-          <span className="tabular-nums">
-            {p.name === "Temp" ? `${p.value}°C` : `${p.value}%`}
-          </span>
+          <span className="tabular-nums">{p.value}%</span>
         </div>
       ))}
     </div>
   );
 }
 
-export function GpuUtilChart({ data, formatXTick, tickInterval }: GpuUtilChartProps) {
+export function GpuMemChart({ data, formatXTick, tickInterval }: GpuMemChartProps) {
   if (data.length === 0) {
     return (
       <div className="flex h-[300px] items-center justify-center text-sm text-zinc-400">
@@ -67,11 +63,9 @@ export function GpuUtilChart({ data, formatXTick, tickInterval }: GpuUtilChartPr
     );
   }
 
-  const hasTemp = data.some((d) => d.temperature_c != null);
-
   return (
     <ResponsiveContainer width="100%" height={300}>
-      <ComposedChart data={data}>
+      <AreaChart data={data}>
         <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
         <XAxis
           dataKey="time"
@@ -88,45 +82,21 @@ export function GpuUtilChart({ data, formatXTick, tickInterval }: GpuUtilChartPr
           tickFormatter={(v: number) => `${v}%`}
         />
         <Tooltip
-          content={<GpuTooltip />}
+          content={<MemTooltip />}
           cursor={{ fill: "rgba(113,113,122,0.08)" }}
         />
-        <Legend wrapperStyle={{ fontSize: 11 }} />
         <Area
           type="monotone"
-          dataKey="gpu_util"
-          name="GPU Util"
-          stroke="#10b981"
-          fill="#10b981"
+          dataKey="mem_pct"
+          name="Memory Used"
+          stroke="#3b82f6"
+          fill="#3b82f6"
           fillOpacity={0.15}
           strokeWidth={2}
           dot={false}
           activeDot={{ r: 4 }}
         />
-        <Area
-          type="monotone"
-          dataKey="mem_pct"
-          name="Mem Used"
-          stroke="#3b82f6"
-          fill="#3b82f6"
-          fillOpacity={0.1}
-          strokeWidth={2}
-          dot={false}
-          activeDot={{ r: 4 }}
-        />
-        {hasTemp && (
-          <Line
-            type="monotone"
-            dataKey="temperature_c"
-            name="Temp"
-            stroke="#f59e0b"
-            strokeWidth={1.5}
-            strokeDasharray="4 2"
-            dot={false}
-            activeDot={{ r: 3 }}
-          />
-        )}
-      </ComposedChart>
+      </AreaChart>
     </ResponsiveContainer>
   );
 }
