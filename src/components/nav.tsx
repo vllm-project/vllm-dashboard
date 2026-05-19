@@ -8,6 +8,7 @@ const links = [
   { href: "/jobs", label: "Jobs" },
   { href: "/nightly", label: "Nightly" },
   { href: "/queue", label: "Queue" },
+  { href: "/gpu", label: "GPU" },
   { href: "/cost", label: "Cost" },
   { href: "/perf", label: "Performance" },
   { href: "/eval", label: "Evaluation" },

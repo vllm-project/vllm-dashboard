@@ -70,4 +70,28 @@ export async function initSchema() {
       updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
+
+  await db`
+    CREATE TABLE IF NOT EXISTS gpu_snapshots (
+      id             SERIAL PRIMARY KEY,
+      reported_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      hostname       TEXT NOT NULL,
+      gpu_index      INT NOT NULL,
+      gpu_name       TEXT,
+      gpu_util       REAL NOT NULL,
+      mem_used_mb    REAL NOT NULL,
+      mem_total_mb   REAL NOT NULL,
+      temperature_c  REAL,
+      power_draw_w   REAL,
+      power_limit_w  REAL
+    )
+  `;
+  await db`
+    CREATE INDEX IF NOT EXISTS idx_gpu_snapshots_reported
+    ON gpu_snapshots (reported_at DESC, hostname)
+  `;
+  await db`
+    CREATE INDEX IF NOT EXISTS idx_gpu_snapshots_host
+    ON gpu_snapshots (hostname, reported_at DESC)
+  `;
 }

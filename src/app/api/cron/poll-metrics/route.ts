@@ -122,6 +122,10 @@ export async function GET(request: NextRequest) {
       DELETE FROM queue_snapshots
       WHERE polled_at < NOW() - INTERVAL '30 days'
     `;
+    await db`
+      DELETE FROM gpu_snapshots
+      WHERE reported_at < NOW() - INTERVAL '30 days'
+    `;
 
     return NextResponse.json({
       ok: true,
