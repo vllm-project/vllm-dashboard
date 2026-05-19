@@ -145,7 +145,7 @@ export async function loadEvalRows({
   if (model) {
     const esc = escapeSqlString(model);
     conditions.push(
-      `(message:config:model_args:model::STRING = '${esc}' OR message:data:config:model_args:model::STRING = '${esc}')`
+      `(message:config:model_args:model::STRING = '${esc}' OR message:data:config:model_args:model::STRING = '${esc}' OR message:config:model_args::STRING LIKE '%model=${esc}%' OR message:data:config:model_args::STRING LIKE '%model=${esc}%')`
     );
   }
 
