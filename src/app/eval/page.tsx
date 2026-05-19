@@ -177,35 +177,25 @@ function pickMetric(row: EvalRow, metric: string, filter: string): EvalMetric | 
   );
 }
 
-function ScoreChart({
-  rows,
-  task,
-}: {
-  rows: EvalRow[];
-  task: string;
-}) {
+function ScoreChart({ rows }: { rows: EvalRow[] }) {
   const dark = useDarkMode();
 
-  const pm = useMemo(() => primaryMetric(rows), [rows]);
-  const metric = pm?.metric ?? "";
-  const filter = pm?.filter ?? "";
-
   const traces = useMemo(() => {
-    if (!metric || !filter) return [];
-    const groups = new Map<string, EvalRow[]>();
+    const byTask = new Map<string, EvalRow[]>();
     for (const r of rows) {
-      if (!groups.has(r.model)) groups.set(r.model, []);
-      groups.get(r.model)!.push(r);
+      if (!byTask.has(r.task)) byTask.set(r.task, []);
+      byTask.get(r.task)!.push(r);
     }
-    const sortedModels = [...groups.keys()].sort();
+    const sortedTasks = [...byTask.keys()].sort();
     const result: object[] = [];
-    sortedModels.forEach((model, i) => {
+    sortedTasks.forEach((task, i) => {
+      const taskRows = byTask.get(task)!;
+      const pm = primaryMetric(taskRows);
+      if (!pm) return;
       const color = COLORS[i % COLORS.length];
-      const series = [...groups.get(model)!].sort(
-        (a, b) => a.run_epoch - b.run_epoch
-      );
+      const series = [...taskRows].sort((a, b) => a.run_epoch - b.run_epoch);
       const points = series
-        .map((r) => ({ r, m: pickMetric(r, metric, filter) }))
+        .map((r) => ({ r, m: pickMetric(r, pm.metric, pm.filter) }))
         .filter((p) => p.m !== null);
       if (points.length === 0) return;
       result.push({
@@ -220,44 +210,38 @@ function ScoreChart({
           color,
         },
         mode: "lines+markers",
-        name: model,
+        name: task,
         line: { color, width: 2, shape: "spline" },
         marker: { color, size: 8, line: { color: dark ? "#18181b" : "#ffffff", width: 1.5 } },
         customdata: points.map((p) => [
           shortCommit(p.r),
           p.r.n_shot,
           p.r.n_samples,
-          p.r.lm_eval_version ?? "—",
+          pm.metric,
+          pm.filter,
         ]),
         hovertemplate:
-          `<b>${model}</b><br>` +
-          `${metric} (${filter}): <b>%{y:.4f}</b><br>` +
+          `<b>${task}</b><br>` +
+          `%{customdata[3]} (%{customdata[4]}): <b>%{y:.4f}</b><br>` +
           `commit: <b>%{customdata[0]}</b><br>` +
-          `n-shot: %{customdata[1]}  samples: %{customdata[2]}<br>` +
-          `lm_eval: %{customdata[3]}` +
+          `n-shot: %{customdata[1]}  samples: %{customdata[2]}` +
           `<extra></extra>`,
       });
     });
     return result;
-  }, [rows, metric, filter, dark]);
+  }, [rows, dark]);
 
   const axisColor = dark ? "#52525b" : "#d4d4d8";
   const gridColor = dark ? "rgba(63,63,70,0.4)" : "rgba(228,228,231,0.6)";
   const textColor = dark ? "#a1a1aa" : "#71717a";
 
-  if (traces.length === 0) {
-    return (
-      <div className="flex h-[420px] items-center justify-center rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700">
-        <span className="text-sm text-zinc-400">No data for {task}.</span>
-      </div>
-    );
-  }
+  if (traces.length === 0) return null;
 
   return (
     <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-zinc-800/80 dark:bg-zinc-950 dark:shadow-[0_1px_3px_rgba(0,0,0,0.3)]">
       <div className="px-5 pt-4 pb-0">
         <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-          {task} — {metric} ({filter}) over time
+          Scores over time
         </h3>
       </div>
       <div className="-mx-px">
@@ -285,7 +269,7 @@ function ScoreChart({
               ticklen: 4,
             },
             yaxis: {
-              title: { text: metric, font: { size: 11 }, standoff: 8 },
+              title: { text: "Score", font: { size: 11 }, standoff: 8 },
               tickfont: { size: 10 },
               gridcolor: gridColor,
               linecolor: axisColor,
@@ -788,10 +772,6 @@ export default function EvalPage() {
 
   const rows = useMemo(() => data?.rows ?? [], [data?.rows]);
 
-  const tasksInData = useMemo(() => {
-    return [...new Set(rows.map((r) => r.task))].sort();
-  }, [rows]);
-
   return (
     <div className="space-y-5">
       <div>
@@ -848,16 +828,7 @@ export default function EvalPage() {
           {model && (
             <>
               <LatestStatCards rows={rows} />
-
-              <div className="grid grid-cols-1 gap-5">
-                {tasksInData.map((t) => (
-                  <ScoreChart
-                    key={t}
-                    rows={rows.filter((r) => r.task === t)}
-                    task={t}
-                  />
-                ))}
-              </div>
+              <ScoreChart rows={rows} />
             </>
           )}
 
