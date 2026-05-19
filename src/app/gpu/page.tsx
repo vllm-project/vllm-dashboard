@@ -114,6 +114,29 @@ export default function GpuPage() {
 
   const tickInterval = Math.max(1, Math.floor(chartData.data.length / 10));
 
+  const hostRows = useMemo(() => {
+    const map = new Map<string, { hostname: string; gpuType: string; gpuCount: number; memUsedMb: number; memTotalMb: number; lastSeen: string }>();
+    for (const g of filtered) {
+      const existing = map.get(g.hostname);
+      if (!existing) {
+        map.set(g.hostname, {
+          hostname: g.hostname,
+          gpuType: gpuType(g.gpu_name),
+          gpuCount: 1,
+          memUsedMb: g.mem_used_mb,
+          memTotalMb: g.mem_total_mb,
+          lastSeen: g.reported_at,
+        });
+      } else {
+        existing.gpuCount++;
+        existing.memUsedMb += g.mem_used_mb;
+        existing.memTotalMb += g.mem_total_mb;
+        if (g.reported_at > existing.lastSeen) existing.lastSeen = g.reported_at;
+      }
+    }
+    return [...map.values()].sort((a, b) => a.hostname.localeCompare(b.hostname));
+  }, [filtered]);
+
   function formatXTick(t: number): string {
     const d = new Date(t);
     if (hours <= 24) {
@@ -147,30 +170,6 @@ export default function GpuPage() {
   const totalMemUsedGb = filtered.reduce((s, g) => s + g.mem_used_mb, 0) / 1024;
   const totalMemGb = filtered.reduce((s, g) => s + g.mem_total_mb, 0) / 1024;
   const uniqueHosts = filteredHosts.length;
-
-  // Aggregate per-host for the table
-  const hostRows = useMemo(() => {
-    const map = new Map<string, { hostname: string; gpuType: string; gpuCount: number; memUsedMb: number; memTotalMb: number; lastSeen: string }>();
-    for (const g of filtered) {
-      const existing = map.get(g.hostname);
-      if (!existing) {
-        map.set(g.hostname, {
-          hostname: g.hostname,
-          gpuType: gpuType(g.gpu_name),
-          gpuCount: 1,
-          memUsedMb: g.mem_used_mb,
-          memTotalMb: g.mem_total_mb,
-          lastSeen: g.reported_at,
-        });
-      } else {
-        existing.gpuCount++;
-        existing.memUsedMb += g.mem_used_mb;
-        existing.memTotalMb += g.mem_total_mb;
-        if (g.reported_at > existing.lastSeen) existing.lastSeen = g.reported_at;
-      }
-    }
-    return [...map.values()].sort((a, b) => a.hostname.localeCompare(b.hostname));
-  }, [filtered]);
 
   return (
     <div className="space-y-6">
