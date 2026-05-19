@@ -53,8 +53,11 @@ export default function BuildsPage() {
   if (startDate) params.set("startDate", startDate);
   if (endDate) params.set("endDate", endDate);
   params.set("page", String(page));
-  if (selectedGroups.size > 0) params.set("jobGroups", [...selectedGroups].join(","));
-  if (selectedJobs.size > 0) params.set("jobNames", [...selectedJobs].join(","));
+  if (selectedJobs.size > 0) {
+    params.set("jobNames", [...selectedJobs].join(","));
+  } else if (selectedGroups.size > 0) {
+    params.set("jobGroups", [...selectedGroups].join(","));
+  }
   const queryString = params.toString();
   const apiUrl = `/api/builds?${queryString}`;
 
