@@ -168,22 +168,7 @@ export function BuildsTable({ builds, showBranch, hideSoftFail, hideOptional, se
     .filter((g) => !hasGroupFilter || selectedGroups.has(g))
     .sort();
 
-  const INACTIVE_STATES = new Set(["blocked", "skipped", "not_run", "canceled", "canceling"]);
   const hasJobFilter = selectedJobs && selectedJobs.size > 0;
-  const filteredBuilds = (hasGroupFilter || hasJobFilter)
-    ? builds.filter((build) => {
-        const groupMap = new Map((build.testGroups ?? []).map((g) => [g.group, g]));
-        if (hasJobFilter) {
-          return [...groupMap.values()].some((gs) =>
-            gs.jobs.some((j) => selectedJobs.has(j.name) && !INACTIVE_STATES.has(j.state))
-          );
-        }
-        return [...selectedGroups!].some((g) => {
-          const gs = groupMap.get(g);
-          return gs && !INACTIVE_STATES.has(gs.state);
-        });
-      })
-    : builds;
 
   const columns: Column[] = [];
   for (const group of groupOrder) {
@@ -290,7 +275,7 @@ export function BuildsTable({ builds, showBranch, hideSoftFail, hideOptional, se
             </tr>
           </thead>
           <tbody>
-            {filteredBuilds.map((build) => {
+            {builds.map((build) => {
               const groupMap = new Map(
                 (build.testGroups ?? []).map((g) => [g.group, g])
               );
@@ -440,7 +425,7 @@ export function BuildsTable({ builds, showBranch, hideSoftFail, hideOptional, se
                 </tr>
               );
             })}
-            {filteredBuilds.length === 0 && (
+            {builds.length === 0 && (
               <tr>
                 <td
                   colSpan={FIXED_COLS + columns.length}

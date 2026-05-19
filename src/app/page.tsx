@@ -53,6 +53,11 @@ export default function BuildsPage() {
   if (startDate) params.set("startDate", startDate);
   if (endDate) params.set("endDate", endDate);
   params.set("page", String(page));
+  if (selectedJobs.size > 0) {
+    params.set("jobNames", [...selectedJobs].join(","));
+  } else if (selectedGroups.size > 0) {
+    params.set("jobGroups", [...selectedGroups].join(","));
+  }
   const queryString = params.toString();
   const apiUrl = `/api/builds?${queryString}`;
 
@@ -80,6 +85,18 @@ export default function BuildsPage() {
       }
     }
     return [...groups].sort();
+  }, [builds]);
+
+  const jobToGroup = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const build of builds) {
+      for (const g of build.testGroups ?? []) {
+        for (const j of g.jobs) {
+          if (!map.has(j.name)) map.set(j.name, g.group);
+        }
+      }
+    }
+    return map;
   }, [builds]);
 
   const availableJobNames = useMemo(() => {
@@ -164,6 +181,7 @@ export default function BuildsPage() {
             selected={selectedGroups}
             onChange={(v) => {
               setSelectedGroups(v);
+              setPage(0);
               setSelectedJobs((prev) => {
                 if (v.size === 0) return prev;
                 const valid = new Set<string>();
@@ -184,7 +202,16 @@ export default function BuildsPage() {
           <MultiSelect
             label="Jobs"
             selected={selectedJobs}
-            onChange={setSelectedJobs}
+            onChange={(v) => {
+              setSelectedJobs(v);
+              setPage(0);
+              const groups = new Set(selectedGroups);
+              for (const name of v) {
+                const group = jobToGroup.get(name);
+                if (group) groups.add(group);
+              }
+              if (groups.size !== selectedGroups.size) setSelectedGroups(groups);
+            }}
             options={availableJobNames}
             placeholder="All Jobs"
           />

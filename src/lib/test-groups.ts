@@ -66,6 +66,30 @@ export interface GroupStatus {
   jobs: JobInfo[];
 }
 
+export function resolveGroupsToJobConditions(groups: string[]): { exactNames: string[]; regexPatterns: string[] } {
+  const mapping = getTestAreaMapping();
+  const exactNames: string[] = [];
+  const regexPatterns: string[] = [];
+  const groupSet = new Set(groups);
+
+  for (const [name, group] of mapping.jobToGroup) {
+    if (groupSet.has(group)) exactNames.push(name);
+  }
+
+  for (const { regex, group } of mapping.patterns) {
+    if (groupSet.has(group)) {
+      regexPatterns.push(regex.source);
+    }
+  }
+
+  if (groupSet.has("Hardware - AMD")) {
+    regexPatterns.push("^mi\\d+[A-Z]?_\\d+:.*$");
+    regexPatterns.push("^AMD: .*$");
+  }
+
+  return { exactNames, regexPatterns };
+}
+
 export function aggregateJobsByGroup(
   jobs: { name: string; state: string; web_url?: string }[]
 ): GroupStatus[] {

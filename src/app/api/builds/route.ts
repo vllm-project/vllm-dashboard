@@ -1,10 +1,42 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
-import { aggregateJobsByGroup } from "@/lib/test-groups";
+import { aggregateJobsByGroup, resolveGroupsToJobConditions } from "@/lib/test-groups";
 import { getCached, setCache } from "@/lib/api-cache";
 
 const PAGE_SIZE = 50;
 const TTL = 30_000;
+
+function buildJobFilterSubquery(jobGroups: string[], jobNames: string[]): string {
+  const nameConditions: string[] = [];
+
+  if (jobNames.length > 0) {
+    const escaped = jobNames.map((n) => `'${n.replace(/'/g, "''")}'`);
+    nameConditions.push(`jf.name IN (${escaped.join(",")})`);
+  }
+
+  if (jobGroups.length > 0) {
+    const { exactNames, regexPatterns } = resolveGroupsToJobConditions(jobGroups);
+    if (exactNames.length > 0) {
+      const escaped = exactNames.map((n) => `'${n.replace(/'/g, "''")}'`);
+      nameConditions.push(`jf.name IN (${escaped.join(",")})`);
+    }
+    for (const pattern of regexPatterns) {
+      nameConditions.push(`jf.name RLIKE '${pattern.replace(/'/g, "''")}'`);
+    }
+  }
+
+  if (nameConditions.length === 0) return "";
+
+  return `AND b.id IN (
+    SELECT DISTINCT jf.build_id
+    FROM vllm_data_warehouse.buildkite.build_job AS jf
+    WHERE jf._fivetran_deleted = false
+      AND jf.type = 'script'
+      AND jf.name IS NOT NULL
+      AND jf.state NOT IN ('blocked', 'skipped', 'not_run', 'canceled', 'canceling')
+      AND (${nameConditions.join(" OR ")})
+  )`;
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -14,8 +46,10 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
     const page = Math.max(0, parseInt(searchParams.get("page") ?? "0", 10));
+    const jobGroups = searchParams.get("jobGroups")?.split(",").filter(Boolean) ?? [];
+    const jobNames = searchParams.get("jobNames")?.split(",").filter(Boolean) ?? [];
 
-    const cacheKey = `builds:${pipeline}:${branch}:${startDate}:${endDate}:${page}`;
+    const cacheKey = `builds:${pipeline}:${branch}:${startDate}:${endDate}:${page}:${jobGroups.join(",")}:${jobNames.join(",")}`;
     const cached = getCached(cacheKey);
     if (cached) return NextResponse.json(cached);
 
@@ -34,6 +68,7 @@ export async function GET(request: NextRequest) {
       conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
     }
     const where = conditions.join(" AND ");
+    const jobFilter = buildJobFilterSubquery(jobGroups, jobNames);
 
     // First: fetch the page of builds + total count + daily stats
     const [builds, countResult, buildDurations] = await Promise.all([
@@ -55,6 +90,7 @@ export async function GET(request: NextRequest) {
         INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p
           ON b.pipeline_id = p.id
         WHERE ${where}
+        ${jobFilter}
         ORDER BY b.created_at DESC
         LIMIT ${PAGE_SIZE} OFFSET ${page * PAGE_SIZE}
       `),
@@ -67,6 +103,7 @@ export async function GET(request: NextRequest) {
         INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p
           ON b.pipeline_id = p.id
         WHERE ${where}
+        ${jobFilter}
       `),
       queryDatabricks(`
         SELECT
@@ -80,6 +117,7 @@ export async function GET(request: NextRequest) {
         INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p
           ON b.pipeline_id = p.id
         WHERE ${where}
+          ${jobFilter}
           AND b.started_at IS NOT NULL
           AND b.finished_at IS NOT NULL
         ORDER BY b.created_at ASC
