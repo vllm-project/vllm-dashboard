@@ -96,11 +96,12 @@ function truncate(s: string, max: number): string {
 }
 
 function formatText(
-  builds: (BuildRow & { testGroups: ReturnType<typeof aggregateJobsByGroup> })[],
+  builds: (BuildRow & { testGroups: ReturnType<typeof aggregateJobsByGroup>; matchedJobs?: { name: string; state: string }[] })[],
   summary: { total: number; passed: number; failed: number; passRate: number },
   filters: { pipeline: string | null; branch: string | null; startDate: string | null; endDate: string | null },
   pagination: { page: number; perPage: number; totalPages: number },
   includeJobs: boolean,
+  filteredJobNames: string[],
 ): string {
   const lines: string[] = [];
 
@@ -112,6 +113,9 @@ function formatText(
     parts.push(`Date: ${filters.startDate ?? "..."} to ${filters.endDate ?? "now"}`);
   }
   if (parts.length > 0) lines.push(parts.join(" | "));
+  if (filteredJobNames.length > 0) {
+    lines.push(`Jobs: ${filteredJobNames.join(", ")}`);
+  }
 
   lines.push(
     `${summary.total} builds | ${summary.passed} passed | ${summary.failed} failed | ${summary.passRate}% pass rate`
@@ -135,26 +139,31 @@ function formatText(
     );
     lines.push(`  ${msg}`);
 
-    // Test group summary line
-    if (build.testGroups.length > 0) {
-      const groupParts = build.testGroups.map((g) => {
-        let detail = groupIcon(g.state);
-        if (g.state === "failed") {
-          detail = `${g.failed}F/${g.total}`;
-        }
-        return `${g.group}:${detail}`;
-      });
-      lines.push(`  [${groupParts.join("  ")}]`);
-    }
+    if (filteredJobNames.length > 0 && build.matchedJobs) {
+      for (const job of build.matchedJobs) {
+        lines.push(`  ${job.name}: ${stateIcon(job.state)}`);
+      }
+    } else {
+      if (build.testGroups.length > 0) {
+        const groupParts = build.testGroups.map((g) => {
+          let detail = groupIcon(g.state);
+          if (g.state === "failed") {
+            detail = `${g.failed}F/${g.total}`;
+          }
+          return `${g.group}:${detail}`;
+        });
+        lines.push(`  [${groupParts.join("  ")}]`);
+      }
 
-    if (includeJobs && build.testGroups.length > 0) {
-      for (const group of build.testGroups) {
-        if (group.state === "failed") {
-          const failedJobs = group.jobs
-            .filter((j) => ["failed", "failing", "broken", "timed_out"].includes(j.state))
-            .map((j) => j.name);
-          if (failedJobs.length > 0) {
-            lines.push(`    ${group.group} failures: ${failedJobs.join(", ")}`);
+      if (includeJobs && build.testGroups.length > 0) {
+        for (const group of build.testGroups) {
+          if (group.state === "failed") {
+            const failedJobs = group.jobs
+              .filter((j) => ["failed", "failing", "broken", "timed_out"].includes(j.state))
+              .map((j) => j.name);
+            if (failedJobs.length > 0) {
+              lines.push(`    ${group.group} failures: ${failedJobs.join(", ")}`);
+            }
           }
         }
       }
@@ -267,7 +276,10 @@ export async function GET(request: NextRequest) {
         const match = b.message.match(/\(#(\d+)\)/);
         if (match) prNumber = match[1];
       }
-      return { ...b, pr_number: prNumber, testGroups };
+      const matchedJobs = jobNames.length > 0
+        ? buildJobs.filter((j) => jobNames.some((n) => j.name === n))
+        : undefined;
+      return { ...b, pr_number: prNumber, testGroups, matchedJobs };
     });
 
     const counts = countResult[0] ?? { total: "0", passed: "0", failed: "0" };
@@ -280,7 +292,7 @@ export async function GET(request: NextRequest) {
     const pagination = { page, perPage, totalPages: Math.ceil(total / perPage) };
 
     if (format === "text") {
-      const text = formatText(buildsWithGroups, summaryData, { pipeline, branch, startDate, endDate }, pagination, includeJobs);
+      const text = formatText(buildsWithGroups, summaryData, { pipeline, branch, startDate, endDate }, pagination, includeJobs, jobNames);
       setCache(cacheKey, { text }, TTL);
       return new NextResponse(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
@@ -299,18 +311,22 @@ export async function GET(request: NextRequest) {
         message: (b.message ?? "").split("\n")[0].slice(0, 80),
         created_at: b.created_at?.slice(0, 16) ?? null,
         duration_mins: b.duration_mins ? parseInt(b.duration_mins, 10) : null,
-        groups: b.testGroups.map((g) => ({
-          name: g.group,
-          state: g.state,
-          passed: g.passed,
-          failed: g.failed,
-          total: g.total,
-          ...(g.state === "failed" ? {
-            failed_jobs: g.jobs
-              .filter((j) => ["failed", "failing", "broken", "timed_out"].includes(j.state))
-              .map((j) => j.name),
-          } : {}),
-        })),
+        ...(jobNames.length > 0 && b.matchedJobs ? {
+          jobs: b.matchedJobs.map((j) => ({ name: j.name, state: j.state })),
+        } : {
+          groups: b.testGroups.map((g) => ({
+            name: g.group,
+            state: g.state,
+            passed: g.passed,
+            failed: g.failed,
+            total: g.total,
+            ...(g.state === "failed" ? {
+              failed_jobs: g.jobs
+                .filter((j) => ["failed", "failing", "broken", "timed_out"].includes(j.state))
+                .map((j) => j.name),
+            } : {}),
+          })),
+        }),
       })),
     };
 
