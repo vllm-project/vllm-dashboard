@@ -2,7 +2,6 @@
 
 import { useState, useMemo } from "react";
 import useSWR from "swr";
-import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
 import { GpuMemChart } from "@/components/gpu-util-chart";
 
@@ -53,6 +52,7 @@ function gpuType(name: string | null): string {
 
 export default function GpuPage() {
   const [gpuTypeFilter, setGpuTypeFilter] = useState("");
+  const [hostFilter, setHostFilter] = useState("");
   const [hours, setHours] = useState(24);
 
   const url = `/api/gpu?hours=${hours}`;
@@ -66,11 +66,16 @@ export default function GpuPage() {
     return [...types].sort();
   }, [data]);
 
+  const allHostnames = useMemo(() => {
+    return [...new Set((data?.latest ?? []).map((g) => g.hostname))].sort();
+  }, [data]);
+
   const filtered = useMemo(() => {
-    const latest = data?.latest ?? [];
-    if (!gpuTypeFilter) return latest;
-    return latest.filter((g) => gpuType(g.gpu_name) === gpuTypeFilter);
-  }, [data, gpuTypeFilter]);
+    let latest = data?.latest ?? [];
+    if (gpuTypeFilter) latest = latest.filter((g) => gpuType(g.gpu_name) === gpuTypeFilter);
+    if (hostFilter) latest = latest.filter((g) => g.hostname === hostFilter);
+    return latest;
+  }, [data, gpuTypeFilter, hostFilter]);
 
   const filteredHosts = useMemo(() => {
     return [...new Set(filtered.map((g) => g.hostname))].sort();
@@ -115,9 +120,18 @@ export default function GpuPage() {
   const tickInterval = Math.max(1, Math.floor(chartData.data.length / 10));
 
   const hostRows = useMemo(() => {
-    const map = new Map<string, { hostname: string; gpuType: string; gpuCount: number; memUsedMb: number; memTotalMb: number; lastSeen: string }>();
+    const map = new Map<string, {
+      hostname: string;
+      gpuType: string;
+      gpuCount: number;
+      memUsedMb: number;
+      memTotalMb: number;
+      lastSeen: string;
+      gpus: Array<{ index: number; memUsedMb: number; memTotalMb: number }>;
+    }>();
     for (const g of filtered) {
       const existing = map.get(g.hostname);
+      const gpu = { index: g.gpu_index, memUsedMb: g.mem_used_mb, memTotalMb: g.mem_total_mb };
       if (!existing) {
         map.set(g.hostname, {
           hostname: g.hostname,
@@ -126,13 +140,18 @@ export default function GpuPage() {
           memUsedMb: g.mem_used_mb,
           memTotalMb: g.mem_total_mb,
           lastSeen: g.reported_at,
+          gpus: [gpu],
         });
       } else {
         existing.gpuCount++;
         existing.memUsedMb += g.mem_used_mb;
         existing.memTotalMb += g.mem_total_mb;
+        existing.gpus.push(gpu);
         if (g.reported_at > existing.lastSeen) existing.lastSeen = g.reported_at;
       }
+    }
+    for (const row of map.values()) {
+      row.gpus.sort((a, b) => a.index - b.index);
     }
     return [...map.values()].sort((a, b) => a.hostname.localeCompare(b.hostname));
   }, [filtered]);
@@ -163,19 +182,18 @@ export default function GpuPage() {
     );
   }
 
-  const totalGpus = filtered.length;
-  const avgMemPct = totalGpus > 0
-    ? Math.round(filtered.reduce((s, g) => s + (g.mem_total_mb > 0 ? (g.mem_used_mb / g.mem_total_mb) * 100 : 0), 0) / totalGpus)
-    : 0;
-  const totalMemUsedGb = filtered.reduce((s, g) => s + g.mem_used_mb, 0) / 1024;
-  const totalMemGb = filtered.reduce((s, g) => s + g.mem_total_mb, 0) / 1024;
-  const uniqueHosts = filteredHosts.length;
-
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">GPU Memory</h1>
         <div className="flex gap-3">
+          <SearchableSelect
+            label="Host"
+            value={hostFilter}
+            onChange={setHostFilter}
+            options={allHostnames}
+            allLabel="All Hosts"
+          />
           <SearchableSelect
             label="GPU Type"
             value={gpuTypeFilter}
@@ -199,26 +217,6 @@ export default function GpuPage() {
             ))}
           </div>
         </div>
-      </div>
-
-      {/* Stat cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Nodes" value={uniqueHosts} detail={`${totalGpus} GPUs total`} />
-        <StatCard
-          label="Avg Memory Used"
-          value={`${avgMemPct}%`}
-          color={avgMemPct > 90 ? "red" : avgMemPct > 70 ? "yellow" : "default"}
-        />
-        <StatCard
-          label="Memory Used"
-          value={`${totalMemUsedGb.toFixed(0)} GB`}
-          detail={`of ${totalMemGb.toFixed(0)} GB total`}
-        />
-        <StatCard
-          label="Memory Free"
-          value={`${(totalMemGb - totalMemUsedGb).toFixed(0)} GB`}
-          color={(totalMemGb - totalMemUsedGb) < 50 ? "yellow" : "default"}
-        />
       </div>
 
       {/* Per-host memory chart */}
@@ -247,8 +245,8 @@ export default function GpuPage() {
               <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
                 <th className="px-5 py-2.5 font-medium">Host</th>
                 <th className="px-5 py-2.5 font-medium">GPU Type</th>
-                <th className="px-5 py-2.5 font-medium">GPUs</th>
                 <th className="px-5 py-2.5 font-medium">Memory</th>
+                <th className="px-5 py-2.5 font-medium">Per-GPU</th>
                 <th className="px-5 py-2.5 font-medium">Last Seen</th>
               </tr>
             </thead>
@@ -264,13 +262,46 @@ export default function GpuPage() {
                   >
                     <td className="px-5 py-2.5 font-medium">{h.hostname}</td>
                     <td className="px-5 py-2.5">{h.gpuType}</td>
-                    <td className="px-5 py-2.5">{h.gpuCount}</td>
                     <td className="px-5 py-2.5">
                       <span className={memPct > 90 ? "font-medium text-red-600 dark:text-red-400" : ""}>
                         {formatMemory(h.memUsedMb)}
                       </span>
                       <span className="text-zinc-400"> / {formatMemory(h.memTotalMb)}</span>
                       <span className="ml-1 text-xs text-zinc-400">({memPct}%)</span>
+                    </td>
+                    <td className="px-5 py-2.5">
+                      <div className="flex items-end gap-1" style={{ height: 36 }}>
+                        {h.gpus.map((gpu) => {
+                          const pct = gpu.memTotalMb > 0 ? Math.round((gpu.memUsedMb / gpu.memTotalMb) * 100) : 0;
+                          const barColor = pct > 90
+                            ? "bg-red-500 dark:bg-red-400"
+                            : pct > 60
+                            ? "bg-blue-500 dark:bg-blue-400"
+                            : "bg-blue-400 dark:bg-blue-500";
+                          return (
+                            <div
+                              key={gpu.index}
+                              className="group relative flex flex-col items-center"
+                            >
+                              <div
+                                className="relative w-3 rounded-sm bg-zinc-100 dark:bg-zinc-800"
+                                style={{ height: 36 }}
+                              >
+                                <div
+                                  className={`absolute bottom-0 w-full rounded-sm transition-all ${barColor}`}
+                                  style={{ height: `${Math.max(pct, 2)}%` }}
+                                />
+                              </div>
+                              <div className="pointer-events-none absolute -top-10 left-1/2 z-50 hidden -translate-x-1/2 whitespace-nowrap rounded border border-zinc-200 bg-white px-2 py-1 text-xs shadow-lg group-hover:block dark:border-zinc-700 dark:bg-zinc-900">
+                                <span className="font-medium">GPU {gpu.index}</span>
+                                <span className="ml-1 text-zinc-400">
+                                  {formatMemory(gpu.memUsedMb)} / {formatMemory(gpu.memTotalMb)} ({pct}%)
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </td>
                     <td className={`whitespace-nowrap px-5 py-2.5 text-zinc-500 dark:text-zinc-400 ${stale ? "text-yellow-600 dark:text-yellow-400" : ""}`}>
                       {stale ? `${ago}m ago` : "just now"}
