@@ -7,7 +7,13 @@
 // queues, etc.) have persistent agents, so jobs_waiting is accurate.
 // Queues where jobs_waiting under-reports because some waiting jobs show up
 // only in jobs_scheduled.  Effective waiting = jobs_scheduled + jobs_waiting.
-export const SCHEDULED_PLUS_WAITING_QUEUES = new Set([
+export const SCHEDULED_PLUS_WAITING_QUEUES = new Set<string>([
+]);
+
+// Kubernetes queues where jobs_waiting is not meaningful.
+// Only jobs_scheduled reflects actual waiting jobs.
+export const K8S_SCHEDULED_QUEUES = new Set([
+  "b200-k8s",
   "mithril-h100-pool",
 ]);
 
@@ -34,6 +40,7 @@ export const DOCKER_PLUGIN_QUEUES = new Set([
 /** Return the effective waiting-job count for a queue. */
 export function effectiveWaiting(queue: string, jobsScheduled: number, jobsWaiting: number): number {
   if (DOCKER_PLUGIN_QUEUES.has(queue)) return jobsScheduled;
+  if (K8S_SCHEDULED_QUEUES.has(queue)) return jobsScheduled;
   if (SCHEDULED_PLUS_WAITING_QUEUES.has(queue)) return jobsScheduled + jobsWaiting;
   return jobsWaiting;
 }
