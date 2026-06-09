@@ -13,9 +13,11 @@ import {
 } from "recharts";
 
 interface QueueOverviewChartProps {
-  data: Array<{ time: number; running: number; scheduled: number; agents: number }>;
+  data: Array<{ time: number; running: number; scheduled: number; waiting: number; agents: number }>;
   formatXTick: (t: number) => string;
   tickInterval: number;
+  /** When true, also plot raw jobs_waiting as a grey bar (e.g. mithril-h100-pool). */
+  showWaiting?: boolean;
 }
 
 function OverviewTooltip({
@@ -56,7 +58,7 @@ function OverviewTooltip({
   );
 }
 
-export function QueueOverviewChart({ data, formatXTick, tickInterval }: QueueOverviewChartProps) {
+export function QueueOverviewChart({ data, formatXTick, tickInterval, showWaiting = false }: QueueOverviewChartProps) {
   if (data.length === 0) {
     return (
       <div className="flex h-[300px] items-center justify-center text-sm text-zinc-400">
@@ -100,8 +102,17 @@ export function QueueOverviewChart({ data, formatXTick, tickInterval }: QueueOve
           name="Waiting"
           stackId="jobs"
           fill="#eab308"
-          radius={[2, 2, 0, 0]}
+          radius={showWaiting ? [0, 0, 0, 0] : [2, 2, 0, 0]}
         />
+        {showWaiting && (
+          <Bar
+            dataKey="waiting"
+            name="Waiting (raw)"
+            stackId="jobs"
+            fill="#a1a1aa"
+            radius={[2, 2, 0, 0]}
+          />
+        )}
         <Line
 
           type="monotone"
