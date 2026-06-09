@@ -99,7 +99,7 @@ export function QueueOverviewChart({ data, formatXTick, tickInterval }: QueueOve
           dataKey="scheduled"
           name="Scheduled"
           stackId="jobs"
-          fill="#a1a1aa"
+          fill="#eab308"
           radius={[0, 0, 0, 0]}
         />
         <Bar
@@ -107,7 +107,7 @@ export function QueueOverviewChart({ data, formatXTick, tickInterval }: QueueOve
           dataKey="waiting"
           name="Waiting"
           stackId="jobs"
-          fill="#eab308"
+          fill="#a1a1aa"
           radius={[2, 2, 0, 0]}
         />
         <Line
