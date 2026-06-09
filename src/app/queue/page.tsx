@@ -91,19 +91,20 @@ export default function QueuePage() {
 
   const metricsQueuesForFilter = metricsData?.queues ?? [];
 
-  // Aggregate snapshots into chart data: sum running/waiting/agents per time bucket
+  // Aggregate snapshots into chart data: sum running/scheduled/waiting/agents per time bucket
   const overviewChartData = useMemo(() => {
     const snapshots = metricsData?.snapshots ?? [];
     if (snapshots.length === 0) return [];
 
-    const bucketMap = new Map<number, { running: number; waiting: number; agents: number }>();
+    const bucketMap = new Map<number, { running: number; scheduled: number; waiting: number; agents: number }>();
     for (const row of snapshots) {
       if (queue && row.queue !== queue) continue;
       const t = new Date(row.time_bucket).getTime();
-      if (!bucketMap.has(t)) bucketMap.set(t, { running: 0, waiting: 0, agents: 0 });
+      if (!bucketMap.has(t)) bucketMap.set(t, { running: 0, scheduled: 0, waiting: 0, agents: 0 });
       const entry = bucketMap.get(t)!;
       entry.running += row.jobs_running;
-      entry.waiting += effectiveWaiting(row.queue, row.jobs_scheduled, row.jobs_waiting);
+      entry.scheduled += row.jobs_scheduled;
+      entry.waiting += row.jobs_waiting;
       entry.agents += row.agents_total;
     }
 

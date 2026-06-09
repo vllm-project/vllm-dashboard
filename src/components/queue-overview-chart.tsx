@@ -13,7 +13,7 @@ import {
 } from "recharts";
 
 interface QueueOverviewChartProps {
-  data: Array<{ time: number; running: number; waiting: number; agents: number }>;
+  data: Array<{ time: number; running: number; scheduled: number; waiting: number; agents: number }>;
   formatXTick: (t: number) => string;
   tickInterval: number;
 }
@@ -96,10 +96,18 @@ export function QueueOverviewChart({ data, formatXTick, tickInterval }: QueueOve
         />
         <Bar
 
+          dataKey="scheduled"
+          name="Scheduled"
+          stackId="jobs"
+          fill="#a1a1aa"
+          radius={[0, 0, 0, 0]}
+        />
+        <Bar
+
           dataKey="waiting"
           name="Waiting"
           stackId="jobs"
-          fill="#a1a1aa"
+          fill="#eab308"
           radius={[2, 2, 0, 0]}
         />
         <Line
