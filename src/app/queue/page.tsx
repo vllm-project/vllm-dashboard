@@ -63,6 +63,10 @@ const METRICS_HOURS_OPTIONS = [
   { label: "7d", value: 168 },
 ];
 
+// Queues whose raw jobs_waiting count is meaningful and should be charted as
+// a separate grey bar (in addition to the yellow scheduled "Waiting" bar).
+const RAW_WAITING_QUEUES = new Set(["mithril-h100-pool"]);
+
 export default function QueuePage() {
   const [queue, setQueue] = useState("gpu_1_queue");
   const [metricsHours, setMetricsHours] = useState(24);
@@ -92,19 +96,21 @@ export default function QueuePage() {
   const metricsQueuesForFilter = metricsData?.queues ?? [];
 
   // Aggregate snapshots into chart data: sum running/scheduled/agents per time bucket.
-  // jobs_scheduled is surfaced as the "Waiting" series; raw jobs_waiting is not charted.
+  // jobs_scheduled is surfaced as the "Waiting" series. Raw jobs_waiting is
+  // also tracked but only charted (as a grey bar) for RAW_WAITING_QUEUES.
   const overviewChartData = useMemo(() => {
     const snapshots = metricsData?.snapshots ?? [];
     if (snapshots.length === 0) return [];
 
-    const bucketMap = new Map<number, { running: number; scheduled: number; agents: number }>();
+    const bucketMap = new Map<number, { running: number; scheduled: number; waiting: number; agents: number }>();
     for (const row of snapshots) {
       if (queue && row.queue !== queue) continue;
       const t = new Date(row.time_bucket).getTime();
-      if (!bucketMap.has(t)) bucketMap.set(t, { running: 0, scheduled: 0, agents: 0 });
+      if (!bucketMap.has(t)) bucketMap.set(t, { running: 0, scheduled: 0, waiting: 0, agents: 0 });
       const entry = bucketMap.get(t)!;
       entry.running += row.jobs_running;
       entry.scheduled += row.jobs_scheduled;
+      entry.waiting += row.jobs_waiting;
       entry.agents += row.agents_total;
     }
 
@@ -219,6 +225,7 @@ export default function QueuePage() {
           data={overviewChartData}
           formatXTick={formatMetricsXTick}
           tickInterval={chartTickInterval}
+          showWaiting={queue ? RAW_WAITING_QUEUES.has(queue) : false}
         />
       </div>
 
