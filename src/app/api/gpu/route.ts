@@ -3,6 +3,13 @@ import { getDb, initSchema } from "@/lib/db";
 
 let schemaInitialized = false;
 
+// The host roster (latest snapshot per host) is decoupled from the chart's
+// selected time window: a node that stopped reporting should still appear in
+// the Host Summary table (badged Offline) instead of silently vanishing once
+// its last report ages past the chart window. Anything seen within this
+// lookback is shown; longer-dead/decommissioned nodes eventually drop off.
+const LATEST_LOOKBACK_HOURS = 720; // 30 days
+
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
   const hours = Math.min(parseInt(searchParams.get("hours") ?? "24", 10) || 24, 720);
@@ -70,7 +77,7 @@ export async function GET(request: NextRequest) {
         hostname, gpu_index, gpu_name, gpu_util, mem_used_mb, mem_total_mb,
         temperature_c, power_draw_w, power_limit_w, reported_at
       FROM gpu_snapshots
-      WHERE reported_at > NOW() - INTERVAL '1 hour' * ${hours}
+      WHERE reported_at > NOW() - INTERVAL '1 hour' * ${LATEST_LOOKBACK_HOURS}
       ORDER BY hostname, gpu_index, reported_at DESC
     `;
 

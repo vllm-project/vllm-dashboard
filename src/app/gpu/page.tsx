@@ -92,6 +92,10 @@ export default function GpuPage() {
     if (snapshots.length === 0) return { data: [] as Array<Record<string, number>>, hosts: [] as string[] };
 
     const relevantHosts = new Set(filteredHosts);
+    // Only chart hosts that actually have data points in the selected window —
+    // offline hosts still belong in the roster/table but would otherwise add
+    // empty legend lines here.
+    const hostsWithData = new Set<string>();
 
     const bucketMap = new Map<number, Map<string, { memPctSum: number; count: number }>>();
 
@@ -99,6 +103,7 @@ export default function GpuPage() {
       if (!relevantHosts.has(row.hostname)) continue;
       if (gpuTypeFilter && gpuType(row.gpu_name) !== gpuTypeFilter) continue;
 
+      hostsWithData.add(row.hostname);
       const t = new Date(row.time_bucket).getTime();
       if (!bucketMap.has(t)) bucketMap.set(t, new Map());
       const hostMap = bucketMap.get(t)!;
@@ -108,7 +113,7 @@ export default function GpuPage() {
       entry.count++;
     }
 
-    const hosts = [...relevantHosts].sort();
+    const hosts = [...hostsWithData].sort();
     const rows = [...bucketMap.entries()]
       .map(([time, hostMap]) => {
         const row: Record<string, number> = { time };
