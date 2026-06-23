@@ -94,4 +94,13 @@ export async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_gpu_snapshots_host
     ON gpu_snapshots (hostname, reported_at DESC)
   `;
+  // Supports the "latest snapshot per (hostname, gpu_index)" roster query in
+  // /api/gpu over a 30-day lookback: an index-only scan to enumerate distinct
+  // GPU keys, plus a per-key newest-row lookup. Without gpu_index in the index,
+  // that query degrades to a full scan + sort over millions of rows and times
+  // out (the cause of the /gpu page hanging).
+  await db`
+    CREATE INDEX IF NOT EXISTS idx_gpu_snapshots_host_gpu_reported
+    ON gpu_snapshots (hostname, gpu_index, reported_at DESC)
+  `;
 }
