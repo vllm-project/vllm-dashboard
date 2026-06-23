@@ -72,13 +72,30 @@ export async function GET(request: NextRequest) {
       ORDER BY hostname
     `;
 
+    // Latest snapshot per (hostname, gpu_index) over the 30-day roster window.
+    // A plain DISTINCT ON here forces Postgres to read+dedup every row in the
+    // window (millions, at a 30s report cadence) before keeping one per GPU.
+    // Instead, enumerate the distinct GPU keys (index-only scan over
+    // idx_gpu_snapshots_host_gpu_reported), then fetch just the single newest
+    // row per key via a lateral lookup — bounding heap fetches to ~one per GPU.
     const latestResult = await db`
-      SELECT DISTINCT ON (hostname, gpu_index)
-        hostname, gpu_index, gpu_name, gpu_util, mem_used_mb, mem_total_mb,
-        temperature_c, power_draw_w, power_limit_w, reported_at
-      FROM gpu_snapshots
-      WHERE reported_at > NOW() - INTERVAL '1 hour' * ${LATEST_LOOKBACK_HOURS}
-      ORDER BY hostname, gpu_index, reported_at DESC
+      SELECT l.hostname, l.gpu_index, l.gpu_name, l.gpu_util, l.mem_used_mb,
+             l.mem_total_mb, l.temperature_c, l.power_draw_w, l.power_limit_w,
+             l.reported_at
+      FROM (
+        SELECT DISTINCT hostname, gpu_index
+        FROM gpu_snapshots
+        WHERE reported_at > NOW() - INTERVAL '1 hour' * ${LATEST_LOOKBACK_HOURS}
+      ) k
+      CROSS JOIN LATERAL (
+        SELECT hostname, gpu_index, gpu_name, gpu_util, mem_used_mb, mem_total_mb,
+               temperature_c, power_draw_w, power_limit_w, reported_at
+        FROM gpu_snapshots s
+        WHERE s.hostname = k.hostname AND s.gpu_index = k.gpu_index
+        ORDER BY s.reported_at DESC
+        LIMIT 1
+      ) l
+      ORDER BY l.hostname, l.gpu_index
     `;
 
     return NextResponse.json({
