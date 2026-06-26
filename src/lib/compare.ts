@@ -293,6 +293,46 @@ export async function loadPerfRowsByImages(
     .filter((row): row is PerfRun => row !== null);
 }
 
+/**
+ * Load all nightly perf runs from the last `days` calendar days. Used by the
+ * nightly Slack summary to compute peak / moving-average / current stats per
+ * metric. Returns the same normalized PerfRun shape as loadPerfRowsByImages.
+ */
+export async function loadNightlyPerfHistory(days: number): Promise<PerfRun[]> {
+  const rows = await queryDatabricks<RawPerfRow>(`
+    SELECT
+      message:date::STRING AS date,
+      message:model::STRING AS model,
+      message:device::STRING AS device,
+      message:tp::INT AS tp,
+      message:conc::INT AS conc,
+      message:isl::INT AS isl,
+      message:osl::INT AS osl,
+      message:precision::STRING AS precision,
+      message:image::STRING AS image,
+      message:tput_per_gpu::DOUBLE AS tput_per_gpu,
+      message:input_tput_per_gpu::DOUBLE AS input_tput_per_gpu,
+      message:output_tput_per_gpu::DOUBLE AS output_tput_per_gpu,
+      message:mean_ttft::DOUBLE AS mean_ttft,
+      message:mean_tpot::DOUBLE AS mean_tpot,
+      message:mean_itl::DOUBLE AS mean_itl,
+      message:mean_e2el::DOUBLE AS mean_e2el,
+      message:p99_ttft::DOUBLE AS p99_ttft,
+      message:p99_tpot::DOUBLE AS p99_tpot,
+      message:p99_itl::DOUBLE AS p99_itl,
+      message:p99_e2el::DOUBLE AS p99_e2el
+    FROM vllm_data_warehouse.default.vllm_perf_data_ingest
+    WHERE message:nightly::BOOLEAN = TRUE
+      AND message:model IS NOT NULL
+      AND message:date::STRING >= date_sub(current_date(), ${Math.max(1, Math.floor(days))})::STRING
+    ORDER BY message:date::STRING DESC
+  `);
+
+  return rows
+    .map(normalizePerfRow)
+    .filter((row): row is PerfRun => row !== null);
+}
+
 export function loadPerfRows({
   baseline,
   candidate,
@@ -545,4 +585,322 @@ export function buildSummary(
     missingCandidate:
       perf.missingCandidate.length + evalData.missingCandidate.length,
   };
+}
+
+// ============================================================================
+// Per-metric historical stats for the nightly summary
+//
+// Instead of a single current-vs-previous delta, the nightly Slack summary
+// compares each metric's current nightly value against its recent behaviour:
+// the all-time peak (over a longer window) and the trailing moving average
+// ±1 sample stddev. A metric is flagged when the current value sits more than
+// `zThreshold` stddevs away from the moving average (and moved at least
+// `minPctFlag`, to avoid flagging trivially-small but low-variance metrics).
+// ============================================================================
+
+export interface PerfHistoryOptions {
+  /** Trailing window (days, exclusive of the current nightly) for mean ±σ. */
+  avgWindowDays: number;
+  /** Longer window (days, inclusive of current) over which "peak" is taken. */
+  peakWindowDays: number;
+  /** |z| at or above which a metric is flagged as a regression/improvement. */
+  zThreshold: number;
+  /** Minimum |Δ vs avg| (fraction) required before a metric can be flagged. */
+  minPctFlag: number;
+  /** Metric keys to include, in display order. Defaults to throughput/GPU. */
+  metrics?: string[];
+}
+
+export interface PerfHistoryRow {
+  model: string;
+  /** Full perf dimension string (device / TP / conc / ISL / OSL / precision). */
+  dimension: string;
+  /** Compact config label for tables, e.g. "H200 TP8". */
+  configShort: string;
+  metric: string;
+  metricLabel: string;
+  unit: string;
+  higherIsBetter: boolean;
+  /** Value on the most recent nightly that has this metric. */
+  current: number;
+  /** Best value over the peak window (max if higher-is-better, else min). */
+  peak: number | null;
+  /** Mean over the trailing average window (excluding current). */
+  mean: number | null;
+  /** Sample stddev over the trailing average window (null if < 2 points). */
+  stddev: number | null;
+  /** Number of points contributing to mean/stddev. */
+  count: number;
+  /** (current - mean) / mean. */
+  deltaPct: number | null;
+  /** (current - peak) / peak. */
+  deltaPeakPct: number | null;
+  /** (current - mean) / stddev (signed; null if stddev unavailable). */
+  z: number | null;
+  status: DeltaStatus;
+}
+
+export const DEFAULT_HISTORY_METRICS = ["tput_per_gpu"];
+
+/** Integer day index (UTC) from a perf row date string ("YYYY-MM-DD[ ...]"). */
+function dayIndex(date: string): number {
+  const parsed = Date.parse(`${date.slice(0, 10)}T00:00:00Z`);
+  return Number.isFinite(parsed) ? Math.floor(parsed / 86400000) : NaN;
+}
+
+function configShort(row: PerfRun): string {
+  const device = row.device && row.device !== "unknown" ? row.device.toUpperCase() : "?";
+  return `${device} TP${row.tp}`;
+}
+
+/**
+ * Reduce a window of nightly perf runs to one stats row per (config, metric):
+ * current value, peak, trailing mean ±σ, and a regression/improvement flag.
+ * Configs that did not run on the latest nightly (no current value) are dropped.
+ */
+export function computePerfHistory(
+  rows: PerfRun[],
+  opts: PerfHistoryOptions,
+): PerfHistoryRow[] {
+  const metricKeys = opts.metrics ?? DEFAULT_HISTORY_METRICS;
+  const metricInfo = new Map(PERF_METRICS.map((m) => [m.key, m]));
+
+  let currentDay = -Infinity;
+  for (const r of rows) {
+    const d = dayIndex(r.date);
+    if (Number.isFinite(d) && d > currentDay) currentDay = d;
+  }
+  if (!Number.isFinite(currentDay)) return [];
+
+  const groups = new Map<string, PerfRun[]>();
+  for (const r of rows) {
+    const key = perfKey(r);
+    const arr = groups.get(key) ?? [];
+    arr.push(r);
+    groups.set(key, arr);
+  }
+
+  const out: PerfHistoryRow[] = [];
+
+  for (const groupRows of groups.values()) {
+    const ref = groupRows[0];
+
+    for (const metricKey of metricKeys) {
+      const info = metricInfo.get(metricKey);
+      if (!info) continue;
+
+      // Latest value per day for this metric (rows arrive newest-first, so the
+      // first value we see for a day is that day's latest run).
+      const byDay = new Map<number, number>();
+      for (const r of groupRows) {
+        const value = r.metrics[metricKey];
+        if (value === undefined) continue;
+        const d = dayIndex(r.date);
+        if (!Number.isFinite(d) || byDay.has(d)) continue;
+        byDay.set(d, value);
+      }
+
+      const current = byDay.get(currentDay);
+      if (current === undefined) continue; // didn't run on the latest nightly
+
+      const avgValues: number[] = [];
+      const peakValues: number[] = [];
+      for (const [d, v] of byDay) {
+        if (d < currentDay && d >= currentDay - opts.avgWindowDays) avgValues.push(v);
+        if (d >= currentDay - opts.peakWindowDays) peakValues.push(v);
+      }
+
+      const mean =
+        avgValues.length >= 1
+          ? avgValues.reduce((a, b) => a + b, 0) / avgValues.length
+          : null;
+      let stddev: number | null = null;
+      if (mean !== null && avgValues.length >= 2) {
+        const variance =
+          avgValues.reduce((a, b) => a + (b - mean) ** 2, 0) / (avgValues.length - 1);
+        stddev = Math.sqrt(variance);
+      }
+      const peak =
+        peakValues.length === 0
+          ? null
+          : info.higherIsBetter
+            ? Math.max(...peakValues)
+            : Math.min(...peakValues);
+
+      const deltaPct = mean !== null && mean !== 0 ? (current - mean) / mean : null;
+      const deltaPeakPct = peak !== null && peak !== 0 ? (current - peak) / peak : null;
+      const z = mean !== null && stddev && stddev > 0 ? (current - mean) / stddev : null;
+
+      let status: DeltaStatus = "unchanged";
+      if (
+        z !== null &&
+        Math.abs(z) >= opts.zThreshold &&
+        deltaPct !== null &&
+        Math.abs(deltaPct) >= opts.minPctFlag
+      ) {
+        const impact = info.higherIsBetter ? z : -z;
+        status = impact < 0 ? "regression" : "improvement";
+      }
+
+      out.push({
+        model: ref.model,
+        dimension: perfDimension(ref),
+        configShort: configShort(ref),
+        metric: metricKey,
+        metricLabel: info.label,
+        unit: info.unit,
+        higherIsBetter: info.higherIsBetter,
+        current,
+        peak,
+        mean,
+        stddev,
+        count: avgValues.length,
+        deltaPct,
+        deltaPeakPct,
+        z,
+        status,
+      });
+    }
+  }
+
+  const metricOrder = new Map(metricKeys.map((k, i) => [k, i]));
+  const statusRank: Record<DeltaStatus, number> = {
+    regression: 0,
+    improvement: 1,
+    noisy: 2,
+    unchanged: 3,
+  };
+  out.sort((a, b) => {
+    const mo = (metricOrder.get(a.metric) ?? 0) - (metricOrder.get(b.metric) ?? 0);
+    if (mo !== 0) return mo;
+    if (statusRank[a.status] !== statusRank[b.status]) {
+      return statusRank[a.status] - statusRank[b.status];
+    }
+    return b.current - a.current;
+  });
+
+  return out;
+}
+
+export interface EvalHistoryRow {
+  model: string;
+  task: string;
+  nShot: number;
+  /** Metric name, e.g. "exact_match" or "acc". */
+  metric: string;
+  filter: string;
+  /** Display label "name (filter)". */
+  metricLabel: string;
+  higherIsBetter: boolean;
+  /** Score (fraction 0..1) on the most recent nightly that has this metric. */
+  current: number;
+  peak: number | null;
+  mean: number | null;
+  stddev: number | null;
+  count: number;
+  deltaPct: number | null;
+  deltaPeakPct: number | null;
+  z: number | null;
+  status: DeltaStatus;
+}
+
+/**
+ * Per (model, task, n_shot, metric, filter) eval-accuracy history over a window
+ * of nightly eval runs: current value, peak, trailing mean ±σ, and a
+ * regression/improvement flag. Mirrors computePerfHistory. Pass eval rows for
+ * the window's nightly images (e.g. loadEvalRows({ images })); the σ here is the
+ * stddev of the daily scores over the window, not the per-run stderr.
+ */
+export function computeEvalHistory(
+  rows: EvalRow[],
+  opts: PerfHistoryOptions,
+): EvalHistoryRow[] {
+  interface Acc {
+    model: string;
+    task: string;
+    nShot: number;
+    name: string;
+    filter: string;
+    hib: boolean;
+    byDay: Map<number, { value: number; epoch: number }>;
+  }
+  const groups = new Map<string, Acc>();
+  let currentDay = -Infinity;
+
+  for (const r of rows) {
+    const d = dayIndex(r.run_date);
+    if (!Number.isFinite(d)) continue;
+    if (d > currentDay) currentDay = d;
+    for (const m of r.metrics) {
+      const key = `${r.model}|${r.task}|${r.n_shot}|${m.name}|${m.filter}`;
+      let g = groups.get(key);
+      if (!g) {
+        g = {
+          model: r.model, task: r.task, nShot: r.n_shot, name: m.name,
+          filter: m.filter, hib: m.higher_is_better, byDay: new Map(),
+        };
+        groups.set(key, g);
+      }
+      const cur = g.byDay.get(d);
+      if (!cur || r.run_epoch > cur.epoch) g.byDay.set(d, { value: m.value, epoch: r.run_epoch });
+    }
+  }
+  if (!Number.isFinite(currentDay)) return [];
+
+  const out: EvalHistoryRow[] = [];
+  for (const g of groups.values()) {
+    const cur = g.byDay.get(currentDay);
+    if (cur === undefined) continue; // didn't run on the latest nightly
+
+    const current = cur.value;
+    const avgValues: number[] = [];
+    const peakValues: number[] = [];
+    for (const [d, o] of g.byDay) {
+      if (d < currentDay && d >= currentDay - opts.avgWindowDays) avgValues.push(o.value);
+      if (d >= currentDay - opts.peakWindowDays) peakValues.push(o.value);
+    }
+
+    const mean =
+      avgValues.length >= 1 ? avgValues.reduce((a, b) => a + b, 0) / avgValues.length : null;
+    let stddev: number | null = null;
+    if (mean !== null && avgValues.length >= 2) {
+      stddev = Math.sqrt(
+        avgValues.reduce((a, b) => a + (b - mean) ** 2, 0) / (avgValues.length - 1),
+      );
+    }
+    const peak =
+      peakValues.length === 0 ? null : g.hib ? Math.max(...peakValues) : Math.min(...peakValues);
+    const deltaPct = mean !== null && mean !== 0 ? (current - mean) / mean : null;
+    const deltaPeakPct = peak !== null && peak !== 0 ? (current - peak) / peak : null;
+    const z = mean !== null && stddev && stddev > 0 ? (current - mean) / stddev : null;
+
+    let status: DeltaStatus = "unchanged";
+    if (
+      z !== null &&
+      Math.abs(z) >= opts.zThreshold &&
+      deltaPct !== null &&
+      Math.abs(deltaPct) >= opts.minPctFlag
+    ) {
+      const impact = g.hib ? z : -z;
+      status = impact < 0 ? "regression" : "improvement";
+    }
+
+    out.push({
+      model: g.model, task: g.task, nShot: g.nShot, metric: g.name, filter: g.filter,
+      metricLabel: `${g.name} (${g.filter})`, higherIsBetter: g.hib,
+      current, peak, mean, stddev, count: avgValues.length, deltaPct, deltaPeakPct, z, status,
+    });
+  }
+
+  const statusRank: Record<DeltaStatus, number> = {
+    regression: 0, improvement: 1, noisy: 2, unchanged: 3,
+  };
+  out.sort(
+    (a, b) =>
+      statusRank[a.status] - statusRank[b.status] ||
+      a.model.localeCompare(b.model) ||
+      a.task.localeCompare(b.task) ||
+      a.filter.localeCompare(b.filter),
+  );
+  return out;
 }

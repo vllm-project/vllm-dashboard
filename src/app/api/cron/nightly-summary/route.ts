@@ -1,18 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
-import { loadEvalRows, type EvalRow } from "@/lib/eval-data";
+import { loadEvalRows } from "@/lib/eval-data";
 import {
-  buildSummary,
-  compareEvalRows,
-  comparePerfRows,
-  loadPerfRowsByImages,
-  sortDeltas,
-  type PerfRun,
+  computeEvalHistory,
+  computePerfHistory,
+  loadNightlyPerfHistory,
 } from "@/lib/compare";
-import { renderNightlySummary } from "@/lib/nightly-template";
-import { postMessage } from "@/lib/slack";
+import { renderNightlyCanvas, renderChannelSummary } from "@/lib/nightly-template";
+import { createCanvas, shareCanvasToChannel, postMessage } from "@/lib/slack";
 
 export const maxDuration = 55;
+
+// --- History window knobs -------------------------------------------------
+const AVG_WINDOW_DAYS = 7;
+const PEAK_WINDOW_DAYS = 30;
+const PERF_LOAD_DAYS = 35; // >= peak window
+const Z_THRESHOLD = 2;
+const MIN_PCT_FLAG = 0.01;
+const PERF_METRICS = ["tput_per_gpu"];
+const NIGHTLY_WINDOW = 40; // nightly images to pull eval history from
+
+const HISTORY_OPTS = {
+  avgWindowDays: AVG_WINDOW_DAYS,
+  peakWindowDays: PEAK_WINDOW_DAYS,
+  zThreshold: Z_THRESHOLD,
+  minPctFlag: MIN_PCT_FLAG,
+};
 
 interface NightlyRow {
   commit: string;
@@ -59,27 +72,6 @@ async function loadNightlyCommits(limit: number): Promise<NightlyRow[]> {
   `);
 }
 
-function groupPerfByImage(rows: PerfRun[]): Map<string, PerfRun[]> {
-  const out = new Map<string, PerfRun[]>();
-  for (const r of rows) {
-    const arr = out.get(r.image) ?? [];
-    arr.push(r);
-    out.set(r.image, arr);
-  }
-  return out;
-}
-
-function groupEvalByImage(rows: EvalRow[]): Map<string, EvalRow[]> {
-  const out = new Map<string, EvalRow[]>();
-  for (const r of rows) {
-    if (!r.image) continue;
-    const arr = out.get(r.image) ?? [];
-    arr.push(r);
-    out.set(r.image, arr);
-  }
-  return out;
-}
-
 export async function GET(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret) {
@@ -90,97 +82,93 @@ export async function GET(request: NextRequest) {
   }
 
   if (!process.env.SLACK_BOT_TOKEN) {
+    return NextResponse.json({ error: "SLACK_BOT_TOKEN not configured" }, { status: 500 });
+  }
+  const channel = process.env.SLACK_CI_NOTIFICATIONS_CHANNEL;
+  if (!channel) {
     return NextResponse.json(
-      { error: "SLACK_BOT_TOKEN not configured" },
+      { error: "SLACK_CI_NOTIFICATIONS_CHANNEL must be set" },
       { status: 500 },
     );
   }
 
   try {
-    const channel = process.env.SLACK_CI_NOTIFICATIONS_CHANNEL;
-    if (!channel) {
-      return NextResponse.json(
-        { error: "SLACK_CI_NOTIFICATIONS_CHANNEL must be set" },
-        { status: 500 },
-      );
+    const nightlies = await loadNightlyCommits(NIGHTLY_WINDOW);
+    if (nightlies.length === 0) {
+      return NextResponse.json({ ok: true, skipped: true, reason: "No nightlies found" });
     }
-    const perfThreshold = 0.02;
-    const evalSigma = 2;
-
-    const nightlies = await loadNightlyCommits(2);
-    if (nightlies.length < 2) {
-      return NextResponse.json({ ok: true, skipped: true, reason: "Need at least 2 nightlies to compare" });
-    }
-
     const current = nightlies[0];
-    const prev = nightlies[1];
+    const prev = nightlies[1] ?? null;
+    const windowImages = nightlies.map((n) => n.image);
 
-    const [perfRows, evalRows] = await Promise.all([
-      loadPerfRowsByImages([current.image, prev.image]),
-      loadEvalRows({ images: [current.image, prev.image] }),
-    ]);
+    // Perf history (peak / 7d avg ±σ / current) from the trailing date window.
+    const perfRows = await loadNightlyPerfHistory(PERF_LOAD_DAYS);
+    const perfHistory = computePerfHistory(perfRows, { ...HISTORY_OPTS, metrics: PERF_METRICS });
+    const latestPerfDate = perfRows.reduce<string | null>((max, r) => {
+      const d = r.date ? r.date.slice(0, 10) : null;
+      return d && (!max || d > max) ? d : max;
+    }, null);
 
-    const perfByImage = groupPerfByImage(perfRows);
-    const evalByImage = groupEvalByImage(evalRows);
+    // Eval history from the window's nightly images.
+    const evalRows = await loadEvalRows({ images: windowImages });
+    const evalHistory = computeEvalHistory(evalRows, HISTORY_OPTS);
 
-    const candidatePerf = perfByImage.get(current.image) ?? [];
-    const baselinePerf = perfByImage.get(prev.image) ?? [];
-    const candidateEval = evalByImage.get(current.image) ?? [];
-    const baselineEval = evalByImage.get(prev.image) ?? [];
-
-    const perfResult = comparePerfRows(
-      [...baselinePerf, ...candidatePerf],
-      prev.image,
-      current.image,
-      perfThreshold,
-    );
-    const evalResult = compareEvalRows(
-      [...baselineEval, ...candidateEval],
-      prev.image,
-      current.image,
-      evalSigma,
-    );
-
-    const summary = buildSummary(perfResult, evalResult);
-    const perfDeltas = perfResult.deltas.sort(sortDeltas);
-    const evalDeltas = evalResult.deltas.sort(sortDeltas);
-
-    const tsEpoch = parseFloat(current.latest_ts);
-    const date = Number.isFinite(tsEpoch) && tsEpoch > 0
-      ? new Date(tsEpoch * 1000).toISOString()
-      : new Date().toISOString();
-
-    const text = renderNightlySummary(
-      current.commit,
-      prev.commit,
-      date,
-      summary,
-      perfDeltas,
-      evalDeltas,
-      perfResult.missingCandidate,
-      evalResult.missingCandidate,
-    );
-
-    const result = await postMessage(text, undefined, channel);
-    if (!result.ok) {
-      return NextResponse.json({ error: `Slack post failed: ${result.error}` }, { status: 500 });
+    if (perfHistory.length === 0 && evalHistory.length === 0) {
+      return NextResponse.json({ ok: true, skipped: true, reason: "No perf or eval history" });
     }
 
+    const canvasInput = {
+      commit: current.commit,
+      prevCommit: prev?.commit ?? "n/a",
+      latestDate: latestPerfDate,
+      perfHistory,
+      evalHistory,
+      window: HISTORY_OPTS,
+    };
+
+    // Preferred path: publish a canvas and post a short message linking to it.
+    const { title, content } = renderNightlyCanvas(canvasInput);
+    const canvas = await createCanvas(title, content);
+
+    if (canvas.ok && canvas.canvasId && canvas.url) {
+      await shareCanvasToChannel(canvas.canvasId, channel);
+      const message = renderChannelSummary(canvasInput, canvas.url);
+      const posted = await postMessage(message, undefined, channel);
+      if (!posted.ok) {
+        return NextResponse.json({ error: `Slack post failed: ${posted.error}` }, { status: 500 });
+      }
+      return NextResponse.json({
+        ok: true,
+        mode: "canvas",
+        canvasId: canvas.canvasId,
+        canvasUrl: canvas.url,
+        perfConfigs: perfHistory.length,
+        perfRegressions: perfHistory.filter((r) => r.status === "regression").length,
+        evalMetrics: evalHistory.length,
+        evalRegressions: evalHistory.filter((r) => r.status === "regression").length,
+        messageTs: posted.ts,
+      });
+    }
+
+    // Fallback: canvas creation failed (e.g. transient Slack error or the bot
+    // lost the canvases:write scope). Post the same summary message without a
+    // canvas link so the nightly notification still goes out — never the legacy
+    // text-table format.
+    const message = renderChannelSummary(canvasInput, "");
+    const posted = await postMessage(message, undefined, channel);
+    if (!posted.ok) {
+      return NextResponse.json({ error: `Slack post failed: ${posted.error}` }, { status: 500 });
+    }
     return NextResponse.json({
       ok: true,
-      commit: current.commit.slice(0, 7),
-      prevCommit: prev.commit.slice(0, 7),
-      matched: summary.matched,
-      regressions: summary.regressions,
-      improvements: summary.improvements,
-      noisy: summary.noisy,
-      messageTs: result.ts,
+      mode: "message-fallback",
+      canvasError: canvas.error ?? "no canvas url",
+      perfConfigs: perfHistory.length,
+      evalMetrics: evalHistory.length,
+      messageTs: posted.ts,
     });
   } catch (error) {
     console.error("Nightly summary cron failed:", error);
-    return NextResponse.json(
-      { error: "Failed to send nightly summary" },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: "Failed to send nightly summary" }, { status: 500 });
   }
 }
