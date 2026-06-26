@@ -86,16 +86,20 @@ const COLORS = [
 ];
 
 function subscribeToColorScheme(onStoreChange: () => void) {
-  if (typeof window === "undefined") return () => {};
-  const mq = window.matchMedia("(prefers-color-scheme: dark)");
-  mq.addEventListener("change", onStoreChange);
-  return () => mq.removeEventListener("change", onStoreChange);
+  if (typeof document === "undefined") return () => {};
+  const obs = new MutationObserver(onStoreChange);
+  obs.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+  return () => obs.disconnect();
 }
 
 function getColorSchemeSnapshot() {
-  return typeof window !== "undefined"
-    ? window.matchMedia("(prefers-color-scheme: dark)").matches
-    : false;
+  return (
+    typeof document !== "undefined" &&
+    document.documentElement.classList.contains("dark")
+  );
 }
 
 function useDarkMode() {
