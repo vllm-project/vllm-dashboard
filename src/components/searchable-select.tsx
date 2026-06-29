@@ -8,6 +8,8 @@ interface SearchableSelectProps {
   onChange: (value: string) => void;
   options: string[];
   allLabel?: string;
+  /** Optional per-option count, shown muted on the right (e.g. datapoints). */
+  counts?: Record<string, number>;
 }
 
 export function SearchableSelect({
@@ -16,6 +18,7 @@ export function SearchableSelect({
   onChange,
   options,
   allLabel,
+  counts,
 }: SearchableSelectProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -122,13 +125,18 @@ export function SearchableSelect({
                     setOpen(false);
                     setSearch("");
                   }}
-                  className={`w-full px-3 py-1.5 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
+                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
                     value === option
                       ? "font-medium text-blue-600 dark:text-blue-400"
                       : ""
                   }`}
                 >
-                  {option}
+                  <span className="min-w-0 flex-1 truncate">{option}</span>
+                  {counts?.[option] !== undefined && (
+                    <span className="shrink-0 tabular-nums text-xs text-zinc-400 dark:text-zinc-500">
+                      {counts[option]}
+                    </span>
+                  )}
                 </button>
               </li>
             ))}
