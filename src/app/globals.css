@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Drive `dark:` utilities off a `.dark` class on <html> instead of the
+   prefers-color-scheme media query, so the theme toggle can override it. */
+@custom-variant dark (&:is(.dark *));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -12,11 +16,10 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  color-scheme: dark;
 }
 
 body {

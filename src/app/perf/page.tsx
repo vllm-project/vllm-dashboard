@@ -115,13 +115,18 @@ const COLORS = [
 // ── Hooks ────────────────────────────────────────────────────────────────────
 
 function useDarkMode() {
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState(
+    () =>
+      typeof document !== "undefined" &&
+      document.documentElement.classList.contains("dark")
+  );
   useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    setDark(mq.matches);
-    const handler = (e: MediaQueryListEvent) => setDark(e.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
+    const el = document.documentElement;
+    const obs = new MutationObserver(() =>
+      setDark(el.classList.contains("dark"))
+    );
+    obs.observe(el, { attributes: true, attributeFilter: ["class"] });
+    return () => obs.disconnect();
   }, []);
   return dark;
 }
