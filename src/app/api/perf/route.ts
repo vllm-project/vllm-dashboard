@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
 
-const TTL = 60_000;
+// Perf data refreshes at most nightly, so a longer cache keeps repeat loads
+// instant without serving stale numbers.
+const TTL = 300_000;
 
 export async function GET(request: NextRequest) {
   try {
