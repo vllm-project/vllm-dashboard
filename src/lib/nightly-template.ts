@@ -1,80 +1,67 @@
-import type { CompareSummary, DeltaItem, CoverageItem } from "@/lib/compare";
+import type { PerfHistoryRow, EvalHistoryRow } from "@/lib/compare";
 
 // ============================================================================
-// Nightly Perf/Eval Slack summary — message template
+// Nightly Perf/Eval summary — Slack Canvas delivery
 //
-// Everything that controls the *wording and layout* of the daily Slack summary
-// lives in the TEMPLATE object below. To tweak the message, edit these strings.
-//
-// Tokens in {curlyBraces} are replaced with live data (see each comment for the
-// available tokens). Structural repetition — the per-model sections and the
-// status-count fragments — is assembled by the render functions further down,
-// which also read their wording from TEMPLATE, so there are no hardcoded
-// strings outside this object.
+// The nightly cron publishes a Slack Canvas (Canvas-flavored Markdown: real
+// tables, headings, emoji) comparing, per model, each metric's recent peak, its
+// trailing 7-day moving average ±σ, and the current nightly value — and posts a
+// short summary message to the channel linking to the canvas. All wording and
+// layout live in the CANVAS object below; tokens in {curlyBraces} are replaced
+// with live data.
 // ============================================================================
 
-export const TEMPLATE = {
-  // --- Top-level message ---------------------------------------------------
-  // {date}
-  header: "*Nightly Perf/Eval Summary — {date}*",
-  // {commit} {prevCommit}  (already shortened to commitShaLength)
-  commitLine: "Commit: `{commit}` vs previous nightly `{prevCommit}`",
-  // {matched} {perfMatched} {evalMatched} {regressions} {improvements} {noisy} {unchanged}
-  totalsLine:
-    "Total: *{matched} matched* ({perfMatched} perf, {evalMatched} eval) — " +
-    "{regressions} regressions, {improvements} improvements, {noisy} noisy, {unchanged} unchanged",
-  // Printed on its own line between the summary header and the per-model sections.
-  separator: "---",
+export const CANVAS = {
+  titlePrefix: "Nightly Perf / Eval — {date}",
+  commitLine:
+    "**Commit** `{commit}`  vs previous nightly  `{prevCommit}`  ·  latest nightly **{latestDate}**",
+  // {perfRegr} {perfImpr} {perfSteady} {evalRegr} {evalImpr} {evalSteady}
+  summaryLine:
+    "> **Perf:** 🔴 {perfRegr} · 🟢 {perfImpr} improved · {perfSteady} steady  ·  **Eval:** 🔴 {evalRegr} · 🟢 {evalImpr} improved · {evalSteady} steady",
+  // {zThreshold} {minPct} {peakWindowDays} {avgWindowDays}
+  legend:
+    "_● 🔴 = regression vs {avgWindowDays}-day avg (≥{zThreshold}σ & ≥{minPct}%), 🟢 = otherwise. **Δ vs avg** and **Δ vs peak** are relative %. **Peak** over {peakWindowDays}d, **avg ±σ** over trailing {avgWindowDays} days._",
+  perfHeading: "## Throughput / GPU",
+  perfUnit: "_token/s/gpu · higher is better_",
+  evalHeading: "## Eval accuracy",
+  evalUnit: "_% correct · higher is better · ±σ in percentage points_",
+  // {avgWindowDays}
+  perfTableHeader: "| ● | Model | Config | Peak | {avgWindowDays}d avg ±σ | Current | Δ vs avg | Δ vs peak |",
+  perfTableDivider: "|:-:|:--|:--|--:|--:|--:|--:|--:|",
+  evalTableHeader: "| ● | Model | Task · Metric | Peak | {avgWindowDays}d avg ±σ | Current | Δ vs avg | Δ vs peak |",
+  evalTableDivider: "|:-:|:--|:--|--:|--:|--:|--:|--:|",
+  noData: "_No nightly data available to compare._",
 
-  // --- Per-model section ---------------------------------------------------
-  // {model} {config}
-  modelHeader: "*{model}* · {config}",
-  // Used when a model has no comparable metrics yet, only missing ones.
-  // {model} {totalMissing}
-  modelMissingOnly:
-    "*{model}* — {totalMissing} metrics missing (not yet run for this nightly)",
-  // {status} {detail}   (detail is empty or starts with ": ...")
-  perfLine: "  Perf ({status}){detail}",
-  // {status} {details}
-  evalLine: "  Eval ({status}): {details}",
-  // {perfMissing} {evalMissing}
-  missingLine: "  _{perfMissing} perf + {evalMissing} eval metrics missing in candidate_",
+  // --- channel summary message (mrkdwn, links to the canvas) ---------------
+  msgHeader: "*Nightly Perf / Eval — {date}*  ·  <{canvasUrl}|open full table ▸>",
+  // Used when the canvas could not be created (degraded fallback, no link).
+  msgHeaderNoLink: "*Nightly Perf / Eval — {date}*  _(full canvas unavailable — see details below)_",
+  msgCommit: "Commit `{commit}` vs previous nightly `{prevCommit}`",
+  msgSummary:
+    "{regrEmoji} *{perfRegr}* perf regression(s) · {imprEmoji} {perfImpr} improved · {perfSteady} steady   |   eval: *{evalRegr}* regression(s), {evalImpr} improved",
+  // One flagged-row line. {dot} {label} {detail}
+  msgFlagLine: "{dot} `{label}` — {detail}",
+  msgNoFlags: "🟢 No regressions vs 7-day average.",
 
-  // --- Inline fragments ----------------------------------------------------
-  // One perf delta, joined with ", " into perfLine's {detail}. {metricLabel} {deltaPct}
-  perfDelta: "{metricLabel} {deltaPct}",
-  // One eval delta, joined with ", " into evalLine's {details}.
-  // {metricLabel} {baseline} {candidate} {sig}
-  evalDelta: "`{metricLabel}` {baseline} → {candidate}{sig}",
-  // Appended to an eval delta when significance is available. {significance}
-  evalSig: " (σ={significance})",
-
-  // Status counts are rendered as "<n> <label>" for each status with count > 0,
-  // joined with ", " — in the order listed here.
-  statusLabels: {
-    regression: "regression",
-    improvement: "improvement",
-    noisy: "noisy",
-    unchanged: "unchanged",
-  } as Record<string, string>,
-
-  // --- Formatting knobs ----------------------------------------------------
+  // --- knobs ---------------------------------------------------------------
   commitShaLength: 7,
+  statusEmoji: {
+    regression: ":red_circle:",
+    improvement: ":large_green_circle:",
+  } as Record<string, string>,
   dateFormat: {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "America/Los_Angeles",
+    month: "short", day: "numeric", year: "numeric", timeZone: "America/Los_Angeles",
   } as Intl.DateTimeFormatOptions,
 };
 
-export interface ModelGroup {
-  model: string;
-  config: string;
-  perfDeltas: DeltaItem[];
-  evalDeltas: DeltaItem[];
-  perfMissing: CoverageItem[];
-  evalMissing: CoverageItem[];
+export interface NightlyCanvasInput {
+  commit: string;
+  prevCommit: string;
+  /** Latest nightly date (YYYY-MM-DD). */
+  latestDate: string | null;
+  perfHistory: PerfHistoryRow[];
+  evalHistory: EvalHistoryRow[];
+  window: { avgWindowDays: number; peakWindowDays: number; zThreshold: number; minPctFlag: number };
 }
 
 /** Replace {token} placeholders in a template string with the given values. */
@@ -84,165 +71,171 @@ function fill(template: string, values: Record<string, string | number>): string
   );
 }
 
-function fmtPct(v: number | null): string {
-  if (v === null) return "N/A";
-  const sign = v >= 0 ? "+" : "";
-  return `${sign}${(v * 100).toFixed(1)}%`;
+/** Fraction digits appropriate for a value of the given magnitude. */
+function digitsFor(magnitude: number): number {
+  const a = Math.abs(magnitude);
+  if (a >= 100) return 0;
+  if (a >= 1) return 1;
+  return 3;
 }
 
-function fmtEvalScore(v: number): string {
-  return `${(v * 100).toFixed(2)}%`;
+/**
+ * Format a metric value, choosing precision (and thousands separators) from a
+ * reference magnitude so mean/peak/current and the ±σ read at the same scale
+ * (e.g. "10,874 ±91" rather than "10,874 ±90.9").
+ */
+function fmtMetric(v: number | null, reference?: number | null): string {
+  if (v === null || v === undefined || !Number.isFinite(v)) return "—";
+  const ref = reference ?? v;
+  const d = digitsFor(ref);
+  return v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 }
 
-function extractConfig(d: DeltaItem): string {
-  const parts = d.dimension.split(" - ");
-  return parts.length > 1 ? parts.join(" · ") : d.dimension;
+function dotFor(status: string): string {
+  return status === "regression" ? "🔴" : "🟢";
 }
 
-function groupByModel(
-  perfDeltas: DeltaItem[],
-  evalDeltas: DeltaItem[],
-  perfMissingCandidate: CoverageItem[],
-  evalMissingCandidate: CoverageItem[],
-): ModelGroup[] {
-  const map = new Map<string, ModelGroup>();
-
-  function getGroup(model: string, configSource: string): ModelGroup {
-    let g = map.get(model);
-    if (!g) {
-      g = { model, config: configSource, perfDeltas: [], evalDeltas: [], perfMissing: [], evalMissing: [] };
-      map.set(model, g);
-    }
-    return g;
-  }
-
-  for (const d of perfDeltas) {
-    const g = getGroup(d.model, extractConfig(d));
-    g.perfDeltas.push(d);
-  }
-  for (const d of evalDeltas) {
-    const existing = map.get(d.model);
-    const g = getGroup(d.model, existing?.config ?? extractConfig(d));
-    g.evalDeltas.push(d);
-  }
-  for (const c of perfMissingCandidate) {
-    const g = getGroup(c.model, c.dimension);
-    g.perfMissing.push(c);
-  }
-  for (const c of evalMissingCandidate) {
-    const existing = map.get(c.model);
-    const g = getGroup(c.model, existing?.config ?? c.dimension);
-    g.evalMissing.push(c);
-  }
-
-  return [...map.values()];
+/** Model name without the org prefix, untruncated (canvas/messages have room). */
+function modelTail(model: string): string {
+  return model.includes("/") ? model.split("/").pop()! : model;
 }
 
-function countByStatus(deltas: DeltaItem[]): Record<string, number> {
-  const counts: Record<string, number> = { regression: 0, improvement: 0, noisy: 0, unchanged: 0 };
-  for (const d of deltas) counts[d.status] = (counts[d.status] ?? 0) + 1;
-  return counts;
+/** Relative % with sign, clamping rounding noise to "0.0%". */
+function relPct(p: number | null): string {
+  if (p === null) return "—";
+  const v = p * 100;
+  if (Math.abs(v) < 0.05) return "0.0%";
+  return `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(1)}%`;
 }
 
-/** Render the "N regression, M improvement, ..." status fragment for a set of deltas. */
-function formatStatus(deltas: DeltaItem[]): string {
-  const counts = countByStatus(deltas);
-  const parts: string[] = [];
-  for (const [status, label] of Object.entries(TEMPLATE.statusLabels)) {
-    const n = counts[status] ?? 0;
-    if (n > 0) parts.push(`${n} ${label}`);
-  }
-  return parts.join(", ");
+function evalScore(v: number | null): string {
+  return v === null ? "—" : `${(v * 100).toFixed(2)}%`;
 }
 
-export function formatModelSection(g: ModelGroup): string {
-  const allDeltas = [...g.perfDeltas, ...g.evalDeltas];
-  const totalMissing = g.perfMissing.length + g.evalMissing.length;
+function canvasDate(latestDate: string | null): string {
+  const d = latestDate ? new Date(`${latestDate}T12:00:00Z`) : new Date();
+  return d.toLocaleDateString("en-US", CANVAS.dateFormat);
+}
 
-  if (allDeltas.length === 0 && totalMissing > 0) {
-    return fill(TEMPLATE.modelMissingOnly, { model: g.model, totalMissing });
-  }
+function counts(rows: { status: string }[]) {
+  const regr = rows.filter((r) => r.status === "regression").length;
+  const impr = rows.filter((r) => r.status === "improvement").length;
+  return { regr, impr, steady: rows.length - regr - impr };
+}
+
+/** Build the Canvas-flavored Markdown document (title + perf & eval tables). */
+export function renderNightlyCanvas(input: NightlyCanvasInput): { title: string; content: string } {
+  const { avgWindowDays, peakWindowDays, zThreshold, minPctFlag } = input.window;
+  const tokens = {
+    avgWindowDays, peakWindowDays, zThreshold,
+    minPct: +(minPctFlag * 100).toFixed(2),
+  };
+  const p = counts(input.perfHistory);
+  const e = counts(input.evalHistory);
 
   const lines: string[] = [];
-  lines.push(fill(TEMPLATE.modelHeader, { model: g.model, config: g.config }));
+  lines.push(fill(CANVAS.commitLine, {
+    commit: input.commit.slice(0, CANVAS.commitShaLength),
+    prevCommit: input.prevCommit.slice(0, CANVAS.commitShaLength),
+    latestDate: input.latestDate ?? canvasDate(input.latestDate),
+  }));
+  lines.push("");
+  lines.push(fill(CANVAS.summaryLine, {
+    perfRegr: p.regr, perfImpr: p.impr, perfSteady: p.steady,
+    evalRegr: e.regr, evalImpr: e.impr, evalSteady: e.steady,
+  }));
+  lines.push("");
+  lines.push(fill(CANVAS.legend, tokens));
 
-  if (g.perfDeltas.length > 0) {
-    const status = formatStatus(g.perfDeltas);
-    const summaries = g.perfDeltas
-      .filter(d => d.status === "regression" || d.status === "improvement")
-      .map(d => fill(TEMPLATE.perfDelta, { metricLabel: d.metricLabel, deltaPct: fmtPct(d.deltaPct) }))
-      .join(", ");
-    const detail = summaries ? `: ${summaries}` : "";
-    lines.push(fill(TEMPLATE.perfLine, { status, detail }));
+  if (input.perfHistory.length === 0 && input.evalHistory.length === 0) {
+    lines.push("");
+    lines.push(CANVAS.noData);
+    return { title: fill(CANVAS.titlePrefix, { date: canvasDate(input.latestDate) }), content: lines.join("\n") };
   }
 
-  if (g.evalDeltas.length > 0) {
-    const status = formatStatus(g.evalDeltas);
-    const details = g.evalDeltas
-      .map(d => {
-        const sig = d.significance !== null
-          ? fill(TEMPLATE.evalSig, { significance: d.significance.toFixed(2) })
-          : "";
-        return fill(TEMPLATE.evalDelta, {
-          metricLabel: d.metricLabel,
-          baseline: fmtEvalScore(d.baselineValue),
-          candidate: fmtEvalScore(d.candidateValue),
-          sig,
-        });
-      })
-      .join(", ");
-    lines.push(fill(TEMPLATE.evalLine, { status, details }));
+  if (input.perfHistory.length > 0) {
+    lines.push("");
+    lines.push(CANVAS.perfHeading);
+    lines.push(CANVAS.perfUnit);
+    lines.push("");
+    lines.push(fill(CANVAS.perfTableHeader, tokens));
+    lines.push(CANVAS.perfTableDivider);
+    for (const r of input.perfHistory) {
+      const sd = r.stddev === null ? "—" : `±${fmtMetric(r.stddev, r.mean)}`;
+      lines.push(
+        `| ${dotFor(r.status)} | **${modelTail(r.model)}** | ${r.configShort.replace(" ", " · ")} | ` +
+        `${fmtMetric(r.peak, r.current)} | ${fmtMetric(r.mean, r.current)} ${sd} | ${fmtMetric(r.current)} | ` +
+        `${relPct(r.deltaPct)} | ${relPct(r.deltaPeakPct)} |`,
+      );
+    }
   }
 
-  if (totalMissing > 0) {
-    lines.push(fill(TEMPLATE.missingLine, {
-      perfMissing: g.perfMissing.length,
-      evalMissing: g.evalMissing.length,
+  if (input.evalHistory.length > 0) {
+    lines.push("");
+    lines.push("---");
+    lines.push("");
+    lines.push(CANVAS.evalHeading);
+    lines.push(CANVAS.evalUnit);
+    lines.push("");
+    lines.push(fill(CANVAS.evalTableHeader, tokens));
+    lines.push(CANVAS.evalTableDivider);
+    for (const r of input.evalHistory) {
+      const sd = r.stddev === null ? "—" : `±${(r.stddev * 100).toFixed(2)}`;
+      lines.push(
+        `| ${dotFor(r.status)} | ${modelTail(r.model)} | \`${r.task} · ${r.metricLabel}\` | ` +
+        `${evalScore(r.peak)} | ${evalScore(r.mean)} ${sd} | ${evalScore(r.current)} | ` +
+        `${relPct(r.deltaPct)} | ${relPct(r.deltaPeakPct)} |`,
+      );
+    }
+  }
+
+  return {
+    title: fill(CANVAS.titlePrefix, { date: canvasDate(input.latestDate) }),
+    content: lines.join("\n"),
+  };
+}
+
+/**
+ * Short channel message (mrkdwn). Normally links to the canvas; if canvasUrl is
+ * empty (canvas couldn't be created) it degrades to a link-less header so the
+ * nightly notification still carries the headline counts and flagged rows.
+ */
+export function renderChannelSummary(input: NightlyCanvasInput, canvasUrl: string): string {
+  const p = counts(input.perfHistory);
+  const e = counts(input.evalHistory);
+  const lines: string[] = [];
+  lines.push(
+    canvasUrl
+      ? fill(CANVAS.msgHeader, { date: canvasDate(input.latestDate), canvasUrl })
+      : fill(CANVAS.msgHeaderNoLink, { date: canvasDate(input.latestDate) }),
+  );
+  lines.push(fill(CANVAS.msgCommit, {
+    commit: input.commit.slice(0, CANVAS.commitShaLength),
+    prevCommit: input.prevCommit.slice(0, CANVAS.commitShaLength),
+  }));
+  lines.push(fill(CANVAS.msgSummary, {
+    regrEmoji: CANVAS.statusEmoji.regression,
+    imprEmoji: CANVAS.statusEmoji.improvement,
+    perfRegr: p.regr, perfImpr: p.impr, perfSteady: p.steady,
+    evalRegr: e.regr, evalImpr: e.impr,
+  }));
+
+  const flags: string[] = [];
+  for (const r of input.perfHistory.filter((r) => r.status === "regression")) {
+    flags.push(fill(CANVAS.msgFlagLine, {
+      dot: "🔴",
+      label: `${modelTail(r.model)} · ${r.configShort}`,
+      detail: `regression ${relPct(r.deltaPct)} vs 7d avg, ${relPct(r.deltaPeakPct)} vs peak`,
     }));
   }
-
-  return lines.join("\n");
-}
-
-export function renderNightlySummary(
-  commit: string,
-  prevCommit: string,
-  date: string,
-  summary: CompareSummary,
-  perfDeltas: DeltaItem[],
-  evalDeltas: DeltaItem[],
-  perfMissingCandidate: CoverageItem[],
-  evalMissingCandidate: CoverageItem[],
-): string {
-  const dateStr = new Date(date).toLocaleDateString("en-US", TEMPLATE.dateFormat);
-
-  const lines: string[] = [];
-  lines.push(fill(TEMPLATE.header, { date: dateStr }));
-  lines.push("");
-  lines.push(fill(TEMPLATE.commitLine, {
-    commit: commit.slice(0, TEMPLATE.commitShaLength),
-    prevCommit: prevCommit.slice(0, TEMPLATE.commitShaLength),
-  }));
-  lines.push(fill(TEMPLATE.totalsLine, {
-    matched: summary.matched,
-    perfMatched: summary.perfMatched,
-    evalMatched: summary.evalMatched,
-    regressions: summary.regressions,
-    improvements: summary.improvements,
-    noisy: summary.noisy,
-    unchanged: summary.unchanged,
-  }));
-
-  const groups = groupByModel(perfDeltas, evalDeltas, perfMissingCandidate, evalMissingCandidate);
-  if (groups.length > 0) {
-    lines.push("");
-    lines.push(TEMPLATE.separator);
-    lines.push("");
-    for (const g of groups) {
-      lines.push(formatModelSection(g));
-      lines.push("");
-    }
+  for (const r of input.evalHistory.filter((r) => r.status === "regression")) {
+    flags.push(fill(CANVAS.msgFlagLine, {
+      dot: "🔴",
+      label: `${modelTail(r.model)} · ${r.task} ${r.metricLabel}`,
+      detail: `${evalScore(r.mean)} → ${evalScore(r.current)} (${relPct(r.deltaPct)} vs 7d avg)`,
+    }));
   }
+  lines.push(flags.length > 0 ? flags.join("\n") : CANVAS.msgNoFlags);
 
   return lines.join("\n").trim();
 }
