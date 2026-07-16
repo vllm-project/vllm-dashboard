@@ -1,5 +1,6 @@
 import { queryDatabricks } from "@/lib/databricks";
 import type { EvalMetric, EvalRow } from "@/lib/eval-data";
+import { PERF_DATA_START_CONDITION } from "@/lib/perf-data";
 
 export type Area = "perf" | "eval";
 export type DeltaStatus = "regression" | "improvement" | "unchanged" | "noisy";
@@ -252,6 +253,7 @@ export async function loadPerfRowsByImages(
   const escapedImages = images.map((i) => `'${escapeSqlString(i)}'`).join(", ");
   const conditions = [
     "message:model IS NOT NULL",
+    PERF_DATA_START_CONDITION,
     `message:image::STRING IN (${escapedImages})`,
   ];
   if (opts.model) {

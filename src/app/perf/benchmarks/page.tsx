@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect } from "react";
 import useSWR from "swr";
 import dynamic from "next/dynamic";
 import { SearchableSelect } from "@/components/searchable-select";
+import { usePerfSettings } from "@/app/perf/perf-settings";
 
 const Plot = dynamic(() => import("@/components/plotly-chart"), {
   ssr: false,
@@ -382,15 +383,20 @@ function PerfChart({
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function PerfPage() {
+  const { startDate } = usePerfSettings();
   const [model, setModel] = useState("");
   const [device, setDevice] = useState("");
   const [tp, setTp] = useState("");
   const [conc, setConc] = useState("");
   const [hideNonOptimal, setHideNonOptimal] = useState(false);
 
-  const { data: filters } = useSWR<FiltersResponse>("/api/perf/filters", fetcher);
+  const { data: filters } = useSWR<FiltersResponse>(
+    `/api/perf/filters?start=${encodeURIComponent(startDate)}`,
+    fetcher
+  );
 
   const params = new URLSearchParams();
+  params.set("start", startDate);
   if (model) params.set("model", model);
   if (device) params.set("device", device);
   if (tp) params.set("tp", tp);
@@ -552,4 +558,3 @@ export default function PerfPage() {
     </div>
   );
 }
-
