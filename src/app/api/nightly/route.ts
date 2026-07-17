@@ -16,12 +16,6 @@ import {
   type PerfRun,
 } from "@/lib/compare";
 
-interface NightlyRow {
-  commit: string;
-  image: string;
-  latest_ts: string;
-}
-
 interface BuildRow {
   id: string;
   number: string;
@@ -32,6 +26,42 @@ interface BuildRow {
   finished_at: string;
   web_url: string;
   message: string;
+}
+
+interface PairedNightlyQueryRow {
+  perf_eval_build_id: string;
+  perf_eval_build_number: string;
+  perf_eval_web_url: string;
+  perf_eval_message: string;
+  perf_eval_state: string;
+  perf_eval_branch: string;
+  perf_eval_commit: string;
+  perf_eval_created_at: string;
+  perf_eval_finished_at: string | null;
+  perf_eval_run_at: string;
+  vllm_commit: string;
+  vllm_image: string;
+  full_ci_build_id: string | null;
+  full_ci_build_number: string | null;
+  full_ci_web_url: string | null;
+  full_ci_message: string | null;
+  full_ci_state: string | null;
+  full_ci_branch: string | null;
+  full_ci_commit: string | null;
+  full_ci_created_at: string | null;
+  full_ci_finished_at: string | null;
+  schedule_delta_seconds: string | number | null;
+  commit_matches: string | boolean | null;
+}
+
+interface NightlyRow {
+  commit: string;
+  sourceImage: string;
+  runAt: string;
+  perfEvalBuild: BuildRow;
+  fullCIBuild: BuildRow | null;
+  scheduleDeltaSeconds: number | null;
+  commitMatches: boolean;
 }
 
 interface JobRow {
@@ -52,15 +82,26 @@ interface NightlyEntry {
   commit: string;
   shortCommit: string;
   image: string;
+  sourceImage: string;
   date: string;
+  perfEval: {
+    build: BuildRow;
+  };
   fullCI: {
     build: BuildRow | null;
+    match: {
+      type: "schedule";
+      commitMatches: boolean;
+      scheduleDeltaSeconds: number;
+    } | null;
+    comparisonAvailable: boolean;
     failedJobs: TaggedJob[];
     fixedJobs: TaggedJob[];
   };
   deltaVsPrev: {
     prevCommit: string | null;
     prevImage: string | null;
+    prevSourceImage: string | null;
     summary: CompareSummary | null;
     worstRegressions: DeltaItem[];
     perfDeltas: DeltaItem[];
@@ -74,89 +115,170 @@ interface NightlyEntry {
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 30;
+const FULL_CI_MATCH_WINDOW_SECONDS = 300;
+const RELEASE_IMAGE_PREFIX = "public.ecr.aws/q9t5s3a7/vllm-release-repo:";
 
-function tsToIso(ts: string | number | null): string {
-  if (ts === null || ts === undefined) return "";
-  const n = typeof ts === "number" ? ts : parseFloat(String(ts));
-  if (!Number.isFinite(n) || n <= 0) return "";
-  return new Date(n * 1000).toISOString();
+function timestampToIso(value: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toISOString();
 }
 
-async function loadNightlyCommits(limit: number): Promise<NightlyRow[]> {
-  return queryDatabricks<NightlyRow>(`
-    WITH nights AS (
-      SELECT
-        NULLIF(
-          COALESCE(
-            NULLIF(message:vllm_commit::STRING, ''),
-            regexp_extract(LOWER(message:image::STRING), 'nightly-([0-9a-f]+)', 1)
-          ),
-          ''
-        ) AS commit,
-        message:image::STRING AS image,
-        COALESCE(message:date::DOUBLE, message:data:date::DOUBLE) AS ts
-      FROM vllm_data_warehouse.default.vllm_eval_data_ingest
-      WHERE message:nightly::BOOLEAN = TRUE
-        AND message:image::STRING IS NOT NULL
+function parseDbBoolean(value: string | boolean | null): boolean {
+  return value === true || (
+    typeof value === "string" && ["true", "1"].includes(value.toLowerCase())
+  );
+}
 
-      UNION ALL
+function displayImage(sourceImage: string, commit: string): string {
+  if (sourceImage === `${RELEASE_IMAGE_PREFIX}${commit}`) {
+    return `vllm/vllm-openai:nightly-${commit}`;
+  }
+  return sourceImage;
+}
 
+function isTerminalBuild(build: BuildRow | null): build is BuildRow {
+  return build !== null && (build.state === "passed" || build.state === "failed");
+}
+
+async function loadNightlies(limit: number): Promise<NightlyRow[]> {
+  const rows = await queryDatabricks<PairedNightlyQueryRow>(`
+    WITH perf_eval AS (
       SELECT
-        NULLIF(regexp_extract(LOWER(message:image::STRING), 'nightly-([0-9a-f]+)', 1), '') AS commit,
-        message:image::STRING AS image,
-        unix_timestamp(message:date::STRING) AS ts
-      FROM vllm_data_warehouse.default.vllm_perf_data_ingest
-      WHERE message:nightly::BOOLEAN = TRUE
-        AND message:image::STRING IS NOT NULL
+        b.id,
+        b.number,
+        b.web_url,
+        b.message,
+        b.state,
+        b.branch,
+        b.commit,
+        b.created_at,
+        b.finished_at,
+        COALESCE(b.scheduled_at, b.created_at) AS run_at,
+        NULLIF(TRIM(get_json_object(b.env, '$.VLLM_COMMIT')), '') AS vllm_commit,
+        NULLIF(TRIM(get_json_object(b.env, '$.VLLM_IMAGE')), '') AS vllm_image
+      FROM vllm_data_warehouse.buildkite.build AS b
+      WHERE b._fivetran_deleted = false
+        AND b.organization_slug = 'vllm'
+        AND b.pipeline_slug = 'perf-eval'
+        AND b.branch = 'main'
+        AND get_json_object(b.env, '$.NIGHTLY') = '1'
+        AND NULLIF(TRIM(get_json_object(b.env, '$.VLLM_COMMIT')), '') IS NOT NULL
+        AND NULLIF(TRIM(get_json_object(b.env, '$.VLLM_IMAGE')), '') IS NOT NULL
+      ORDER BY COALESCE(b.scheduled_at, b.created_at) DESC
+      LIMIT ${limit}
+    ),
+    full_ci AS (
+      SELECT
+        b.id,
+        b.number,
+        b.web_url,
+        b.message,
+        b.state,
+        b.branch,
+        b.commit,
+        b.created_at,
+        b.finished_at,
+        COALESCE(b.scheduled_at, b.created_at) AS run_at
+      FROM vllm_data_warehouse.buildkite.build AS b
+      WHERE b._fivetran_deleted = false
+        AND b.organization_slug = 'vllm'
+        AND b.pipeline_slug = 'ci'
+        AND b.branch = 'main'
+        AND b.source = 'schedule'
+        AND get_json_object(b.env, '$.NIGHTLY') = '1'
+        AND get_json_object(b.env, '$.RUN_ALL') = '1'
+        AND get_json_object(b.env, '$.TORCH_NIGHTLY') IS NULL
+        AND COALESCE(b.scheduled_at, b.created_at)
+          BETWEEN (SELECT MIN(run_at) - INTERVAL 5 MINUTES FROM perf_eval)
+              AND (SELECT MAX(run_at) + INTERVAL 5 MINUTES FROM perf_eval)
     )
     SELECT
-      commit,
-      MAX(image) AS image,
-      CAST(MAX(ts) AS STRING) AS latest_ts
-    FROM nights
-    WHERE commit IS NOT NULL
-    GROUP BY commit
-    ORDER BY MAX(ts) DESC
-    LIMIT ${limit}
+      pe.id AS perf_eval_build_id,
+      pe.number AS perf_eval_build_number,
+      pe.web_url AS perf_eval_web_url,
+      pe.message AS perf_eval_message,
+      pe.state AS perf_eval_state,
+      pe.branch AS perf_eval_branch,
+      pe.commit AS perf_eval_commit,
+      pe.created_at AS perf_eval_created_at,
+      pe.finished_at AS perf_eval_finished_at,
+      pe.run_at AS perf_eval_run_at,
+      pe.vllm_commit,
+      pe.vllm_image,
+      ci.id AS full_ci_build_id,
+      ci.number AS full_ci_build_number,
+      ci.web_url AS full_ci_web_url,
+      ci.message AS full_ci_message,
+      ci.state AS full_ci_state,
+      ci.branch AS full_ci_branch,
+      ci.commit AS full_ci_commit,
+      ci.created_at AS full_ci_created_at,
+      ci.finished_at AS full_ci_finished_at,
+      ABS(unix_timestamp(ci.run_at) - unix_timestamp(pe.run_at)) AS schedule_delta_seconds,
+      CASE
+        WHEN ci.id IS NULL THEN NULL
+        ELSE pe.vllm_commit = ci.commit
+      END AS commit_matches
+    FROM perf_eval AS pe
+    LEFT JOIN full_ci AS ci
+      ON ABS(unix_timestamp(ci.run_at) - unix_timestamp(pe.run_at))
+        <= ${FULL_CI_MATCH_WINDOW_SECONDS}
+    QUALIFY ROW_NUMBER() OVER (
+      PARTITION BY pe.id
+      ORDER BY
+        CASE WHEN ci.id IS NULL THEN 1 ELSE 0 END,
+        ABS(unix_timestamp(ci.run_at) - unix_timestamp(pe.run_at)) ASC,
+        ci.created_at DESC,
+        ci.number DESC
+    ) = 1
+    ORDER BY pe.run_at DESC
   `);
+
+  return rows.map((row) => {
+    const perfEvalBuild: BuildRow = {
+      id: row.perf_eval_build_id,
+      number: row.perf_eval_build_number,
+      state: row.perf_eval_state,
+      branch: row.perf_eval_branch,
+      commit: row.perf_eval_commit,
+      created_at: row.perf_eval_created_at,
+      finished_at: row.perf_eval_finished_at ?? "",
+      web_url: row.perf_eval_web_url,
+      message: row.perf_eval_message,
+    };
+    const fullCIBuild = row.full_ci_build_id ? {
+      id: row.full_ci_build_id,
+      number: row.full_ci_build_number ?? "",
+      state: row.full_ci_state ?? "",
+      branch: row.full_ci_branch ?? "",
+      commit: row.full_ci_commit ?? "",
+      created_at: row.full_ci_created_at ?? "",
+      finished_at: row.full_ci_finished_at ?? "",
+      web_url: row.full_ci_web_url ?? "",
+      message: row.full_ci_message ?? "",
+    } satisfies BuildRow : null;
+    const parsedDelta = row.schedule_delta_seconds === null
+      ? null
+      : Number(row.schedule_delta_seconds);
+
+    return {
+      commit: row.vllm_commit,
+      sourceImage: row.vllm_image,
+      runAt: row.perf_eval_run_at,
+      perfEvalBuild,
+      fullCIBuild,
+      scheduleDeltaSeconds: fullCIBuild && parsedDelta !== null && Number.isFinite(parsedDelta)
+        ? parsedDelta
+        : null,
+      commitMatches: parseDbBoolean(row.commit_matches),
+    };
+  });
 }
 
-async function loadFullCIBuilds(commits: string[]): Promise<Map<string, BuildRow>> {
-  if (commits.length === 0) return new Map();
-  const inList = commits.map((c) => `'${escapeSqlString(c)}'`).join(", ");
-  const builds = await queryDatabricks<BuildRow>(`
-    SELECT
-      b.id,
-      b.number,
-      b.state,
-      b.branch,
-      b.commit,
-      b.created_at,
-      b.finished_at,
-      b.web_url,
-      b.message
-    FROM vllm_data_warehouse.buildkite.build AS b
-    INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p ON b.pipeline_id = p.id
-    WHERE b._fivetran_deleted = false
-      AND p.name = 'CI'
-      AND b.branch = 'main'
-      AND b.message LIKE '%Full CI%'
-      AND b.state IN ('passed', 'failed')
-      AND b.commit IN (${inList})
-    ORDER BY b.created_at DESC
-  `);
-
-  // Latest build wins per commit.
-  const out = new Map<string, BuildRow>();
-  for (const b of builds) {
-    if (!out.has(b.commit)) out.set(b.commit, b);
-  }
-  return out;
-}
-
-async function loadFailedJobsByCommit(commits: string[]): Promise<Map<string, JobRow[]>> {
-  if (commits.length === 0) return new Map();
-  const inList = commits.map((c) => `'${escapeSqlString(c)}'`).join(", ");
+async function loadFailedJobsByBuildIds(buildIds: string[]): Promise<Map<string, JobRow[]>> {
+  if (buildIds.length === 0) return new Map();
+  const inList = buildIds.map((id) => `'${escapeSqlString(id)}'`).join(", ");
   const jobs = await queryDatabricks<JobRow>(`
     SELECT
       j.build_id,
@@ -167,14 +289,7 @@ async function loadFailedJobsByCommit(commits: string[]): Promise<Map<string, Jo
       j.finished_at,
       j.soft_failed
     FROM vllm_data_warehouse.buildkite.build_job AS j
-    INNER JOIN vllm_data_warehouse.buildkite.build AS b ON j.build_id = b.id
-    INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p ON b.pipeline_id = p.id
-    WHERE b._fivetran_deleted = false
-      AND p.name = 'CI'
-      AND b.branch = 'main'
-      AND b.message LIKE '%Full CI%'
-      AND b.state IN ('passed', 'failed')
-      AND b.commit IN (${inList})
+    WHERE j.build_id IN (${inList})
       AND j._fivetran_deleted = false
       AND j.type = 'script'
       AND j.state IN ('failed', 'failing', 'broken', 'timed_out')
@@ -260,19 +375,22 @@ export async function GET(request: NextRequest) {
     const cached = getCached(cacheKey);
     if (cached) return NextResponse.json(cached);
 
-    const nightlies = await loadNightlyCommits(limit + 1);
+    const nightlies = await loadNightlies(limit + 1);
     if (nightlies.length === 0) {
       return NextResponse.json({ nightlies: [], generatedAt: new Date().toISOString() });
     }
 
-    const allCommits = nightlies.map((n) => n.commit);
-    const allImages = nightlies.map((n) => n.image);
+    const allSourceImages = [...new Set(nightlies.map((n) => n.sourceImage))];
+    const fullCIBuildIds = [
+      ...new Set(
+        nightlies.flatMap((n) => n.fullCIBuild ? [n.fullCIBuild.id] : [])
+      ),
+    ];
 
-    const [builds, perfRows, evalRows, jobsByBuild] = await Promise.all([
-      loadFullCIBuilds(allCommits),
-      loadPerfRowsByImages(allImages),
-      loadEvalRows({ images: allImages }),
-      loadFailedJobsByCommit(allCommits),
+    const [perfRows, evalRows, jobsByBuild] = await Promise.all([
+      loadPerfRowsByImages(allSourceImages),
+      loadEvalRows({ images: allSourceImages }),
+      loadFailedJobsByBuildIds(fullCIBuildIds),
     ]);
 
     const perfByImage = groupPerfByImage(perfRows);
@@ -282,12 +400,17 @@ export async function GET(request: NextRequest) {
     for (let i = 0; i < Math.min(limit, nightlies.length); i++) {
       const n = nightlies[i];
       const prev = nightlies[i + 1];
-      const build = builds.get(n.commit) ?? null;
-      const prevBuild = prev ? builds.get(prev.commit) ?? null : null;
+      const build = n.fullCIBuild;
+      const prevBuild = prev?.fullCIBuild ?? null;
 
       const currentJobs = build ? jobsByBuild.get(build.id) ?? [] : [];
-      const prevJobs = prevBuild ? jobsByBuild.get(prevBuild.id) ?? [] : null;
-      const { failedJobs, fixedJobs } = categorizeFailures(currentJobs, prevJobs);
+      const comparisonAvailable = isTerminalBuild(build) && isTerminalBuild(prevBuild);
+      const { failedJobs, fixedJobs } = comparisonAvailable
+        ? categorizeFailures(currentJobs, jobsByBuild.get(prevBuild.id) ?? [])
+        : {
+            failedJobs: currentJobs.map((j) => tagJob(j, "unknown")),
+            fixedJobs: [],
+          };
 
       let deltaSummary: CompareSummary | null = null;
       let worstRegressions: DeltaItem[] = [];
@@ -299,21 +422,21 @@ export async function GET(request: NextRequest) {
       let evalMissingCandidate: CoverageItem[] = [];
 
       if (prev) {
-        const candidatePerf = perfByImage.get(n.image) ?? [];
-        const baselinePerf = perfByImage.get(prev.image) ?? [];
-        const candidateEval = evalByImage.get(n.image) ?? [];
-        const baselineEval = evalByImage.get(prev.image) ?? [];
+        const candidatePerf = perfByImage.get(n.sourceImage) ?? [];
+        const baselinePerf = perfByImage.get(prev.sourceImage) ?? [];
+        const candidateEval = evalByImage.get(n.sourceImage) ?? [];
+        const baselineEval = evalByImage.get(prev.sourceImage) ?? [];
 
         const perfResult = comparePerfRows(
           [...baselinePerf, ...candidatePerf],
-          prev.image,
-          n.image,
+          prev.sourceImage,
+          n.sourceImage,
           perfThreshold
         );
         const evalResult = compareEvalRows(
           [...baselineEval, ...candidateEval],
-          prev.image,
-          n.image,
+          prev.sourceImage,
+          n.sourceImage,
           evalSigma
         );
 
@@ -333,12 +456,25 @@ export async function GET(request: NextRequest) {
       entries.push({
         commit: n.commit,
         shortCommit: n.commit.slice(0, 7),
-        image: n.image,
-        date: tsToIso(n.latest_ts),
-        fullCI: { build, failedJobs, fixedJobs },
+        image: displayImage(n.sourceImage, n.commit),
+        sourceImage: n.sourceImage,
+        date: timestampToIso(n.runAt),
+        perfEval: { build: n.perfEvalBuild },
+        fullCI: {
+          build,
+          match: build && n.scheduleDeltaSeconds !== null ? {
+            type: "schedule",
+            commitMatches: n.commitMatches,
+            scheduleDeltaSeconds: n.scheduleDeltaSeconds,
+          } : null,
+          comparisonAvailable,
+          failedJobs,
+          fixedJobs,
+        },
         deltaVsPrev: {
           prevCommit: prev?.commit ?? null,
-          prevImage: prev?.image ?? null,
+          prevImage: prev ? displayImage(prev.sourceImage, prev.commit) : null,
+          prevSourceImage: prev?.sourceImage ?? null,
           summary: deltaSummary,
           worstRegressions,
           perfDeltas,
