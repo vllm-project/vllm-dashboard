@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "js-yaml": "^4.1.1",
     "next": "16.1.7",
     "plotly.js-basic-dist-min": "^3.4.0",
