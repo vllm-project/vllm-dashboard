@@ -5,11 +5,14 @@ export async function GET() {
   try {
     const latest = await queryGpuLatest();
     return NextResponse.json(
-      { latest },
+      { latest, checked_at: new Date().toISOString() },
       {
         headers: {
           "Cache-Control": "public, max-age=0, must-revalidate",
-          "Vercel-CDN-Cache-Control": "public, s-maxage=30, stale-while-revalidate=120",
+          // Current GPU state is cheap to query and should never spend minutes
+          // in stale-while-revalidate. A short shared cache still absorbs
+          // bursts, then the next request waits for a confirmed fresh result.
+          "Vercel-CDN-Cache-Control": "public, s-maxage=15, must-revalidate",
         },
       },
     );

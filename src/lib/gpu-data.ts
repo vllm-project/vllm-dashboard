@@ -3,6 +3,7 @@ import { getDb } from "@/lib/db";
 import type {
   GpuHistoryResponse,
   GpuLatest,
+  GpuLatestResponse,
   GpuSnapshot,
 } from "@/lib/gpu-types";
 
@@ -152,15 +153,23 @@ const getCachedInitialHistory = unstable_cache(
 );
 
 const getCachedInitialLatest = unstable_cache(
-  queryGpuLatest,
-  ["gpu-initial-latest-v1"],
+  async (): Promise<GpuLatestResponse> => ({
+    latest: await queryGpuLatest(),
+    checked_at: new Date().toISOString(),
+  }),
+  ["gpu-initial-latest-v2"],
   { revalidate: 30, tags: ["gpu-latest"] },
 );
 
 export async function getInitialGpuData() {
-  const [history, latest] = await Promise.all([
+  const [history, latestResponse] = await Promise.all([
     getCachedInitialHistory(),
     getCachedInitialLatest(),
   ]);
-  return { history, latest, asOf: Date.now() };
+  return {
+    history,
+    latest: latestResponse.latest,
+    latestCheckedAt: latestResponse.checked_at,
+    asOf: Date.now(),
+  };
 }

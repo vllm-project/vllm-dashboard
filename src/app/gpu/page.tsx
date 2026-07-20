@@ -7,12 +7,14 @@ export const dynamic = "force-dynamic";
 export default async function GpuPage() {
   let initialHistory: GpuHistoryResponse = { hours: 24, snapshots: [] };
   let initialLatest: GpuLatest[] = [];
+  let initialLatestCheckedAt = "";
   let initialNow = 0;
 
   try {
     const initial = await getInitialGpuData();
     initialHistory = initial.history;
     initialLatest = initial.latest;
+    initialLatestCheckedAt = initial.latestCheckedAt;
     initialNow = initial.asOf;
   } catch (error) {
     console.error("Failed to prefetch GPU dashboard data:", error);
@@ -22,6 +24,7 @@ export default async function GpuPage() {
     <GpuDashboard
       initialHistory={initialHistory}
       initialLatest={initialLatest}
+      initialLatestCheckedAt={initialLatestCheckedAt}
       initialNow={initialNow}
     />
   );
