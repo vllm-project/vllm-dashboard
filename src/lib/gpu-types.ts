@@ -23,5 +23,6 @@ export interface GpuHistoryResponse {
 
 export interface GpuLatestResponse {
   latest: GpuLatest[];
+  checked_at: string;
   error?: string;
 }

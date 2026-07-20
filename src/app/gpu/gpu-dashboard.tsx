@@ -47,6 +47,19 @@ function formatAgo(minutes: number): string {
   return `${Math.round(minutes / 1440)}d ago`;
 }
 
+function formatCheckedAgo(checkedAt: string, now: number): string {
+  if (!checkedAt || now <= 0) return "recently";
+  const checkedTime = new Date(checkedAt).getTime();
+  if (!Number.isFinite(checkedTime)) return "recently";
+  const seconds = Math.max(
+    0,
+    Math.round((now - checkedTime) / 1000),
+  );
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  return formatAgo(Math.round(seconds / 60));
+}
+
 function gpuType(name: string | null): string {
   if (!name) return "Unknown";
   const match = name.match(/\b(A100|H100|H200|B200|B100|L40S?|A10G?|T4|V100|GB200|GB300)\b/i);
@@ -56,12 +69,14 @@ function gpuType(name: string | null): string {
 interface GpuDashboardProps {
   initialHistory: GpuHistoryResponse;
   initialLatest: GpuLatest[];
+  initialLatestCheckedAt: string;
   initialNow: number;
 }
 
 export function GpuDashboard({
   initialHistory,
   initialLatest,
+  initialLatestCheckedAt,
   initialNow,
 }: GpuDashboardProps) {
   const [gpuTypeFilter, setGpuTypeFilter] = useState("");
@@ -78,15 +93,21 @@ export function GpuDashboard({
     };
   }, []);
 
-  const { data: latestData, error: latestError } = useSWR<GpuLatestResponse>(
-    "/api/gpu/latest",
-    fetcher,
-    {
-      fallbackData: { latest: initialLatest },
-      revalidateOnMount: initialLatest.length === 0,
-      refreshInterval: 60_000,
+  const {
+    data: latestData,
+    error: latestError,
+    isValidating: latestIsValidating,
+    mutate: refreshLatest,
+  } = useSWR<GpuLatestResponse>("/api/gpu/latest", fetcher, {
+    fallbackData: {
+      latest: initialLatest,
+      checked_at: initialLatestCheckedAt,
     },
-  );
+    // Server-rendered data makes the page useful immediately; this request is
+    // the explicit freshness check users see in the status line.
+    revalidateOnMount: true,
+    refreshInterval: 30_000,
+  });
 
   const historyUrl = `/api/gpu/history?hours=${hours}${
     hostFilter ? `&hostname=${encodeURIComponent(hostFilter)}` : ""
@@ -105,6 +126,7 @@ export function GpuDashboard({
   });
 
   const latest = latestData?.latest ?? initialLatest;
+  const latestCheckedAt = latestData?.checked_at ?? initialLatestCheckedAt;
   const snapshots = historyData?.snapshots ?? initialHistory.snapshots;
   const displayedHours = historyData?.hours ?? initialHistory.hours;
   const historyPending = historyIsLoading || historyIsValidating;
@@ -220,13 +242,82 @@ export function GpuDashboard({
 
   return (
     <div className="space-y-6">
-      {(latestError || (historyError && snapshots.length === 0)) && (
+      {historyError && snapshots.length === 0 && (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
-          GPU data could not be refreshed. Showing the most recent available values.
+          GPU history could not be loaded. Current host readings may still be available below.
         </div>
       )}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-semibold">GPU Memory</h1>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">GPU Memory</h1>
+          <div
+            className="mt-2 flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1 text-xs"
+            role="status"
+            aria-live="polite"
+          >
+            <span
+              className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 font-medium ${
+                latestIsValidating
+                  ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/80 dark:bg-blue-950/50 dark:text-blue-300"
+                  : latestError
+                    ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/80 dark:bg-amber-950/50 dark:text-amber-300"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/80 dark:bg-emerald-950/50 dark:text-emerald-300"
+              }`}
+            >
+              {latestIsValidating ? (
+                <span className="relative flex h-2 w-2" aria-hidden="true">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-70 motion-reduce:animate-none" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
+                </span>
+              ) : (
+                <span
+                  className={`h-2 w-2 rounded-full ${
+                    latestError ? "bg-amber-500" : "bg-emerald-500"
+                  }`}
+                  aria-hidden="true"
+                />
+              )}
+              {latestIsValidating
+                ? latest.length > 0
+                  ? "Checking for fresh readings"
+                  : "Loading GPU readings"
+                : latestError
+                  ? latest.length > 0
+                    ? "Refresh paused"
+                    : "Live readings unavailable"
+                  : `Checked ${formatCheckedAgo(latestCheckedAt, now)}`}
+            </span>
+            <span className="text-zinc-500 dark:text-zinc-400">
+              {latestIsValidating && latest.length > 0
+                ? "Showing the last update while new data loads."
+                : latestError
+                  ? latest.length > 0
+                    ? `Showing readings checked ${formatCheckedAgo(latestCheckedAt, now)}.`
+                    : "Retry to load the current GPU state."
+                  : "Automatically refreshes every 30 seconds."}
+            </span>
+            <button
+              type="button"
+              onClick={() => void refreshLatest()}
+              disabled={latestIsValidating}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-1 font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 disabled:cursor-wait disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+              aria-label={latestError ? "Retry GPU data refresh" : "Refresh GPU data now"}
+            >
+              <svg
+                className={`h-3.5 w-3.5 ${latestIsValidating ? "animate-spin motion-reduce:animate-none" : ""}`}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                aria-hidden="true"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M20 7v5h-5M4 17v-5h5" />
+                <path strokeLinecap="round" d="M6.1 8.5A7 7 0 0 1 18.7 7M17.9 15.5A7 7 0 0 1 5.3 17" />
+              </svg>
+              {latestError ? "Retry" : "Refresh"}
+            </button>
+          </div>
+        </div>
         <div className="flex flex-wrap items-end gap-3">
           <SearchableSelect
             label="Host"
@@ -266,8 +357,9 @@ export function GpuDashboard({
           Memory Utilization by Host
         </h3>
         {historyPending && (
-          <span className="absolute right-5 top-4 text-xs text-zinc-400" role="status">
-            Updating {HOURS_OPTIONS.find((option) => option.value === hours)?.label ?? `${hours}h`}…
+          <span className="absolute right-5 top-4 inline-flex items-center gap-1.5 text-xs text-zinc-400" role="status">
+            <span className="h-3 w-3 animate-spin rounded-full border border-zinc-300 border-t-zinc-600 motion-reduce:animate-none dark:border-zinc-700 dark:border-t-zinc-300" aria-hidden="true" />
+            Updating {HOURS_OPTIONS.find((option) => option.value === hours)?.label ?? `${hours}h`} chart…
           </span>
         )}
         <GpuMemChart
