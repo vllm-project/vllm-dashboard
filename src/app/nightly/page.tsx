@@ -62,15 +62,26 @@ interface NightlyEntry {
   commit: string;
   shortCommit: string;
   image: string;
+  sourceImage: string;
   date: string;
+  perfEval: {
+    build: BuildRow;
+  };
   fullCI: {
     build: BuildRow | null;
+    match: {
+      type: "schedule";
+      commitMatches: boolean;
+      scheduleDeltaSeconds: number;
+    } | null;
+    comparisonAvailable: boolean;
     failedJobs: TaggedJob[];
     fixedJobs: TaggedJob[];
   };
   deltaVsPrev: {
     prevCommit: string | null;
     prevImage: string | null;
+    prevSourceImage: string | null;
     summary: CompareSummary | null;
     worstRegressions: DeltaItem[];
     perfDeltas: DeltaItem[];
@@ -118,7 +129,11 @@ function StateBadge({ state }: { state: string }) {
       ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
       : state === "failed"
         ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400"
-        : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300";
+        : state === "failing"
+          ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+          : state === "running" || state === "scheduled"
+            ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+            : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300";
   return (
     <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${cls}`}>
       {state}
@@ -246,9 +261,10 @@ function NightlyRow({ entry }: { entry: NightlyEntry }) {
   const newCount = fullCI.failedJobs.filter((j) => j.category === "new").length;
   const recurringCount = fullCI.failedJobs.filter((j) => j.category === "recurring").length;
   const compareHref =
-    deltaVsPrev.prevImage
-      ? `/compare?baseline=${encodeURIComponent(deltaVsPrev.prevImage)}&candidate=${encodeURIComponent(entry.image)}`
+    deltaVsPrev.prevSourceImage
+      ? `/compare?baseline=${encodeURIComponent(deltaVsPrev.prevSourceImage)}&candidate=${encodeURIComponent(entry.sourceImage)}`
       : null;
+  const ciCommit = fullCI.build?.commit.slice(0, 7);
 
   return (
     <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
@@ -268,14 +284,33 @@ function NightlyRow({ entry }: { entry: NightlyEntry }) {
             {fullCI.build && <StateBadge state={fullCI.build.state} />}
             {!fullCI.build && (
               <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-                no Full CI build
+                no paired Full CI
               </span>
             )}
           </div>
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
-            <span className="font-mono" title={entry.image}>
+            <span
+              className="font-mono"
+              title={
+                entry.sourceImage === entry.image
+                  ? entry.image
+                  : `Tested as ${entry.sourceImage}`
+              }
+            >
               {entry.image}
             </span>
+            {entry.sourceImage !== entry.image && (
+              <span title={entry.sourceImage}>tested via the equivalent ECR artifact</span>
+            )}
+            <a
+              href={entry.perfEval.build.web_url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="text-blue-600 hover:underline dark:text-blue-400"
+            >
+              Perf/eval #{entry.perfEval.build.number}
+            </a>
             {fullCI.build && (
               <a
                 href={fullCI.build.web_url}
@@ -284,8 +319,21 @@ function NightlyRow({ entry }: { entry: NightlyEntry }) {
                 onClick={(e) => e.stopPropagation()}
                 className="text-blue-600 hover:underline dark:text-blue-400"
               >
-                Build #{fullCI.build.number}
+                Full CI #{fullCI.build.number}
               </a>
+            )}
+            {fullCI.build && fullCI.match && (
+              <span
+                title={
+                  fullCI.match.commitMatches
+                    ? "Full CI and image use the same vLLM commit"
+                    : "The independently scheduled builds use different commits"
+                }
+              >
+                CI commit {ciCommit}
+                {!fullCI.match.commitMatches &&
+                  ` · paired ${fullCI.match.scheduleDeltaSeconds}s apart`}
+              </span>
             )}
             {compareHref && (
               <a
@@ -302,13 +350,21 @@ function NightlyRow({ entry }: { entry: NightlyEntry }) {
           <div>
             <div className="text-[10px] uppercase tracking-wide text-zinc-400">CI fails</div>
             <div className={`text-lg font-semibold tabular-nums ${
-              fullCI.failedJobs.length > 0 ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"
+              !fullCI.build
+                ? "text-zinc-400"
+                : fullCI.failedJobs.length > 0
+                  ? "text-red-600 dark:text-red-400"
+                  : fullCI.comparisonAvailable
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-zinc-400"
             }`}>
-              {fullCI.failedJobs.length}
+              {fullCI.build ? fullCI.failedJobs.length : "\u2014"}
             </div>
             {fullCI.failedJobs.length > 0 && (
               <div className="text-[10px] text-zinc-400">
-                {newCount} new · {recurringCount} recurring
+                {fullCI.comparisonAvailable
+                  ? `${newCount} new · ${recurringCount} recurring`
+                  : "observed so far"}
               </div>
             )}
           </div>
@@ -340,30 +396,61 @@ function NightlyRow({ entry }: { entry: NightlyEntry }) {
             </h3>
             {!fullCI.build ? (
               <p className="text-sm text-zinc-500">
-                No Full CI build was found for commit {entry.shortCommit}.
+                No scheduled Full CI build was found within five minutes of this
+                perf/eval nightly.
               </p>
             ) : (
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                <FailureSection
-                  title="New failures"
-                  jobs={fullCI.failedJobs.filter((j) => j.category === "new")}
-                  titleColor="text-red-600 dark:text-red-400"
-                />
-                <FailureSection
-                  title="Recurring failures"
-                  jobs={fullCI.failedJobs.filter((j) => j.category === "recurring")}
-                  titleColor="text-orange-600 dark:text-orange-400"
-                />
-                <FailureSection
-                  title="Fixed since previous"
-                  jobs={fullCI.fixedJobs}
-                  titleColor="text-emerald-600 dark:text-emerald-400"
-                />
-                {fullCI.failedJobs.length === 0 && fullCI.fixedJobs.length === 0 && (
-                  <p className="text-sm text-zinc-500 md:col-span-3">
-                    No failed or fixed jobs vs the previous nightly.
+              <div className="space-y-3">
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  Full CI commit <span className="font-mono">{ciCommit}</span>
+                  {fullCI.match && !fullCI.match.commitMatches && (
+                    <>
+                      {" "}is paired to image commit{" "}
+                      <span className="font-mono">{entry.shortCommit}</span> by
+                      their schedule time ({fullCI.match.scheduleDeltaSeconds}s apart).
+                    </>
+                  )}
+                </p>
+                {!fullCI.comparisonAvailable && (
+                  <p className="text-sm text-zinc-500">
+                    New, recurring, and fixed classifications are available once
+                    both this and the previous paired Full CI builds are complete.
                   </p>
                 )}
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  {fullCI.comparisonAvailable ? (
+                    <>
+                      <FailureSection
+                        title="New failures"
+                        jobs={fullCI.failedJobs.filter((j) => j.category === "new")}
+                        titleColor="text-red-600 dark:text-red-400"
+                      />
+                      <FailureSection
+                        title="Recurring failures"
+                        jobs={fullCI.failedJobs.filter((j) => j.category === "recurring")}
+                        titleColor="text-orange-600 dark:text-orange-400"
+                      />
+                      <FailureSection
+                        title="Fixed since previous"
+                        jobs={fullCI.fixedJobs}
+                        titleColor="text-emerald-600 dark:text-emerald-400"
+                      />
+                    </>
+                  ) : (
+                    <FailureSection
+                      title="Observed failures"
+                      jobs={fullCI.failedJobs}
+                      titleColor="text-red-600 dark:text-red-400"
+                    />
+                  )}
+                  {fullCI.failedJobs.length === 0 && fullCI.fixedJobs.length === 0 && (
+                    <p className="text-sm text-zinc-500 md:col-span-3">
+                      {fullCI.comparisonAvailable
+                        ? "No failed or fixed jobs vs the previous nightly."
+                        : "No failed jobs have been reported for this build."}
+                    </p>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -455,8 +542,9 @@ export default function NightlyPage() {
         <h1 className="text-2xl font-semibold tracking-tight">Nightly</h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
           Recent nightly builds with their Full CI status and perf/eval deltas
-          vs the previous nightly. Matched by vLLM commit SHA. Nightly runs are
-          tagged by setting <code className="font-mono text-xs">NIGHTLY=1</code> in the perf-eval build env.
+          vs the previous nightly. Rows come from scheduled perf/eval builds;
+          Full CI is paired to the same schedule cycle, even when the two builds
+          captured different vLLM commits.
         </p>
       </div>
 
@@ -474,8 +562,7 @@ export default function NightlyPage() {
 
       {!isLoading && nightlies.length === 0 && !error && (
         <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-zinc-300 text-sm text-zinc-400 dark:border-zinc-700">
-          No nightly runs found yet. Set <code className="mx-1 font-mono">NIGHTLY=1</code> on the
-          perf-eval build to tag rows.
+          No scheduled perf/eval nightly builds were found.
         </div>
       )}
 
@@ -488,16 +575,26 @@ export default function NightlyPage() {
           />
           <StatCard
             label="Full CI failures"
-            value={totalFailures}
-            detail={totalFailures > 0 ? `${newFailures} new` : "all green"}
+            value={latestCI?.build ? totalFailures : "\u2014"}
+            detail={
+              !latestCI?.build
+                ? "no paired build"
+                : !latestCI.comparisonAvailable
+                  ? `${latestCI.build.state} · ${totalFailures} observed`
+                  : totalFailures > 0
+                    ? `${newFailures} new`
+                    : "all green"
+            }
             color={
               !latestCI?.build
                 ? "default"
-                : totalFailures === 0
-                  ? "green"
-                  : newFailures > 0
-                    ? "red"
-                    : "yellow"
+                : !latestCI.comparisonAvailable
+                  ? "yellow"
+                  : totalFailures === 0
+                    ? "green"
+                    : newFailures > 0
+                      ? "red"
+                      : "yellow"
             }
           />
           <StatCard
@@ -530,7 +627,7 @@ export default function NightlyPage() {
 
       <div className="space-y-3">
         {nightlies.map((n) => (
-          <NightlyRow key={n.commit} entry={n} />
+          <NightlyRow key={n.perfEval.build.id} entry={n} />
         ))}
       </div>
     </div>
