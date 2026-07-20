@@ -10,10 +10,9 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
 interface GpuSnapshot {
   time_bucket: string;
   hostname: string;
-  gpu_index: number;
   gpu_name: string | null;
-  mem_used_mb: number;
-  mem_total_mb: number;
+  mem_pct_sum: number;
+  sample_count: number;
 }
 
 interface GpuLatest {
@@ -27,7 +26,6 @@ interface GpuLatest {
 
 interface GpuResponse {
   snapshots: GpuSnapshot[];
-  hostnames: string[];
   latest: GpuLatest[];
   error?: string;
 }
@@ -37,6 +35,8 @@ const HOURS_OPTIONS = [
   { label: "6h", value: 6 },
   { label: "24h", value: 24 },
   { label: "7d", value: 168 },
+  { label: "14d", value: 336 },
+  { label: "30d", value: 720 },
 ];
 
 function formatMemory(mb: number): string {
@@ -109,8 +109,8 @@ export default function GpuPage() {
       const hostMap = bucketMap.get(t)!;
       if (!hostMap.has(row.hostname)) hostMap.set(row.hostname, { memPctSum: 0, count: 0 });
       const entry = hostMap.get(row.hostname)!;
-      entry.memPctSum += row.mem_total_mb > 0 ? (Number(row.mem_used_mb) / Number(row.mem_total_mb)) * 100 : 0;
-      entry.count++;
+      entry.memPctSum += Number(row.mem_pct_sum);
+      entry.count += Number(row.sample_count);
     }
 
     const hosts = [...hostsWithData].sort();
@@ -197,7 +197,7 @@ export default function GpuPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">GPU Memory</h1>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap items-end gap-3">
           <SearchableSelect
             label="Host"
             value={hostFilter}
