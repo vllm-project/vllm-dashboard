@@ -23,70 +23,87 @@ export async function GET(request: NextRequest) {
       schemaInitialized = true;
     }
 
-    const bucketMinutes = hours <= 1 ? 1 : hours <= 6 ? 2 : hours <= 24 ? 5 : hours <= 168 ? 30 : 60;
+    const bucketMinutes = hours <= 1
+      ? 1
+      : hours <= 6
+        ? 2
+        : hours <= 24
+          ? 5
+          : hours <= 168
+            ? 30
+            : hours <= 336
+              ? 60
+              : 120;
 
-    const snapshots = hostname
-      ? await db`
+    const snapshotsQuery = hostname
+      ? db`
           SELECT
-            date_trunc('hour', reported_at)
-              + INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM reported_at) / ${bucketMinutes}) * ${bucketMinutes})
-              AS time_bucket,
+            date_bin(
+              INTERVAL '1 minute' * ${bucketMinutes},
+              reported_at,
+              TIMESTAMPTZ 'epoch'
+            ) AS time_bucket,
             hostname,
-            gpu_index,
             gpu_name,
-            ROUND(AVG(gpu_util)::numeric, 1) AS gpu_util,
-            ROUND(AVG(mem_used_mb)::numeric, 0) AS mem_used_mb,
-            MAX(mem_total_mb) AS mem_total_mb,
-            ROUND(AVG(temperature_c)::numeric, 0) AS temperature_c,
-            ROUND(AVG(power_draw_w)::numeric, 0) AS power_draw_w,
-            MAX(power_limit_w) AS power_limit_w
+            ROUND(SUM(CASE
+              WHEN mem_total_mb > 0 THEN mem_used_mb / mem_total_mb * 100
+              ELSE 0
+            END)::numeric, 2) AS mem_pct_sum,
+            COUNT(*)::int AS sample_count
           FROM gpu_snapshots
           WHERE reported_at > NOW() - INTERVAL '1 hour' * ${hours}
             AND hostname = ${hostname}
-          GROUP BY time_bucket, hostname, gpu_index, gpu_name
-          ORDER BY time_bucket ASC, gpu_index ASC
+          GROUP BY time_bucket, hostname, gpu_name
+          ORDER BY time_bucket ASC, hostname ASC, gpu_name ASC
         `
-      : await db`
+      : db`
           SELECT
-            date_trunc('hour', reported_at)
-              + INTERVAL '1 minute' * (FLOOR(EXTRACT(MINUTE FROM reported_at) / ${bucketMinutes}) * ${bucketMinutes})
-              AS time_bucket,
+            date_bin(
+              INTERVAL '1 minute' * ${bucketMinutes},
+              reported_at,
+              TIMESTAMPTZ 'epoch'
+            ) AS time_bucket,
             hostname,
-            gpu_index,
             gpu_name,
-            ROUND(AVG(gpu_util)::numeric, 1) AS gpu_util,
-            ROUND(AVG(mem_used_mb)::numeric, 0) AS mem_used_mb,
-            MAX(mem_total_mb) AS mem_total_mb,
-            ROUND(AVG(temperature_c)::numeric, 0) AS temperature_c,
-            ROUND(AVG(power_draw_w)::numeric, 0) AS power_draw_w,
-            MAX(power_limit_w) AS power_limit_w
+            ROUND(SUM(CASE
+              WHEN mem_total_mb > 0 THEN mem_used_mb / mem_total_mb * 100
+              ELSE 0
+            END)::numeric, 2) AS mem_pct_sum,
+            COUNT(*)::int AS sample_count
           FROM gpu_snapshots
           WHERE reported_at > NOW() - INTERVAL '1 hour' * ${hours}
-          GROUP BY time_bucket, hostname, gpu_index, gpu_name
-          ORDER BY time_bucket ASC, gpu_index ASC
+          GROUP BY time_bucket, hostname, gpu_name
+          ORDER BY time_bucket ASC, hostname ASC, gpu_name ASC
         `;
 
-    const hostnamesResult = await db`
-      SELECT DISTINCT hostname FROM gpu_snapshots
-      WHERE reported_at > NOW() - INTERVAL '1 hour' * ${hours}
-      ORDER BY hostname
-    `;
-
-    // Latest snapshot per (hostname, gpu_index) over the 30-day roster window.
-    // A plain DISTINCT ON here forces Postgres to read+dedup every row in the
-    // window (millions, at a 30s report cadence) before keeping one per GPU.
-    // Instead, enumerate the distinct GPU keys (index-only scan over
-    // idx_gpu_snapshots_host_gpu_reported), then fetch just the single newest
-    // row per key via a lateral lookup — bounding heap fetches to ~one per GPU.
-    const latestResult = await db`
+    // Walk the composite index from one (hostname, gpu_index) key to the next.
+    // SELECT DISTINCT would scan every retained snapshot just to enumerate this
+    // small roster; the recursive lateral lookup performs one index seek per GPU.
+    const latestQuery = db`
+      WITH RECURSIVE gpu_keys(hostname, gpu_index) AS (
+        (
+          SELECT hostname, gpu_index
+          FROM gpu_snapshots
+          WHERE reported_at > NOW() - INTERVAL '1 hour' * ${LATEST_LOOKBACK_HOURS}
+          ORDER BY hostname, gpu_index
+          LIMIT 1
+        )
+        UNION ALL
+        SELECT next_key.hostname, next_key.gpu_index
+        FROM gpu_keys current_key
+        CROSS JOIN LATERAL (
+          SELECT hostname, gpu_index
+          FROM gpu_snapshots
+          WHERE (hostname, gpu_index) > (current_key.hostname, current_key.gpu_index)
+            AND reported_at > NOW() - INTERVAL '1 hour' * ${LATEST_LOOKBACK_HOURS}
+          ORDER BY hostname, gpu_index
+          LIMIT 1
+        ) next_key
+      )
       SELECT l.hostname, l.gpu_index, l.gpu_name, l.gpu_util, l.mem_used_mb,
              l.mem_total_mb, l.temperature_c, l.power_draw_w, l.power_limit_w,
              l.reported_at
-      FROM (
-        SELECT DISTINCT hostname, gpu_index
-        FROM gpu_snapshots
-        WHERE reported_at > NOW() - INTERVAL '1 hour' * ${LATEST_LOOKBACK_HOURS}
-      ) k
+      FROM gpu_keys k
       CROSS JOIN LATERAL (
         SELECT hostname, gpu_index, gpu_name, gpu_util, mem_used_mb, mem_total_mb,
                temperature_c, power_draw_w, power_limit_w, reported_at
@@ -98,11 +115,20 @@ export async function GET(request: NextRequest) {
       ORDER BY l.hostname, l.gpu_index
     `;
 
-    return NextResponse.json({
-      snapshots,
-      hostnames: hostnamesResult.map((r) => r.hostname),
-      latest: latestResult,
-    });
+    const [snapshots, latestResult] = await Promise.all([
+      snapshotsQuery,
+      latestQuery,
+    ]);
+
+    return NextResponse.json(
+      { snapshots, latest: latestResult },
+      {
+        headers: {
+          "Cache-Control": "public, max-age=0, must-revalidate",
+          "Vercel-CDN-Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
+        },
+      },
+    );
   } catch (error) {
     console.error("GPU metrics query failed:", error);
     return NextResponse.json(
