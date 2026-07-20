@@ -28,6 +28,7 @@ A Next.js dashboard for observing vLLM's Buildkite CI: build status, job runtime
 cp .env.local.example .env.local
 # fill in your own credentials
 npm install
+npm run migrate:gpu-rollups
 npm run dev
 ```
 
@@ -44,6 +45,12 @@ Open http://localhost:3000.
 | `CRON_SECRET` | Optional shared secret required by Vercel cron handlers |
 
 The dashboard assumes a warehouse schema with tables under `vllm_data_warehouse.buildkite.*` (builds, jobs, agent query rules) and `vllm_data_warehouse.default.vllm_perf_data_ingest` for benchmarks. Adapt the queries in `src/app/api/**/route.ts` if your schema differs.
+
+GPU telemetry is written to raw `gpu_snapshots` rows and an incremental
+`gpu_history_5m` rollup used by the 24-hour through 30-day dashboard views.
+Run `npm run migrate:gpu-rollups` once before deploying a version that reads
+the rollup. The migration is idempotent and backfills existing raw snapshots;
+schema creation is intentionally kept out of user-facing request handlers.
 
 ## Deployment
 

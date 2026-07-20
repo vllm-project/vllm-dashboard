@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "migrate:gpu-rollups": "node scripts/migrate-gpu-rollups.mjs"
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",
