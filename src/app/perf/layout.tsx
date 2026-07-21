@@ -2,6 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import {
+  PerfSettingsMenu,
+  PerfSettingsProvider,
+} from "@/app/perf/perf-settings";
 
 const tabs = [
   { href: "/perf", label: "Trends" },
@@ -13,7 +17,16 @@ export default function PerfLayout({
 }: {
   children: React.ReactNode;
 }) {
+  return (
+    <PerfSettingsProvider>
+      <PerfLayoutContent>{children}</PerfLayoutContent>
+    </PerfSettingsProvider>
+  );
+}
+
+function PerfLayoutContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+
   return (
     <div className="space-y-5">
       <div>
@@ -35,6 +48,7 @@ export default function PerfLayout({
               </Link>
             );
           })}
+          <PerfSettingsMenu />
         </div>
       </div>
       {children}

@@ -4,6 +4,7 @@ import { useState, useMemo, useEffect } from "react";
 import useSWR from "swr";
 import dynamic from "next/dynamic";
 import { SearchableSelect } from "@/components/searchable-select";
+import { usePerfSettings } from "@/app/perf/perf-settings";
 
 const Plot = dynamic(() => import("@/components/plotly-chart"), {
   ssr: false,
@@ -275,18 +276,24 @@ function TrendChart({
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function PerfTrendsPage() {
+  const { startDate } = usePerfSettings();
   const [model, setModel] = useState("");
   const [device, setDevice] = useState("");
   const [tp, setTp] = useState("");
   const [conc, setConc] = useState("");
   const [stat, setStat] = useState<Stat>("p99");
 
-  const { data: filters } = useSWR<FiltersResponse>("/api/perf/filters", fetcher);
+  const { data: filters } = useSWR<FiltersResponse>(
+    `/api/perf/filters?start=${encodeURIComponent(startDate)}`,
+    fetcher
+  );
 
   // Fetch every row for the model once, then filter device/TP/concurrency
   // client-side so those switches are instant (no refetch).
   const { data, isLoading } = useSWR<{ rows: PerfRow[] }>(
-    model ? `/api/perf?model=${encodeURIComponent(model)}` : null,
+    model
+      ? `/api/perf?model=${encodeURIComponent(model)}&start=${encodeURIComponent(startDate)}`
+      : null,
     fetcher,
     { refreshInterval: 10 * 60 * 1000, keepPreviousData: true }
   );

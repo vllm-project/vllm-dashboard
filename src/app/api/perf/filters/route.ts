@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
+import {
+  perfDataStartCondition,
+  resolvePerfDataStartDate,
+} from "@/lib/perf-data";
 
 const TTL = 300_000;
 
@@ -11,17 +15,17 @@ function isIsoDate(s: string): boolean {
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const start = searchParams.get("start");
+    const startDate = resolvePerfDataStartDate(searchParams.get("start"));
     const end = searchParams.get("end");
 
-    const cacheKey = `perf:filters:${start}:${end}`;
+    const cacheKey = `perf:filters:${startDate}:${end}`;
     const cached = getCached(cacheKey);
     if (cached) return NextResponse.json(cached);
 
-    const conditions = ["message:model IS NOT NULL"];
-    if (start && isIsoDate(start)) {
-      conditions.push(`message:date::STRING >= '${start.slice(0, 10)}'`);
-    }
+    const conditions = [
+      "message:model IS NOT NULL",
+      perfDataStartCondition(startDate),
+    ];
     if (end && isIsoDate(end)) {
       conditions.push(`message:date::STRING <= '${end.slice(0, 10)}'`);
     }

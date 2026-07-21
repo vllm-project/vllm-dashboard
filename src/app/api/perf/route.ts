@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
+import {
+  perfDataStartCondition,
+  resolvePerfDataStartDate,
+} from "@/lib/perf-data";
 
 // Perf data refreshes at most nightly, so a longer cache keeps repeat loads
 // instant without serving stale numbers.
@@ -13,12 +17,16 @@ export async function GET(request: NextRequest) {
     const device = sp.get("device");
     const tp = sp.get("tp");
     const conc = sp.get("conc");
+    const startDate = resolvePerfDataStartDate(sp.get("start"));
 
-    const cacheKey = `perf:${model}:${device}:${tp}:${conc}`;
+    const cacheKey = `perf:${startDate}:${model}:${device}:${tp}:${conc}`;
     const cached = getCached(cacheKey);
     if (cached) return NextResponse.json(cached);
 
-    const conditions = ["message:model IS NOT NULL"];
+    const conditions = [
+      "message:model IS NOT NULL",
+      perfDataStartCondition(startDate),
+    ];
     if (model) conditions.push(`message:model::STRING = '${model.replace(/'/g, "''")}'`);
     if (device) conditions.push(`message:device::STRING = '${device.replace(/'/g, "''")}'`);
     if (tp) conditions.push(`message:tp::INT = ${parseInt(tp, 10)}`);
