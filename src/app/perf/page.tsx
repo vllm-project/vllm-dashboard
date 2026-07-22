@@ -5,6 +5,7 @@ import useSWR from "swr";
 import dynamic from "next/dynamic";
 import { SearchableSelect } from "@/components/searchable-select";
 import { usePerfSettings } from "@/app/perf/perf-settings";
+import { dedupePerfRows } from "@/lib/perf-data";
 
 const Plot = dynamic(() => import("@/components/plotly-chart"), {
   ssr: false,
@@ -299,7 +300,10 @@ export default function PerfTrendsPage() {
   );
 
   const allPoints: TrendPoint[] = useMemo(() => {
-    const rawRows = data?.rows ?? [];
+    // Collapse duplicate/re-ingested rows so each build contributes one point
+    // per config; otherwise the same nightly can appear several times and the
+    // line zig-zags.
+    const rawRows = dedupePerfRows(data?.rows ?? []);
     return rawRows
       .map(
         (r) =>
@@ -309,7 +313,12 @@ export default function PerfTrendsPage() {
             device: r.device,
             tp: parseInt(r.tp, 10),
             conc: parseInt(r.conc, 10),
-            series: `${r.device} · TP${r.tp} · c${r.conc}`,
+            // Include ISL/OSL and precision in the series identity: rows that
+            // differ in these are distinct benchmarks and must not share a
+            // line, or a second config/producer makes the trend look erratic.
+            series: `${r.device} · TP${r.tp} · c${r.conc} · ${r.isl}/${r.osl}${
+              r.precision ? ` · ${r.precision}` : ""
+            }`,
             tput_per_gpu: parseFloat(r.tput_per_gpu),
             output_tput_per_gpu: parseFloat(r.output_tput_per_gpu),
             mean_ttft: parseFloat(r.mean_ttft),
