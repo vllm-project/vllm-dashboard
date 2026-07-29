@@ -97,7 +97,7 @@ export function MultiSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
-        className="dashboard-control flex w-full items-center justify-between rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-left text-sm shadow-sm hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 sm:w-48"
+        className="dashboard-control flex min-h-11 w-full items-center justify-between rounded-md border border-zinc-200 bg-white px-3 text-left text-sm shadow-sm hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 sm:min-h-10 sm:w-52"
       >
         <span className={`min-w-0 truncate ${selected.size === 0 ? "text-zinc-400" : ""}`}>
           {buttonLabel}
@@ -113,7 +113,7 @@ export function MultiSelect({
         </svg>
       </button>
       {open && (
-        <div className="dashboard-popover absolute left-0 z-50 mt-1 w-full min-w-64 rounded-lg border border-black/10 bg-white shadow-[0_16px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-zinc-900 dark:shadow-[0_20px_50px_rgba(0,0,0,0.45)] sm:w-72">
+        <div className="dashboard-popover absolute left-0 z-50 mt-2 w-full min-w-64 rounded-lg border border-black/10 bg-white shadow-[0_16px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-zinc-900 dark:shadow-[0_20px_50px_rgba(0,0,0,0.45)] sm:w-80">
           <div className="border-b border-zinc-200 p-2 dark:border-zinc-700">
             <input
               ref={inputRef}
@@ -122,7 +122,7 @@ export function MultiSelect({
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search groups..."
               aria-label={`Search ${label.toLowerCase()}`}
-              className="w-full rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-zinc-700 dark:bg-zinc-800"
+              className="min-h-10 w-full rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-zinc-700 dark:bg-zinc-800"
             />
           </div>
           <div className="border-b border-zinc-200 px-3 py-1.5 dark:border-zinc-700">
@@ -130,7 +130,7 @@ export function MultiSelect({
               <button
                 type="button"
                 onClick={() => onChange(new Set(options))}
-                className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                className="inline-flex min-h-11 items-center text-xs text-blue-600 hover:underline dark:text-blue-400 sm:min-h-9"
               >
                 Select all
               </button>
@@ -138,7 +138,7 @@ export function MultiSelect({
               <button
                 type="button"
                 onClick={() => onChange(new Set())}
-                className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+                className="inline-flex min-h-11 items-center text-xs text-blue-600 hover:underline dark:text-blue-400 sm:min-h-9"
               >
                 Clear
               </button>
@@ -158,7 +158,7 @@ export function MultiSelect({
                   role="option"
                   aria-selected={selected.has(option)}
                   onClick={() => toggle(option)}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                  className="flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800 sm:min-h-10"
                 >
                   <span
                     className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border ${
@@ -178,7 +178,9 @@ export function MultiSelect({
               </li>
             ))}
             {filtered.length === 0 && (
-              <li className="px-3 py-2 text-sm text-zinc-400">No matches</li>
+              <li className="flex min-h-11 items-center px-3 py-2 text-sm text-zinc-400">
+                No matches
+              </li>
             )}
           </ul>
         </div>

@@ -19,7 +19,7 @@ export function ThemeToggle() {
       type="button"
       onClick={toggle}
       aria-label="Toggle light/dark theme"
-      className="rounded-md p-2 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+      className="dashboard-control grid h-11 w-11 place-items-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 sm:h-10 sm:w-10"
     >
       {/* Sun — shown in dark mode */}
       <svg className="hidden h-4 w-4 dark:block" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>

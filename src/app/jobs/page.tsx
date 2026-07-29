@@ -259,7 +259,7 @@ function JobAnalysisTab({
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <StatCard
           label="Jobs with Failures"
           value={totalFailingJobs}
@@ -282,11 +282,11 @@ function JobAnalysisTab({
         />
       </div>
 
-      <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800">
+      <div className="flex min-w-0 flex-col gap-3 border-b border-zinc-200 sm:flex-row sm:items-end sm:justify-between sm:gap-4 dark:border-zinc-800">
         <div className="flex gap-1">
           <button
             onClick={() => { setAnalysisTab("failures"); setPage(0); }}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`min-h-11 px-3 text-sm font-medium transition-colors active:scale-[0.98] sm:min-h-10 sm:px-4 ${
               analysisTab === "failures"
                 ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
                 : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
@@ -296,7 +296,7 @@ function JobAnalysisTab({
           </button>
           <button
             onClick={() => { setAnalysisTab("duration"); setPage(0); }}
-            className={`px-4 py-2 text-sm font-medium transition-colors ${
+            className={`min-h-11 px-3 text-sm font-medium transition-colors active:scale-[0.98] sm:min-h-10 sm:px-4 ${
               analysisTab === "duration"
                 ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
                 : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
@@ -305,15 +305,15 @@ function JobAnalysisTab({
             Duration Ranking
           </button>
         </div>
-        <div className="flex items-center gap-4 pb-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 pb-2 sm:justify-end sm:pb-1">
           <input
             type="text"
             placeholder="Search jobs..."
             value={searchQuery}
             onChange={(e) => { setSearchQuery(e.target.value); setPage(0); }}
-            className="h-7 rounded-md border border-zinc-200 bg-white px-2.5 text-xs text-zinc-900 placeholder-zinc-400 focus:outline-none focus:ring-1 focus:ring-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500 dark:focus:ring-zinc-500"
+            className="h-11 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:ring-1 focus:ring-zinc-400 sm:h-10 sm:w-48 sm:flex-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500 dark:focus:ring-zinc-500"
           />
-          <label className="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+          <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500 sm:min-h-10 dark:text-zinc-400">
             <input
               type="checkbox"
               checked={hideSoftFail}
@@ -322,7 +322,7 @@ function JobAnalysisTab({
             />
             Hide soft fail
           </label>
-          <label className="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+          <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500 sm:min-h-10 dark:text-zinc-400">
             <input
               type="checkbox"
               checked={hideOptional}
@@ -478,14 +478,14 @@ function JobAnalysisTab({
             <button
               onClick={() => setPage((p) => Math.max(0, p - 1))}
               disabled={page === 0}
-              className="rounded-md border border-zinc-200 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800"
+              className="min-h-11 rounded-md border border-zinc-200 px-3 text-sm font-medium transition-colors hover:bg-zinc-100 active:scale-[0.98] disabled:opacity-40 disabled:hover:bg-transparent sm:min-h-10 dark:border-zinc-700 dark:hover:bg-zinc-800"
             >
               Previous
             </button>
             <button
               onClick={() => setPage((p) => p + 1)}
               disabled={page + 1 >= totalPages}
-              className="rounded-md border border-zinc-200 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800"
+              className="min-h-11 rounded-md border border-zinc-200 px-3 text-sm font-medium transition-colors hover:bg-zinc-100 active:scale-[0.98] disabled:opacity-40 disabled:hover:bg-transparent sm:min-h-10 dark:border-zinc-700 dark:hover:bg-zinc-800"
             >
               Next
             </button>

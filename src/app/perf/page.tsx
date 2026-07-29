@@ -287,12 +287,13 @@ export default function PerfTrendsPage() {
     `/api/perf/filters?start=${encodeURIComponent(startDate)}`,
     fetcher
   );
+  const activeModel = model || filters?.models[0] || "";
 
   // Fetch every row for the model once, then filter device/TP/concurrency
   // client-side so those switches are instant (no refetch).
   const { data, isLoading } = useSWR<{ rows: PerfRow[] }>(
-    model
-      ? `/api/perf?model=${encodeURIComponent(model)}&start=${encodeURIComponent(startDate)}`
+    activeModel
+      ? `/api/perf?model=${encodeURIComponent(activeModel)}&start=${encodeURIComponent(startDate)}`
       : null,
     fetcher,
     { refreshInterval: 10 * 60 * 1000, keepPreviousData: true }
@@ -381,7 +382,7 @@ export default function PerfTrendsPage() {
       <div className="flex flex-wrap items-end gap-x-4 gap-y-3 rounded-xl border border-zinc-200/80 bg-white px-5 py-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-zinc-800/80 dark:bg-zinc-950 dark:shadow-[0_1px_3px_rgba(0,0,0,0.3)]">
         <SearchableSelect
           label="Model"
-          value={model}
+          value={activeModel}
           onChange={(v) => {
             setModel(v);
             setDevice("");
@@ -390,7 +391,7 @@ export default function PerfTrendsPage() {
           }}
           options={filters?.models ?? []}
           counts={filters?.modelCounts}
-          allLabel="Select Model"
+          allLabel="Most active model"
         />
         <SearchableSelect
           label="Device"
@@ -424,7 +425,7 @@ export default function PerfTrendsPage() {
                 key={s}
                 type="button"
                 onClick={() => setStat(s)}
-                className={`rounded px-2.5 py-1 text-xs font-medium uppercase tracking-wide transition-colors ${
+                className={`min-h-11 rounded px-3 text-xs font-medium uppercase tracking-wide transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
                   stat === s
                     ? "bg-indigo-500 text-white"
                     : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
@@ -435,7 +436,7 @@ export default function PerfTrendsPage() {
             ))}
           </div>
         </div>
-        {model && seriesKeys.length > 0 && (
+        {activeModel && seriesKeys.length > 0 && (
           <div className="pb-1.5 text-xs text-zinc-400 dark:text-zinc-500">
             {seriesKeys.length} series
           </div>
@@ -443,20 +444,20 @@ export default function PerfTrendsPage() {
       </div>
 
       {/* Empty states */}
-      {!model && (
+      {!activeModel && (
         <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700">
           <span className="text-sm text-zinc-400 dark:text-zinc-500">
-            Select a model to view performance trends
+            Loading available models...
           </span>
         </div>
       )}
-      {model && isLoading && (
+      {activeModel && isLoading && (
         <div className="flex h-64 items-center justify-center gap-3">
           <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600 dark:border-zinc-600 dark:border-t-zinc-300" />
           <span className="text-sm text-zinc-400">Loading benchmarks...</span>
         </div>
       )}
-      {model && !isLoading && points.length === 0 && (
+      {activeModel && !isLoading && points.length === 0 && (
         <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700">
           <span className="text-sm text-zinc-400 dark:text-zinc-500">
             No data found for this configuration.
@@ -465,7 +466,7 @@ export default function PerfTrendsPage() {
       )}
 
       {/* Charts grid */}
-      {model && !isLoading && points.length > 0 && (
+      {activeModel && !isLoading && points.length > 0 && (
         <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
           {allMetrics.map((m) => (
             <TrendChart

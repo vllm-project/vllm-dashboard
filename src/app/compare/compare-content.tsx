@@ -1434,29 +1434,33 @@ export default function ComparePage() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-3xl font-semibold tracking-tight">Perf &amp; Eval Compare</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Perf &amp; Eval Compare</h1>
         <p className="mt-1 max-w-prose text-sm text-zinc-500 dark:text-zinc-400">
           Compare two vLLM images across performance benchmarks and accuracy
           evaluations.
         </p>
       </div>
 
-      <div className="rounded-xl border border-zinc-200/80 bg-white px-5 py-4 dark:border-zinc-800/80 dark:bg-zinc-950">
-        <div className="flex flex-wrap items-end gap-x-4 gap-y-3">
-          <SearchableSelect
-            label="Baseline image"
-            value={baseline}
-            onChange={updateBaseline}
-            options={imageOptions}
-            allLabel="Select baseline"
-          />
-          <SearchableSelect
-            label="Candidate image"
-            value={candidate}
-            onChange={updateCandidate}
-            options={imageOptions}
-            allLabel="Select candidate"
-          />
+      <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-950">
+        <div className="grid gap-3 px-4 py-4 sm:px-5 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:items-end">
+          <div className="order-1 min-w-0">
+            <SearchableSelect
+              label="Baseline image"
+              value={baseline}
+              onChange={updateBaseline}
+              options={imageOptions}
+              allLabel="Select baseline"
+            />
+          </div>
+          <div className="order-2 min-w-0 md:order-3">
+            <SearchableSelect
+              label="Candidate image"
+              value={candidate}
+              onChange={updateCandidate}
+              options={imageOptions}
+              allLabel="Select candidate"
+            />
+          </div>
           <button
             type="button"
             onClick={() => {
@@ -1465,63 +1469,87 @@ export default function ComparePage() {
               updateCompareUrl({ baseline: candidate, candidate: baseline });
             }}
             disabled={!baseline && !candidate}
-            className="rounded-md border border-zinc-200 px-3 py-1.5 text-sm font-medium text-zinc-600 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            className="order-3 min-h-11 rounded-md border border-zinc-200 px-4 text-sm font-medium text-zinc-600 transition-[background-color,transform] hover:bg-zinc-50 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 md:order-2 md:min-h-10 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
           >
             Swap
           </button>
-          <SearchableSelect
-            label="Model"
-            value={model}
-            onChange={updateModel}
-            options={modelOptions}
-            allLabel="All Models"
-          />
-          <SearchableSelect
-            label="Device"
-            value={device}
-            onChange={updateDevice}
-            options={deviceOptions}
-            allLabel="All Devices"
-          />
-          <SearchableSelect
-            label="Task"
-            value={task}
-            onChange={updateTask}
-            options={taskOptions}
-            allLabel="All Tasks"
-          />
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">
-              Threshold
-            </span>
-            <div className="group relative w-28">
-              <input
-                type="number"
-                min="0"
-                step="0.5"
-                value={perfThresholdPct}
-                onChange={(event) => updatePerfThresholdPct(event.target.value)}
-                className="w-full rounded-md border border-zinc-200 bg-white py-1.5 pl-3 pr-7 text-sm tabular-nums shadow-sm outline-none transition-colors hover:border-zinc-300 focus:border-zinc-400 focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 dark:focus:border-zinc-500 dark:focus:ring-zinc-100/10 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-              />
-              <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-xs text-zinc-400">
-                %
-              </span>
-            </div>
-          </label>
-          <div>
-            <span className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">
-              Date range
-            </span>
-            <DateRangePicker
-              startDate={startDate}
-              endDate={endDate}
-              onChange={(s, e) => {
-                setStartDate(s);
-                setEndDate(e);
-              }}
-            />
-          </div>
         </div>
+        <details className="group border-t border-zinc-200 dark:border-zinc-800">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-50 sm:min-h-10 sm:px-5 dark:text-zinc-300 dark:hover:bg-zinc-900/60 [&::-webkit-details-marker]:hidden">
+            <span>Advanced filters</span>
+            <span className="flex items-center gap-2 text-xs font-normal text-zinc-400">
+              {[model, device, task, startDate || endDate].filter(Boolean).length > 0
+                ? `${[model, device, task, startDate || endDate].filter(Boolean).length} active`
+                : `±${perfThresholdPct || "0"}% threshold`}
+              <svg
+                aria-hidden="true"
+                className="h-4 w-4 transition-transform group-open:rotate-180"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M5.22 7.72a.75.75 0 0 1 1.06 0L10 11.44l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 8.78a.75.75 0 0 1 0-1.06Z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </span>
+          </summary>
+          <div className="flex flex-wrap items-end gap-x-4 gap-y-3 border-t border-zinc-100 px-4 py-4 sm:px-5 dark:border-zinc-900">
+            <SearchableSelect
+              label="Model"
+              value={model}
+              onChange={updateModel}
+              options={modelOptions}
+              allLabel="All Models"
+            />
+            <SearchableSelect
+              label="Device"
+              value={device}
+              onChange={updateDevice}
+              options={deviceOptions}
+              allLabel="All Devices"
+            />
+            <SearchableSelect
+              label="Task"
+              value={task}
+              onChange={updateTask}
+              options={taskOptions}
+              allLabel="All Tasks"
+            />
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                Threshold
+              </span>
+              <div className="group relative w-28">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={perfThresholdPct}
+                  onChange={(event) => updatePerfThresholdPct(event.target.value)}
+                  className="min-h-11 w-full rounded-md border border-zinc-200 bg-white pl-3 pr-7 text-sm tabular-nums shadow-sm outline-none transition-colors hover:border-zinc-300 focus:border-zinc-400 focus:ring-2 focus:ring-zinc-900/10 sm:min-h-10 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 dark:focus:border-zinc-500 dark:focus:ring-zinc-100/10 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-xs text-zinc-400">
+                  %
+                </span>
+              </div>
+            </label>
+            <div>
+              <span className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                Date range
+              </span>
+              <DateRangePicker
+                startDate={startDate}
+                endDate={endDate}
+                onChange={(s, e) => {
+                  setStartDate(s);
+                  setEndDate(e);
+                }}
+              />
+            </div>
+          </div>
+        </details>
       </div>
 
       {!hasFilters && (

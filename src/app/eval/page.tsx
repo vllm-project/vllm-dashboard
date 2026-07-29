@@ -546,7 +546,7 @@ function SamplesDrawer({
   );
 }
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 20;
 
 function LeaderboardTable({
   rows,
@@ -562,19 +562,65 @@ function LeaderboardTable({
   }, [rows]);
 
   const totalPages = Math.ceil(allRuns.length / PAGE_SIZE);
-  const pageRows = allRuns.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const pageIndex = Math.min(page, Math.max(0, totalPages - 1));
+  const pageRows = allRuns.slice(
+    pageIndex * PAGE_SIZE,
+    (pageIndex + 1) * PAGE_SIZE,
+  );
 
   if (allRuns.length === 0) return null;
 
   return (
     <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-950">
-      <div className="flex items-baseline justify-between px-5 py-3 border-b border-zinc-200 dark:border-zinc-800">
+      <div className="flex flex-col gap-1 border-b border-zinc-200 px-4 py-3 sm:flex-row sm:items-baseline sm:justify-between sm:px-5 dark:border-zinc-800">
         <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
           All runs ({allRuns.length}) — newest first
         </h3>
-        <span className="text-xs text-zinc-400">Click a row to inspect samples</span>
+        <span className="text-xs text-zinc-400">Select a run to inspect samples</span>
       </div>
-      <div className="overflow-x-auto">
+      <div className="divide-y divide-zinc-100 md:hidden dark:divide-zinc-800">
+        {pageRows.map((row) => {
+          const metric = row.metrics[0] ?? null;
+          const clickable = !!row.buildkite_build_id;
+          return (
+            <button
+              key={`mobile-${row.model}|${row.task}|${row.ingest_ts}`}
+              type="button"
+              onClick={clickable ? () => onSelect(row) : undefined}
+              disabled={!clickable}
+              className="flex min-h-24 w-full items-start justify-between gap-4 px-4 py-4 text-left transition-colors enabled:hover:bg-zinc-50 enabled:active:bg-zinc-100 disabled:opacity-60 dark:enabled:hover:bg-zinc-900/50 dark:enabled:active:bg-zinc-900"
+              title={clickable ? "View per-sample answers" : "No per-sample data linked to this run"}
+            >
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                  {row.task}
+                </span>
+                <span className="mt-1 block truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                  {row.model || "Unknown model"}
+                </span>
+                <span className="mt-2 flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                  <span>{formatTime(row.run_date)}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono text-blue-600 dark:text-blue-400">
+                    {shortCommit(row)}
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span>{row.n_samples} samples</span>
+                </span>
+              </span>
+              <span className="shrink-0 text-right">
+                <span className="block text-lg font-semibold tabular-nums tracking-tight text-zinc-900 dark:text-zinc-100">
+                  {metric ? formatPct(metric.value) : "—"}
+                </span>
+                <span className="mt-1 block text-[11px] text-zinc-400">
+                  {metric ? `±${(metric.stderr * 100).toFixed(2)}%` : "No score"}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="hidden overflow-x-auto md:block">
         <table className="w-full text-sm">
           <thead className="bg-zinc-50 text-xs font-medium text-zinc-500 dark:bg-zinc-900/50 dark:text-zinc-400">
             <tr>
@@ -648,24 +694,24 @@ function LeaderboardTable({
         </table>
       </div>
       {totalPages > 1 && (
-        <div className="flex items-center justify-between border-t border-zinc-200 px-5 py-3 dark:border-zinc-800">
+        <div className="flex items-center justify-between border-t border-zinc-200 px-4 py-3 sm:px-5 dark:border-zinc-800">
           <span className="text-xs text-zinc-400">
-            {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, allRuns.length)} of {allRuns.length}
+            {pageIndex * PAGE_SIZE + 1}–{Math.min((pageIndex + 1) * PAGE_SIZE, allRuns.length)} of {allRuns.length}
           </span>
-          <div className="flex gap-1">
+          <div className="flex gap-2">
             <button
               type="button"
-              disabled={page === 0}
-              onClick={() => setPage(page - 1)}
-              className="rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-50 disabled:opacity-40 disabled:cursor-not-allowed dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+              disabled={pageIndex === 0}
+              onClick={() => setPage(pageIndex - 1)}
+              className="min-h-11 rounded-md border border-zinc-200 px-3 text-xs font-medium text-zinc-600 transition-[background-color,transform] hover:bg-zinc-50 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-10 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
             >
               Prev
             </button>
             <button
               type="button"
-              disabled={page >= totalPages - 1}
-              onClick={() => setPage(page + 1)}
-              className="rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-50 disabled:opacity-40 disabled:cursor-not-allowed dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+              disabled={pageIndex >= totalPages - 1}
+              onClick={() => setPage(pageIndex + 1)}
+              className="min-h-11 rounded-md border border-zinc-200 px-3 text-xs font-medium text-zinc-600 transition-[background-color,transform] hover:bg-zinc-50 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-10 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
             >
               Next
             </button>
@@ -755,6 +801,150 @@ function LatestStatCards({
   );
 }
 
+function EvaluationOverview({ rows }: { rows: EvalRow[] }) {
+  const overview = useMemo(() => {
+    const sorted = [...rows].sort((a, b) => b.run_epoch - a.run_epoch);
+    const latest = sorted[0] ?? null;
+    const models = new Set(rows.map((row) => row.model).filter(Boolean));
+    const tasks = new Set(rows.map((row) => row.task).filter(Boolean));
+    const groups = new Map<string, EvalRow[]>();
+    for (const row of rows) {
+      const key = `${row.model}|${row.task}`;
+      groups.set(key, [...(groups.get(key) ?? []), row]);
+    }
+
+    const changes: {
+      key: string;
+      model: string;
+      task: string;
+      delta: number;
+      significance: number;
+      regression: boolean;
+    }[] = [];
+
+    for (const [key, groupRows] of groups) {
+      const group = [...groupRows].sort(
+        (a, b) => b.run_epoch - a.run_epoch,
+      );
+      const current = group[0];
+      const previous = group[1];
+      const metric = primaryMetric(group);
+      if (!current || !previous || !metric) continue;
+      const currentMetric = pickMetric(current, metric.metric, metric.filter);
+      const previousMetric = pickMetric(previous, metric.metric, metric.filter);
+      if (!currentMetric || !previousMetric) continue;
+      const delta = currentMetric.value - previousMetric.value;
+      const sigma = Math.sqrt(
+        currentMetric.stderr ** 2 + previousMetric.stderr ** 2,
+      );
+      const significance = sigma > 0 ? Math.abs(delta) / sigma : 0;
+      if (significance < 2) continue;
+      const beneficialDelta = currentMetric.higher_is_better ? delta : -delta;
+      changes.push({
+        key,
+        model: current.model,
+        task: current.task,
+        delta,
+        significance,
+        regression: beneficialDelta < 0,
+      });
+    }
+
+    changes.sort((a, b) => b.significance - a.significance);
+    return {
+      latest,
+      modelCount: models.size,
+      taskCount: tasks.size,
+      regressions: changes.filter((change) => change.regression).length,
+      improvements: changes.filter((change) => !change.regression).length,
+      changes: changes.slice(0, 5),
+    };
+  }, [rows]);
+
+  if (!overview.latest) return null;
+
+  return (
+    <section className="space-y-3" aria-labelledby="evaluation-overview-title">
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <h2
+            id="evaluation-overview-title"
+            className="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+          >
+            Evaluation overview
+          </h2>
+          <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+            Latest activity and statistically meaningful changes
+          </p>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+        <StatCard
+          label="Runs"
+          value={rows.length}
+          detail={`${overview.modelCount} models`}
+        />
+        <StatCard
+          label="Tasks"
+          value={overview.taskCount}
+          detail="Across current filters"
+        />
+        <StatCard
+          label="Latest commit"
+          value={shortCommit(overview.latest)}
+          detail={formatTime(overview.latest.run_date)}
+        />
+        <StatCard
+          label="Regression watch"
+          value={overview.regressions}
+          detail={`${overview.improvements} improvements`}
+          color={overview.regressions > 0 ? "red" : "green"}
+        />
+      </div>
+      <div className="rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-950">
+        <div className="border-b border-zinc-200 px-4 py-3 sm:px-5 dark:border-zinc-800">
+          <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+            Strongest changes vs previous run
+          </h3>
+        </div>
+        {overview.changes.length === 0 ? (
+          <p className="px-4 py-5 text-sm text-zinc-500 sm:px-5 dark:text-zinc-400">
+            No changes exceeded the 2σ watch threshold.
+          </p>
+        ) : (
+          <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+            {overview.changes.map((change) => (
+              <div
+                key={change.key}
+                className="flex min-h-14 items-center justify-between gap-4 px-4 py-3 sm:px-5"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                    {change.task}
+                  </p>
+                  <p className="mt-0.5 truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                    {change.model || "Unknown model"} · {change.significance.toFixed(1)}σ
+                  </p>
+                </div>
+                <span
+                  className={`shrink-0 text-sm font-semibold tabular-nums ${
+                    change.regression
+                      ? "text-red-600 dark:text-red-400"
+                      : "text-emerald-600 dark:text-emerald-400"
+                  }`}
+                >
+                  {change.regression ? "↓" : "↑"}{" "}
+                  {Math.abs(change.delta * 100).toFixed(2)}pp
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function EvalPage() {
   const [model, setModel] = useState("");
   const [task, setTask] = useState("");
@@ -829,6 +1019,7 @@ export default function EvalPage() {
 
       {!isLoading && rows.length > 0 && (
         <>
+          {!model && <EvaluationOverview rows={rows} />}
           {model && (
             <>
               <LatestStatCards rows={rows} />

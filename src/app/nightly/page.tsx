@@ -271,7 +271,8 @@ function NightlyRow({ entry }: { entry: NightlyEntry }) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-start gap-4 px-5 py-4 text-left transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900/40"
+        aria-expanded={open}
+        className="flex min-h-11 w-full flex-col gap-3 px-4 py-4 text-left transition-colors hover:bg-zinc-50 active:bg-zinc-100 sm:flex-row sm:items-start sm:gap-4 sm:px-5 dark:hover:bg-zinc-900/40 dark:active:bg-zinc-900/70"
       >
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -288,7 +289,7 @@ function NightlyRow({ entry }: { entry: NightlyEntry }) {
               </span>
             )}
           </div>
-          <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+          <div className="mt-1 hidden flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 sm:flex dark:text-zinc-400">
             <span
               className="font-mono"
               title={
@@ -346,7 +347,7 @@ function NightlyRow({ entry }: { entry: NightlyEntry }) {
             )}
           </div>
         </div>
-        <div className="flex shrink-0 gap-3 text-right text-xs">
+        <div className="flex w-full shrink-0 items-center justify-between gap-3 border-t border-zinc-100 pt-3 text-right text-xs sm:w-auto sm:justify-start sm:border-0 sm:pt-0 dark:border-zinc-800">
           <div>
             <div className="text-[10px] uppercase tracking-wide text-zinc-400">CI fails</div>
             <div className={`text-lg font-semibold tabular-nums ${
@@ -381,14 +382,51 @@ function NightlyRow({ entry }: { entry: NightlyEntry }) {
               </div>
             )}
           </div>
-          <span className={`mt-2 inline-block text-zinc-400 transition-transform ${open ? "rotate-180" : ""}`}>
-            ▾
-          </span>
+          <svg
+            aria-hidden="true"
+            className={`h-4 w-4 text-zinc-400 transition-transform ${open ? "rotate-180" : ""}`}
+            viewBox="0 0 20 20"
+            fill="currentColor"
+          >
+            <path
+              fillRule="evenodd"
+              d="M5.22 7.72a.75.75 0 0 1 1.06 0L10 11.44l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 8.78a.75.75 0 0 1 0-1.06Z"
+              clipRule="evenodd"
+            />
+          </svg>
         </div>
       </button>
 
       {open && (
-        <div className="space-y-5 border-t border-zinc-200 bg-zinc-50/40 px-5 py-5 dark:border-zinc-800 dark:bg-zinc-900/20">
+        <div className="space-y-5 border-t border-zinc-200 bg-zinc-50/40 px-4 py-5 sm:px-5 dark:border-zinc-800 dark:bg-zinc-900/20">
+          <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs sm:hidden">
+            <a
+              href={entry.perfEval.build.web_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-blue-600 hover:underline dark:text-blue-400"
+            >
+              Perf/eval #{entry.perfEval.build.number}
+            </a>
+            {fullCI.build && (
+              <a
+                href={fullCI.build.web_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-blue-600 hover:underline dark:text-blue-400"
+              >
+                Full CI #{fullCI.build.number}
+              </a>
+            )}
+            {compareHref && (
+              <a
+                href={compareHref}
+                className="text-blue-600 hover:underline dark:text-blue-400"
+              >
+                Compare vs {deltaVsPrev.prevCommit?.slice(0, 7)}
+              </a>
+            )}
+          </div>
           {/* Full CI block */}
           <div>
             <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
@@ -549,8 +587,35 @@ export default function NightlyPage() {
       </div>
 
       {isLoading && (
-        <div className="flex h-48 items-center justify-center text-sm text-zinc-400">
-          Loading nightly summary...
+        <div
+          className="space-y-4 motion-reduce:[&_*]:animate-none"
+          aria-label="Loading nightly summary"
+          aria-busy="true"
+        >
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+            {Array.from({ length: 4 }, (_, index) => (
+              <div
+                key={index}
+                className="rounded-lg border border-zinc-200 bg-white p-4 sm:p-5 dark:border-zinc-800 dark:bg-zinc-950"
+              >
+                <div className="h-3 w-24 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
+                <div className="mt-3 h-7 w-16 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
+                <div className="mt-2 h-3 w-28 animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+              </div>
+            ))}
+          </div>
+          {Array.from({ length: 3 }, (_, index) => (
+            <div
+              key={index}
+              className="flex min-h-24 items-center justify-between gap-4 rounded-xl border border-zinc-200 bg-white px-4 py-4 sm:px-5 dark:border-zinc-800 dark:bg-zinc-950"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="h-4 w-36 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
+                <div className="mt-3 h-3 max-w-xl animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+              </div>
+              <div className="h-8 w-20 animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+            </div>
+          ))}
         </div>
       )}
 
@@ -567,7 +632,7 @@ export default function NightlyPage() {
       )}
 
       {latest && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
           <StatCard
             label="Latest nightly"
             value={latest.shortCommit}

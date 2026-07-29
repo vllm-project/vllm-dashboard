@@ -90,7 +90,7 @@ export function SearchableSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
-        className="dashboard-control flex w-full items-center justify-between rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-left text-sm shadow-sm hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 sm:w-48"
+        className="dashboard-control flex min-h-11 w-full items-center justify-between rounded-md border border-zinc-200 bg-white px-3 text-left text-sm shadow-sm hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 sm:min-h-10 sm:w-52"
       >
         <span className={`min-w-0 truncate ${value ? "" : "text-zinc-400"}`}>
           {value || allLabel}
@@ -106,7 +106,7 @@ export function SearchableSelect({
         </svg>
       </button>
       {open && (
-        <div className="dashboard-popover absolute left-0 z-50 mt-1 w-full min-w-64 rounded-lg border border-black/10 bg-white shadow-[0_16px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-zinc-900 dark:shadow-[0_20px_50px_rgba(0,0,0,0.45)] sm:w-64">
+        <div className="dashboard-popover absolute left-0 z-50 mt-2 w-full min-w-64 rounded-lg border border-black/10 bg-white shadow-[0_16px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-zinc-900 dark:shadow-[0_20px_50px_rgba(0,0,0,0.45)] sm:w-72">
           <div className="border-b border-zinc-200 p-2 dark:border-zinc-700">
             <input
               ref={inputRef}
@@ -115,7 +115,7 @@ export function SearchableSelect({
               onChange={(e) => setSearch(e.target.value)}
               placeholder={`Search ${label.toLowerCase()}...`}
               aria-label={`Search ${label.toLowerCase()}`}
-              className="w-full rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-zinc-700 dark:bg-zinc-800"
+              className="min-h-10 w-full rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-zinc-700 dark:bg-zinc-800"
             />
           </div>
           <ul
@@ -135,7 +135,7 @@ export function SearchableSelect({
                     setOpen(false);
                     setSearch("");
                   }}
-                  className={`w-full px-3 py-1.5 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
+                  className={`min-h-11 w-full px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800 sm:min-h-10 ${
                     !value ? "font-medium text-blue-600 dark:text-blue-400" : ""
                   }`}
                 >
@@ -154,7 +154,7 @@ export function SearchableSelect({
                     setOpen(false);
                     setSearch("");
                   }}
-                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800 ${
+                  className={`flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800 sm:min-h-10 ${
                     value === option
                       ? "font-medium text-blue-600 dark:text-blue-400"
                       : ""
@@ -170,7 +170,9 @@ export function SearchableSelect({
               </li>
             ))}
             {filtered.length === 0 && (
-              <li className="px-3 py-2 text-sm text-zinc-400">No matches</li>
+              <li className="flex min-h-11 items-center px-3 py-2 text-sm text-zinc-400">
+                No matches
+              </li>
             )}
           </ul>
         </div>

@@ -93,7 +93,7 @@ const STACK_COLORS = [
   "#6366f1", "#f97316", "#10b981", "#ef4444",
 ];
 const OTHER_COLOR = "#71717a";
-const MAX_QUEUES = 8;
+const MAX_QUEUES = 5;
 const BUILDS_PER_PAGE = 20;
 
 // ── Tooltip ──────────────────────────────────────────────────────────────────
@@ -155,7 +155,7 @@ function TabButton({
   return (
     <button
       onClick={onClick}
-      className={`px-4 py-2 text-sm font-medium transition-colors ${
+      className={`min-h-11 px-4 text-sm font-medium transition-[color,transform] active:scale-[0.98] sm:min-h-10 ${
         active
           ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
           : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
@@ -175,6 +175,7 @@ export default function CostPage() {
   const [endDate, setEndDate] = useState(today());
   const [tab, setTab] = useState<"overview" | "builds" | "jobs">("overview");
   const [chartMode, setChartMode] = useState<"cost" | "hours">("cost");
+  const [seriesMode, setSeriesMode] = useState<"top" | "all">("top");
   const [buildPage, setBuildPage] = useState(0);
 
   const params = new URLSearchParams();
@@ -200,8 +201,9 @@ export default function CostPage() {
       queueTotals.set(row.queue, (queueTotals.get(row.queue) ?? 0) + row.total_cost);
     }
     const sorted = [...queueTotals.entries()].sort((a, b) => b[1] - a[1]);
-    const topQueues = sorted.slice(0, MAX_QUEUES).map(([q]) => q);
-    const hasOther = sorted.length > MAX_QUEUES;
+    const visibleLimit = seriesMode === "top" ? MAX_QUEUES : sorted.length;
+    const topQueues = sorted.slice(0, visibleLimit).map(([q]) => q);
+    const hasOther = sorted.length > visibleLimit;
     const allQueues = hasOther ? [...topQueues, "Other"] : topQueues;
 
     const colors: Record<string, string> = {};
@@ -228,7 +230,7 @@ export default function CostPage() {
     );
 
     return { stackedData: chartData, queues: allQueues, queueColors: colors, dayCount: chartData.length };
-  }, [data]);
+  }, [data, seriesMode]);
 
   if (isLoading) {
     return (
@@ -293,8 +295,8 @@ export default function CostPage() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <StatCard label="Total Cost" value={`$${totalCost.toFixed(0)}`} detail="Known queues only" />
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
+        <StatCard className="col-span-2 sm:col-span-1" label="Total Cost" value={`$${totalCost.toFixed(0)}`} detail="Known queues only" />
         <StatCard label="Avg Daily Cost" value={`$${avgDailyCost.toFixed(0)}`} />
         <StatCard label="Compute Hours" value={`${totalHours.toFixed(0)}`} />
         <StatCard label="Total Jobs" value={totalJobs} />
@@ -317,32 +319,77 @@ export default function CostPage() {
       {/* ── Overview tab ── */}
       {tab === "overview" && (
         <>
-          {/* Chart mode toggle */}
-          <div className="flex gap-2">
-            <button
-              onClick={() => setChartMode("cost")}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                chartMode === "cost"
-                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                  : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
-              }`}
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div
+              className="inline-flex w-fit rounded-lg bg-zinc-100 p-0.5 dark:bg-zinc-900"
+              aria-label="Cost chart metric"
             >
-              Daily Cost
-            </button>
-            <button
-              onClick={() => setChartMode("hours")}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                chartMode === "hours"
-                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                  : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
-              }`}
+              <button
+                onClick={() => setChartMode("cost")}
+                aria-pressed={chartMode === "cost"}
+                className={`min-h-11 rounded-md px-3 text-xs font-medium transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
+                  chartMode === "cost"
+                    ? "bg-white text-zinc-900 shadow-sm ring-1 ring-black/5 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10"
+                    : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                }`}
+              >
+                Daily Cost
+              </button>
+              <button
+                onClick={() => setChartMode("hours")}
+                aria-pressed={chartMode === "hours"}
+                className={`min-h-11 rounded-md px-3 text-xs font-medium transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
+                  chartMode === "hours"
+                    ? "bg-white text-zinc-900 shadow-sm ring-1 ring-black/5 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10"
+                    : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                }`}
+              >
+                Compute Hours
+              </button>
+            </div>
+            <div
+              className="inline-flex w-fit rounded-lg bg-zinc-100 p-0.5 dark:bg-zinc-900"
+              aria-label="Cost chart queue detail"
             >
-              Compute Hours
-            </button>
+              <button
+                type="button"
+                onClick={() => setSeriesMode("top")}
+                aria-pressed={seriesMode === "top"}
+                className={`min-h-11 rounded-md px-3 text-xs font-medium transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
+                  seriesMode === "top"
+                    ? "bg-white text-zinc-900 shadow-sm ring-1 ring-black/5 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10"
+                    : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                }`}
+              >
+                Top 5 + Other
+              </button>
+              <button
+                type="button"
+                onClick={() => setSeriesMode("all")}
+                aria-pressed={seriesMode === "all"}
+                className={`min-h-11 rounded-md px-3 text-xs font-medium transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
+                  seriesMode === "all"
+                    ? "bg-white text-zinc-900 shadow-sm ring-1 ring-black/5 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10"
+                    : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                }`}
+              >
+                All Queues
+              </button>
+            </div>
           </div>
 
-          <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-            <ResponsiveContainer width="100%" height={300}>
+          <div className="rounded-lg border border-zinc-200 bg-white p-4 sm:p-5 dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="mb-4">
+              <h3 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                {chartMode === "cost" ? "Daily cost" : "Daily compute hours"} by queue
+              </h3>
+              <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                {seriesMode === "top"
+                  ? "Highest-volume queues are shown individually; the remainder is grouped."
+                  : `${queues.length} queues shown for detailed inspection.`}
+              </p>
+            </div>
+            <ResponsiveContainer width="100%" height={340}>
               <BarChart data={stackedData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
                 <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#71717a" />
@@ -441,7 +488,7 @@ export default function CostPage() {
                 <button
                   onClick={() => setBuildPage((p) => Math.max(0, p - 1))}
                   disabled={buildPage === 0}
-                  className="rounded px-2 py-1 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  className="min-h-11 rounded px-3 text-xs font-medium text-zinc-500 transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] disabled:opacity-40 sm:min-h-10 dark:text-zinc-400 dark:hover:bg-zinc-800"
                 >
                   Prev
                 </button>
@@ -451,7 +498,7 @@ export default function CostPage() {
                 <button
                   onClick={() => setBuildPage((p) => Math.min(buildTotalPages - 1, p + 1))}
                   disabled={buildPage >= buildTotalPages - 1}
-                  className="rounded px-2 py-1 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  className="min-h-11 rounded px-3 text-xs font-medium text-zinc-500 transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] disabled:opacity-40 sm:min-h-10 dark:text-zinc-400 dark:hover:bg-zinc-800"
                 >
                   Next
                 </button>
@@ -542,7 +589,7 @@ export default function CostPage() {
                 <button
                   onClick={() => setBuildPage((p) => Math.max(0, p - 1))}
                   disabled={buildPage === 0}
-                  className="rounded px-2 py-1 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  className="min-h-11 rounded px-3 text-xs font-medium text-zinc-500 transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] disabled:opacity-40 sm:min-h-10 dark:text-zinc-400 dark:hover:bg-zinc-800"
                 >
                   Prev
                 </button>
@@ -552,7 +599,7 @@ export default function CostPage() {
                 <button
                   onClick={() => setBuildPage((p) => Math.min(buildTotalPages - 1, p + 1))}
                   disabled={buildPage >= buildTotalPages - 1}
-                  className="rounded px-2 py-1 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  className="min-h-11 rounded px-3 text-xs font-medium text-zinc-500 transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] disabled:opacity-40 sm:min-h-10 dark:text-zinc-400 dark:hover:bg-zinc-800"
                 >
                   Next
                 </button>

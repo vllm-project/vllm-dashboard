@@ -62,7 +62,7 @@ export function PerfSettingsMenu() {
         aria-label="Performance settings"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        className="relative rounded-md p-1.5 text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+        className="relative flex min-h-11 min-w-11 items-center justify-center rounded-md text-zinc-400 transition-[background-color,color,transform] hover:bg-zinc-100 hover:text-zinc-700 active:scale-[0.97] sm:min-h-10 sm:min-w-10 dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
         title="Performance settings"
       >
         <svg

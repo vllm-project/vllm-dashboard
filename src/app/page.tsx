@@ -161,7 +161,7 @@ export default function BuildsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <StatCard label="Total Builds" value={summary.total} />
         <StatCard
           label="Pass Rate"
@@ -174,8 +174,8 @@ export default function BuildsPage() {
 
       <BuildChart data={buildDurations} startDate={startDate} endDate={endDate} />
 
-      <div className="flex items-end justify-between gap-4">
-        <div className="flex gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
+        <div className="flex min-w-0 gap-3">
           <MultiSelect
             label="Job Groups"
             selected={selectedGroups}
@@ -216,8 +216,8 @@ export default function BuildsPage() {
             placeholder="All Jobs"
           />
         </div>
-        <div className="flex gap-4">
-          <label className="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500 sm:min-h-10 dark:text-zinc-400">
             <input
               type="checkbox"
               checked={hideSoftFail}
@@ -226,7 +226,7 @@ export default function BuildsPage() {
             />
             Hide soft fail
           </label>
-          <label className="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+          <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500 sm:min-h-10 dark:text-zinc-400">
             <input
               type="checkbox"
               checked={hideOptional}
@@ -248,14 +248,14 @@ export default function BuildsPage() {
             <button
               onClick={() => setPage((p) => Math.max(0, p - 1))}
               disabled={page === 0}
-              className="rounded-md border border-zinc-200 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800"
+              className="min-h-11 rounded-md border border-zinc-200 px-3 text-sm font-medium transition-colors hover:bg-zinc-100 active:scale-[0.98] disabled:opacity-40 disabled:hover:bg-transparent sm:min-h-10 dark:border-zinc-700 dark:hover:bg-zinc-800"
             >
               Previous
             </button>
             <button
               onClick={() => setPage((p) => p + 1)}
               disabled={page + 1 >= pagination.totalPages}
-              className="rounded-md border border-zinc-200 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-zinc-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:hover:bg-zinc-800"
+              className="min-h-11 rounded-md border border-zinc-200 px-3 text-sm font-medium transition-colors hover:bg-zinc-100 active:scale-[0.98] disabled:opacity-40 disabled:hover:bg-transparent sm:min-h-10 dark:border-zinc-700 dark:hover:bg-zinc-800"
             >
               Next
             </button>

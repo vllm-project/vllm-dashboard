@@ -124,7 +124,7 @@ export function DateRangePicker({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        className="dashboard-control flex w-full items-center justify-between rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-left text-sm shadow-sm hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 sm:w-64"
+        className="dashboard-control flex min-h-11 w-full items-center justify-between rounded-md border border-zinc-200 bg-white px-3 text-left text-sm shadow-sm hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 sm:min-h-10 sm:w-72"
       >
         <span className={`min-w-0 truncate ${startDate ? "" : "text-zinc-400"}`}>
           {displayLabel}
@@ -144,7 +144,7 @@ export function DateRangePicker({
           id={panelId}
           role="dialog"
           aria-label="Choose time range"
-          className="dashboard-popover absolute left-0 z-50 mt-1 w-full min-w-72 rounded-lg border border-black/10 bg-white p-4 shadow-[0_16px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-zinc-900 dark:shadow-[0_20px_50px_rgba(0,0,0,0.45)] sm:w-72"
+          className="dashboard-popover absolute left-0 z-50 mt-2 w-full min-w-72 rounded-lg border border-black/10 bg-white p-4 shadow-[0_16px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-zinc-900 dark:shadow-[0_20px_50px_rgba(0,0,0,0.45)] sm:w-80"
         >
           <div className="mb-3 flex flex-wrap gap-2">
             {PRESETS.map((preset) => {
@@ -174,7 +174,7 @@ export function DateRangePicker({
                       setDraftEnd(formatDate(new Date()));
                     }
                   }}
-                  className={`dashboard-control rounded-md px-2.5 py-1 text-xs font-medium ${
+                  className={`dashboard-control min-h-11 rounded-md px-3 py-2 text-xs font-medium sm:min-h-10 ${
                     isActive
                       ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
                       : "border border-zinc-200 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
@@ -195,7 +195,7 @@ export function DateRangePicker({
                 value={draftStartOnly}
                 max={draftEndOnly || formatDate(new Date())}
                 onChange={(e) => setDraftStart(e.target.value)}
-                className="w-full rounded border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-sm outline-none focus:border-blue-400 dark:border-zinc-700 dark:bg-zinc-800"
+                className="min-h-11 w-full rounded border border-zinc-200 bg-zinc-50 px-3 text-sm outline-none focus:border-blue-400 dark:border-zinc-700 dark:bg-zinc-800 sm:min-h-10"
               />
             </div>
             <div className="flex-1">
@@ -208,22 +208,22 @@ export function DateRangePicker({
                 min={draftStartOnly}
                 max={formatDate(new Date())}
                 onChange={(e) => setDraftEnd(e.target.value)}
-                className="w-full rounded border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-sm outline-none focus:border-blue-400 dark:border-zinc-700 dark:bg-zinc-800"
+                className="min-h-11 w-full rounded border border-zinc-200 bg-zinc-50 px-3 text-sm outline-none focus:border-blue-400 dark:border-zinc-700 dark:bg-zinc-800 sm:min-h-10"
               />
             </div>
           </div>
-          <div className="mt-3 flex justify-between">
+          <div className="mt-4 flex justify-between gap-3">
             <button
               type="button"
               onClick={() => applyAndClose("", "")}
-              className="text-xs text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+              className="dashboard-control inline-flex min-h-11 items-center rounded-md px-3 text-sm text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 sm:min-h-10"
             >
               Clear
             </button>
             <button
               type="button"
               onClick={() => applyAndClose(draftStart, draftEnd)}
-              className="dashboard-control rounded-md bg-zinc-900 px-3 py-1 text-xs font-medium text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+              className="dashboard-control min-h-11 rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300 sm:min-h-10"
             >
               Apply
             </button>

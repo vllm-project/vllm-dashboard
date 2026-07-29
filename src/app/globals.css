@@ -93,6 +93,23 @@ h2 {
   display: none;
 }
 
+.js-plotly-plot .plotly .modebar-btn {
+  display: inline-flex !important;
+  width: 44px !important;
+  height: 44px !important;
+  align-items: center;
+  justify-content: center;
+  padding: 10px !important;
+}
+
+@media (min-width: 640px) {
+  .js-plotly-plot .plotly .modebar-btn {
+    width: 40px !important;
+    height: 40px !important;
+    padding: 9px !important;
+  }
+}
+
 @media (hover: hover) and (pointer: fine) {
   .dashboard-control:not(:disabled):active:not(:focus-visible) {
     transform: scale(0.98);

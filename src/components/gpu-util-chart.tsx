@@ -14,7 +14,7 @@ import {
   CartesianGrid,
 } from "recharts";
 
-export type GpuChartMode = "lines" | "stacked";
+export type GpuChartMode = "overview" | "hosts" | "stacked";
 
 interface GpuMemChartProps {
   data: Array<Record<string, number>>;
@@ -100,7 +100,7 @@ export function GpuMemChart({
 }: GpuMemChartProps) {
   if (data.length === 0) {
     return (
-      <div className="flex h-[300px] items-center justify-center text-sm text-zinc-400">
+      <div className="flex h-[360px] items-center justify-center text-sm text-zinc-400 sm:h-[420px]">
         No GPU data yet. Deploy the reporting script to start collecting metrics.
       </div>
     );
@@ -109,7 +109,7 @@ export function GpuMemChart({
   const xAxis = (
     <XAxis
       dataKey="time"
-      tick={{ fontSize: 10 }}
+      tick={{ fontSize: 11 }}
       stroke="#71717a"
       tickFormatter={formatXTick}
       interval={tickInterval}
@@ -117,92 +117,172 @@ export function GpuMemChart({
   );
   const grid = <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />;
 
+  if (mode === "overview") {
+    const selectedHost = hosts.length === 1;
+    return (
+      <div className="h-[360px] sm:h-[420px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data}>
+            {grid}
+            {xAxis}
+            <YAxis
+              tick={{ fontSize: 11 }}
+              stroke="#71717a"
+              width={40}
+              domain={[0, 100]}
+              tickFormatter={(v: number) => `${v}%`}
+            />
+            <Tooltip
+              content={<MemTooltip mode="overview" />}
+              cursor={{ fill: "rgba(113,113,122,0.08)" }}
+            />
+            <Legend itemSorter={null} wrapperStyle={{ fontSize: 12 }} />
+            {selectedHost ? (
+              <Line
+                type="monotone"
+                dataKey={hosts[0]}
+                name={hosts[0]}
+                stroke="#3b82f6"
+                strokeWidth={3}
+                dot={false}
+                activeDot={{ r: 5 }}
+                connectNulls
+                isAnimationActive={false}
+              />
+            ) : (
+              <>
+                <Line
+                  type="monotone"
+                  dataKey="Typical (P50)"
+                  name="Typical (P50)"
+                  stroke="#3b82f6"
+                  strokeWidth={3}
+                  dot={false}
+                  activeDot={{ r: 5 }}
+                  connectNulls
+                  isAnimationActive={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="High (P90)"
+                  name="High (P90)"
+                  stroke="#8b5cf6"
+                  strokeWidth={2.25}
+                  dot={false}
+                  activeDot={{ r: 5 }}
+                  connectNulls
+                  isAnimationActive={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="Peak"
+                  name="Peak"
+                  stroke="#f59e0b"
+                  strokeWidth={1.75}
+                  strokeDasharray="5 4"
+                  dot={false}
+                  activeDot={{ r: 5 }}
+                  connectNulls
+                  isAnimationActive={false}
+                />
+              </>
+            )}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
   if (mode === "stacked") {
     return (
-      <ResponsiveContainer width="100%" height={300}>
-        <AreaChart data={data}>
+      <div className="h-[360px] sm:h-[420px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={data}>
+            {grid}
+            {xAxis}
+            <YAxis
+              tick={{ fontSize: 11 }}
+              stroke="#71717a"
+              width={58}
+              domain={[0, totalCapacityGb]}
+              tickFormatter={formatGigabytes}
+              allowDataOverflow
+            />
+            <Tooltip
+              content={<MemTooltip mode="stacked" />}
+              cursor={{ fill: "rgba(113,113,122,0.08)" }}
+            />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <ReferenceLine
+              y={totalCapacityGb}
+              stroke="#71717a"
+              strokeDasharray="4 4"
+              strokeWidth={1.5}
+              ifOverflow="extendDomain"
+              label={{
+                value: `${totalGpuCount} GPUs · ${formatGigabytes(totalCapacityGb)} capacity`,
+                position: "insideTopRight",
+                fill: "#71717a",
+                fontSize: 11,
+              }}
+            />
+            {hosts.map((host, i) => (
+              <Area
+                key={host}
+                type="monotone"
+                dataKey={host}
+                name={host}
+                stackId="gpu-memory"
+                stroke={HOST_COLORS[i % HOST_COLORS.length]}
+                fill={HOST_COLORS[i % HOST_COLORS.length]}
+                fillOpacity={0.72}
+                strokeWidth={1.5}
+                dot={false}
+                activeDot={{ r: 5 }}
+                connectNulls
+                isAnimationActive={false}
+              />
+            ))}
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-[360px] sm:h-[420px]">
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={data}>
           {grid}
           {xAxis}
           <YAxis
             tick={{ fontSize: 11 }}
             stroke="#71717a"
-            width={58}
-            domain={[0, totalCapacityGb]}
-            tickFormatter={formatGigabytes}
-            allowDataOverflow
+            width={40}
+            domain={[0, 100]}
+            tickFormatter={(v: number) => `${v}%`}
           />
           <Tooltip
-            content={<MemTooltip mode="stacked" />}
+            content={<MemTooltip mode="hosts" />}
             cursor={{ fill: "rgba(113,113,122,0.08)" }}
           />
-          <Legend wrapperStyle={{ fontSize: 11 }} />
-          <ReferenceLine
-            y={totalCapacityGb}
-            stroke="#71717a"
-            strokeDasharray="4 4"
-            strokeWidth={1.5}
-            ifOverflow="extendDomain"
-            label={{
-              value: `${totalGpuCount} GPUs · ${formatGigabytes(totalCapacityGb)} capacity`,
-              position: "insideTopRight",
-              fill: "#71717a",
-              fontSize: 11,
-            }}
-          />
+          <Legend wrapperStyle={{ fontSize: 12 }} />
           {hosts.map((host, i) => (
-            <Area
+            <Line
               key={host}
               type="monotone"
               dataKey={host}
               name={host}
-              stackId="gpu-memory"
               stroke={HOST_COLORS[i % HOST_COLORS.length]}
-              fill={HOST_COLORS[i % HOST_COLORS.length]}
-              fillOpacity={0.72}
-              strokeWidth={1.5}
+              strokeWidth={2}
               dot={false}
-              activeDot={{ r: 4 }}
+              activeDot={{ r: 5 }}
               connectNulls
               isAnimationActive={false}
             />
           ))}
-        </AreaChart>
+        </LineChart>
       </ResponsiveContainer>
-    );
-  }
-
-  return (
-    <ResponsiveContainer width="100%" height={300}>
-      <LineChart data={data}>
-        {grid}
-        {xAxis}
-        <YAxis
-          tick={{ fontSize: 11 }}
-          stroke="#71717a"
-          width={40}
-          domain={[0, 100]}
-          tickFormatter={(v: number) => `${v}%`}
-        />
-        <Tooltip
-          content={<MemTooltip mode="lines" />}
-          cursor={{ fill: "rgba(113,113,122,0.08)" }}
-        />
-        <Legend wrapperStyle={{ fontSize: 11 }} />
-        {hosts.map((host, i) => (
-          <Line
-            key={host}
-            type="monotone"
-            dataKey={host}
-            name={host}
-            stroke={HOST_COLORS[i % HOST_COLORS.length]}
-            strokeWidth={2}
-            dot={false}
-            activeDot={{ r: 4 }}
-            connectNulls
-            isAnimationActive={false}
-          />
-        ))}
-      </LineChart>
-    </ResponsiveContainer>
+    </div>
   );
 }

@@ -38,7 +38,7 @@ function PerfLayoutContent({ children }: { children: React.ReactNode }) {
               <Link
                 key={t.href}
                 href={t.href}
-                className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors ${
+                className={`-mb-px inline-flex min-h-11 items-center border-b-2 px-3 text-sm font-medium transition-[color,transform] active:scale-[0.98] sm:min-h-10 ${
                   active
                     ? "border-indigo-500 text-zinc-900 dark:text-zinc-100"
                     : "border-transparent text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"

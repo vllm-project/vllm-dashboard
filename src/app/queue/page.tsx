@@ -171,7 +171,7 @@ export default function QueuePage() {
               <button
                 key={opt.value}
                 onClick={() => setMetricsHours(opt.value)}
-                className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                className={`min-h-11 min-w-11 rounded px-2 text-xs font-medium transition-colors active:scale-[0.97] sm:min-h-10 ${
                   metricsHours === opt.value
                     ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
                     : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
@@ -185,7 +185,7 @@ export default function QueuePage() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <StatCard
           label="Total Agents"
           value={totalAgents}

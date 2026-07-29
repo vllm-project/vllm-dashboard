@@ -15,7 +15,7 @@ const GpuMemChart = dynamic(
   () => import("@/components/gpu-util-chart").then((module) => module.GpuMemChart),
   {
     ssr: false,
-    loading: () => <div className="h-[300px] animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />,
+    loading: () => <div className="h-[360px] animate-pulse rounded bg-zinc-100 dark:bg-zinc-900 sm:h-[420px]" />,
   },
 );
 
@@ -37,9 +37,30 @@ const HOURS_OPTIONS = [
   { label: "30d", value: 720 },
 ];
 
+const OVERVIEW_SERIES = [
+  "Typical (P50)",
+  "High (P90)",
+  "Peak",
+] as const;
+
+function percentile(values: number[], quantile: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const position = (sorted.length - 1) * quantile;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sorted[lower];
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+}
+
 function formatMemory(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${Math.round(mb)} MB`;
+}
+
+function formatCapacityGb(gb: number): string {
+  if (gb >= 1024) return `${(gb / 1024).toFixed(1)} TB`;
+  return `${Math.round(gb)} GB`;
 }
 
 function formatAgo(minutes: number): string {
@@ -83,7 +104,7 @@ export function GpuDashboard({
   const [gpuTypeFilter, setGpuTypeFilter] = useState("");
   const [hostFilter, setHostFilter] = useState("");
   const [hours, setHours] = useState(24);
-  const [chartMode, setChartMode] = useState<GpuChartMode>("lines");
+  const [chartMode, setChartMode] = useState<GpuChartMode>("overview");
   const [now, setNow] = useState(initialNow);
 
   useEffect(() => {
@@ -195,23 +216,51 @@ export function GpuDashboard({
     }
 
     const hosts = [...hostsWithData].sort();
+    const overviewSeries = hosts.length === 1 ? ["Utilization"] : [...OVERVIEW_SERIES];
     const rows = [...bucketMap.entries()]
       .map(([time, hostMap]) => {
         const row: Record<string, number> = { time };
+        const utilizationValues: number[] = [];
         for (const host of hosts) {
           const entry = hostMap.get(host);
           if (entry) {
             const averagePercent = entry.memPctSum / entry.count;
-            row[host] = chartMode === "stacked"
-              ? Math.round((averagePercent / 100) * (hostCapacityGb.get(host) ?? 0) * 10) / 10
-              : Math.round(averagePercent);
+            utilizationValues.push(averagePercent);
+            if (chartMode === "stacked") {
+              row[host] =
+                Math.round(
+                  (averagePercent / 100) *
+                    (hostCapacityGb.get(host) ?? 0) *
+                    10,
+                ) / 10;
+            } else if (chartMode === "hosts") {
+              row[host] = Math.round(averagePercent);
+            }
+          }
+        }
+        if (chartMode === "overview" && utilizationValues.length > 0) {
+          if (overviewSeries.length === 1) {
+            row[overviewSeries[0]] = Math.round(utilizationValues[0]);
+          } else {
+            row[OVERVIEW_SERIES[0]] = Math.round(
+              percentile(utilizationValues, 0.5),
+            );
+            row[OVERVIEW_SERIES[1]] = Math.round(
+              percentile(utilizationValues, 0.9),
+            );
+            row[OVERVIEW_SERIES[2]] = Math.round(
+              Math.max(...utilizationValues),
+            );
           }
         }
         return row;
       })
       .sort((a, b) => a.time - b.time);
 
-    return { data: rows, hosts };
+    return {
+      data: rows,
+      hosts: chartMode === "overview" ? overviewSeries : hosts,
+    };
   }, [snapshots, filteredHosts, gpuTypeFilter, chartMode, hostCapacityGb]);
 
   const tickInterval = Math.max(1, Math.floor(chartData.data.length / 10));
@@ -270,11 +319,17 @@ export function GpuDashboard({
           GPU history could not be loaded. Current host readings may still be available below.
         </div>
       )}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">GPU Memory</h1>
+      <div className="space-y-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-[-0.03em]">GPU Memory</h1>
+            <p className="mt-1.5 text-sm text-zinc-500 dark:text-zinc-400">
+              {filteredHosts.length.toLocaleString()} hosts · {filtered.length.toLocaleString()} GPUs ·{" "}
+              {formatCapacityGb(totalCapacityGb)} total memory
+            </p>
+          </div>
           <div
-            className="mt-2 flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1 text-xs"
+            className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 text-xs lg:max-w-xl lg:justify-end"
             role="status"
             aria-live="polite"
           >
@@ -323,7 +378,7 @@ export function GpuDashboard({
               type="button"
               onClick={() => void refreshLatest()}
               disabled={latestIsValidating}
-              className="dashboard-control inline-flex items-center gap-1 rounded px-1.5 py-1 font-medium text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-wait disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+              className="dashboard-control inline-flex min-h-11 items-center gap-1.5 rounded-md px-3 py-2 font-medium text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-wait disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 sm:min-h-10"
               aria-label={latestError ? "Retry GPU data refresh" : "Refresh GPU data now"}
             >
               <svg
@@ -341,51 +396,76 @@ export function GpuDashboard({
             </button>
           </div>
         </div>
-        <div className="flex flex-wrap items-end gap-3">
-          <SearchableSelect
-            label="Host"
-            value={hostFilter}
-            onChange={setHostFilter}
-            options={allHostnames}
-            allLabel="All Hosts"
-          />
-          <SearchableSelect
-            label="GPU Type"
-            value={gpuTypeFilter}
-            onChange={setGpuTypeFilter}
-            options={gpuTypes}
-            allLabel="All Types"
-          />
-          <div className="flex gap-1 rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700">
-            {HOURS_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => setHours(opt.value)}
-                className={`dashboard-control rounded px-2.5 py-1 text-xs font-medium ${
-                  hours === opt.value
-                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                    : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
+        <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 sm:p-5">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+              <SearchableSelect
+                label="Host"
+                value={hostFilter}
+                onChange={setHostFilter}
+                options={allHostnames}
+                allLabel="All Hosts"
+              />
+              <SearchableSelect
+                label="GPU Type"
+                value={gpuTypeFilter}
+                onChange={setGpuTypeFilter}
+                options={gpuTypes}
+                allLabel="All Types"
+              />
+            </div>
+            <div className="min-w-0">
+              <div className="mb-1 block text-xs font-medium tracking-[0.01em] text-zinc-500 dark:text-zinc-400">
+                Time Range
+              </div>
+              <div className="scrollbar-hidden -mx-1 overflow-x-auto px-1">
+                <div
+                  className="flex min-w-max gap-1 rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700"
+                  role="group"
+                  aria-label="GPU history time range"
+                >
+                  {HOURS_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setHours(opt.value)}
+                      aria-pressed={hours === opt.value}
+                      className={`dashboard-control min-h-11 rounded px-3 py-2 text-sm font-medium sm:min-h-10 ${
+                        hours === opt.value
+                          ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                          : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
       {/* Per-host memory chart */}
-      <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none sm:p-5">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none sm:p-6">
+        <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-              {chartMode === "stacked" ? "Stacked Memory by Host" : "Memory Utilization by Host"}
-            </h3>
-            {chartMode === "stacked" && (
-              <p className="mt-1 text-xs text-zinc-400">
-                Aggregate usage across {filtered.length} GPUs, stacked by host.
-              </p>
-            )}
+            <h2 className="text-lg font-semibold tracking-[-0.02em]">
+              {chartMode === "overview"
+                ? "Fleet Memory Overview"
+                : chartMode === "hosts"
+                  ? "Memory Utilization by Host"
+                  : "Stacked Memory by Host"}
+            </h2>
+            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+              {chartMode === "overview"
+                ? filteredHosts.length === 1
+                  ? "Utilization for the selected host."
+                  : `Typical, high, and peak utilization across ${chartData.hosts.length > 0 ? filteredHosts.length : 0} hosts.`
+                : chartMode === "hosts"
+                  ? `${chartData.hosts.length} individual host lines. Filter to a host for close inspection.`
+                  : `Aggregate usage across ${filtered.length} GPUs, stacked by host.`}
+            </p>
           </div>
           <div className="flex items-center gap-3">
             {historyPending && (
@@ -400,7 +480,8 @@ export function GpuDashboard({
               aria-label="GPU chart mode"
             >
               {([
-                { label: "Lines", value: "lines" },
+                { label: "Overview", value: "overview" },
+                { label: "Hosts", value: "hosts" },
                 { label: "Stacked", value: "stacked" },
               ] as const).map((option) => (
                 <button
@@ -408,7 +489,7 @@ export function GpuDashboard({
                   type="button"
                   onClick={() => setChartMode(option.value)}
                   aria-pressed={chartMode === option.value}
-                  className={`dashboard-control rounded px-2.5 py-1 text-xs font-medium ${
+                  className={`dashboard-control min-h-11 rounded px-3 py-2 text-sm font-medium sm:min-h-10 ${
                     chartMode === option.value
                       ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
                       : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
@@ -433,20 +514,21 @@ export function GpuDashboard({
 
       {/* Host summary table */}
       <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none">
-        <div className="border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
-          <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-            Host Summary
-          </h3>
+        <div className="flex min-h-14 items-center justify-between gap-4 border-b border-zinc-200 px-5 py-3 dark:border-zinc-800 sm:px-6">
+          <h2 className="text-lg font-semibold tracking-[-0.02em]">Host Summary</h2>
+          <span className="text-sm tabular-nums text-zinc-500 dark:text-zinc-400">
+            {hostRows.length} hosts
+          </span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px] text-sm">
             <thead>
               <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                <th className="px-5 py-2.5 font-medium">Host</th>
-                <th className="px-5 py-2.5 font-medium">GPU Type</th>
-                <th className="px-5 py-2.5 font-medium">Memory</th>
-                <th className="px-5 py-2.5 font-medium">Per-GPU</th>
-                <th className="px-5 py-2.5 font-medium">Last Seen</th>
+                <th className="px-5 py-3 font-medium sm:px-6">Host</th>
+                <th className="px-5 py-3 font-medium sm:px-6">GPU Type</th>
+                <th className="px-5 py-3 font-medium sm:px-6">Memory</th>
+                <th className="px-5 py-3 font-medium sm:px-6">Per-GPU</th>
+                <th className="px-5 py-3 font-medium sm:px-6">Last Seen</th>
               </tr>
             </thead>
             <tbody>
@@ -462,7 +544,7 @@ export function GpuDashboard({
                     key={h.hostname}
                     className={`border-b border-zinc-100 last:border-0 dark:border-zinc-800/50 ${stale ? "opacity-50" : ""}`}
                   >
-                    <td className="px-5 py-2.5 font-medium">
+                    <td className="px-5 py-3.5 font-medium sm:px-6">
                       {h.hostname}
                       {offline && (
                         <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/40 dark:text-red-400">
@@ -470,16 +552,16 @@ export function GpuDashboard({
                         </span>
                       )}
                     </td>
-                    <td className="px-5 py-2.5">{h.gpuType}</td>
-                    <td className="px-5 py-2.5">
+                    <td className="px-5 py-3.5 sm:px-6">{h.gpuType}</td>
+                    <td className="px-5 py-3.5 sm:px-6">
                       <span className={memPct > 90 ? "font-medium text-red-600 dark:text-red-400" : ""}>
                         {formatMemory(h.memUsedMb)}
                       </span>
                       <span className="text-zinc-400"> / {formatMemory(h.memTotalMb)}</span>
                       <span className="ml-1 text-xs text-zinc-400">({memPct}%)</span>
                     </td>
-                    <td className="px-5 py-2.5">
-                      <div className="flex items-end gap-1" style={{ height: 36 }}>
+                    <td className="px-5 py-3.5 sm:px-6">
+                      <div className="flex items-end gap-1.5" style={{ height: 40 }}>
                         {h.gpus.map((gpu) => {
                           const pct = gpu.memTotalMb > 0 ? Math.round((gpu.memUsedMb / gpu.memTotalMb) * 100) : 0;
                           const barColor = pct > 90
@@ -494,7 +576,7 @@ export function GpuDashboard({
                             >
                               <div
                                 className="relative w-3 rounded-sm bg-zinc-100 dark:bg-zinc-800"
-                                style={{ height: 36 }}
+                                style={{ height: 40 }}
                               >
                                 <div
                                   className={`absolute bottom-0 w-full rounded-sm ${barColor}`}
@@ -513,7 +595,7 @@ export function GpuDashboard({
                       </div>
                     </td>
                     <td
-                      className={`whitespace-nowrap px-5 py-2.5 ${
+                      className={`whitespace-nowrap px-5 py-3.5 sm:px-6 ${
                         offline
                           ? "text-red-600 dark:text-red-400"
                           : stale
@@ -528,7 +610,7 @@ export function GpuDashboard({
               })}
               {hostRows.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-zinc-400">
+                  <td colSpan={5} className="px-5 py-12 text-center text-zinc-400">
                     No GPU data found. Deploy the reporting script to start collecting metrics.
                   </td>
                 </tr>
