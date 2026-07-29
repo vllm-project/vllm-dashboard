@@ -1358,7 +1358,7 @@ export default function ComparePage() {
   const { data, error, isLoading } = useSWR<CompareResponse>(
     compareUrl,
     fetcher,
-    { refreshInterval: 10 * 60 * 1000 }
+    { refreshInterval: 10 * 60 * 1000, keepPreviousData: true }
   );
 
   const classifiedPerf = useMemo(
@@ -1572,7 +1572,7 @@ export default function ComparePage() {
         </div>
       )}
 
-      {compareUrl && isLoading && (
+      {compareUrl && isLoading && !data && (
         <div className="flex h-64 items-center justify-center gap-3">
           <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600 dark:border-zinc-600 dark:border-t-zinc-300" />
           <span className="text-sm text-zinc-400">Comparing images...</span>
@@ -1585,7 +1585,7 @@ export default function ComparePage() {
         </div>
       )}
 
-      {data && !isLoading && (
+      {data && (
         <>
           <VerdictHero
             summary={derivedSummary}

@@ -961,10 +961,11 @@ export default function EvalPage() {
   const { data, isLoading } = useSWR<{ rows: EvalRow[] }>(
     `/api/eval?${params.toString()}`,
     fetcher,
-    { refreshInterval: 10 * 60 * 1000 }
+    { refreshInterval: 10 * 60 * 1000, keepPreviousData: true }
   );
 
   const rows = useMemo(() => data?.rows ?? [], [data?.rows]);
+  const showInitialLoading = isLoading && !data;
 
   return (
     <div className="space-y-5">
@@ -1002,14 +1003,14 @@ export default function EvalPage() {
         />
       </div>
 
-      {isLoading && (
+      {showInitialLoading && (
         <div className="flex h-64 items-center justify-center gap-3">
           <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-600 dark:border-zinc-600 dark:border-t-zinc-300" />
           <span className="text-sm text-zinc-400">Loading evaluations...</span>
         </div>
       )}
 
-      {!isLoading && rows.length === 0 && (
+      {!showInitialLoading && rows.length === 0 && (
         <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-zinc-300 dark:border-zinc-700">
           <span className="text-sm text-zinc-400">
             No evaluation runs found.
@@ -1017,7 +1018,7 @@ export default function EvalPage() {
         </div>
       )}
 
-      {!isLoading && rows.length > 0 && (
+      {!showInitialLoading && rows.length > 0 && (
         <>
           {!model && <EvaluationOverview rows={rows} />}
           {model && (

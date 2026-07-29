@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
+import { cachedJson } from "@/lib/api-response";
 
 const TTL = 300_000;
+const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 86_400 };
 
 export async function GET() {
   try {
     const cacheKey = "builds:filters";
     const cached = getCached(cacheKey);
-    if (cached) return NextResponse.json(cached);
+    if (cached) return cachedJson(cached, CDN_CACHE);
 
     const [pipelines, branches] = await Promise.all([
       queryDatabricks(`
@@ -32,7 +34,7 @@ export async function GET() {
     };
     setCache(cacheKey, result, TTL);
 
-    return NextResponse.json(result);
+    return cachedJson(result, CDN_CACHE);
   } catch (error) {
     console.error("Failed to fetch filters:", error);
     return NextResponse.json(

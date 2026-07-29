@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
+import { cachedJson } from "@/lib/api-response";
 import {
   perfDataStartCondition,
   resolvePerfDataStartDate,
 } from "@/lib/perf-data";
 
 const TTL = 300_000;
+const CDN_CACHE = { maxAge: 600, staleWhileRevalidate: 86_400 };
 
 function isIsoDate(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}/.test(s);
@@ -20,7 +22,7 @@ export async function GET(request: Request) {
 
     const cacheKey = `perf:filters:${startDate}:${end}`;
     const cached = getCached(cacheKey);
-    if (cached) return NextResponse.json(cached);
+    if (cached) return cachedJson(cached, CDN_CACHE);
 
     const conditions = [
       "message:model IS NOT NULL",
@@ -76,7 +78,7 @@ export async function GET(request: Request) {
     const result = { models, modelCounts, devices, tps, concs, precisions, images };
     setCache(cacheKey, result, TTL);
 
-    return NextResponse.json(result);
+    return cachedJson(result, CDN_CACHE);
   } catch (error) {
     console.error("Failed to fetch perf filters:", error);
     return NextResponse.json({ error: "Failed to fetch filters" }, { status: 500 });

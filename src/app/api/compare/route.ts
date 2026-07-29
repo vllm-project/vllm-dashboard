@@ -9,6 +9,9 @@ import {
   sortDeltas,
 } from "@/lib/compare";
 import { getCached, setCache } from "@/lib/api-cache";
+import { cachedJson } from "@/lib/api-response";
+
+const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
 
 export async function GET(request: NextRequest) {
   try {
@@ -30,7 +33,7 @@ export async function GET(request: NextRequest) {
 
     const cacheKey = `compare:${baseline}:${candidate}:${model}:${device}:${task}`;
     const cached = getCached(cacheKey);
-    if (cached) return NextResponse.json(cached);
+    if (cached) return cachedJson(cached, CDN_CACHE);
 
     const [perfRows, evalRows] = await Promise.all([
       loadPerfRows({ baseline, candidate, model, device }),
@@ -67,7 +70,7 @@ export async function GET(request: NextRequest) {
     };
     setCache(cacheKey, result, 60_000);
 
-    return NextResponse.json(result);
+    return cachedJson(result, CDN_CACHE);
   } catch (error) {
     console.error("Failed to compare images:", error);
     return NextResponse.json(

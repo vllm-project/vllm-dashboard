@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { getCached, setCache } from "@/lib/api-cache";
+import { cachedJson } from "@/lib/api-response";
 
 const TTL = 15_000;
+const CDN_CACHE = { maxAge: 15, staleWhileRevalidate: 3_600 };
 
 export async function GET(request: NextRequest) {
   try {
@@ -15,7 +17,7 @@ export async function GET(request: NextRequest) {
     const queue = searchParams.get("queue") || null;
     const cacheKey = `metrics:${hours}:${queue ?? "all"}`;
     const cached = getCached(cacheKey);
-    if (cached) return NextResponse.json(cached);
+    if (cached) return cachedJson(cached, CDN_CACHE);
 
     const cutoff = new Date(Date.now() - hours * 3600 * 1000);
     const latestCutoff = new Date(Date.now() - 2 * 3600 * 1000);
@@ -121,7 +123,7 @@ export async function GET(request: NextRequest) {
     };
     setCache(cacheKey, result, TTL);
 
-    return NextResponse.json(result);
+    return cachedJson(result, CDN_CACHE);
   } catch (error) {
     console.error("Failed to fetch metrics:", error);
     return NextResponse.json(

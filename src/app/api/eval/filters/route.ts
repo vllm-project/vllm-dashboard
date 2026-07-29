@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { resolveEvalImage } from "@/lib/eval-images";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
+import { cachedJson } from "@/lib/api-response";
 
 interface RawRow {
   m: string;
@@ -30,6 +31,7 @@ function parseDateParam(s: string | null): number | null {
 }
 
 const TTL = 300_000;
+const CDN_CACHE = { maxAge: 600, staleWhileRevalidate: 86_400 };
 
 export async function GET(request: Request) {
   try {
@@ -44,7 +46,7 @@ export async function GET(request: Request) {
 
     const cacheKey = `eval:filters:${searchParams.get("start")}:${searchParams.get("end")}`;
     const cached = getCached(cacheKey);
-    if (cached) return NextResponse.json(cached);
+    if (cached) return cachedJson(cached, CDN_CACHE);
 
     const conditions = [
       "(message:results IS NOT NULL OR message:data:results IS NOT NULL)",
@@ -113,7 +115,7 @@ export async function GET(request: Request) {
     };
     setCache(cacheKey, result, TTL);
 
-    return NextResponse.json(result);
+    return cachedJson(result, CDN_CACHE);
   } catch (error) {
     console.error("Failed to fetch eval filters:", error);
     return NextResponse.json(

@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { aggregateJobsByGroup, resolveGroupsToJobConditions } from "@/lib/test-groups";
 import { getCached, setCache } from "@/lib/api-cache";
+import { cachedJson } from "@/lib/api-response";
 
 const PAGE_SIZE = 50;
 const TTL = 30_000;
+const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
 
 function buildJobFilterSubquery(jobGroups: string[], jobNames: string[]): string {
   const nameConditions: string[] = [];
@@ -51,7 +53,7 @@ export async function GET(request: NextRequest) {
 
     const cacheKey = `builds:${pipeline}:${branch}:${startDate}:${endDate}:${page}:${jobGroups.join(",")}:${jobNames.join(",")}`;
     const cached = getCached(cacheKey);
-    if (cached) return NextResponse.json(cached);
+    if (cached) return cachedJson(cached, CDN_CACHE);
 
     // Build WHERE clauses
     const conditions = ["b._fivetran_deleted = false"];
@@ -126,7 +128,7 @@ export async function GET(request: NextRequest) {
 
     // Second: fetch jobs only for the builds on this page
     const buildIds = builds.map((b) => (b as Record<string, unknown>).id as string);
-    let jobsByBuild = new Map<string, { name: string; state: string; web_url?: string }[]>();
+    const jobsByBuild = new Map<string, { name: string; state: string; web_url?: string }[]>();
 
     if (buildIds.length > 0) {
       const idList = buildIds.map((id) => `'${id}'`).join(",");
@@ -181,7 +183,7 @@ export async function GET(request: NextRequest) {
     };
     setCache(cacheKey, result, TTL);
 
-    return NextResponse.json(result);
+    return cachedJson(result, CDN_CACHE);
   } catch (error) {
     console.error("Failed to fetch builds:", error);
     return NextResponse.json(

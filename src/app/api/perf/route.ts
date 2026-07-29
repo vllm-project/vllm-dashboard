@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
+import { cachedJson } from "@/lib/api-response";
 import {
   perfDataStartCondition,
   resolvePerfDataStartDate,
@@ -9,6 +10,7 @@ import {
 // Perf data refreshes at most nightly, so a longer cache keeps repeat loads
 // instant without serving stale numbers.
 const TTL = 300_000;
+const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
 
 export async function GET(request: NextRequest) {
   try {
@@ -21,7 +23,7 @@ export async function GET(request: NextRequest) {
 
     const cacheKey = `perf:${startDate}:${model}:${device}:${tp}:${conc}`;
     const cached = getCached(cacheKey);
-    if (cached) return NextResponse.json(cached);
+    if (cached) return cachedJson(cached, CDN_CACHE);
 
     const conditions = [
       "message:model IS NOT NULL",
@@ -68,7 +70,7 @@ export async function GET(request: NextRequest) {
     const result = { rows };
     setCache(cacheKey, result, TTL);
 
-    return NextResponse.json(result);
+    return cachedJson(result, CDN_CACHE);
   } catch (error) {
     console.error("Failed to fetch perf data:", error);
     return NextResponse.json({ error: "Failed to fetch performance data" }, { status: 500 });

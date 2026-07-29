@@ -8,7 +8,16 @@ export function getDb() {
     if (!url) {
       throw new Error("DATABASE_URL is not set");
     }
-    sql = postgres(url, { ssl: "require" });
+    sql = postgres(url, {
+      ssl: "require",
+      // Serverless instances should fail quickly and keep a deliberately small
+      // pool. The dashboard only fans out three PostgreSQL queries at once;
+      // larger per-instance pools amplify connection pressure during bursts.
+      max: 3,
+      connect_timeout: 10,
+      idle_timeout: 20,
+      max_lifetime: 10 * 60,
+    });
   }
   return sql;
 }

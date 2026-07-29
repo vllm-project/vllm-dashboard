@@ -188,6 +188,7 @@ export default function CostPage() {
   const { data: filters } = useSWR<FiltersResponse>("/api/builds/filters", fetcher);
   const { data, error, isLoading } = useSWR<CostResponse>(apiUrl, fetcher, {
     refreshInterval: 5 * 60 * 1000,
+    keepPreviousData: true,
   });
 
   // Build stacked chart data
@@ -232,7 +233,7 @@ export default function CostPage() {
     return { stackedData: chartData, queues: allQueues, queueColors: colors, dayCount: chartData.length };
   }, [data, seriesMode]);
 
-  if (isLoading) {
+  if (isLoading && !data) {
     return (
       <div className="flex h-64 items-center justify-center text-zinc-400">
         Loading cost data...

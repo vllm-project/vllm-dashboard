@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
+import { cachedJson } from "@/lib/api-response";
 
 const TTL = 60_000;
+const CDN_CACHE = { maxAge: 30, staleWhileRevalidate: 3_600 };
 
 export async function GET(request: NextRequest) {
   const queue = request.nextUrl.searchParams.get("queue");
@@ -12,15 +14,11 @@ export async function GET(request: NextRequest) {
 
   const cacheKey = `waiting-builds:${queue}`;
   const cached = getCached(cacheKey);
-  if (cached) return NextResponse.json(cached);
+  if (cached) return cachedJson(cached, CDN_CACHE);
 
   try {
     const rows = await queryDatabricks(`
-      SELECT
-        w.build_number, w.build_url, w.message, w.author,
-        w.waiting_jobs, w.max_wait_min,
-        t.total_jobs
-      FROM (
+      WITH waiting AS (
         SELECT
           b.number AS build_number,
           b.web_url AS build_url,
@@ -43,20 +41,34 @@ export async function GET(request: NextRequest) {
         GROUP BY b.number, b.web_url, b.message, b.github_author_name, b.id
         ORDER BY waiting_jobs DESC
         LIMIT 5
-      ) w
-      INNER JOIN (
-        SELECT build_id, COUNT(*) AS total_jobs
-        FROM vllm_data_warehouse.buildkite.build_job
-        WHERE _fivetran_deleted = false AND type = 'script'
-        GROUP BY build_id
-      ) t ON w.build_id = t.build_id
+      )
+      SELECT
+        w.build_number,
+        w.build_url,
+        w.message,
+        w.author,
+        w.waiting_jobs,
+        w.max_wait_min,
+        COUNT(t.id) AS total_jobs
+      FROM waiting AS w
+      INNER JOIN vllm_data_warehouse.buildkite.build_job AS t
+        ON w.build_id = t.build_id
+       AND t._fivetran_deleted = false
+       AND t.type = 'script'
+      GROUP BY
+        w.build_number,
+        w.build_url,
+        w.message,
+        w.author,
+        w.waiting_jobs,
+        w.max_wait_min
       ORDER BY w.waiting_jobs DESC
     `);
 
     const result = { builds: rows };
     setCache(cacheKey, result, TTL);
 
-    return NextResponse.json(result);
+    return cachedJson(result, CDN_CACHE);
   } catch (error) {
     console.error("Failed to fetch waiting builds:", error);
     return NextResponse.json(

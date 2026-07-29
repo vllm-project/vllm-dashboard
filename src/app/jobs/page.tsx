@@ -145,9 +145,10 @@ function JobAnalysisTab({
 
   const { data, error, isLoading } = useSWR<JobsResponse>(apiUrl, fetcher, {
     refreshInterval: 5 * 60 * 1000,
+    keepPreviousData: true,
   });
 
-  if (isLoading) {
+  if (isLoading && !data) {
     return (
       <div className="flex h-64 items-center justify-center text-zinc-400">
         Loading job statistics...

@@ -8,7 +8,6 @@ import { BuildsTable, Build } from "@/components/builds-table";
 import { SearchableSelect } from "@/components/searchable-select";
 import { MultiSelect } from "@/components/multi-select";
 import { DateRangePicker } from "@/components/date-range-picker";
-import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -68,6 +67,7 @@ export default function BuildsPage() {
 
   const { data, error, isLoading } = useSWR<BuildsResponse>(apiUrl, fetcher, {
     refreshInterval: 5 * 60 * 1000,
+    keepPreviousData: true,
   });
 
   const {
@@ -111,7 +111,7 @@ export default function BuildsPage() {
     return [...jobs].sort();
   }, [builds, selectedGroups]);
 
-  if (isLoading) {
+  if (isLoading && !data) {
     return (
       <div className="flex h-64 items-center justify-center text-zinc-400">
         Loading builds...

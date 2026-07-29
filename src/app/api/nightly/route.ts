@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { loadEvalRows, type EvalRow } from "@/lib/eval-data";
 import { getCached, setCache } from "@/lib/api-cache";
+import { cachedJson } from "@/lib/api-response";
 import {
   buildSummary,
   compareEvalRows,
@@ -360,6 +361,7 @@ function groupEvalByImage(rows: EvalRow[]): Map<string, EvalRow[]> {
 }
 
 const TTL = 60_000;
+const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
 
 export async function GET(request: NextRequest) {
   try {
@@ -373,11 +375,14 @@ export async function GET(request: NextRequest) {
 
     const cacheKey = `nightly:${limit}:${perfThreshold}:${evalSigma}`;
     const cached = getCached(cacheKey);
-    if (cached) return NextResponse.json(cached);
+    if (cached) return cachedJson(cached, CDN_CACHE);
 
     const nightlies = await loadNightlies(limit + 1);
     if (nightlies.length === 0) {
-      return NextResponse.json({ nightlies: [], generatedAt: new Date().toISOString() });
+      return cachedJson(
+        { nightlies: [], generatedAt: new Date().toISOString() },
+        CDN_CACHE,
+      );
     }
 
     const allSourceImages = [...new Set(nightlies.map((n) => n.sourceImage))];
@@ -494,7 +499,7 @@ export async function GET(request: NextRequest) {
     };
     setCache(cacheKey, result, TTL);
 
-    return NextResponse.json(result);
+    return cachedJson(result, CDN_CACHE);
   } catch (error) {
     console.error("Failed to load nightly summary:", error);
     return NextResponse.json(

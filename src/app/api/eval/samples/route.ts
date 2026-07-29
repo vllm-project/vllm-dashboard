@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
+import { cachedJson } from "@/lib/api-response";
 
 export interface EvalSample {
   doc_id: number;
@@ -84,7 +85,12 @@ export async function GET(request: NextRequest) {
 
     const cacheKey = `eval:samples:${buildId}:${taskParam}:${workloadParam}:${correct}:${limit}`;
     const cached = getCached(cacheKey);
-    if (cached) return NextResponse.json(cached);
+    if (cached) {
+      return cachedJson(cached, {
+        maxAge: 300,
+        staleWhileRevalidate: 3_600,
+      });
+    }
 
     const escBuild = buildId.replace(/'/g, "''");
     const escTask = taskParam ? taskParam.replace(/'/g, "''") : null;
@@ -169,7 +175,10 @@ export async function GET(request: NextRequest) {
     };
     setCache(cacheKey, result, 60_000);
 
-    return NextResponse.json(result);
+    return cachedJson(result, {
+      maxAge: 300,
+      staleWhileRevalidate: 3_600,
+    });
   } catch (error) {
     console.error("Failed to fetch eval samples:", error);
     return NextResponse.json(

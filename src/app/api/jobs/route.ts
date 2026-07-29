@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
+import { cachedJson } from "@/lib/api-response";
 
 const TTL = 60_000;
+const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
 
 export async function GET(request: NextRequest) {
   try {
@@ -14,7 +16,7 @@ export async function GET(request: NextRequest) {
 
     const cacheKey = `jobs:${pipeline}:${branch}:${startDate}:${endDate}`;
     const cached = getCached(cacheKey);
-    if (cached) return NextResponse.json(cached);
+    if (cached) return cachedJson(cached, CDN_CACHE);
 
     const conditions = [
       "j._fivetran_deleted = false",
@@ -86,7 +88,7 @@ export async function GET(request: NextRequest) {
     const result = { failureRanking, durationStats };
     setCache(cacheKey, result, TTL);
 
-    return NextResponse.json(result);
+    return cachedJson(result, CDN_CACHE);
   } catch (error) {
     console.error("Failed to fetch job stats:", error);
     return NextResponse.json(

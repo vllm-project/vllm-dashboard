@@ -76,6 +76,7 @@ export default function QueuePage() {
   const metricsUrl = `/api/metrics?hours=${metricsHours}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}`;
   const { data: metricsData, error, isLoading } = useSWR<MetricsResponse>(metricsUrl, fetcher, {
     refreshInterval: 60 * 1000,
+    keepPreviousData: true,
   });
 
   interface WaitingBuild {
@@ -131,7 +132,7 @@ export default function QueuePage() {
     return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
   }
 
-  if (isLoading) {
+  if (isLoading && !metricsData) {
     return (
       <div className="flex h-64 items-center justify-center text-zinc-400">
         Loading queue data...
