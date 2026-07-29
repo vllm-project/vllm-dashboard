@@ -209,7 +209,7 @@ interface BuildChartProps {
 }
 
 export function BuildChart({ data, startDate, endDate }: BuildChartProps) {
-  const [mode, setMode] = useState<ChartMode>("overview");
+  const [mode, setMode] = useState<ChartMode>("runs");
   const rangeLabel =
     startDate && endDate ? `${startDate} — ${endDate}` : "All Time";
 
