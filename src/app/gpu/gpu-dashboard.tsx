@@ -9,6 +9,7 @@ import type {
   GpuHistoryResponse,
   GpuLatest,
   GpuLatestResponse,
+  GpuOverviewPoint,
 } from "@/lib/gpu-types";
 
 const GpuMemChart = dynamic(
@@ -42,6 +43,7 @@ const OVERVIEW_SERIES = [
   "High (P90)",
   "Peak",
 ] as const;
+const EMPTY_SNAPSHOTS: GpuHistoryResponse["snapshots"] = [];
 
 function percentile(values: number[], quantile: number): number {
   if (values.length === 0) return 0;
@@ -89,14 +91,14 @@ function gpuType(name: string | null): string {
 }
 
 interface GpuDashboardProps {
-  initialHistory: GpuHistoryResponse;
+  initialOverview: GpuOverviewPoint[];
   initialLatest: GpuLatest[];
   initialLatestCheckedAt: string;
   initialNow: number;
 }
 
 export function GpuDashboard({
-  initialHistory,
+  initialOverview,
   initialLatest,
   initialLatestCheckedAt,
   initialNow,
@@ -132,27 +134,34 @@ export function GpuDashboard({
     refreshInterval: 30_000,
   });
 
-  const historyUrl = `/api/gpu/history?hours=${hours}${
-    hostFilter ? `&hostname=${encodeURIComponent(hostFilter)}` : ""
-  }`;
+  const needsRawHistory =
+    hours !== 24 ||
+    Boolean(hostFilter) ||
+    Boolean(gpuTypeFilter) ||
+    chartMode !== "overview";
+  const historyUrl = needsRawHistory
+    ? `/api/gpu/history?hours=${hours}${
+        hostFilter ? `&hostname=${encodeURIComponent(hostFilter)}` : ""
+      }`
+    : null;
   const {
     data: historyData,
     error: historyError,
     isLoading: historyIsLoading,
     isValidating: historyIsValidating,
   } = useSWR<GpuHistoryResponse>(historyUrl, fetcher, {
-    fallbackData: hours === 24 && !hostFilter ? initialHistory : undefined,
     keepPreviousData: true,
-    revalidateOnMount:
-      initialHistory.snapshots.length === 0 || hours !== 24 || Boolean(hostFilter),
     refreshInterval: 60_000,
   });
 
   const latest = latestData?.latest ?? initialLatest;
   const latestCheckedAt = latestData?.checked_at ?? initialLatestCheckedAt;
-  const snapshots = historyData?.snapshots ?? initialHistory.snapshots;
-  const displayedHours = historyData?.hours ?? initialHistory.hours;
-  const historyPending = historyIsLoading || historyIsValidating;
+  const snapshots = needsRawHistory
+    ? historyData?.snapshots ?? EMPTY_SNAPSHOTS
+    : EMPTY_SNAPSHOTS;
+  const displayedHours = historyData?.hours ?? hours;
+  const historyPending =
+    needsRawHistory && (historyIsLoading || historyIsValidating);
 
   const gpuTypes = useMemo(() => {
     const types = new Set(latest.map((g) => gpuType(g.gpu_name)));
@@ -191,6 +200,23 @@ export function GpuDashboard({
   );
 
   const chartData = useMemo(() => {
+    if (
+      chartMode === "overview" &&
+      hours === 24 &&
+      !hostFilter &&
+      !gpuTypeFilter &&
+      snapshots.length === 0
+    ) {
+      return {
+        data: initialOverview.map((point) => ({
+          time: point.time,
+          [OVERVIEW_SERIES[0]]: point.p50,
+          [OVERVIEW_SERIES[1]]: point.p90,
+          [OVERVIEW_SERIES[2]]: point.peak,
+        })),
+        hosts: [...OVERVIEW_SERIES],
+      };
+    }
     if (snapshots.length === 0) return { data: [] as Array<Record<string, number>>, hosts: [] as string[] };
 
     const relevantHosts = new Set(filteredHosts);
@@ -261,7 +287,16 @@ export function GpuDashboard({
       data: rows,
       hosts: chartMode === "overview" ? overviewSeries : hosts,
     };
-  }, [snapshots, filteredHosts, gpuTypeFilter, chartMode, hostCapacityGb]);
+  }, [
+    snapshots,
+    filteredHosts,
+    gpuTypeFilter,
+    chartMode,
+    hostCapacityGb,
+    hours,
+    hostFilter,
+    initialOverview,
+  ]);
 
   const tickInterval = Math.max(1, Math.floor(chartData.data.length / 10));
 
@@ -314,7 +349,7 @@ export function GpuDashboard({
 
   return (
     <div className="space-y-6">
-      {historyError && snapshots.length === 0 && (
+      {needsRawHistory && historyError && snapshots.length === 0 && (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
           GPU history could not be loaded. Current host readings may still be available below.
         </div>

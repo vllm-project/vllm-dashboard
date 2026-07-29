@@ -12,7 +12,6 @@ import {
   parseThreshold,
   sortDeltas,
   type CompareSummary,
-  type CoverageItem,
   type DeltaItem,
   type PerfRun,
 } from "@/lib/compare";
@@ -107,10 +106,6 @@ interface NightlyEntry {
     worstRegressions: DeltaItem[];
     perfDeltas: DeltaItem[];
     evalDeltas: DeltaItem[];
-    perfMissingBaseline: CoverageItem[];
-    perfMissingCandidate: CoverageItem[];
-    evalMissingBaseline: CoverageItem[];
-    evalMissingCandidate: CoverageItem[];
   };
 }
 
@@ -421,11 +416,6 @@ export async function GET(request: NextRequest) {
       let worstRegressions: DeltaItem[] = [];
       let perfDeltas: DeltaItem[] = [];
       let evalDeltas: DeltaItem[] = [];
-      let perfMissingBaseline: CoverageItem[] = [];
-      let perfMissingCandidate: CoverageItem[] = [];
-      let evalMissingBaseline: CoverageItem[] = [];
-      let evalMissingCandidate: CoverageItem[] = [];
-
       if (prev) {
         const candidatePerf = perfByImage.get(n.sourceImage) ?? [];
         const baselinePerf = perfByImage.get(prev.sourceImage) ?? [];
@@ -450,12 +440,11 @@ export async function GET(request: NextRequest) {
         worstRegressions = allDeltas
           .filter((d) => d.status === "regression")
           .slice(0, 5);
-        perfDeltas = perfResult.deltas.sort(sortDeltas);
-        evalDeltas = evalResult.deltas.sort(sortDeltas);
-        perfMissingBaseline = perfResult.missingBaseline;
-        perfMissingCandidate = perfResult.missingCandidate;
-        evalMissingBaseline = evalResult.missingBaseline;
-        evalMissingCandidate = evalResult.missingCandidate;
+        // The Nightly UI renders at most eight rows per section. Keep the
+        // complete comparison behind /compare instead of repeating hundreds
+        // of detail rows in every Nightly bootstrap entry.
+        perfDeltas = perfResult.deltas.sort(sortDeltas).slice(0, 8);
+        evalDeltas = evalResult.deltas.sort(sortDeltas).slice(0, 8);
       }
 
       entries.push({
@@ -484,10 +473,6 @@ export async function GET(request: NextRequest) {
           worstRegressions,
           perfDeltas,
           evalDeltas,
-          perfMissingBaseline,
-          perfMissingCandidate,
-          evalMissingBaseline,
-          evalMissingCandidate,
         },
       });
     }

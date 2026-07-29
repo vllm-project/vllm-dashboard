@@ -34,19 +34,14 @@ interface EvalRow {
   task: string;
   n_shot: number;
   n_samples: number;
-  version: number;
   git_hash: string | null;
-  lm_eval_version: string | null;
   eval_seconds: number;
   metrics: EvalMetric[];
-  config: Record<string, unknown>;
-  model_args: Record<string, unknown>;
   image: string | null;
   buildkite_build_id: string | null;
   buildkite_build_number: string | null;
   buildkite_build_url: string | null;
   buildkite_commit: string | null;
-  buildkite_branch: string | null;
   vllm_commit: string | null;
   workload: string | null;
 }

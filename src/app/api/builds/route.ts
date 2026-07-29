@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
-import { aggregateJobsByGroup, resolveGroupsToJobConditions } from "@/lib/test-groups";
+import { resolveGroupsToJobConditions } from "@/lib/test-groups";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 
@@ -126,46 +126,18 @@ export async function GET(request: NextRequest) {
       `),
     ]);
 
-    // Second: fetch jobs only for the builds on this page
-    const buildIds = builds.map((b) => (b as Record<string, unknown>).id as string);
-    const jobsByBuild = new Map<string, { name: string; state: string; web_url?: string }[]>();
-
-    if (buildIds.length > 0) {
-      const idList = buildIds.map((id) => `'${id}'`).join(",");
-      const jobs = await queryDatabricks(`
-        SELECT
-          j.build_id,
-          j.name,
-          j.state,
-          j.web_url
-        FROM vllm_data_warehouse.buildkite.build_job AS j
-        WHERE j.build_id IN (${idList})
-          AND j._fivetran_deleted = false
-          AND j.type = 'script'
-          AND j.name IS NOT NULL
-      `);
-
-      for (const job of jobs) {
-        const j = job as Record<string, string>;
-        if (!jobsByBuild.has(j.build_id)) {
-          jobsByBuild.set(j.build_id, []);
-        }
-        jobsByBuild.get(j.build_id)!.push({ name: j.name, state: j.state, web_url: j.web_url });
-      }
-    }
-
-    // Attach test group statuses and parse PR number from commit message
-    const buildsWithGroups = builds.map((build) => {
+    // Keep the bootstrap response focused on the chart, summary, and build
+    // rows. Group summaries and expanded job details are normalized behind
+    // dedicated endpoints so the first screen does not carry 10k+ nested jobs.
+    const buildsWithMetadata = builds.map((build) => {
       const b = build as Record<string, unknown>;
-      const buildJobs = jobsByBuild.get(b.id as string) ?? [];
-      const testGroups = aggregateJobsByGroup(buildJobs);
       // Parse PR number from commit message if not set (e.g. main branch)
       let prNumber = b.pr_number as string | null;
       if (!prNumber && b.message) {
         const match = (b.message as string).match(/\(#(\d+)\)/);
         if (match) prNumber = match[1];
       }
-      return { ...b, pr_number: prNumber, testGroups };
+      return { ...b, pr_number: prNumber };
     });
 
     const counts = countResult[0] as Record<string, string> ?? { total: "0", passed: "0", failed: "0" };
@@ -176,7 +148,7 @@ export async function GET(request: NextRequest) {
       passed + failed > 0 ? Math.round((passed / (passed + failed)) * 100) : 0;
 
     const result = {
-      builds: buildsWithGroups,
+      builds: buildsWithMetadata,
       buildDurations,
       summary: { total, passed, failed, passRate },
       pagination: { page, pageSize: PAGE_SIZE, totalPages: Math.ceil(total / PAGE_SIZE) },

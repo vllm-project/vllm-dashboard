@@ -21,6 +21,13 @@ export interface GpuHistoryResponse {
   error?: string;
 }
 
+export interface GpuOverviewPoint {
+  time: number;
+  p50: number;
+  p90: number;
+  peak: number;
+}
+
 export interface GpuLatestResponse {
   latest: GpuLatest[];
   checked_at: string;

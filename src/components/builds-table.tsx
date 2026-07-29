@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
+import useSWR from "swr";
 import type { GroupStatus } from "@/lib/test-groups";
 import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
 
@@ -144,8 +145,34 @@ interface Column {
   jobName?: string;
 }
 
+interface BuildJobsResponse {
+  jobsByBuild: Record<
+    string,
+    Record<string, Array<{ name: string; state: string; web_url?: string }>>
+  >;
+}
+
+const fetcher = (url: string) => fetch(url).then((response) => response.json());
+
 export function BuildsTable({ builds, showBranch, hideSoftFail, hideOptional, selectedGroups, selectedJobs }: { builds: Build[]; showBranch?: boolean; hideSoftFail?: boolean; hideOptional?: boolean; selectedGroups?: Set<string>; selectedJobs?: Set<string> }) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const buildIds = useMemo(
+    () => builds.map((build) => build.id),
+    [builds],
+  );
+  const expandedGroupList = useMemo(
+    () => [...expandedGroups].sort(),
+    [expandedGroups],
+  );
+  const jobDetailsUrl =
+    buildIds.length > 0 && expandedGroupList.length > 0
+      ? `/api/builds/jobs?buildIds=${encodeURIComponent(buildIds.join(","))}&groups=${encodeURIComponent(expandedGroupList.join(","))}`
+      : null;
+  const { data: jobDetails } = useSWR<BuildJobsResponse>(
+    jobDetailsUrl,
+    fetcher,
+    { keepPreviousData: true },
+  );
 
   const shouldHideJob = (name: string): boolean => {
     if (hideSoftFail && isSoftFailJob(name)) return true;
@@ -158,7 +185,8 @@ export function BuildsTable({ builds, showBranch, hideSoftFail, hideOptional, se
     for (const g of build.testGroups ?? []) {
       if (!allGroups.has(g.group)) allGroups.set(g.group, new Set());
       const jobSet = allGroups.get(g.group)!;
-      for (const j of g.jobs) {
+      const jobs = jobDetails?.jobsByBuild[build.id]?.[g.group] ?? [];
+      for (const j of jobs) {
         if (!shouldHideJob(j.name)) jobSet.add(j.name);
       }
     }
@@ -277,7 +305,14 @@ export function BuildsTable({ builds, showBranch, hideSoftFail, hideOptional, se
           <tbody>
             {builds.map((build) => {
               const groupMap = new Map(
-                (build.testGroups ?? []).map((g) => [g.group, g])
+                (build.testGroups ?? []).map((g) => [
+                  g.group,
+                  {
+                    ...g,
+                    jobs:
+                      jobDetails?.jobsByBuild[build.id]?.[g.group] ?? [],
+                  },
+                ])
               );
 
               return (

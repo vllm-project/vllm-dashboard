@@ -84,7 +84,36 @@ export function Nav() {
   function prefetchRouteData(href: string) {
     if (prefetchedRoutes.has(href)) return;
     prefetchedRoutes.add(href);
-    const requests = defaultDataUrls(href).map((url) => preload(url, fetcher));
+    const requests = defaultDataUrls(href).map(async (url) => {
+      const data = await preload(url, fetcher);
+      if (href === "/" && url.startsWith("/api/builds?")) {
+        const buildIds = (
+          data as { builds?: Array<{ id?: string }> }
+        ).builds
+          ?.map((build) => build.id)
+          .filter((id): id is string => Boolean(id));
+        if (buildIds?.length) {
+          const groupsUrl =
+            `/api/builds/groups?buildIds=${encodeURIComponent(buildIds.join(","))}`;
+          await preload(groupsUrl, fetcher);
+        }
+      }
+      if (href === "/perf" && url.startsWith("/api/perf/filters?")) {
+        const defaultModel = (
+          data as { models?: string[] }
+        ).models?.[0];
+        if (defaultModel) {
+          const start = new URL(url, window.location.origin).searchParams.get(
+            "start",
+          );
+          const perfUrl =
+            `/api/perf?model=${encodeURIComponent(defaultModel)}` +
+            (start ? `&start=${encodeURIComponent(start)}` : "");
+          await preload(perfUrl, fetcher);
+        }
+      }
+      return data;
+    });
     void Promise.all(requests).catch(() => {
       prefetchedRoutes.delete(href);
     });

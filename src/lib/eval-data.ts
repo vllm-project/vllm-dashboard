@@ -21,19 +21,14 @@ export interface EvalRow {
   task: string;
   n_shot: number;
   n_samples: number;
-  version: number;
   git_hash: string | null;
-  lm_eval_version: string | null;
   eval_seconds: number;
   metrics: EvalMetric[];
-  config: Record<string, unknown>;
-  model_args: Record<string, unknown>;
   image: string | null;
   buildkite_build_id: string | null;
   buildkite_build_number: string | null;
   buildkite_build_url: string | null;
   buildkite_commit: string | null;
-  buildkite_branch: string | null;
   vllm_commit: string | null;
   workload: string | null;
 }
@@ -192,22 +187,17 @@ export async function loadEvalRows({
         task: taskName,
         n_shot: core["n-shot"]?.[taskName] ?? 0,
         n_samples: core["n-samples"]?.[taskName]?.effective ?? 0,
-        version: core.versions?.[taskName] ?? 0,
         git_hash: core.git_hash ?? null,
-        lm_eval_version: core.lm_eval_version ?? null,
         eval_seconds:
           typeof core.total_evaluation_time_seconds === "number"
             ? core.total_evaluation_time_seconds
             : parseFloat(String(core.total_evaluation_time_seconds ?? "0")),
         metrics,
-        config: core.configs?.[taskName] ?? {},
-        model_args: core.config?.model_args ?? {},
         image: imageFromMessage(raw, core, taskName),
         buildkite_build_id: raw.buildkite_build_id ?? null,
         buildkite_build_number: raw.buildkite_build_number ?? null,
         buildkite_build_url: raw.buildkite_build_url ?? null,
         buildkite_commit: raw.buildkite_commit ?? null,
-        buildkite_branch: raw.buildkite_branch ?? null,
         vllm_commit: raw.vllm_commit ?? null,
         workload,
       };

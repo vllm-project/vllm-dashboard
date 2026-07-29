@@ -35,6 +35,23 @@ interface FiltersResponse {
   error?: string;
 }
 
+interface BuildGroupsResponse {
+  groupsByBuild: Record<
+    string,
+    Array<{
+      group: string;
+      state: "passed" | "failed" | "running" | "blocked";
+      passed: number;
+      failed: number;
+      running: number;
+      blocked: number;
+      total: number;
+    }>
+  >;
+  jobOptions: Array<{ name: string; group: string }>;
+  error?: string;
+}
+
 export default function BuildsPage() {
   const [pipeline, setPipeline] = useState("CI");
   const [branch, setBranch] = useState("main");
@@ -71,11 +88,36 @@ export default function BuildsPage() {
   });
 
   const {
-    builds = [],
+    builds: buildRows = [],
     buildDurations = [],
     summary = { total: 0, passed: 0, failed: 0, passRate: 0 },
     pagination = { page: 0, pageSize: 50, totalPages: 0 },
   } = data ?? {};
+
+  const buildIds = useMemo(
+    () => buildRows.map((build) => build.id),
+    [buildRows],
+  );
+  const groupsUrl =
+    buildIds.length > 0
+      ? `/api/builds/groups?buildIds=${encodeURIComponent(buildIds.join(","))}`
+      : null;
+  const { data: groupData } = useSWR<BuildGroupsResponse>(groupsUrl, fetcher, {
+    refreshInterval: 5 * 60 * 1000,
+    keepPreviousData: true,
+  });
+
+  const builds = useMemo(
+    () =>
+      buildRows.map((build) => ({
+        ...build,
+        testGroups: (groupData?.groupsByBuild[build.id] ?? []).map((group) => ({
+          ...group,
+          jobs: [],
+        })),
+      })),
+    [buildRows, groupData?.groupsByBuild],
+  );
 
   const allGroupNames = useMemo(() => {
     const groups = new Set<string>();
@@ -89,27 +131,18 @@ export default function BuildsPage() {
 
   const jobToGroup = useMemo(() => {
     const map = new Map<string, string>();
-    for (const build of builds) {
-      for (const g of build.testGroups ?? []) {
-        for (const j of g.jobs) {
-          if (!map.has(j.name)) map.set(j.name, g.group);
-        }
-      }
+    for (const option of groupData?.jobOptions ?? []) {
+      map.set(option.name, option.group);
     }
     return map;
-  }, [builds]);
+  }, [groupData?.jobOptions]);
 
   const availableJobNames = useMemo(() => {
-    const jobs = new Set<string>();
     const groupFilter = selectedGroups.size > 0 ? selectedGroups : null;
-    for (const build of builds) {
-      for (const g of build.testGroups ?? []) {
-        if (groupFilter && !groupFilter.has(g.group)) continue;
-        for (const j of g.jobs) jobs.add(j.name);
-      }
-    }
-    return [...jobs].sort();
-  }, [builds, selectedGroups]);
+    return (groupData?.jobOptions ?? [])
+      .filter((option) => !groupFilter || groupFilter.has(option.group))
+      .map((option) => option.name);
+  }, [groupData?.jobOptions, selectedGroups]);
 
   if (isLoading && !data) {
     return (
@@ -185,12 +218,9 @@ export default function BuildsPage() {
               setSelectedJobs((prev) => {
                 if (v.size === 0) return prev;
                 const valid = new Set<string>();
-                for (const build of builds) {
-                  for (const g of build.testGroups ?? []) {
-                    if (!v.has(g.group)) continue;
-                    for (const j of g.jobs) {
-                      if (prev.has(j.name)) valid.add(j.name);
-                    }
+                for (const option of groupData?.jobOptions ?? []) {
+                  if (v.has(option.group) && prev.has(option.name)) {
+                    valid.add(option.name);
                   }
                 }
                 return valid;

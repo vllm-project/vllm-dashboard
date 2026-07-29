@@ -4,6 +4,7 @@ import type {
   GpuHistoryResponse,
   GpuLatest,
   GpuLatestResponse,
+  GpuOverviewPoint,
   GpuSnapshot,
 } from "@/lib/gpu-types";
 
@@ -49,6 +50,52 @@ function normalizeLatest(rows: DbRow[]): GpuLatest[] {
     mem_total_mb: Number(row.mem_total_mb),
     reported_at: isoString(row.reported_at),
   }));
+}
+
+function percentile(values: number[], quantile: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const position = (sorted.length - 1) * quantile;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sorted[lower];
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+}
+
+function summarizeGpuHistory(
+  history: GpuHistoryResponse,
+): GpuOverviewPoint[] {
+  const buckets = new Map<
+    number,
+    Map<string, { memPctSum: number; sampleCount: number }>
+  >();
+
+  for (const snapshot of history.snapshots) {
+    const time = new Date(snapshot.time_bucket).getTime();
+    const hosts = buckets.get(time) ?? new Map();
+    const host = hosts.get(snapshot.hostname) ?? {
+      memPctSum: 0,
+      sampleCount: 0,
+    };
+    host.memPctSum += snapshot.mem_pct_sum;
+    host.sampleCount += snapshot.sample_count;
+    hosts.set(snapshot.hostname, host);
+    buckets.set(time, hosts);
+  }
+
+  return [...buckets.entries()]
+    .map(([time, hosts]) => {
+      const values = [...hosts.values()]
+        .filter((host) => host.sampleCount > 0)
+        .map((host) => host.memPctSum / host.sampleCount);
+      return {
+        time,
+        p50: Math.round(percentile(values, 0.5)),
+        p90: Math.round(percentile(values, 0.9)),
+        peak: Math.round(Math.max(...values, 0)),
+      };
+    })
+    .sort((a, b) => a.time - b.time);
 }
 
 export async function queryGpuHistory(
@@ -167,7 +214,7 @@ export async function getInitialGpuData() {
     getCachedInitialLatest(),
   ]);
   return {
-    history,
+    overview: summarizeGpuHistory(history),
     latest: latestResponse.latest,
     latestCheckedAt: latestResponse.checked_at,
     asOf: Date.now(),
