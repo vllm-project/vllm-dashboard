@@ -41,6 +41,7 @@ interface DailyPoint {
   p90: number;
   peak: number;
   total: number;
+  passed: number;
   failed: number;
 }
 
@@ -89,7 +90,7 @@ function OverviewTooltip({
       <dl className="mt-2 space-y-1.5 text-zinc-500 dark:text-zinc-400">
         <div className="flex items-center justify-between gap-6">
           <dt>Typical (P50)</dt>
-          <dd className="font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
+          <dd className="font-medium tabular-nums text-blue-600 dark:text-blue-400">
             {formatDuration(point.p50)}
           </dd>
         </div>
@@ -101,14 +102,83 @@ function OverviewTooltip({
         </div>
         <div className="flex items-center justify-between gap-6">
           <dt>Peak</dt>
-          <dd className="font-medium tabular-nums text-red-600 dark:text-red-400">
+          <dd className="font-medium tabular-nums text-violet-600 dark:text-violet-400">
             {formatDuration(point.peak)}
           </dd>
         </div>
       </dl>
-      <p className="mt-2 border-t border-zinc-200 pt-2 text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
-        {point.total} builds · {point.failed} failed
-      </p>
+      <div className="mt-2 flex items-center gap-3 border-t border-zinc-200 pt-2 dark:border-zinc-700">
+        <span className="font-medium text-emerald-600 dark:text-emerald-400">
+          {point.passed} passed
+        </span>
+        <span className="font-medium text-red-600 dark:text-red-400">
+          {point.failed} failed
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function BuildOutcomeStrip({ data }: { data: DailyPoint[] }) {
+  const totals = data.reduce(
+    (summary, point) => ({
+      passed: summary.passed + point.passed,
+      failed: summary.failed + point.failed,
+    }),
+    { passed: 0, failed: 0 },
+  );
+
+  return (
+    <div className="mt-2 border-t border-zinc-100 pt-3 dark:border-zinc-800">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
+          Build status by day
+        </p>
+        <div className="flex items-center gap-3 text-xs tabular-nums">
+          <span className="inline-flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
+            <span
+              aria-hidden="true"
+              className="h-2 w-2 rounded-full bg-emerald-500"
+            />
+            {totals.passed} passed
+          </span>
+          <span className="inline-flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
+            <span
+              aria-hidden="true"
+              className="h-2 w-2 rounded-full bg-red-500"
+            />
+            {totals.failed} failed
+          </span>
+        </div>
+      </div>
+      <div className="ml-[46px] mr-3 mt-2">
+        <div className="flex h-3 gap-px overflow-hidden rounded-sm bg-zinc-100 dark:bg-zinc-800">
+          {data.map((point) => {
+            const passedPercent = point.total
+              ? (point.passed / point.total) * 100
+              : 0;
+            return (
+              <div
+                key={point.date}
+                role="img"
+                aria-label={`${point.date}: ${point.passed} passed, ${point.failed} failed`}
+                title={`${point.date}: ${point.passed} passed, ${point.failed} failed`}
+                className="flex min-w-0 flex-1"
+              >
+                <span
+                  aria-hidden="true"
+                  className="h-full bg-emerald-500"
+                  style={{ width: `${passedPercent}%` }}
+                />
+                <span
+                  aria-hidden="true"
+                  className="h-full flex-1 bg-red-500"
+                />
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -188,6 +258,7 @@ export function BuildChart({ data, startDate, endDate }: BuildChartProps) {
           p90: percentile(durations, 0.9),
           peak: durations[durations.length - 1] ?? 0,
           total: builds.length,
+          passed: builds.filter((build) => !isFailed(build.state)).length,
           failed: builds.filter((build) => isFailed(build.state)).length,
         };
       });
@@ -272,27 +343,30 @@ export function BuildChart({ data, startDate, endDate }: BuildChartProps) {
             >
               <CartesianGrid
                 strokeDasharray="3 3"
-                stroke="#27272a"
+                stroke="var(--chart-grid)"
                 vertical={false}
               />
               <XAxis
                 dataKey="dateLabel"
                 interval={tickInterval}
                 minTickGap={20}
-                stroke="#71717a"
+                stroke="var(--chart-axis)"
                 tick={{ fontSize: 11 }}
               />
               <YAxis
                 tick={{ fontSize: 11 }}
                 tickFormatter={formatDurationRound}
-                stroke="#71717a"
+                stroke="var(--chart-axis)"
                 width={44}
                 ticks={ticks}
                 domain={[0, ticks[ticks.length - 1] || maxDuration]}
               />
               <Tooltip
                 content={<OverviewTooltip />}
-                cursor={{ stroke: "#71717a", strokeDasharray: "3 3" }}
+                cursor={{
+                  stroke: "var(--chart-axis)",
+                  strokeDasharray: "3 3",
+                }}
               />
               <Legend
                 verticalAlign="bottom"
@@ -304,7 +378,7 @@ export function BuildChart({ data, startDate, endDate }: BuildChartProps) {
                 type="monotone"
                 dataKey="p50"
                 name="Typical (P50)"
-                stroke="#10b981"
+                stroke="#3b82f6"
                 strokeWidth={2.5}
                 dot={false}
                 activeDot={{ r: 4 }}
@@ -322,7 +396,7 @@ export function BuildChart({ data, startDate, endDate }: BuildChartProps) {
                 type="monotone"
                 dataKey="peak"
                 name="Peak"
-                stroke="#ef4444"
+                stroke="#8b5cf6"
                 strokeWidth={2}
                 strokeDasharray="5 4"
                 dot={false}
@@ -336,7 +410,7 @@ export function BuildChart({ data, startDate, endDate }: BuildChartProps) {
             >
               <CartesianGrid
                 strokeDasharray="3 3"
-                stroke="#27272a"
+                stroke="var(--chart-grid)"
                 vertical={false}
               />
               <XAxis
@@ -347,12 +421,12 @@ export function BuildChart({ data, startDate, endDate }: BuildChartProps) {
                 }
                 interval={tickInterval}
                 minTickGap={20}
-                stroke="#71717a"
+                stroke="var(--chart-axis)"
               />
               <YAxis
                 tick={{ fontSize: 11 }}
                 tickFormatter={formatDurationRound}
-                stroke="#71717a"
+                stroke="var(--chart-axis)"
                 width={44}
                 ticks={ticks}
                 domain={[0, ticks[ticks.length - 1] || maxDuration]}
@@ -373,6 +447,7 @@ export function BuildChart({ data, startDate, endDate }: BuildChartProps) {
           )}
         </ResponsiveContainer>
       </div>
+      {mode === "overview" && <BuildOutcomeStrip data={dailyData} />}
     </section>
   );
 }

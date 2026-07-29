@@ -7,6 +7,8 @@
 :root {
   --background: #fafafa;
   --foreground: #171717;
+  --chart-grid: #e4e4e7;
+  --chart-axis: #71717a;
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 }
@@ -21,6 +23,8 @@
 .dark {
   --background: #09090b;
   --foreground: #ededed;
+  --chart-grid: #27272a;
+  --chart-axis: #71717a;
   color-scheme: dark;
 }
 
