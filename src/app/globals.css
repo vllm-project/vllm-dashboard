@@ -5,8 +5,10 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #ffffff;
+  --background: #fafafa;
   --foreground: #171717;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 }
 
 @theme inline {
@@ -17,13 +19,113 @@
 }
 
 .dark {
-  --background: #0a0a0a;
+  --background: #09090b;
   --foreground: #ededed;
   color-scheme: dark;
+}
+
+html {
+  min-width: 320px;
+  font-optical-sizing: auto;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.5;
+  overflow-x: clip;
+}
+
+h1,
+h2 {
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+::selection {
+  background: rgb(59 130 246 / 22%);
+}
+
+:where(a, button, input, select, textarea):focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+.dashboard-nav {
+  background: rgb(255 255 255 / 82%);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+}
+
+.dark .dashboard-nav {
+  background: rgb(9 9 11 / 82%);
+}
+
+.dashboard-popover {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transform-origin: top;
+  transition:
+    opacity 160ms var(--ease-out),
+    transform 160ms var(--ease-out);
+
+  @starting-style {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+
+.dashboard-control {
+  transition:
+    color 140ms var(--ease-out),
+    background-color 140ms var(--ease-out),
+    border-color 140ms var(--ease-out),
+    box-shadow 140ms var(--ease-out),
+    transform 140ms var(--ease-out);
+}
+
+.scrollbar-hidden {
+  scrollbar-width: none;
+}
+
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .dashboard-control:not(:disabled):active:not(:focus-visible) {
+    transform: scale(0.98);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-popover {
+    transform: none;
+    transition: opacity 120ms ease-out;
+
+    @starting-style {
+      opacity: 0;
+      transform: none;
+    }
+  }
+
+  .dashboard-control {
+    transition-property: color, background-color, border-color, box-shadow;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .dashboard-nav {
+    background: var(--background);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .dashboard-nav {
+    background: var(--background);
+    border-color: currentColor;
+  }
 }

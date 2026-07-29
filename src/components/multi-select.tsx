@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useId } from "react";
 
 interface MultiSelectProps {
   label: string;
@@ -21,6 +21,8 @@ export function MultiSelect({
   const [search, setSearch] = useState("");
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const triggerId = useId();
+  const listboxId = useId();
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -71,20 +73,37 @@ export function MultiSelect({
         : `${selected.size} groups`;
 
   return (
-    <div ref={ref} className="relative">
-      <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">
+    <div
+      ref={ref}
+      className="relative w-full min-w-0 sm:w-auto"
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && open) {
+          event.stopPropagation();
+          setOpen(false);
+          setSearch("");
+        }
+      }}
+    >
+      <label
+        htmlFor={triggerId}
+        className="mb-1 block text-xs font-medium tracking-[0.01em] text-zinc-500 dark:text-zinc-400"
+      >
         {label}
       </label>
       <button
+        id={triggerId}
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex w-48 items-center justify-between rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-left text-sm dark:border-zinc-700 dark:bg-zinc-900"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        className="dashboard-control flex w-full items-center justify-between rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-left text-sm shadow-sm hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 sm:w-48"
       >
-        <span className={selected.size === 0 ? "text-zinc-400" : "truncate"}>
+        <span className={`min-w-0 truncate ${selected.size === 0 ? "text-zinc-400" : ""}`}>
           {buttonLabel}
         </span>
         <svg
-          className={`ml-2 h-4 w-4 flex-shrink-0 text-zinc-400 transition-transform ${open ? "rotate-180" : ""}`}
+          className={`ml-2 h-4 w-4 shrink-0 text-zinc-400 transition-transform duration-150 ease-[var(--ease-out)] motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -94,7 +113,7 @@ export function MultiSelect({
         </svg>
       </button>
       {open && (
-        <div className="absolute z-50 mt-1 w-72 rounded-md border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+        <div className="dashboard-popover absolute left-0 z-50 mt-1 w-full min-w-64 rounded-lg border border-black/10 bg-white shadow-[0_16px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-zinc-900 dark:shadow-[0_20px_50px_rgba(0,0,0,0.45)] sm:w-72">
           <div className="border-b border-zinc-200 p-2 dark:border-zinc-700">
             <input
               ref={inputRef}
@@ -102,7 +121,8 @@ export function MultiSelect({
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search groups..."
-              className="w-full rounded border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-sm outline-none focus:border-blue-400 dark:border-zinc-700 dark:bg-zinc-800"
+              aria-label={`Search ${label.toLowerCase()}`}
+              className="w-full rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-zinc-700 dark:bg-zinc-800"
             />
           </div>
           <div className="border-b border-zinc-200 px-3 py-1.5 dark:border-zinc-700">
@@ -124,11 +144,19 @@ export function MultiSelect({
               </button>
             </div>
           </div>
-          <ul className="max-h-60 overflow-y-auto py-1">
+          <ul
+            id={listboxId}
+            role="listbox"
+            aria-label={label}
+            aria-multiselectable="true"
+            className="max-h-60 overflow-y-auto py-1"
+          >
             {filtered.map((option) => (
               <li key={option}>
                 <button
                   type="button"
+                  role="option"
+                  aria-selected={selected.has(option)}
                   onClick={() => toggle(option)}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800"
                 >
