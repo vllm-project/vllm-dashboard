@@ -41,8 +41,25 @@ export interface PerfRowIdentity {
 // `vllm_perf_data_ingest` table. Those extra rows are what make a trend line
 // zig-zag. Keying on the full config + image lets us collapse them to one point
 // per build, matching the commit-keyed de-dup the standalone AMD dashboard uses.
+//
+// ROCm nightlies are published under both a floating `…-rocm:nightly` tag and a
+// commit-pinned `…-rocm:nightly-<sha>` tag, so the same build can be ingested
+// under two different `image` strings. Keying ROCm rows on the embedded commit
+// sha (when present) makes those collapse to one point per commit instead of
+// being double-counted. Non-ROCm images are left untouched.
+const ROCM_NIGHTLY_SHA = /nightly-([0-9a-f]{7,40})\b/i;
+
+export function imageIdentity(image?: string): string {
+  const img = image ?? "";
+  if (/rocm/i.test(img)) {
+    const m = img.match(ROCM_NIGHTLY_SHA);
+    if (m) return `rocm@${m[1].toLowerCase()}`;
+  }
+  return img;
+}
+
 export function perfPointKey(r: PerfRowIdentity): string {
-  return [r.device, r.tp, r.conc, r.isl, r.osl, r.precision, r.image]
+  return [r.device, r.tp, r.conc, r.isl, r.osl, r.precision, imageIdentity(r.image)]
     .map((v) => (v ?? "").toString())
     .join("|");
 }
