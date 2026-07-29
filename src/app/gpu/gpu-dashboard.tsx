@@ -42,6 +42,12 @@ function formatMemory(mb: number): string {
   return `${Math.round(mb)} MB`;
 }
 
+function formatFleetMemory(mb: number): string {
+  if (mb >= 1024 * 1024) return `${(mb / (1024 * 1024)).toFixed(1)} TB`;
+  if (mb >= 1024) return `${Math.round(mb / 1024).toLocaleString()} GB`;
+  return `${Math.round(mb)} MB`;
+}
+
 function formatAgo(minutes: number): string {
   if (minutes < 60) return `${minutes}m ago`;
   if (minutes < 1440) return `${Math.round(minutes / 60)}h ago`;
@@ -169,6 +175,16 @@ export function GpuDashboard({
     [hostCapacityGb],
   );
 
+  const fleetMemory = useMemo(() => {
+    const usedMb = filtered.reduce((sum, gpu) => sum + gpu.mem_used_mb, 0);
+    const totalMb = filtered.reduce((sum, gpu) => sum + gpu.mem_total_mb, 0);
+    return {
+      usedMb,
+      totalMb,
+      utilization: totalMb > 0 ? Math.round((usedMb / totalMb) * 100) : 0,
+    };
+  }, [filtered]);
+
   const chartData = useMemo(() => {
     if (snapshots.length === 0) return { data: [] as Array<Record<string, number>>, hosts: [] as string[] };
 
@@ -264,82 +280,157 @@ export function GpuDashboard({
   }
 
   return (
-    <div className="space-y-6">
+    <div className="gpu-command-center space-y-6">
       {historyError && snapshots.length === 0 && (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400">
           GPU history could not be loaded. Current host readings may still be available below.
         </div>
       )}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">GPU Memory</h1>
-          <div
-            className="mt-2 flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1 text-xs"
-            role="status"
-            aria-live="polite"
-          >
-            <span
-              className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 font-medium ${
-                latestIsValidating
-                  ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/80 dark:bg-blue-950/50 dark:text-blue-300"
-                  : latestError
-                    ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/80 dark:bg-amber-950/50 dark:text-amber-300"
-                    : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/80 dark:bg-emerald-950/50 dark:text-emerald-300"
-              }`}
+      <section className="gpu-glass-panel relative overflow-hidden rounded-[28px] border border-blue-500/15 bg-white/70 p-5 shadow-[0_24px_80px_rgba(37,99,235,0.08)] backdrop-blur-xl dark:border-blue-400/15 dark:bg-zinc-950/65 dark:shadow-[0_28px_90px_rgba(0,0,0,0.28)] sm:p-7">
+        <div
+          className="pointer-events-none absolute -right-20 -top-28 h-72 w-72 rounded-full bg-blue-500/10 blur-3xl dark:bg-blue-400/15"
+          aria-hidden="true"
+        />
+        <div
+          className="pointer-events-none absolute right-32 top-10 h-44 w-44 rounded-full bg-violet-500/10 blur-3xl dark:bg-violet-400/10"
+          aria-hidden="true"
+        />
+        <div className="relative">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div className="max-w-2xl">
+              <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-blue-500/15 bg-blue-500/[0.07] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-700 dark:border-blue-400/20 dark:bg-blue-400/10 dark:text-blue-200">
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.9)]" />
+                Live fleet telemetry
+              </div>
+              <h1 className="text-4xl font-semibold tracking-[-0.045em] sm:text-5xl">
+                GPU <span className="gpu-accent-text">command center.</span>
+              </h1>
+              <p className="mt-3 max-w-xl text-sm leading-6 text-zinc-500 dark:text-zinc-400 sm:text-base">
+                Memory pressure, fleet capacity, and host health in one live operational view.
+              </p>
+            </div>
+            <div
+              className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1 text-xs lg:max-w-sm lg:justify-end"
+              role="status"
+              aria-live="polite"
             >
-              {latestIsValidating ? (
-                <span className="relative flex h-2 w-2" aria-hidden="true">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-70 motion-reduce:animate-none" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
-                </span>
-              ) : (
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    latestError ? "bg-amber-500" : "bg-emerald-500"
-                  }`}
-                  aria-hidden="true"
-                />
-              )}
-              {latestIsValidating
-                ? latest.length > 0
-                  ? "Checking for fresh readings"
-                  : "Loading GPU readings"
-                : latestError
-                  ? latest.length > 0
-                    ? "Refresh paused"
-                    : "Live readings unavailable"
-                  : `Checked ${formatCheckedAgo(latestCheckedAt, now)}`}
-            </span>
-            <span className="text-zinc-500 dark:text-zinc-400">
-              {latestIsValidating && latest.length > 0
-                ? "Showing the last update while new data loads."
-                : latestError
-                  ? latest.length > 0
-                    ? `Showing readings checked ${formatCheckedAgo(latestCheckedAt, now)}.`
-                    : "Retry to load the current GPU state."
-                  : "Automatically refreshes every 30 seconds."}
-            </span>
-            <button
-              type="button"
-              onClick={() => void refreshLatest()}
-              disabled={latestIsValidating}
-              className="dashboard-control inline-flex items-center gap-1 rounded px-1.5 py-1 font-medium text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-wait disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
-              aria-label={latestError ? "Retry GPU data refresh" : "Refresh GPU data now"}
-            >
-              <svg
-                className={`h-3.5 w-3.5 ${latestIsValidating ? "animate-spin motion-reduce:animate-none" : ""}`}
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                aria-hidden="true"
+              <span
+                className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 font-medium ${
+                  latestIsValidating
+                    ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/80 dark:bg-blue-950/50 dark:text-blue-300"
+                    : latestError
+                      ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/80 dark:bg-amber-950/50 dark:text-amber-300"
+                      : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/80 dark:bg-emerald-950/50 dark:text-emerald-300"
+                }`}
               >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M20 7v5h-5M4 17v-5h5" />
-                <path strokeLinecap="round" d="M6.1 8.5A7 7 0 0 1 18.7 7M17.9 15.5A7 7 0 0 1 5.3 17" />
-              </svg>
-              {latestError ? "Retry" : "Refresh"}
-            </button>
+                {latestIsValidating ? (
+                  <span className="relative flex h-2 w-2" aria-hidden="true">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-70 motion-reduce:animate-none" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-blue-500" />
+                  </span>
+                ) : (
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      latestError ? "bg-amber-500" : "bg-emerald-500"
+                    }`}
+                    aria-hidden="true"
+                  />
+                )}
+                {latestIsValidating
+                  ? latest.length > 0
+                    ? "Checking for fresh readings"
+                    : "Loading GPU readings"
+                  : latestError
+                    ? latest.length > 0
+                      ? "Refresh paused"
+                      : "Live readings unavailable"
+                    : `Checked ${formatCheckedAgo(latestCheckedAt, now)}`}
+              </span>
+              <button
+                type="button"
+                onClick={() => void refreshLatest()}
+                disabled={latestIsValidating}
+                className="dashboard-control inline-flex items-center gap-1 rounded-full px-2 py-1 font-medium text-zinc-500 hover:bg-white/70 hover:text-zinc-900 disabled:cursor-wait disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-zinc-100"
+                aria-label={latestError ? "Retry GPU data refresh" : "Refresh GPU data now"}
+              >
+                <svg
+                  className={`h-3.5 w-3.5 ${latestIsValidating ? "animate-spin motion-reduce:animate-none" : ""}`}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M20 7v5h-5M4 17v-5h5" />
+                  <path strokeLinecap="round" d="M6.1 8.5A7 7 0 0 1 18.7 7M17.9 15.5A7 7 0 0 1 5.3 17" />
+                </svg>
+                {latestError ? "Retry" : "Refresh"}
+              </button>
+              <p className="w-full text-zinc-500 dark:text-zinc-400 lg:text-right">
+                {latestIsValidating && latest.length > 0
+                  ? "Showing the last update while new data loads."
+                  : latestError
+                    ? latest.length > 0
+                      ? `Showing readings checked ${formatCheckedAgo(latestCheckedAt, now)}.`
+                      : "Retry to load the current GPU state."
+                    : "Automatically refreshes every 30 seconds."}
+              </p>
+            </div>
           </div>
+
+          <div className="mt-7 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {[
+              {
+                label: "Hosts",
+                value: filteredHosts.length.toLocaleString(),
+                detail: hostFilter ? "selected host" : "in this view",
+                accent: "bg-blue-500",
+              },
+              {
+                label: "Accelerators",
+                value: filtered.length.toLocaleString(),
+                detail: gpuTypeFilter || "all GPU types",
+                accent: "bg-violet-500",
+              },
+              {
+                label: "Fleet memory",
+                value: formatFleetMemory(fleetMemory.totalMb),
+                detail: `${formatFleetMemory(fleetMemory.usedMb)} allocated`,
+                accent: "bg-cyan-500",
+              },
+              {
+                label: "Utilization",
+                value: `${fleetMemory.utilization}%`,
+                detail: fleetMemory.utilization > 80 ? "high pressure" : "healthy headroom",
+                accent: fleetMemory.utilization > 80 ? "bg-amber-500" : "bg-emerald-500",
+              },
+            ].map((metric) => (
+              <div
+                key={metric.label}
+                className="gpu-metric-card rounded-2xl border border-white/70 p-4 dark:border-white/[0.07]"
+              >
+                <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.13em] text-zinc-500 dark:text-zinc-400">
+                  <span className={`h-1.5 w-1.5 rounded-full ${metric.accent}`} aria-hidden="true" />
+                  {metric.label}
+                </div>
+                <div className="mt-2 text-2xl font-semibold tracking-[-0.035em] sm:text-3xl">
+                  {metric.value}
+                </div>
+                <div className="mt-1 truncate text-xs text-zinc-400">{metric.detail}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="gpu-glass-panel rounded-2xl border border-zinc-200/80 bg-white/70 p-4 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-zinc-950/60 sm:p-5">
+        <div className="mb-3">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
+            Focus the fleet
+          </div>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            Slice live telemetry without leaving the command view.
+          </p>
         </div>
         <div className="flex flex-wrap items-end gap-3">
           <SearchableSelect
@@ -356,14 +447,14 @@ export function GpuDashboard({
             options={gpuTypes}
             allLabel="All Types"
           />
-          <div className="flex gap-1 rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700">
+          <div className="flex gap-1 rounded-lg border border-zinc-200 bg-zinc-50/80 p-0.5 dark:border-zinc-700 dark:bg-zinc-900/70">
             {HOURS_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
                 onClick={() => setHours(opt.value)}
-                className={`dashboard-control rounded px-2.5 py-1 text-xs font-medium ${
+                className={`dashboard-control rounded-md px-2.5 py-1 text-xs font-medium ${
                   hours === opt.value
-                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                    ? "bg-gradient-to-br from-blue-600 to-violet-600 text-white shadow-md shadow-blue-500/20"
                     : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
                 }`}
               >
@@ -372,13 +463,17 @@ export function GpuDashboard({
             ))}
           </div>
         </div>
-      </div>
+      </section>
 
       {/* Per-host memory chart */}
-      <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none sm:p-5">
+      <div className="gpu-command-panel min-w-0 overflow-hidden rounded-[22px] border p-4 sm:p-6">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+            <div className="mb-2 inline-flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-blue-600 dark:text-blue-300">
+              <span className="h-px w-6 bg-gradient-to-r from-blue-500 to-violet-500" />
+              Memory telemetry
+            </div>
+            <h3 className="text-base font-semibold tracking-[-0.02em]">
               {chartMode === "stacked" ? "Stacked Memory by Host" : "Memory Utilization by Host"}
             </h3>
             {chartMode === "stacked" && (
@@ -410,7 +505,7 @@ export function GpuDashboard({
                   aria-pressed={chartMode === option.value}
                   className={`dashboard-control rounded px-2.5 py-1 text-xs font-medium ${
                     chartMode === option.value
-                      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                      ? "bg-gradient-to-br from-blue-600 to-violet-600 text-white shadow-md shadow-blue-500/20"
                       : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
                   }`}
                 >
@@ -432,11 +527,19 @@ export function GpuDashboard({
       </div>
 
       {/* Host summary table */}
-      <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none">
-        <div className="border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
-          <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-            Host Summary
-          </h3>
+      <div className="min-w-0 overflow-hidden rounded-[22px] border border-zinc-200/80 bg-white/80 shadow-[0_16px_50px_rgba(24,24,27,0.06)] backdrop-blur-xl dark:border-white/10 dark:bg-zinc-950/70 dark:shadow-[0_20px_60px_rgba(0,0,0,0.18)]">
+        <div className="flex items-center justify-between border-b border-zinc-200/80 px-5 py-4 dark:border-white/10">
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
+              Fleet roster
+            </div>
+            <h3 className="mt-1 text-base font-semibold tracking-[-0.02em]">
+              Host Summary
+            </h3>
+          </div>
+          <span className="rounded-full border border-blue-500/15 bg-blue-500/[0.07] px-2.5 py-1 text-xs font-medium text-blue-700 dark:border-blue-400/20 dark:bg-blue-400/10 dark:text-blue-200">
+            {hostRows.length} hosts
+          </span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px] text-sm">
@@ -460,7 +563,7 @@ export function GpuDashboard({
                 return (
                   <tr
                     key={h.hostname}
-                    className={`border-b border-zinc-100 last:border-0 dark:border-zinc-800/50 ${stale ? "opacity-50" : ""}`}
+                    className={`border-b border-zinc-100 hover:bg-blue-500/[0.035] last:border-0 dark:border-zinc-800/50 dark:hover:bg-blue-400/[0.045] ${stale ? "opacity-50" : ""}`}
                   >
                     <td className="px-5 py-2.5 font-medium">
                       {h.hostname}
@@ -483,10 +586,10 @@ export function GpuDashboard({
                         {h.gpus.map((gpu) => {
                           const pct = gpu.memTotalMb > 0 ? Math.round((gpu.memUsedMb / gpu.memTotalMb) * 100) : 0;
                           const barColor = pct > 90
-                            ? "bg-red-500 dark:bg-red-400"
+                            ? "from-red-600 to-orange-400"
                             : pct > 60
-                            ? "bg-blue-500 dark:bg-blue-400"
-                            : "bg-blue-400 dark:bg-blue-500";
+                            ? "from-blue-700 to-violet-400"
+                            : "from-blue-600 to-cyan-400";
                           return (
                             <div
                               key={gpu.index}
@@ -497,7 +600,7 @@ export function GpuDashboard({
                                 style={{ height: 36 }}
                               >
                                 <div
-                                  className={`absolute bottom-0 w-full rounded-sm ${barColor}`}
+                                  className={`absolute bottom-0 w-full rounded-sm bg-gradient-to-t ${barColor}`}
                                   style={{ height: `${Math.max(pct, 2)}%` }}
                                 />
                               </div>

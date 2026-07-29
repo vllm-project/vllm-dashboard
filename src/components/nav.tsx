@@ -49,9 +49,17 @@ export function Nav() {
         <div className="flex h-14 items-center gap-6">
           <Link
             href="/"
-            className="shrink-0 whitespace-nowrap text-base font-semibold tracking-[-0.02em] sm:text-lg"
+            className="group flex shrink-0 items-center gap-2.5 whitespace-nowrap text-base font-semibold tracking-[-0.02em] sm:text-lg"
           >
-            vLLM Dashboard
+            <span
+              className="dashboard-brand-mark grid h-8 w-8 place-items-center rounded-[10px] text-sm font-bold text-white shadow-lg shadow-blue-500/20"
+              aria-hidden="true"
+            >
+              v
+            </span>
+            <span>
+              <span className="hidden sm:inline">vLLM </span>Dashboard
+            </span>
           </Link>
           <div className="hidden min-w-0 flex-1 items-center gap-1 lg:flex">
             {links.map((link) => {
@@ -63,7 +71,7 @@ export function Nav() {
                   aria-current={active ? "page" : undefined}
                   className={`whitespace-nowrap rounded-md px-2.5 py-1.5 text-sm font-medium ${
                     active
-                      ? "bg-zinc-950/[0.06] text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-white/10 dark:text-zinc-50 dark:ring-white/10"
+                      ? "bg-blue-500/10 text-blue-700 shadow-sm ring-1 ring-blue-500/15 dark:bg-blue-400/15 dark:text-blue-200 dark:ring-blue-300/15"
                       : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50"
                   }`}
                 >
@@ -90,7 +98,7 @@ export function Nav() {
                 aria-current={active ? "page" : undefined}
                 className={`shrink-0 rounded-md px-2.5 py-1.5 text-sm font-medium ${
                   active
-                    ? "bg-zinc-950/[0.07] text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-white/10 dark:text-zinc-50 dark:ring-white/10"
+                    ? "bg-blue-500/10 text-blue-700 shadow-sm ring-1 ring-blue-500/15 dark:bg-blue-400/15 dark:text-blue-200 dark:ring-blue-300/15"
                     : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50"
                 }`}
               >
