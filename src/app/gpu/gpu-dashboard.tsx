@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { SearchableSelect } from "@/components/searchable-select";
+import type { GpuChartMode } from "@/components/gpu-util-chart";
 import type {
   GpuHistoryResponse,
   GpuLatest,
@@ -82,6 +83,7 @@ export function GpuDashboard({
   const [gpuTypeFilter, setGpuTypeFilter] = useState("");
   const [hostFilter, setHostFilter] = useState("");
   const [hours, setHours] = useState(24);
+  const [chartMode, setChartMode] = useState<GpuChartMode>("lines");
   const [now, setNow] = useState(initialNow);
 
   useEffect(() => {
@@ -151,6 +153,22 @@ export function GpuDashboard({
     return [...new Set(filtered.map((g) => g.hostname))].sort();
   }, [filtered]);
 
+  const hostCapacityGb = useMemo(() => {
+    const capacities = new Map<string, number>();
+    for (const gpu of filtered) {
+      capacities.set(
+        gpu.hostname,
+        (capacities.get(gpu.hostname) ?? 0) + gpu.mem_total_mb / 1024,
+      );
+    }
+    return capacities;
+  }, [filtered]);
+
+  const totalCapacityGb = useMemo(
+    () => [...hostCapacityGb.values()].reduce((sum, capacity) => sum + capacity, 0),
+    [hostCapacityGb],
+  );
+
   const chartData = useMemo(() => {
     if (snapshots.length === 0) return { data: [] as Array<Record<string, number>>, hosts: [] as string[] };
 
@@ -182,14 +200,19 @@ export function GpuDashboard({
         const row: Record<string, number> = { time };
         for (const host of hosts) {
           const entry = hostMap.get(host);
-          if (entry) row[host] = Math.round(entry.memPctSum / entry.count);
+          if (entry) {
+            const averagePercent = entry.memPctSum / entry.count;
+            row[host] = chartMode === "stacked"
+              ? Math.round((averagePercent / 100) * (hostCapacityGb.get(host) ?? 0) * 10) / 10
+              : Math.round(averagePercent);
+          }
         }
         return row;
       })
       .sort((a, b) => a.time - b.time);
 
     return { data: rows, hosts };
-  }, [snapshots, filteredHosts, gpuTypeFilter]);
+  }, [snapshots, filteredHosts, gpuTypeFilter, chartMode, hostCapacityGb]);
 
   const tickInterval = Math.max(1, Math.floor(chartData.data.length / 10));
 
@@ -352,21 +375,59 @@ export function GpuDashboard({
       </div>
 
       {/* Per-host memory chart */}
-      <div className="relative rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-        <h3 className="mb-4 text-sm font-medium text-zinc-500 dark:text-zinc-400">
-          Memory Utilization by Host
-        </h3>
-        {historyPending && (
-          <span className="absolute right-5 top-4 inline-flex items-center gap-1.5 text-xs text-zinc-400" role="status">
-            <span className="h-3 w-3 animate-spin rounded-full border border-zinc-300 border-t-zinc-600 motion-reduce:animate-none dark:border-zinc-700 dark:border-t-zinc-300" aria-hidden="true" />
-            Updating {HOURS_OPTIONS.find((option) => option.value === hours)?.label ?? `${hours}h`} chart…
-          </span>
-        )}
+      <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+              {chartMode === "stacked" ? "Stacked Memory by Host" : "Memory Utilization by Host"}
+            </h3>
+            {chartMode === "stacked" && (
+              <p className="mt-1 text-xs text-zinc-400">
+                Aggregate usage across {filtered.length} GPUs, stacked by host.
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            {historyPending && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400" role="status">
+                <span className="h-3 w-3 animate-spin rounded-full border border-zinc-300 border-t-zinc-600 motion-reduce:animate-none dark:border-zinc-700 dark:border-t-zinc-300" aria-hidden="true" />
+                Updating {HOURS_OPTIONS.find((option) => option.value === hours)?.label ?? `${hours}h`} chart…
+              </span>
+            )}
+            <div
+              className="flex gap-1 rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700"
+              role="group"
+              aria-label="GPU chart mode"
+            >
+              {([
+                { label: "Lines", value: "lines" },
+                { label: "Stacked", value: "stacked" },
+              ] as const).map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setChartMode(option.value)}
+                  aria-pressed={chartMode === option.value}
+                  className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                    chartMode === option.value
+                      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                      : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
         <GpuMemChart
           data={chartData.data}
           hosts={chartData.hosts}
           formatXTick={formatXTick}
           tickInterval={tickInterval}
+          mode={chartMode}
+          totalCapacityGb={totalCapacityGb}
+          totalGpuCount={filtered.length}
         />
       </div>
 
