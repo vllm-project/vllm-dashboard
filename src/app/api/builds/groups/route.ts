@@ -27,7 +27,12 @@ export async function GET(request: NextRequest) {
 
     if (buildIds.length === 0) {
       return cachedJson(
-        { groupsByBuild: {}, jobOptions: [] },
+        {
+          groupsByBuild: {},
+          jobNames: [],
+          jobsByBuild: {},
+          jobOptions: [],
+        },
         CDN_CACHE,
       );
     }
@@ -60,22 +65,48 @@ export async function GET(request: NextRequest) {
       jobsByBuild.set(row.build_id, buildJobs);
     }
 
-    const groupsByBuild: Record<string, GroupSummary[]> = {};
+    const groupedByBuild = new Map<string, GroupStatus[]>();
     const jobToGroup = new Map<string, string>();
     for (const buildId of buildIds) {
       const groups = aggregateJobsByGroup(jobsByBuild.get(buildId) ?? []);
-      groupsByBuild[buildId] = groups.map(({ jobs: groupJobs, ...summary }) => {
-        for (const job of groupJobs) {
+      groupedByBuild.set(buildId, groups);
+      for (const group of groups) {
+        for (const job of group.jobs) {
           if (!jobToGroup.has(job.name)) {
-            jobToGroup.set(job.name, summary.group);
+            jobToGroup.set(job.name, group.group);
           }
         }
+      }
+    }
+
+    // Normalize repeated job names into one dictionary. The compact
+    // name-index/state matrix is small enough to ship with group summaries, so
+    // expanding a group is immediate. Only the much larger job URLs stay lazy.
+    const jobNames = [...jobToGroup.keys()].sort((a, b) => a.localeCompare(b));
+    const jobNameIndex = new Map(
+      jobNames.map((name, index) => [name, index]),
+    );
+    const groupsByBuild: Record<string, GroupSummary[]> = {};
+    const compactJobsByBuild: Record<
+      string,
+      Record<string, Array<[number, string]>>
+    > = {};
+    for (const buildId of buildIds) {
+      const groups = groupedByBuild.get(buildId) ?? [];
+      compactJobsByBuild[buildId] = {};
+      groupsByBuild[buildId] = groups.map(({ jobs: groupJobs, ...summary }) => {
+        compactJobsByBuild[buildId][summary.group] = groupJobs.map((job) => [
+          jobNameIndex.get(job.name)!,
+          job.state,
+        ]);
         return summary;
       });
     }
 
     const result = {
       groupsByBuild,
+      jobNames,
+      jobsByBuild: compactJobsByBuild,
       jobOptions: [...jobToGroup.entries()]
         .map(([name, group]) => ({ name, group }))
         .sort((a, b) => a.name.localeCompare(b.name)),

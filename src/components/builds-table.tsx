@@ -152,9 +152,34 @@ interface BuildJobsResponse {
   >;
 }
 
+type CompactJobsByBuild = Record<
+  string,
+  Record<string, Array<[nameIndex: number, state: string]>>
+>;
+
+interface BuildsTableProps {
+  builds: Build[];
+  jobNames: string[];
+  jobsByBuild: CompactJobsByBuild;
+  showBranch?: boolean;
+  hideSoftFail?: boolean;
+  hideOptional?: boolean;
+  selectedGroups?: Set<string>;
+  selectedJobs?: Set<string>;
+}
+
 const fetcher = (url: string) => fetch(url).then((response) => response.json());
 
-export function BuildsTable({ builds, showBranch, hideSoftFail, hideOptional, selectedGroups, selectedJobs }: { builds: Build[]; showBranch?: boolean; hideSoftFail?: boolean; hideOptional?: boolean; selectedGroups?: Set<string>; selectedJobs?: Set<string> }) {
+export function BuildsTable({
+  builds,
+  jobNames,
+  jobsByBuild,
+  showBranch,
+  hideSoftFail,
+  hideOptional,
+  selectedGroups,
+  selectedJobs,
+}: BuildsTableProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const buildIds = useMemo(
     () => builds.map((build) => build.id),
@@ -185,9 +210,10 @@ export function BuildsTable({ builds, showBranch, hideSoftFail, hideOptional, se
     for (const g of build.testGroups ?? []) {
       if (!allGroups.has(g.group)) allGroups.set(g.group, new Set());
       const jobSet = allGroups.get(g.group)!;
-      const jobs = jobDetails?.jobsByBuild[build.id]?.[g.group] ?? [];
-      for (const j of jobs) {
-        if (!shouldHideJob(j.name)) jobSet.add(j.name);
+      const compactJobs = jobsByBuild[build.id]?.[g.group] ?? [];
+      for (const [nameIndex] of compactJobs) {
+        const name = jobNames[nameIndex];
+        if (name && !shouldHideJob(name)) jobSet.add(name);
       }
     }
   }
@@ -305,14 +331,21 @@ export function BuildsTable({ builds, showBranch, hideSoftFail, hideOptional, se
           <tbody>
             {builds.map((build) => {
               const groupMap = new Map(
-                (build.testGroups ?? []).map((g) => [
-                  g.group,
-                  {
-                    ...g,
-                    jobs:
-                      jobDetails?.jobsByBuild[build.id]?.[g.group] ?? [],
-                  },
-                ])
+                (build.testGroups ?? []).map((g) => {
+                  const details =
+                    jobDetails?.jobsByBuild[build.id]?.[g.group] ?? [];
+                  const urlsByName = new Map(
+                    details.map((job) => [job.name, job.web_url]),
+                  );
+                  const jobs = (jobsByBuild[build.id]?.[g.group] ?? [])
+                    .map(([nameIndex, state]) => ({
+                      name: jobNames[nameIndex],
+                      state,
+                      web_url: urlsByName.get(jobNames[nameIndex]),
+                    }))
+                    .filter((job) => Boolean(job.name));
+                  return [g.group, { ...g, jobs }];
+                })
               );
 
               return (
