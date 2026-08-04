@@ -46,6 +46,7 @@ interface BuildGroupsResponse {
       running: number;
       blocked: number;
       total: number;
+      failedJobs?: Array<{ name: string; web_url: string }>;
     }>
   >;
   jobNames: string[];

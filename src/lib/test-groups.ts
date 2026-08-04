@@ -66,6 +66,15 @@ export interface GroupStatus {
   jobs: JobInfo[];
 }
 
+export function isFailedJobState(state: string): boolean {
+  return (
+    state === "failed" ||
+    state === "failing" ||
+    state === "broken" ||
+    state === "timed_out"
+  );
+}
+
 export function resolveGroupsToJobConditions(groups: string[]): { exactNames: string[]; regexPatterns: string[] } {
   const mapping = getTestAreaMapping();
   const exactNames: string[] = [];
@@ -113,7 +122,7 @@ export function aggregateJobsByGroup(
 
     const state = job.state;
     if (state === "passed") g.passed++;
-    else if (state === "failed" || state === "failing" || state === "broken" || state === "timed_out") g.failed++;
+    else if (isFailedJobState(state)) g.failed++;
     else if (state === "running" || state === "scheduled" || state === "reserved") g.running++;
     else g.blocked++;
   }

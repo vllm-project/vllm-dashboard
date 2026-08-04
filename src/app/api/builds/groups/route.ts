@@ -2,13 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
-import { aggregateJobsByGroup, type GroupStatus } from "@/lib/test-groups";
+import {
+  aggregateJobsByGroup,
+  isFailedJobState,
+  type GroupStatus,
+} from "@/lib/test-groups";
 
 const TTL = 30_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
 const MAX_BUILD_IDS = 50;
 
-type GroupSummary = Omit<GroupStatus, "jobs">;
+type GroupSummary = Omit<GroupStatus, "jobs"> & {
+  failedJobs: Array<{ name: string; web_url: string }>;
+};
 
 function escapeSql(value: string): string {
   return value.replace(/'/g, "''");
@@ -46,7 +52,8 @@ export async function GET(request: NextRequest) {
       SELECT
         j.build_id,
         j.name,
-        j.state
+        j.state,
+        j.web_url
       FROM vllm_data_warehouse.buildkite.build_job AS j
       WHERE j.build_id IN (${idList})
         AND j._fivetran_deleted = false
@@ -56,12 +63,16 @@ export async function GET(request: NextRequest) {
 
     const jobsByBuild = new Map<
       string,
-      { name: string; state: string }[]
+      { name: string; state: string; web_url?: string }[]
     >();
     for (const job of jobs) {
       const row = job as Record<string, string>;
       const buildJobs = jobsByBuild.get(row.build_id) ?? [];
-      buildJobs.push({ name: row.name, state: row.state });
+      buildJobs.push({
+        name: row.name,
+        state: row.state,
+        web_url: row.web_url,
+      });
       jobsByBuild.set(row.build_id, buildJobs);
     }
 
@@ -99,7 +110,10 @@ export async function GET(request: NextRequest) {
           jobNameIndex.get(job.name)!,
           job.state,
         ]);
-        return summary;
+        const failedJobs = groupJobs
+          .filter((job) => isFailedJobState(job.state) && job.web_url)
+          .map((job) => ({ name: job.name, web_url: job.web_url! }));
+        return { ...summary, failedJobs };
       });
     }
 

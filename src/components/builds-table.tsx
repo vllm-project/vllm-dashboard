@@ -18,7 +18,11 @@ export interface Build {
   finished_at: string | null;
   author: string | null;
   pr_number: string | null;
-  testGroups?: GroupStatus[];
+  testGroups?: Array<
+    GroupStatus & {
+      failedJobs?: Array<{ name: string; web_url: string }>;
+    }
+  >;
 }
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -99,12 +103,14 @@ function DotWithTooltip({
   detail,
   borderClass,
   href,
+  onClick,
 }: {
   color: string;
   label: string;
   detail: string;
   borderClass?: string;
   href?: string;
+  onClick?: () => void;
 }) {
   const [show, setShow] = useState(false);
   return (
@@ -114,12 +120,24 @@ function DotWithTooltip({
           href={href}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex h-5 w-5 items-center justify-center"
+          aria-label={`${label}: ${detail}`}
+          className="inline-flex h-5 w-5 cursor-pointer items-center justify-center"
           onMouseEnter={() => setShow(true)}
           onMouseLeave={() => setShow(false)}
         >
           <span className={`block h-3.5 w-3.5 rounded-sm ${color}`} />
         </a>
+      ) : onClick ? (
+        <button
+          type="button"
+          aria-label={`${label}: ${detail}`}
+          className="inline-flex h-5 w-5 cursor-pointer items-center justify-center"
+          onClick={onClick}
+          onMouseEnter={() => setShow(true)}
+          onMouseLeave={() => setShow(false)}
+        >
+          <span className={`block h-3.5 w-3.5 rounded-sm ${color}`} />
+        </button>
       ) : (
         <div
           className="inline-flex h-5 w-5 cursor-default items-center justify-center"
@@ -337,11 +355,16 @@ export function BuildsTable({
                   const urlsByName = new Map(
                     details.map((job) => [job.name, job.web_url]),
                   );
+                  const failedUrlsByName = new Map(
+                    (g.failedJobs ?? []).map((job) => [job.name, job.web_url]),
+                  );
                   const jobs = (jobsByBuild[build.id]?.[g.group] ?? [])
                     .map(([nameIndex, state]) => ({
                       name: jobNames[nameIndex],
                       state,
-                      web_url: urlsByName.get(jobNames[nameIndex]),
+                      web_url:
+                        urlsByName.get(jobNames[nameIndex]) ??
+                        failedUrlsByName.get(jobNames[nameIndex]),
                     }))
                     .filter((job) => Boolean(job.name));
                   return [g.group, { ...g, jobs }];
@@ -455,6 +478,11 @@ export function BuildsTable({
                           </td>
                         );
                       }
+                      const failedJobLinks = groupStatus.failedJobs ?? [];
+                      const failedJobHref =
+                        groupStatus.failed === 1 && failedJobLinks.length === 1
+                          ? failedJobLinks[0].web_url
+                          : undefined;
                       return (
                         <DotWithTooltip
                           key={key}
@@ -462,6 +490,12 @@ export function BuildsTable({
                           label={groupStatus.group}
                           detail={`${groupStatus.passed} passed, ${groupStatus.failed} failed, ${groupStatus.running} running, ${groupStatus.blocked} blocked`}
                           borderClass={borderL}
+                          href={failedJobHref}
+                          onClick={
+                            groupStatus.failed > 1 && failedJobLinks.length > 0
+                              ? () => toggleGroup(groupStatus.group)
+                              : undefined
+                          }
                         />
                       );
                     }
