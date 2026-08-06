@@ -10,6 +10,10 @@ export function getDb() {
     }
     sql = postgres(url, {
       ssl: "require",
+      // DATABASE_URL points at Supabase's transaction-mode pooler. Named
+      // prepared statements are connection-local and can disappear when the
+      // pooler hands a later request to a different backend connection.
+      prepare: false,
       // Serverless instances should fail quickly and keep a deliberately small
       // pool. The dashboard only fans out three PostgreSQL queries at once;
       // larger per-instance pools amplify connection pressure during bursts.
@@ -55,6 +59,15 @@ export async function initSchema() {
       ALTER TABLE queue_snapshots ADD COLUMN IF NOT EXISTS ${col} REAL
     `);
   }
+  await db.unsafe(`
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_snapshots_queue_polled_cover
+    ON queue_snapshots (queue, polled_at DESC)
+    INCLUDE (
+      agents_idle, agents_busy, agents_total,
+      jobs_scheduled, jobs_running, jobs_waiting, jobs_total,
+      p50_wait_secs, p90_wait_secs, p95_wait_secs
+    )
+  `);
 
   await db`
     CREATE TABLE IF NOT EXISTS alert_threads (

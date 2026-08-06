@@ -50,6 +50,10 @@ function formatDuration(secs: number): string {
 }
 
 interface MetricsResponse {
+  query: {
+    hours: number;
+    queue: string | null;
+  };
   snapshots: MetricsSnapshot[];
   queues: string[];
   latest: MetricsLatest[];
@@ -73,11 +77,17 @@ export default function QueuePage() {
   const [sortCol, setSortCol] = useState<"queue" | "agents" | "running" | "idle" | "waiting" | "p50" | "p90" | "p95">("waiting");
   const [sortAsc, setSortAsc] = useState(false);
 
-  const metricsUrl = `/api/metrics?hours=${metricsHours}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}`;
-  const { data: metricsData, error, isLoading } = useSWR<MetricsResponse>(metricsUrl, fetcher, {
+  const metricsUrl = `/api/metrics?hours=${metricsHours}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}&v=2`;
+  const { data: metricsData, error, isLoading, isValidating } = useSWR<MetricsResponse>(metricsUrl, fetcher, {
     refreshInterval: 60 * 1000,
     keepPreviousData: true,
   });
+
+  const metricsMatchQueue = metricsData?.query.queue === (queue || null);
+  const metricsMatchTimeframe = metricsData?.query.hours === metricsHours;
+  const currentChartData = metricsMatchQueue && metricsMatchTimeframe ? metricsData : undefined;
+  const currentLatestData = metricsMatchQueue ? metricsData : undefined;
+  const isChartRefreshing = !currentChartData && (isLoading || isValidating || Boolean(metricsData));
 
   interface WaitingBuild {
     build_number: string;
@@ -100,7 +110,7 @@ export default function QueuePage() {
   // jobs_scheduled is surfaced as the "Waiting" series. Raw jobs_waiting is
   // also tracked but only charted (as a grey bar) for RAW_WAITING_QUEUES.
   const overviewChartData = useMemo(() => {
-    const snapshots = metricsData?.snapshots ?? [];
+    const snapshots = currentChartData?.snapshots ?? [];
     if (snapshots.length === 0) return [];
 
     const bucketMap = new Map<number, { running: number; scheduled: number; waiting: number; agents: number }>();
@@ -118,7 +128,7 @@ export default function QueuePage() {
     return [...bucketMap.entries()]
       .map(([time, v]) => ({ time, ...v }))
       .sort((a, b) => a.time - b.time);
-  }, [metricsData, queue]);
+  }, [currentChartData, queue]);
 
   const chartTickInterval = Math.max(1, Math.floor(overviewChartData.length / 10));
 
@@ -148,7 +158,7 @@ export default function QueuePage() {
     );
   }
 
-  const allLatest = metricsData?.latest ?? [];
+  const allLatest = currentLatestData?.latest ?? [];
   const filtered = queue ? allLatest.filter((q) => q.queue === queue) : allLatest;
   const totalAgents = filtered.reduce((s, q) => s + q.agents_total, 0);
   const busyAgents = filtered.reduce((s, q) => s + q.agents_busy, 0);
@@ -172,6 +182,7 @@ export default function QueuePage() {
               <button
                 key={opt.value}
                 onClick={() => setMetricsHours(opt.value)}
+                aria-pressed={metricsHours === opt.value}
                 className={`min-h-11 min-w-11 rounded px-2 text-xs font-medium transition-colors active:scale-[0.97] sm:min-h-10 ${
                   metricsHours === opt.value
                     ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
@@ -222,12 +233,22 @@ export default function QueuePage() {
         <h3 className="mb-4 text-sm font-medium text-zinc-500 dark:text-zinc-400">
           Jobs &amp; Agents{queue ? ` — ${queue}` : ""}
         </h3>
-        <QueueOverviewChart
-          data={overviewChartData}
-          formatXTick={formatMetricsXTick}
-          tickInterval={chartTickInterval}
-          showWaiting={queue ? RAW_WAITING_QUEUES.has(queue) : false}
-        />
+        <div aria-busy={isChartRefreshing} aria-live="polite">
+          {isChartRefreshing ? (
+            <div className="flex h-[300px] items-center justify-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-700 dark:border-zinc-700 dark:border-t-zinc-200" />
+              Loading {METRICS_HOURS_OPTIONS.find((option) => option.value === metricsHours)?.label} history…
+            </div>
+          ) : (
+            <QueueOverviewChart
+              data={overviewChartData}
+              formatXTick={formatMetricsXTick}
+              tickInterval={chartTickInterval}
+              showWaiting={queue ? RAW_WAITING_QUEUES.has(queue) : false}
+              emptyMessage={`No snapshots recorded for ${queue || "these queues"} in this timeframe.`}
+            />
+          )}
+        </div>
       </div>
 
       {/* Waiting Builds */}

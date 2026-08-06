@@ -86,13 +86,8 @@ export async function GET(request: NextRequest) {
           );
     }
 
-    const [snapshots, queueRows, latest] = await Promise.all([
+    const [snapshots, latest] = await Promise.all([
       snapshotsQuery,
-      db`
-        SELECT DISTINCT queue FROM queue_snapshots
-        WHERE polled_at >= ${cutoff}
-        ORDER BY queue
-      `,
       db`
         SELECT
           a.queue, a.polled_at,
@@ -117,8 +112,9 @@ export async function GET(request: NextRequest) {
     ]);
 
     const result = {
+      query: { hours, queue },
       snapshots,
-      queues: queueRows.map((r) => r.queue),
+      queues: [...new Set(latest.map((row) => row.queue))].sort(),
       latest,
     };
     setCache(cacheKey, result, TTL);

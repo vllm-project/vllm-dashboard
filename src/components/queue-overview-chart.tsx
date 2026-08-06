@@ -18,6 +18,7 @@ interface QueueOverviewChartProps {
   tickInterval: number;
   /** When true, also plot raw jobs_waiting as a grey bar (e.g. mithril-h100-pool). */
   showWaiting?: boolean;
+  emptyMessage?: string;
 }
 
 function OverviewTooltip({
@@ -58,11 +59,17 @@ function OverviewTooltip({
   );
 }
 
-export function QueueOverviewChart({ data, formatXTick, tickInterval, showWaiting = false }: QueueOverviewChartProps) {
+export function QueueOverviewChart({
+  data,
+  formatXTick,
+  tickInterval,
+  showWaiting = false,
+  emptyMessage = "No snapshots were recorded in this timeframe.",
+}: QueueOverviewChartProps) {
   if (data.length === 0) {
     return (
       <div className="flex h-[300px] items-center justify-center text-sm text-zinc-400">
-        No data yet. Data will appear after metrics polling starts.
+        {emptyMessage}
       </div>
     );
   }
