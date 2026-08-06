@@ -7,7 +7,16 @@ import { SearchableSelect } from "@/components/searchable-select";
 import { QueueOverviewChart } from "@/components/queue-overview-chart";
 import { effectiveWaiting } from "@/lib/queue-plugins";
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+async function fetchJson<T>(url: string): Promise<T> {
+  const response = await fetch(url);
+  const body = (await response.json()) as T & { error?: string };
+
+  if (!response.ok || body.error) {
+    throw new Error(body.error ?? `Request failed with status ${response.status}`);
+  }
+
+  return body;
+}
 
 interface MetricsSnapshot {
   time_bucket: string;
@@ -57,7 +66,6 @@ interface MetricsResponse {
   snapshots: MetricsSnapshot[];
   queues: string[];
   latest: MetricsLatest[];
-  error?: string;
 }
 
 const METRICS_HOURS_OPTIONS = [
@@ -78,16 +86,25 @@ export default function QueuePage() {
   const [sortAsc, setSortAsc] = useState(false);
 
   const metricsUrl = `/api/metrics?hours=${metricsHours}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}&v=2`;
-  const { data: metricsData, error, isLoading, isValidating } = useSWR<MetricsResponse>(metricsUrl, fetcher, {
+  const {
+    data: metricsData,
+    error,
+    isLoading,
+    isValidating,
+    mutate: refreshMetrics,
+  } = useSWR<MetricsResponse>(metricsUrl, fetchJson, {
     refreshInterval: 60 * 1000,
     keepPreviousData: true,
   });
 
-  const metricsMatchQueue = metricsData?.query.queue === (queue || null);
-  const metricsMatchTimeframe = metricsData?.query.hours === metricsHours;
-  const currentChartData = metricsMatchQueue && metricsMatchTimeframe ? metricsData : undefined;
-  const currentLatestData = metricsMatchQueue ? metricsData : undefined;
-  const isChartRefreshing = !currentChartData && (isLoading || isValidating || Boolean(metricsData));
+  const historyMatchesQueue = metricsData?.query.queue === (queue || null);
+  const historyMatchesSelection =
+    historyMatchesQueue && metricsData?.query.hours === metricsHours;
+  const displayedMetricsHours = historyMatchesQueue
+    ? (metricsData?.query.hours ?? metricsHours)
+    : metricsHours;
+  const chartRequestPending =
+    !historyMatchesSelection && (isLoading || isValidating || Boolean(metricsData));
 
   interface WaitingBuild {
     build_number: string;
@@ -100,7 +117,7 @@ export default function QueuePage() {
   }
   const { data: waitingBuildsData } = useSWR<{ builds: WaitingBuild[] }>(
     queue ? `/api/metrics/waiting-builds?queue=${encodeURIComponent(queue)}` : null,
-    fetcher,
+    fetchJson,
     { refreshInterval: 60 * 1000 },
   );
 
@@ -110,7 +127,8 @@ export default function QueuePage() {
   // jobs_scheduled is surfaced as the "Waiting" series. Raw jobs_waiting is
   // also tracked but only charted (as a grey bar) for RAW_WAITING_QUEUES.
   const overviewChartData = useMemo(() => {
-    const snapshots = currentChartData?.snapshots ?? [];
+    if (!historyMatchesQueue) return [];
+    const snapshots = metricsData?.snapshots ?? [];
     if (snapshots.length === 0) return [];
 
     const bucketMap = new Map<number, { running: number; scheduled: number; waiting: number; agents: number }>();
@@ -128,15 +146,15 @@ export default function QueuePage() {
     return [...bucketMap.entries()]
       .map(([time, v]) => ({ time, ...v }))
       .sort((a, b) => a.time - b.time);
-  }, [currentChartData, queue]);
+  }, [historyMatchesQueue, metricsData, queue]);
 
   const chartTickInterval = Math.max(1, Math.floor(overviewChartData.length / 10));
 
   function formatMetricsXTick(t: number): string {
     const d = new Date(t);
-    if (metricsHours <= 24) {
+    if (displayedMetricsHours <= 24) {
       return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
-    } else if (metricsHours <= 168) {
+    } else if (displayedMetricsHours <= 168) {
       return d.toLocaleString("en-US", { weekday: "short", hour: "numeric", hour12: true });
     }
     return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -150,15 +168,24 @@ export default function QueuePage() {
     );
   }
 
-  if (error || metricsData?.error) {
+  if (error && !metricsData) {
     return (
-      <div className="flex h-64 items-center justify-center text-red-400">
-        Failed to load queue data. Check DATABASE_URL and BUILDKITE_AGENT_TOKEN.
+      <div className="flex h-64 flex-col items-center justify-center gap-3 text-sm text-zinc-500 dark:text-zinc-400">
+        <p>Queue data couldn&apos;t be loaded.</p>
+        <button
+          type="button"
+          onClick={() => void refreshMetrics()}
+          className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 font-medium text-zinc-700 transition-colors hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
+        >
+          Retry
+        </button>
       </div>
     );
   }
 
-  const allLatest = currentLatestData?.latest ?? [];
+  // The latest payload always contains every queue, even when history is
+  // filtered to one queue, so it remains safe and useful during chart loads.
+  const allLatest = metricsData?.latest ?? [];
   const filtered = queue ? allLatest.filter((q) => q.queue === queue) : allLatest;
   const totalAgents = filtered.reduce((s, q) => s + q.agents_total, 0);
   const busyAgents = filtered.reduce((s, q) => s + q.agents_busy, 0);
@@ -230,24 +257,67 @@ export default function QueuePage() {
 
       {/* Queue Overview Chart */}
       <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
-        <h3 className="mb-4 text-sm font-medium text-zinc-500 dark:text-zinc-400">
-          Jobs &amp; Agents{queue ? ` — ${queue}` : ""}
-        </h3>
-        <div aria-busy={isChartRefreshing} aria-live="polite">
-          {isChartRefreshing ? (
-            <div className="flex h-[300px] items-center justify-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
-              <span className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-300 border-t-zinc-700 dark:border-zinc-700 dark:border-t-zinc-200" />
-              Loading {METRICS_HOURS_OPTIONS.find((option) => option.value === metricsHours)?.label} history…
+        <div className="mb-4 flex min-h-6 flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+            Jobs &amp; Agents{queue ? ` — ${queue}` : ""}
+          </h3>
+          {overviewChartData.length > 0 && (isValidating || error) && (
+            <div
+              className={`flex items-center gap-2 text-xs ${
+                error
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-blue-600 dark:text-blue-400"
+              }`}
+              role="status"
+              aria-live="polite"
+            >
+              {!error && (
+                <span
+                  className="h-3 w-3 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600 motion-reduce:animate-none dark:border-blue-900 dark:border-t-blue-400"
+                  aria-hidden="true"
+                />
+              )}
+              <span>
+                {error
+                  ? historyMatchesSelection
+                    ? "Refresh paused — showing saved data"
+                    : `Couldn’t load ${metricsHours <= 24 ? `${metricsHours}h` : "7d"} — showing ${displayedMetricsHours <= 24 ? `${displayedMetricsHours}h` : "7d"}`
+                  : historyMatchesSelection
+                    ? "Updating history"
+                    : `Loading ${metricsHours <= 24 ? `${metricsHours}h` : "7d"} — showing ${displayedMetricsHours <= 24 ? `${displayedMetricsHours}h` : "7d"}`}
+              </span>
+              {error && (
+                <button
+                  type="button"
+                  onClick={() => void refreshMetrics()}
+                  className="rounded px-1.5 py-1 font-medium underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500"
+                >
+                  Retry
+                </button>
+              )}
             </div>
-          ) : (
-            <QueueOverviewChart
-              data={overviewChartData}
-              formatXTick={formatMetricsXTick}
-              tickInterval={chartTickInterval}
-              showWaiting={queue ? RAW_WAITING_QUEUES.has(queue) : false}
-              emptyMessage={`No snapshots recorded for ${queue || "these queues"} in this timeframe.`}
-            />
           )}
+        </div>
+        <div aria-busy={chartRequestPending} aria-live="polite">
+          <QueueOverviewChart
+            data={overviewChartData}
+            formatXTick={formatMetricsXTick}
+            tickInterval={chartTickInterval}
+            showWaiting={queue ? RAW_WAITING_QUEUES.has(queue) : false}
+            state={
+              overviewChartData.length > 0
+                ? "ready"
+                : error
+                  ? "error"
+                  : chartRequestPending
+                    ? "loading"
+                    : "ready"
+            }
+            queue={queue}
+            rangeLabel={metricsHours <= 24 ? `${metricsHours}h` : "7d"}
+            emptyMessage={`No snapshots recorded for ${queue || "these queues"} in this timeframe.`}
+            onRetry={() => void refreshMetrics()}
+          />
         </div>
       </div>
 
