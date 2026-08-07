@@ -5,6 +5,7 @@ import { cachedJson } from "@/lib/api-response";
 
 const TTL = 15_000;
 const CDN_CACHE = { maxAge: 15, staleWhileRevalidate: 3_600 };
+const MAX_HISTORY_HOURS = 90 * 24;
 
 export async function GET(request: NextRequest) {
   try {
@@ -12,7 +13,7 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const hours = Math.min(
       parseInt(searchParams.get("hours") ?? "24", 10) || 24,
-      720,
+      MAX_HISTORY_HOURS,
     );
     const queue = searchParams.get("queue") || null;
     const cacheKey = `metrics:${hours}:${queue ?? "all"}`;
