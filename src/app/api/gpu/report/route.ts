@@ -50,13 +50,21 @@ export async function POST(request: NextRequest) {
       power_limit_w: gpu.power_limit_w ?? null,
     }));
 
-    const rollupsByName = new Map<string, { memPctSum: number; count: number }>();
+    const rollupsByName = new Map<
+      string,
+      { memPctSum: number; gpuUtilSum: number; count: number }
+    >();
     for (const gpu of body.gpus) {
       const name = gpu.name ?? "Unknown";
-      const current = rollupsByName.get(name) ?? { memPctSum: 0, count: 0 };
+      const current = rollupsByName.get(name) ?? {
+        memPctSum: 0,
+        gpuUtilSum: 0,
+        count: 0,
+      };
       current.memPctSum += gpu.mem_total_mb > 0
         ? (gpu.mem_used_mb / gpu.mem_total_mb) * 100
         : 0;
+      current.gpuUtilSum += gpu.gpu_util;
       current.count += 1;
       rollupsByName.set(name, current);
     }
@@ -65,6 +73,7 @@ export async function POST(request: NextRequest) {
       hostname: body.hostname,
       gpu_name: gpuName,
       mem_pct_sum: values.memPctSum,
+      gpu_util_sum: values.gpuUtilSum,
       sample_count: values.count,
     }));
 
@@ -94,10 +103,12 @@ export async function POST(request: NextRequest) {
           "hostname",
           "gpu_name",
           "mem_pct_sum",
+          "gpu_util_sum",
           "sample_count",
         )}
         ON CONFLICT (time_bucket, hostname, gpu_name) DO UPDATE SET
           mem_pct_sum = gpu_history_5m.mem_pct_sum + EXCLUDED.mem_pct_sum,
+          gpu_util_sum = gpu_history_5m.gpu_util_sum + EXCLUDED.gpu_util_sum,
           sample_count = gpu_history_5m.sample_count + EXCLUDED.sample_count
       `;
     });

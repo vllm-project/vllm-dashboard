@@ -37,6 +37,7 @@ function normalizeSnapshots(rows: DbRow[]): GpuSnapshot[] {
     hostname: String(row.hostname),
     gpu_name: row.gpu_name == null ? null : String(row.gpu_name),
     mem_pct_sum: Number(row.mem_pct_sum),
+    gpu_util_sum: Number(row.gpu_util_sum),
     sample_count: Number(row.sample_count),
   }));
 }
@@ -46,6 +47,7 @@ function normalizeLatest(rows: DbRow[]): GpuLatest[] {
     hostname: String(row.hostname),
     gpu_index: Number(row.gpu_index),
     gpu_name: row.gpu_name == null ? null : String(row.gpu_name),
+    gpu_util: Number(row.gpu_util),
     mem_used_mb: Number(row.mem_used_mb),
     mem_total_mb: Number(row.mem_total_mb),
     reported_at: isoString(row.reported_at),
@@ -67,7 +69,7 @@ function summarizeGpuHistory(
 ): GpuOverviewPoint[] {
   const buckets = new Map<
     number,
-    Map<string, { memPctSum: number; sampleCount: number }>
+    Map<string, { memPctSum: number; gpuUtilSum: number; sampleCount: number }>
   >();
 
   for (const snapshot of history.snapshots) {
@@ -75,9 +77,11 @@ function summarizeGpuHistory(
     const hosts = buckets.get(time) ?? new Map();
     const host = hosts.get(snapshot.hostname) ?? {
       memPctSum: 0,
+      gpuUtilSum: 0,
       sampleCount: 0,
     };
     host.memPctSum += snapshot.mem_pct_sum;
+    host.gpuUtilSum += snapshot.gpu_util_sum;
     host.sampleCount += snapshot.sample_count;
     hosts.set(snapshot.hostname, host);
     buckets.set(time, hosts);
@@ -85,14 +89,23 @@ function summarizeGpuHistory(
 
   return [...buckets.entries()]
     .map(([time, hosts]) => {
-      const values = [...hosts.values()]
-        .filter((host) => host.sampleCount > 0)
-        .map((host) => host.memPctSum / host.sampleCount);
+      const activeHosts = [...hosts.values()].filter(
+        (host) => host.sampleCount > 0,
+      );
+      const memoryValues = activeHosts.map(
+        (host) => host.memPctSum / host.sampleCount,
+      );
+      const gpuValues = activeHosts.map(
+        (host) => host.gpuUtilSum / host.sampleCount,
+      );
       return {
         time,
-        p50: Math.round(percentile(values, 0.5)),
-        p90: Math.round(percentile(values, 0.9)),
-        peak: Math.round(Math.max(...values, 0)),
+        memoryP50: Math.round(percentile(memoryValues, 0.5)),
+        memoryP90: Math.round(percentile(memoryValues, 0.9)),
+        memoryPeak: Math.round(Math.max(...memoryValues, 0)),
+        gpuP50: Math.round(percentile(gpuValues, 0.5)),
+        gpuP90: Math.round(percentile(gpuValues, 0.9)),
+        gpuPeak: Math.round(Math.max(...gpuValues, 0)),
       };
     })
     .sort((a, b) => a.time - b.time);
@@ -123,6 +136,7 @@ export async function queryGpuHistory(
             WHEN mem_total_mb > 0 THEN mem_used_mb / mem_total_mb * 100
             ELSE 0
           END)::numeric, 2) AS mem_pct_sum,
+          ROUND(SUM(gpu_util)::numeric, 2) AS gpu_util_sum,
           COUNT(*)::bigint AS sample_count
         FROM gpu_snapshots
         WHERE reported_at > NOW() - INTERVAL '1 hour' * ${hours}
@@ -140,6 +154,7 @@ export async function queryGpuHistory(
           hostname,
           NULLIF(gpu_name, 'Unknown') AS gpu_name,
           ROUND(SUM(mem_pct_sum)::numeric, 2) AS mem_pct_sum,
+          ROUND(SUM(gpu_util_sum)::numeric, 2) AS gpu_util_sum,
           SUM(sample_count)::bigint AS sample_count
         FROM gpu_history_5m
         WHERE time_bucket > NOW() - INTERVAL '1 hour' * ${hours}
@@ -177,11 +192,11 @@ export async function queryGpuLatest(): Promise<GpuLatest[]> {
         LIMIT 1
       ) next_key
     )
-    SELECT l.hostname, l.gpu_index, l.gpu_name, l.mem_used_mb,
-           l.mem_total_mb, l.reported_at
+    SELECT l.hostname, l.gpu_index, l.gpu_name, l.gpu_util,
+           l.mem_used_mb, l.mem_total_mb, l.reported_at
     FROM gpu_keys k
     CROSS JOIN LATERAL (
-      SELECT hostname, gpu_index, gpu_name, mem_used_mb, mem_total_mb, reported_at
+      SELECT hostname, gpu_index, gpu_name, gpu_util, mem_used_mb, mem_total_mb, reported_at
       FROM gpu_snapshots s
       WHERE s.hostname = k.hostname AND s.gpu_index = k.gpu_index
       ORDER BY s.reported_at DESC
@@ -195,7 +210,7 @@ export async function queryGpuLatest(): Promise<GpuLatest[]> {
 
 const getCachedInitialHistory = unstable_cache(
   () => queryGpuHistory(24),
-  ["gpu-initial-history-v1"],
+  ["gpu-initial-history-v2"],
   { revalidate: 60, tags: ["gpu-history"] },
 );
 
@@ -204,7 +219,7 @@ const getCachedInitialLatest = unstable_cache(
     latest: await queryGpuLatest(),
     checked_at: new Date().toISOString(),
   }),
-  ["gpu-initial-latest-v2"],
+  ["gpu-initial-latest-v3"],
   { revalidate: 30, tags: ["gpu-latest"] },
 );
 

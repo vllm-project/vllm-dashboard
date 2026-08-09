@@ -44,6 +44,7 @@ const OVERVIEW_SERIES = [
   "Peak",
 ] as const;
 const EMPTY_SNAPSHOTS: GpuHistoryResponse["snapshots"] = [];
+type GpuMetric = "memory" | "utilization";
 
 function percentile(values: number[], quantile: number): number {
   if (values.length === 0) return 0;
@@ -106,6 +107,7 @@ export function GpuDashboard({
   const [gpuTypeFilter, setGpuTypeFilter] = useState("");
   const [hostFilter, setHostFilter] = useState("");
   const [hours, setHours] = useState(24);
+  const [metric, setMetric] = useState<GpuMetric>("memory");
   const [chartMode, setChartMode] = useState<GpuChartMode>("overview");
   const [now, setNow] = useState(initialNow);
 
@@ -210,9 +212,12 @@ export function GpuDashboard({
       return {
         data: initialOverview.map((point) => ({
           time: point.time,
-          [OVERVIEW_SERIES[0]]: point.p50,
-          [OVERVIEW_SERIES[1]]: point.p90,
-          [OVERVIEW_SERIES[2]]: point.peak,
+          [OVERVIEW_SERIES[0]]:
+            metric === "memory" ? point.memoryP50 : point.gpuP50,
+          [OVERVIEW_SERIES[1]]:
+            metric === "memory" ? point.memoryP90 : point.gpuP90,
+          [OVERVIEW_SERIES[2]]:
+            metric === "memory" ? point.memoryPeak : point.gpuPeak,
         })),
         hosts: [...OVERVIEW_SERIES],
       };
@@ -225,7 +230,10 @@ export function GpuDashboard({
     // empty legend lines here.
     const hostsWithData = new Set<string>();
 
-    const bucketMap = new Map<number, Map<string, { memPctSum: number; count: number }>>();
+    const bucketMap = new Map<
+      number,
+      Map<string, { memPctSum: number; gpuUtilSum: number; count: number }>
+    >();
 
     for (const row of snapshots) {
       if (!relevantHosts.has(row.hostname)) continue;
@@ -235,9 +243,12 @@ export function GpuDashboard({
       const t = new Date(row.time_bucket).getTime();
       if (!bucketMap.has(t)) bucketMap.set(t, new Map());
       const hostMap = bucketMap.get(t)!;
-      if (!hostMap.has(row.hostname)) hostMap.set(row.hostname, { memPctSum: 0, count: 0 });
+      if (!hostMap.has(row.hostname)) {
+        hostMap.set(row.hostname, { memPctSum: 0, gpuUtilSum: 0, count: 0 });
+      }
       const entry = hostMap.get(row.hostname)!;
       entry.memPctSum += Number(row.mem_pct_sum);
+      entry.gpuUtilSum += Number(row.gpu_util_sum);
       entry.count += Number(row.sample_count);
     }
 
@@ -250,7 +261,10 @@ export function GpuDashboard({
         for (const host of hosts) {
           const entry = hostMap.get(host);
           if (entry) {
-            const averagePercent = entry.memPctSum / entry.count;
+            const total = metric === "memory"
+              ? entry.memPctSum
+              : entry.gpuUtilSum;
+            const averagePercent = total / entry.count;
             utilizationValues.push(averagePercent);
             if (chartMode === "stacked") {
               row[host] =
@@ -296,6 +310,7 @@ export function GpuDashboard({
     hours,
     hostFilter,
     initialOverview,
+    metric,
   ]);
 
   const tickInterval = Math.max(1, Math.floor(chartData.data.length / 10));
@@ -305,19 +320,31 @@ export function GpuDashboard({
       hostname: string;
       gpuType: string;
       gpuCount: number;
+      gpuUtil: number;
       memUsedMb: number;
       memTotalMb: number;
       lastSeen: string;
-      gpus: Array<{ index: number; memUsedMb: number; memTotalMb: number }>;
+      gpus: Array<{
+        index: number;
+        gpuUtil: number;
+        memUsedMb: number;
+        memTotalMb: number;
+      }>;
     }>();
     for (const g of filtered) {
       const existing = map.get(g.hostname);
-      const gpu = { index: g.gpu_index, memUsedMb: g.mem_used_mb, memTotalMb: g.mem_total_mb };
+      const gpu = {
+        index: g.gpu_index,
+        gpuUtil: g.gpu_util,
+        memUsedMb: g.mem_used_mb,
+        memTotalMb: g.mem_total_mb,
+      };
       if (!existing) {
         map.set(g.hostname, {
           hostname: g.hostname,
           gpuType: gpuType(g.gpu_name),
           gpuCount: 1,
+          gpuUtil: g.gpu_util,
           memUsedMb: g.mem_used_mb,
           memTotalMb: g.mem_total_mb,
           lastSeen: g.reported_at,
@@ -325,6 +352,7 @@ export function GpuDashboard({
         });
       } else {
         existing.gpuCount++;
+        existing.gpuUtil += g.gpu_util;
         existing.memUsedMb += g.mem_used_mb;
         existing.memTotalMb += g.mem_total_mb;
         existing.gpus.push(gpu);
@@ -357,7 +385,7 @@ export function GpuDashboard({
       <div className="space-y-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h1 className="text-3xl font-semibold tracking-[-0.03em]">GPU Memory</h1>
+            <h1 className="text-3xl font-semibold tracking-[-0.03em]">GPU Metrics</h1>
             <p className="mt-1.5 text-sm text-zinc-500 dark:text-zinc-400">
               {filteredHosts.length.toLocaleString()} hosts · {filtered.length.toLocaleString()} GPUs ·{" "}
               {formatCapacityGb(totalCapacityGb)} total memory
@@ -481,16 +509,20 @@ export function GpuDashboard({
         </div>
       </div>
 
-      {/* Per-host memory chart */}
+      {/* Per-host GPU metric chart */}
       <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none sm:p-6">
         <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold tracking-[-0.02em]">
-              {chartMode === "overview"
-                ? "Fleet Memory Overview"
-                : chartMode === "hosts"
-                  ? "Memory Utilization by Host"
-                  : "Stacked Memory by Host"}
+              {metric === "utilization"
+                ? chartMode === "overview"
+                  ? "Fleet GPU Utilization Overview"
+                  : "GPU Utilization by Host"
+                : chartMode === "overview"
+                  ? "Fleet Memory Overview"
+                  : chartMode === "hosts"
+                    ? "Memory Utilization by Host"
+                    : "Stacked Memory by Host"}
             </h2>
             <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
               {chartMode === "overview"
@@ -502,7 +534,7 @@ export function GpuDashboard({
                   : `Aggregate usage across ${filtered.length} GPUs, stacked by host.`}
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-3">
             {historyPending && (
               <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400" role="status">
                 <span className="h-3 w-3 animate-spin rounded-full border border-zinc-300 border-t-zinc-600 motion-reduce:animate-none dark:border-zinc-700 dark:border-t-zinc-300" aria-hidden="true" />
@@ -512,20 +544,24 @@ export function GpuDashboard({
             <div
               className="flex gap-1 rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700"
               role="group"
-              aria-label="GPU chart mode"
+              aria-label="GPU chart metric"
             >
               {([
-                { label: "Overview", value: "overview" },
-                { label: "Hosts", value: "hosts" },
-                { label: "Stacked", value: "stacked" },
+                { label: "Memory", value: "memory" },
+                { label: "GPU Utilization", value: "utilization" },
               ] as const).map((option) => (
                 <button
                   key={option.value}
                   type="button"
-                  onClick={() => setChartMode(option.value)}
-                  aria-pressed={chartMode === option.value}
+                  onClick={() => {
+                    setMetric(option.value);
+                    if (option.value === "utilization" && chartMode === "stacked") {
+                      setChartMode("overview");
+                    }
+                  }}
+                  aria-pressed={metric === option.value}
                   className={`dashboard-control min-h-11 rounded px-3 py-2 text-sm font-medium sm:min-h-10 ${
-                    chartMode === option.value
+                    metric === option.value
                       ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
                       : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
                   }`}
@@ -533,6 +569,33 @@ export function GpuDashboard({
                   {option.label}
                 </button>
               ))}
+            </div>
+            <div
+              className="flex gap-1 rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700"
+              role="group"
+              aria-label="GPU chart mode"
+            >
+              {([
+                { label: "Overview", value: "overview" },
+                { label: "Hosts", value: "hosts" },
+                { label: "Stacked", value: "stacked" },
+              ] as const)
+                .filter((option) => metric === "memory" || option.value !== "stacked")
+                .map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setChartMode(option.value)}
+                    aria-pressed={chartMode === option.value}
+                    className={`dashboard-control min-h-11 rounded px-3 py-2 text-sm font-medium sm:min-h-10 ${
+                      chartMode === option.value
+                        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                        : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
             </div>
           </div>
         </div>
@@ -556,19 +619,21 @@ export function GpuDashboard({
           </span>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-sm">
+          <table className="w-full min-w-[920px] text-sm">
             <thead>
               <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
                 <th className="px-5 py-3 font-medium sm:px-6">Host</th>
                 <th className="px-5 py-3 font-medium sm:px-6">GPU Type</th>
                 <th className="px-5 py-3 font-medium sm:px-6">Memory</th>
-                <th className="px-5 py-3 font-medium sm:px-6">Per-GPU</th>
+                <th className="px-5 py-3 font-medium sm:px-6">GPU Utilization</th>
+                <th className="px-5 py-3 font-medium sm:px-6">Per-GPU Memory</th>
                 <th className="px-5 py-3 font-medium sm:px-6">Last Seen</th>
               </tr>
             </thead>
             <tbody>
               {hostRows.map((h) => {
                 const memPct = h.memTotalMb > 0 ? Math.round((h.memUsedMb / h.memTotalMb) * 100) : 0;
+                const gpuUtil = h.gpuCount > 0 ? Math.round(h.gpuUtil / h.gpuCount) : 0;
                 const ago = now > 0
                   ? Math.round((now - new Date(h.lastSeen).getTime()) / 60_000)
                   : 0;
@@ -596,6 +661,17 @@ export function GpuDashboard({
                       <span className="ml-1 text-xs text-zinc-400">({memPct}%)</span>
                     </td>
                     <td className="px-5 py-3.5 sm:px-6">
+                      <div className="flex min-w-28 items-center gap-2">
+                        <span className="w-10 tabular-nums">{gpuUtil}%</span>
+                        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
+                          <div
+                            className="h-full rounded-full bg-emerald-500 dark:bg-emerald-400"
+                            style={{ width: `${Math.min(Math.max(gpuUtil, 0), 100)}%` }}
+                          />
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-5 py-3.5 sm:px-6">
                       <div className="flex items-end gap-1.5" style={{ height: 40 }}>
                         {h.gpus.map((gpu) => {
                           const pct = gpu.memTotalMb > 0 ? Math.round((gpu.memUsedMb / gpu.memTotalMb) * 100) : 0;
@@ -618,10 +694,13 @@ export function GpuDashboard({
                                   style={{ height: `${Math.max(pct, 2)}%` }}
                                 />
                               </div>
-                              <div className="pointer-events-none absolute -top-10 left-1/2 z-50 hidden -translate-x-1/2 whitespace-nowrap rounded border border-zinc-200 bg-white px-2 py-1 text-xs shadow-lg group-hover:block dark:border-zinc-700 dark:bg-zinc-900">
+                              <div className="pointer-events-none absolute -top-14 left-1/2 z-50 hidden -translate-x-1/2 whitespace-nowrap rounded border border-zinc-200 bg-white px-2 py-1 text-xs shadow-lg group-hover:block dark:border-zinc-700 dark:bg-zinc-900">
                                 <span className="font-medium">GPU {gpu.index}</span>
                                 <span className="ml-1 text-zinc-400">
                                   {formatMemory(gpu.memUsedMb)} / {formatMemory(gpu.memTotalMb)} ({pct}%)
+                                </span>
+                                <span className="block text-zinc-400">
+                                  GPU utilization: {Math.round(gpu.gpuUtil)}%
                                 </span>
                               </div>
                             </div>
@@ -645,7 +724,7 @@ export function GpuDashboard({
               })}
               {hostRows.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-5 py-12 text-center text-zinc-400">
+                  <td colSpan={6} className="px-5 py-12 text-center text-zinc-400">
                     No GPU data found. Deploy the reporting script to start collecting metrics.
                   </td>
                 </tr>

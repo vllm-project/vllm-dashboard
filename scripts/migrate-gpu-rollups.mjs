@@ -42,9 +42,14 @@ try {
       hostname      TEXT NOT NULL,
       gpu_name      TEXT NOT NULL,
       mem_pct_sum   DOUBLE PRECISION NOT NULL,
+      gpu_util_sum  DOUBLE PRECISION NOT NULL,
       sample_count  BIGINT NOT NULL,
       PRIMARY KEY (time_bucket, hostname, gpu_name)
     )
+  `;
+  await sql`
+    ALTER TABLE gpu_history_5m
+    ADD COLUMN IF NOT EXISTS gpu_util_sum DOUBLE PRECISION NOT NULL DEFAULT 0
   `;
   await sql`
     CREATE INDEX IF NOT EXISTS idx_gpu_history_5m_time_host
@@ -56,7 +61,7 @@ try {
     await tx`LOCK TABLE gpu_history_5m IN ACCESS EXCLUSIVE MODE`;
     await tx`
       INSERT INTO gpu_history_5m (
-        time_bucket, hostname, gpu_name, mem_pct_sum, sample_count
+        time_bucket, hostname, gpu_name, mem_pct_sum, gpu_util_sum, sample_count
       )
       SELECT
         date_bin(INTERVAL '5 minutes', reported_at, TIMESTAMPTZ 'epoch'),
@@ -66,11 +71,13 @@ try {
           WHEN mem_total_mb > 0 THEN mem_used_mb / mem_total_mb * 100
           ELSE 0
         END)::double precision,
+        SUM(gpu_util)::double precision,
         COUNT(*)::bigint
       FROM gpu_snapshots
       GROUP BY 1, hostname, COALESCE(gpu_name, 'Unknown')
       ON CONFLICT (time_bucket, hostname, gpu_name) DO UPDATE SET
         mem_pct_sum = EXCLUDED.mem_pct_sum,
+        gpu_util_sum = EXCLUDED.gpu_util_sum,
         sample_count = EXCLUDED.sample_count
     `;
   });
