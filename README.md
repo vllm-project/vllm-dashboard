@@ -6,6 +6,7 @@ A Next.js dashboard for observing vLLM's Buildkite CI: build status, job runtime
 
 - **Builds** — pass/fail rates, durations, and per-job breakdowns for recent pipeline builds.
 - **Jobs** — latest job failures and per-job historical run times.
+- **Tests** — Test Engine reliability, flaky-test filters, execution counts, and duration history.
 - **Queue** — live agent queue depth, waiting builds, and Slack alerts when queues back up.
 - **Cost** — compute hours and dollar cost per queue, derived from AWS on-demand pricing.
 - **Performance** — benchmark trends ingested into the warehouse.
@@ -41,6 +42,8 @@ Open http://localhost:3000.
 | `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID` | Databricks SQL Warehouse access |
 | `DATABASE_URL` | Postgres connection string for agent/queue samples |
 | `BUILDKITE_AGENT_TOKEN` | Buildkite agent registration token (for the Agent Metrics API) |
+| `BUILDKITE_API_TOKEN` | Buildkite personal API token with `read_suites` (for Test Engine data) |
+| `BUILDKITE_ORGANIZATION`, `BUILDKITE_TEST_SUITE` | Test Engine organization and suite slug (defaults: `vllm`, `ci-1`) |
 | `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` | Slack bot for queue-depth alerts (`chat:write`, `reactions:write`) |
 | `CRON_SECRET` | Optional shared secret required by Vercel cron handlers |
 

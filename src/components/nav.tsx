@@ -9,6 +9,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 const links = [
   { href: "/", label: "Builds" },
   { href: "/jobs", label: "Jobs" },
+  { href: "/tests", label: "Tests" },
   { href: "/nightly", label: "Nightly" },
   { href: "/queue", label: "Queue" },
   { href: "/gpu", label: "GPU" },
@@ -49,6 +50,10 @@ function defaultDataUrls(href: string): string[] {
       return [
         `/api/jobs?${buildParams}`,
         "/api/builds/filters",
+      ];
+    case "/tests":
+      return [
+        "/api/tests?period=1day&sortBy=reliability&order=asc&page=1",
       ];
     case "/nightly":
       return ["/api/nightly"];
