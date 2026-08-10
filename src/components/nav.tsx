@@ -7,8 +7,8 @@ import { preload } from "swr";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 const links = [
-  { href: "/", label: "Overview", routes: ["/"] },
-  { href: "/ci/builds", label: "CI Health", routes: ["/ci", "/jobs"] },
+  { href: "/", label: "CI Health", routes: ["/", "/ci", "/jobs"] },
+  { href: "/overview", label: "Overview", routes: ["/overview"] },
   {
     href: "/queue",
     label: "Infrastructure",
@@ -44,6 +44,11 @@ function defaultDataUrls(href: string): string[] {
 
   switch (href) {
     case "/":
+      return [
+        `/api/builds?${buildParams}&page=0`,
+        "/api/builds/filters",
+      ];
+    case "/overview":
       return [
         `/api/builds/summary?${buildParams}&format=json&per_page=5&jobs=false`,
         "/api/metrics?hours=24",
@@ -95,7 +100,7 @@ export function Nav() {
     prefetchedRoutes.add(href);
     const requests = defaultDataUrls(href).map(async (url) => {
       const data = await preload(url, fetcher);
-      if (href === "/ci/builds" && url.startsWith("/api/builds?")) {
+      if ((href === "/" || href === "/ci/builds") && url.startsWith("/api/builds?")) {
         const buildIds = (
           data as { builds?: Array<{ id?: string }> }
         ).builds
