@@ -1,5 +1,5 @@
-import { BuildsDashboard } from "@/components/builds-dashboard";
+import { redirect } from "next/navigation";
 
-export default function BuildsPage() {
-  return <BuildsDashboard />;
+export default function HomePage() {
+  redirect("/ci/builds");
 }
