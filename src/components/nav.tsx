@@ -7,15 +7,18 @@ import { preload } from "swr";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 const links = [
-  { href: "/", label: "Builds" },
-  { href: "/jobs", label: "Jobs" },
-  { href: "/nightly", label: "Nightly" },
-  { href: "/queue", label: "Queue" },
-  { href: "/gpu", label: "GPU" },
-  { href: "/cost", label: "Cost" },
-  { href: "/perf", label: "Performance" },
-  { href: "/eval", label: "Evaluation" },
-  { href: "/compare", label: "Compare" },
+  { href: "/", label: "Overview", routes: ["/"] },
+  { href: "/ci/builds", label: "CI Health", routes: ["/ci", "/jobs"] },
+  {
+    href: "/queue",
+    label: "Infrastructure",
+    routes: ["/infra", "/queue", "/gpu", "/cost"],
+  },
+  {
+    href: "/nightly",
+    label: "Nightly Intelligence",
+    routes: ["/nightly", "/perf", "/eval", "/compare"],
+  },
 ];
 
 const prefetchedRoutes = new Set<string>();
@@ -41,6 +44,12 @@ function defaultDataUrls(href: string): string[] {
 
   switch (href) {
     case "/":
+      return [
+        `/api/builds/summary?${buildParams}&format=json&per_page=5&jobs=false`,
+        "/api/metrics?hours=24",
+        "/api/nightly?limit=2",
+      ];
+    case "/ci/builds":
       return [
         `/api/builds?${buildParams}&page=0`,
         "/api/builds/filters",
@@ -86,7 +95,7 @@ export function Nav() {
     prefetchedRoutes.add(href);
     const requests = defaultDataUrls(href).map(async (url) => {
       const data = await preload(url, fetcher);
-      if (href === "/" && url.startsWith("/api/builds?")) {
+      if (href === "/ci/builds" && url.startsWith("/api/builds?")) {
         const buildIds = (
           data as { builds?: Array<{ id?: string }> }
         ).builds
@@ -160,10 +169,12 @@ export function Nav() {
     [],
   );
 
-  function isActive(href: string): boolean {
-    return href === "/"
-      ? pathname === "/"
-      : pathname === href || pathname.startsWith(`${href}/`);
+  function isActive(link: (typeof links)[number]): boolean {
+    return link.routes.some((route) =>
+      route === "/"
+        ? pathname === "/"
+        : pathname === route || pathname.startsWith(`${route}/`),
+    );
   }
 
   return (
@@ -178,7 +189,7 @@ export function Nav() {
           </Link>
           <div className="hidden min-w-0 flex-1 items-center gap-1 lg:flex">
             {links.map((link) => {
-              const active = isActive(link.href);
+              const active = isActive(link);
               return (
                 <Link
                   key={link.href}
@@ -209,7 +220,7 @@ export function Nav() {
           aria-label="Dashboard sections"
         >
           {links.map((link) => {
-            const active = isActive(link.href);
+            const active = isActive(link);
             return (
               <Link
                 key={link.href}
