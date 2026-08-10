@@ -9,12 +9,6 @@ const fetcher = async (url: string) => {
   return response.json();
 };
 
-function isoDaysAgo(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  return date.toISOString().slice(0, 10);
-}
-
 interface BuildSummaryResponse {
   summary: { total: number; passed: number; failed: number; passRate: number };
   builds: Array<{
@@ -245,9 +239,8 @@ function AttentionQueue({ items }: { items: AttentionItem[] }) {
 }
 
 export function OverviewDashboard() {
-  const startDate = isoDaysAgo(1);
-  const endDate = isoDaysAgo(0);
-  const buildParams = `pipeline=CI&branch=main&startDate=${startDate}&endDate=${endDate}&format=json&jobs=false`;
+  const buildParams =
+    "pipeline=CI&branch=main&hours=24&format=json&jobs=false";
   const { data: builds, error: buildsError } = useSWR<BuildSummaryResponse>(
     `/api/builds/summary?${buildParams}&per_page=5`,
     fetcher,

@@ -6,6 +6,17 @@ import { cachedJson } from "@/lib/api-response";
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
 
+function parseBoundedInt(
+  value: string | null,
+  min: number,
+  max: number,
+): number | null {
+  if (value === null) return null;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.min(max, Math.max(min, parsed));
+}
+
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
@@ -13,8 +24,10 @@ export async function GET(request: NextRequest) {
     const branch = searchParams.get("branch") || "main";
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
+    const hours = parseBoundedInt(searchParams.get("hours"), 1, 24 * 31);
+    const offsetHours = parseBoundedInt(searchParams.get("offsetHours"), 0, 24 * 31) ?? 0;
 
-    const cacheKey = `jobs:${pipeline}:${branch}:${startDate}:${endDate}`;
+    const cacheKey = `jobs:${pipeline}:${branch}:${startDate}:${endDate}:${hours}:${offsetHours}`;
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
 
@@ -30,14 +43,25 @@ export async function GET(request: NextRequest) {
     if (branch) {
       conditions.push(`b.branch = '${branch.replace(/'/g, "''")}'`);
     }
-    if (startDate) {
-      conditions.push(`b.created_at >= '${startDate.replace(/'/g, "''")}'`);
-    }
-    if (endDate) {
-      conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
+    if (hours !== null) {
+      conditions.push(
+        `b.created_at >= CURRENT_TIMESTAMP() - INTERVAL ${hours + offsetHours} HOUR`,
+      );
+      if (offsetHours > 0) {
+        conditions.push(
+          `b.created_at < CURRENT_TIMESTAMP() - INTERVAL ${offsetHours} HOUR`,
+        );
+      }
+    } else {
+      if (startDate) {
+        conditions.push(`b.created_at >= '${startDate.replace(/'/g, "''")}'`);
+      }
+      if (endDate) {
+        conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
+      }
     }
     const where = conditions.join(" AND ");
-    const hasDateRange = startDate || endDate;
+    const hasDateRange = hours !== null || startDate || endDate;
     const recencyHaving = hasDateRange
       ? ""
       : "\n          AND MAX(b.created_at) >= CURRENT_DATE - INTERVAL 7 DAY";

@@ -7,6 +7,17 @@ const MAX_PER_PAGE = 30;
 const DEFAULT_PER_PAGE = 10;
 const TTL = 30_000;
 
+function parseBoundedInt(
+  value: string | null,
+  min: number,
+  max: number,
+): number | null {
+  if (value === null) return null;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.min(max, Math.max(min, parsed));
+}
+
 function buildJobFilterSubquery(jobGroups: string[], jobNames: string[]): string {
   const nameConditions: string[] = [];
 
@@ -182,7 +193,10 @@ export async function GET(request: NextRequest) {
     const branch = searchParams.get("branch");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
+    const hours = parseBoundedInt(searchParams.get("hours"), 1, 24 * 31);
+    const offsetHours = parseBoundedInt(searchParams.get("offsetHours"), 0, 24 * 31) ?? 0;
     const state = searchParams.get("state");
+    const order = searchParams.get("order") === "asc" ? "asc" : "desc";
     const page = Math.max(0, parseInt(searchParams.get("page") ?? "0", 10));
     const perPage = Math.min(MAX_PER_PAGE, Math.max(1, parseInt(searchParams.get("per_page") ?? `${DEFAULT_PER_PAGE}`, 10)));
     const format = searchParams.get("format") === "json" ? "json" : "text";
@@ -190,7 +204,7 @@ export async function GET(request: NextRequest) {
     const jobGroups = searchParams.get("jobGroups")?.split(",").filter(Boolean) ?? [];
     const jobNames = searchParams.get("jobNames")?.split(",").filter(Boolean) ?? [];
 
-    const cacheKey = `builds-summary:${pipeline}:${branch}:${startDate}:${endDate}:${state}:${page}:${perPage}:${format}:${includeJobs}:${jobGroups.join(",")}:${jobNames.join(",")}`;
+    const cacheKey = `builds-summary:${pipeline}:${branch}:${startDate}:${endDate}:${hours}:${offsetHours}:${state}:${order}:${page}:${perPage}:${format}:${includeJobs}:${jobGroups.join(",")}:${jobNames.join(",")}`;
     const cached = getCached<{ text?: string; json?: unknown }>(cacheKey);
     if (cached) {
       if (cached.text) {
@@ -202,8 +216,19 @@ export async function GET(request: NextRequest) {
     const conditions = ["b._fivetran_deleted = false"];
     if (pipeline) conditions.push(`p.name = '${pipeline.replace(/'/g, "''")}'`);
     if (branch) conditions.push(`b.branch = '${branch.replace(/'/g, "''")}'`);
-    if (startDate) conditions.push(`b.created_at >= '${startDate.replace(/'/g, "''")}'`);
-    if (endDate) conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
+    if (hours !== null) {
+      conditions.push(
+        `b.created_at >= CURRENT_TIMESTAMP() - INTERVAL ${hours + offsetHours} HOUR`,
+      );
+      if (offsetHours > 0) {
+        conditions.push(
+          `b.created_at < CURRENT_TIMESTAMP() - INTERVAL ${offsetHours} HOUR`,
+        );
+      }
+    } else {
+      if (startDate) conditions.push(`b.created_at >= '${startDate.replace(/'/g, "''")}'`);
+      if (endDate) conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
+    }
     if (state) conditions.push(`b.state = '${state.replace(/'/g, "''")}'`);
     const where = conditions.join(" AND ");
     const jobFilter = buildJobFilterSubquery(jobGroups, jobNames);
@@ -229,7 +254,7 @@ export async function GET(request: NextRequest) {
           ON b.pipeline_id = p.id
         WHERE ${where}
         ${jobFilter}
-        ORDER BY b.created_at DESC
+        ORDER BY b.created_at ${order.toUpperCase()}
         LIMIT ${perPage} OFFSET ${page * perPage}
       `),
       queryDatabricks<{ total: string; passed: string; failed: string }>(`
@@ -302,6 +327,7 @@ export async function GET(request: NextRequest) {
       pagination,
       builds: buildsWithGroups.map((b) => ({
         number: b.web_url?.match(/builds\/(\d+)/)?.[1] ?? null,
+        url: b.web_url,
         state: b.state,
         pipeline: b.pipeline,
         branch: b.branch,

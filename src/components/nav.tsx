@@ -50,7 +50,7 @@ function defaultDataUrls(href: string): string[] {
       ];
     case "/overview":
       return [
-        `/api/builds/summary?${buildParams}&format=json&per_page=5&jobs=false`,
+        "/api/builds/summary?pipeline=CI&branch=main&hours=24&format=json&per_page=5&jobs=false",
         "/api/metrics?hours=24",
         "/api/nightly?limit=2",
       ];
