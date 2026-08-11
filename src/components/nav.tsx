@@ -7,12 +7,12 @@ import { preload } from "swr";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 const links = [
-  { href: "/", label: "CI Health", routes: ["/", "/ci", "/jobs"] },
+  { href: "/", label: "CI Health", routes: ["/", "/ci", "/jobs", "/queue"] },
   { href: "/overview", label: "Overview", routes: ["/overview"] },
   {
-    href: "/queue",
+    href: "/gpu",
     label: "Infrastructure",
-    routes: ["/infra", "/queue", "/gpu", "/cost"],
+    routes: ["/infra", "/gpu", "/cost"],
   },
   {
     href: "/nightly",
