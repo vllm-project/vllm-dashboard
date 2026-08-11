@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
+import { CiHealthNav } from "@/components/ci-health-nav";
 import { Nav } from "@/components/nav";
 import "./globals.css";
 
@@ -40,6 +41,7 @@ export default function RootLayout({
       >
         <Nav />
         <main className="mx-auto min-w-0 max-w-[1440px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+          <CiHealthNav />
           {children}
         </main>
         <Analytics />

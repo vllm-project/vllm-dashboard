@@ -7,16 +7,14 @@ import { preload } from "swr";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 const links = [
-  { href: "/", label: "Builds" },
-  { href: "/jobs", label: "Jobs" },
-  { href: "/tests", label: "Tests" },
-  { href: "/nightly", label: "Nightly" },
-  { href: "/queue", label: "Queue" },
-  { href: "/gpu", label: "GPU" },
-  { href: "/cost", label: "Cost" },
-  { href: "/perf", label: "Performance" },
-  { href: "/eval", label: "Evaluation" },
-  { href: "/compare", label: "Compare" },
+  { href: "/", label: "CI Health", routes: ["/", "/jobs", "/queue"] },
+  { href: "/tests", label: "Tests", routes: ["/tests"] },
+  { href: "/nightly", label: "Nightly", routes: ["/nightly"] },
+  { href: "/gpu", label: "GPU", routes: ["/gpu"] },
+  { href: "/cost", label: "Cost", routes: ["/cost"] },
+  { href: "/perf", label: "Performance", routes: ["/perf"] },
+  { href: "/eval", label: "Evaluation", routes: ["/eval"] },
+  { href: "/compare", label: "Compare", routes: ["/compare"] },
 ];
 
 const prefetchedRoutes = new Set<string>();
@@ -165,10 +163,12 @@ export function Nav() {
     [],
   );
 
-  function isActive(href: string): boolean {
-    return href === "/"
-      ? pathname === "/"
-      : pathname === href || pathname.startsWith(`${href}/`);
+  function isActive(link: (typeof links)[number]): boolean {
+    return link.routes.some((route) =>
+      route === "/"
+        ? pathname === "/"
+        : pathname === route || pathname.startsWith(`${route}/`),
+    );
   }
 
   return (
@@ -183,7 +183,7 @@ export function Nav() {
           </Link>
           <div className="hidden min-w-0 flex-1 items-center gap-1 lg:flex">
             {links.map((link) => {
-              const active = isActive(link.href);
+              const active = isActive(link);
               return (
                 <Link
                   key={link.href}
@@ -214,7 +214,7 @@ export function Nav() {
           aria-label="Dashboard sections"
         >
           {links.map((link) => {
-            const active = isActive(link.href);
+            const active = isActive(link);
             return (
               <Link
                 key={link.href}
