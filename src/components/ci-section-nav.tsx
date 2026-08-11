@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const links = [
   { href: "/ci/builds", label: "Builds" },
   { href: "/ci/jobs", label: "Jobs" },
+  { href: "/ci/queue", label: "Queue" },
   { href: "/ci/summary", label: "Summary" },
 ];
 
@@ -20,7 +21,7 @@ export function CiSectionNav() {
             CI Health
           </p>
           <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-            Builds remain the operational default; Jobs and Summary add deeper context.
+            Builds remain the default; Jobs, Queue, and Summary add deeper context.
           </p>
         </div>
       </div>
