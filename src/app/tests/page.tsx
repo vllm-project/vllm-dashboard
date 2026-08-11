@@ -211,7 +211,6 @@ function LoadingRows() {
 export default function TestsPage() {
   const [period, setPeriod] = useState<Period>("1day");
   const [state, setState] = useState<TestState>("all");
-  const [flakyOnly, setFlakyOnly] = useState(false);
   const [sortBy, setSortBy] = useState<SortBy>("reliability");
   const [order, setOrder] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(1);
@@ -226,7 +225,6 @@ export default function TestsPage() {
     page: String(page),
   });
   if (state !== "all") params.set("state", state);
-  if (flakyOnly) params.set("flaky", "true");
 
   const { data, error, isLoading, isValidating } = useSWR<TestsResponse>(
     `/api/tests?${params.toString()}`,
@@ -315,23 +313,6 @@ export default function TestsPage() {
               <option value="muted">Muted</option>
               <option value="skipped">Skipped</option>
             </select>
-            <button
-              type="button"
-              aria-pressed={flakyOnly}
-              onClick={() => {
-                setFlakyOnly((value) => !value);
-                setPage(1);
-                setExpanded(null);
-              }}
-              className={`dashboard-control inline-flex min-h-10 items-center gap-2 rounded-md border px-3 text-sm font-medium shadow-sm ${
-                flakyOnly
-                  ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300"
-                  : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-zinc-600"
-              }`}
-            >
-              <span className={`h-2 w-2 rounded-full ${flakyOnly ? "bg-rose-500" : "bg-zinc-300 dark:bg-zinc-600"}`} />
-              Flaky only
-            </button>
           </div>
           <label className="relative block w-full sm:w-72">
             <span className="sr-only">Search tests on this page</span>

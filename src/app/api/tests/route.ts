@@ -67,9 +67,6 @@ export async function GET(request: NextRequest) {
   upstreamUrl.searchParams.set("page", String(page));
   upstreamUrl.searchParams.set("per_page", String(PAGE_SIZE));
   if (state) upstreamUrl.searchParams.set("state", state);
-  if (params.get("flaky") === "true") {
-    upstreamUrl.searchParams.set("labels", "flaky");
-  }
 
   try {
     const response = await fetch(upstreamUrl, {

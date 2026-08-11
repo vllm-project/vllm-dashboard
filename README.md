@@ -6,7 +6,7 @@ A Next.js dashboard for observing vLLM's Buildkite CI: build status, job runtime
 
 - **Builds** — pass/fail rates, durations, and per-job breakdowns for recent pipeline builds.
 - **Jobs** — latest job failures and per-job historical run times.
-- **Tests** — Test Engine reliability, flaky-test filters, execution counts, and duration history.
+- **Tests** — Test Engine reliability, execution counts, and duration history.
 - **Queue** — live agent queue depth, waiting builds, and Slack alerts when queues back up.
 - **Cost** — compute hours and dollar cost per queue, derived from AWS on-demand pricing.
 - **Performance** — benchmark trends ingested into the warehouse.
