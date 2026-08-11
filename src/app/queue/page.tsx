@@ -73,7 +73,14 @@ const METRICS_HOURS_OPTIONS = [
   { label: "6h", value: 6 },
   { label: "24h", value: 24 },
   { label: "7d", value: 168 },
+  { label: "14d", value: 14 * 24 },
+  { label: "30d", value: 30 * 24 },
+  { label: "90d", value: 90 * 24 },
 ];
+
+function formatMetricsRange(hours: number): string {
+  return hours <= 24 ? `${hours}h` : `${hours / 24}d`;
+}
 
 // Queues whose raw jobs_waiting count is meaningful and should be charted as
 // a separate grey bar (in addition to the yellow scheduled "Waiting" bar).
@@ -281,10 +288,10 @@ export default function QueuePage() {
                 {error
                   ? historyMatchesSelection
                     ? "Refresh paused — showing saved data"
-                    : `Couldn’t load ${metricsHours <= 24 ? `${metricsHours}h` : "7d"} — showing ${displayedMetricsHours <= 24 ? `${displayedMetricsHours}h` : "7d"}`
+                    : `Couldn’t load ${formatMetricsRange(metricsHours)} — showing ${formatMetricsRange(displayedMetricsHours)}`
                   : historyMatchesSelection
                     ? "Updating history"
-                    : `Loading ${metricsHours <= 24 ? `${metricsHours}h` : "7d"} — showing ${displayedMetricsHours <= 24 ? `${displayedMetricsHours}h` : "7d"}`}
+                    : `Loading ${formatMetricsRange(metricsHours)} — showing ${formatMetricsRange(displayedMetricsHours)}`}
               </span>
               {error && (
                 <button
@@ -314,7 +321,7 @@ export default function QueuePage() {
                     : "ready"
             }
             queue={queue}
-            rangeLabel={metricsHours <= 24 ? `${metricsHours}h` : "7d"}
+            rangeLabel={formatMetricsRange(metricsHours)}
             emptyMessage={`No snapshots recorded for ${queue || "these queues"} in this timeframe.`}
             onRetry={() => void refreshMetrics()}
           />
