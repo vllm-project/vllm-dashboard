@@ -55,9 +55,9 @@ const PIPELINE_GROUP_DATA: [string, string[]][] = [
   ]],
   ["Intel", [
     ":docker: Build XPU image",
-    "XPU V1 test",
-    "XPU example Test",
-    "XPU server test",
+    ":intel: (BMG) Example Test",
+    ":intel: (BMG) V1 test",
+    ":intel: (BMG) Server test",
   ]],
 ];
 
