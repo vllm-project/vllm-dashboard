@@ -30,6 +30,7 @@ cp .env.local.example .env.local
 # fill in your own credentials
 npm install
 npm run migrate:gpu-rollups
+npm run migrate:otel
 npm run dev
 ```
 
@@ -42,8 +43,11 @@ Open http://localhost:3000.
 | `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID` | Databricks SQL Warehouse access |
 | `DATABASE_URL` | Postgres connection string for agent/queue samples |
 | `BUILDKITE_AGENT_TOKEN` | Buildkite agent registration token (for the Agent Metrics API) |
-| `BUILDKITE_API_TOKEN` | Buildkite personal API token with `read_suites` (for Test Engine data) |
+| `BUILDKITE_API_TOKEN` | Buildkite personal API token; needs `read_suites` for Test Engine and notification-service scopes only when running the OTel setup script |
 | `BUILDKITE_ORGANIZATION`, `BUILDKITE_TEST_SUITE` | Test Engine organization and suite slug (defaults: `vllm`, `ci-1`) |
+| `OTEL_INGEST_TOKEN` | Required Bearer token for the OTLP/HTTP trace receiver |
+| `OTEL_MAX_REQUEST_BYTES` | Optional OTLP request limit; defaults to 4 MiB |
+| `OTEL_ENDPOINT` | Buildkite notification-service base URL; defaults operationally to `https://ci.vllm.ai/api/otel` |
 | `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` | Slack bot for queue-depth alerts (`chat:write`, `reactions:write`) |
 | `CRON_SECRET` | Optional shared secret required by Vercel cron handlers |
 
@@ -54,6 +58,56 @@ GPU telemetry is written to raw `gpu_snapshots` rows and an incremental
 Run `npm run migrate:gpu-rollups` once before deploying a version that reads
 the rollup. The migration is idempotent and backfills existing raw snapshots;
 schema creation is intentionally kept out of user-facing request handlers.
+
+## OpenTelemetry trace ingestion
+
+The dashboard includes an authenticated OTLP/HTTP protobuf receiver at
+`/api/otel/v1/traces`. It stores normalized spans in the operational Postgres
+database so dashboard features can enrich the canonical Databricks build and
+job history without introducing another dashboard.
+
+1. Generate a dedicated random `OTEL_INGEST_TOKEN` with
+   `openssl rand -hex 32` and add it to the Vercel project. Do not reuse a
+   Buildkite or database credential.
+2. Run `npm run migrate:otel` against the production `DATABASE_URL`.
+3. Deploy the dashboard and verify the authenticated
+   `GET /api/otel/health` endpoint.
+4. Create or reconcile Buildkite's OpenTelemetry notification service:
+
+   ```bash
+   BUILDKITE_API_TOKEN=... \
+   OTEL_INGEST_TOKEN=... \
+   OTEL_ENDPOINT=https://ci.vllm.ai/api/otel \
+   npm run configure:buildkite-otel
+   ```
+
+   `OTEL_ENDPOINT` is the base endpoint. Buildkite appends `/v1/traces`.
+   The API token needs `read_notification_services` and
+   `write_notification_services`, and its owner needs organization admin or
+   Manage Notification Services access.
+
+5. Verify delivery without exposing span data publicly:
+
+   ```bash
+   curl -H "Authorization: Bearer $OTEL_INGEST_TOKEN" \
+     https://ci.vllm.ai/api/otel/health
+   ```
+
+The Vercel receiver accepts OTLP/HTTP protobuf with optional gzip compression;
+it is not a gRPC collector. To add agent-side checkout, hook, plugin, command,
+and artifact spans, Buildkite agent v3.101 or newer can be configured with:
+
+```bash
+BUILDKITE_TRACING_BACKEND=opentelemetry
+BUILDKITE_TRACING_PROPAGATE_TRACEPARENT=true
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_ENDPOINT=https://ci.vllm.ai/api/otel
+OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $OTEL_INGEST_TOKEN"
+OTEL_TRACES_SAMPLER=always_on
+```
+
+For older agents that only export OTLP/gRPC, put a standard OpenTelemetry
+Collector in front of this HTTP endpoint or upgrade the agents first.
 
 ## Deployment
 

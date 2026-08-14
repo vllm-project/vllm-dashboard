@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "migrate:gpu-rollups": "node scripts/migrate-gpu-rollups.mjs"
+    "migrate:gpu-rollups": "node scripts/migrate-gpu-rollups.mjs",
+    "migrate:otel": "node scripts/migrate-otel.mjs",
+    "configure:buildkite-otel": "node scripts/configure-buildkite-otel.mjs"
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",
@@ -15,6 +17,7 @@
     "next": "16.1.7",
     "plotly.js-basic-dist-min": "^3.4.0",
     "postgres": "^3.4.8",
+    "protobufjs": "^8.7.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-plotly.js": "^2.6.0",
