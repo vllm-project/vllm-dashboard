@@ -42,8 +42,9 @@ Open http://localhost:3000.
 | `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID` | Databricks SQL Warehouse access |
 | `DATABASE_URL` | Postgres connection string for agent/queue samples |
 | `BUILDKITE_AGENT_TOKEN` | Buildkite agent registration token (for the Agent Metrics API) |
-| `BUILDKITE_API_TOKEN` | Buildkite personal API token with `read_suites` (for Test Engine data) |
+| `BUILDKITE_API_TOKEN` | Buildkite API token with `read_suites` and GraphQL API access; add `write_builds` for job promotion |
 | `BUILDKITE_ORGANIZATION`, `BUILDKITE_TEST_SUITE` | Test Engine organization and suite slug (defaults: `vllm`, `ci-1`) |
+| `BUILDKITE_QUEUE_OPERATOR_TOKEN` | Required to enable queue-job promotion; authorized operators enter it for the current browser tab |
 | `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` | Slack bot for queue-depth alerts (`chat:write`, `reactions:write`) |
 | `CRON_SECRET` | Optional shared secret required by Vercel cron handlers |
 
