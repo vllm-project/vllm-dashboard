@@ -43,6 +43,8 @@ interface BuildWaterfallProps {
   organization: string;
   pipeline: string;
   buildNumber: string;
+  buildUrl: string;
+  startedJobCount?: number;
 }
 
 const INITIAL_LANE_LIMIT = 36;
@@ -103,6 +105,8 @@ export function BuildWaterfall({
   organization,
   pipeline,
   buildNumber,
+  buildUrl,
+  startedJobCount,
 }: BuildWaterfallProps) {
   const [criticalOnly, setCriticalOnly] = useState(false);
   const [showAll, setShowAll] = useState(false);
@@ -186,6 +190,23 @@ export function BuildWaterfall({
   const timelineEnd = Date.parse(summary.observedEnd);
   const timelineDuration = Math.max(1, timelineEnd - timelineStart);
   const hiddenCount = Math.max(0, orderedLanes.length - visibleLanes.length);
+  const hasCoverage =
+    typeof startedJobCount === "number" && startedJobCount > 0;
+  const coverageTotal = hasCoverage
+    ? Math.max(startedJobCount, summary.laneCount)
+    : null;
+  const isPartial =
+    data.complete && coverageTotal !== null && summary.laneCount < coverageTotal;
+  const traceState = !data.complete
+    ? "Live"
+    : isPartial
+      ? "Partial"
+      : "Complete";
+  const traceStateColor = !data.complete
+    ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+    : isPartial
+      ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+      : "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300";
 
   return (
     <section
@@ -193,55 +214,63 @@ export function BuildWaterfall({
       className="sticky left-0 w-[calc(100vw-2rem)] max-w-[1376px] border-t border-zinc-200 bg-zinc-50/80 sm:w-[calc(100vw-3rem)] lg:w-[calc(100vw-4rem)] dark:border-zinc-800 dark:bg-zinc-900/35"
     >
       <div className="flex flex-col gap-4 border-b border-zinc-200 px-5 py-4 lg:flex-row lg:items-start lg:justify-between dark:border-zinc-800">
-        <div>
+        <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-              Build waterfall
+              Build #{buildNumber} timeline
             </h4>
             <span
-              className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.12em] ${
-                data.complete
-                  ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-                  : "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
-              }`}
+              className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.12em] ${traceStateColor}`}
             >
-              {data.complete ? "Complete" : "Live"}
+              {traceState}
             </span>
             {isValidating && (
               <span className="text-[11px] text-zinc-400">Checking…</span>
             )}
           </div>
           <p className="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
-            Amber spans form an inferred critical path: each extended the
-            observed completion frontier. Buildkite OTel does not include
-            dependency edges.
+            Amber marks jobs most likely to determine when the build finished.
+            This is inferred from timing because Buildkite OTel does not include
+            dependency links.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400">
-          <span>
-            <strong className="font-mono font-semibold text-zinc-800 dark:text-zinc-200">
-              {formatDuration(summary.observedDurationMs)}
-            </strong>{" "}
-            observed
-          </span>
-          <span>
-            <strong className="font-mono font-semibold text-zinc-800 dark:text-zinc-200">
-              {summary.laneCount}
-            </strong>{" "}
-            jobs / steps
-          </span>
-          <span>
-            <strong className="font-mono font-semibold text-amber-700 dark:text-amber-300">
-              {summary.criticalCount}
-            </strong>{" "}
-            path spans
-          </span>
-          <span>
-            <strong className="font-mono font-semibold text-zinc-800 dark:text-zinc-200">
-              {summary.queueCount}
-            </strong>{" "}
-            queues
-          </span>
+        <div className="flex flex-col items-start gap-3 lg:items-end">
+          <a
+            href={buildUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="dashboard-control inline-flex min-h-9 items-center gap-1.5 rounded-md border border-zinc-300 bg-white px-3 text-xs font-semibold text-blue-600 hover:border-blue-300 hover:bg-blue-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-blue-400 dark:hover:border-blue-800 dark:hover:bg-blue-950/50"
+          >
+            Open Buildkite #{buildNumber}
+            <span aria-hidden="true">↗</span>
+          </a>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400">
+            <span>
+              <strong className="font-mono font-semibold text-zinc-800 dark:text-zinc-200">
+                {formatDuration(summary.observedDurationMs)}
+              </strong>{" "}
+              observed
+            </span>
+            <span>
+              <strong className="font-mono font-semibold text-zinc-800 dark:text-zinc-200">
+                {summary.laneCount}
+                {coverageTotal !== null ? ` of ${coverageTotal}` : ""}
+              </strong>{" "}
+              jobs traced
+            </span>
+            <span>
+              <strong className="font-mono font-semibold text-amber-700 dark:text-amber-300">
+                {summary.criticalCount}
+              </strong>{" "}
+              build-limiting
+            </span>
+            <span>
+              <strong className="font-mono font-semibold text-zinc-800 dark:text-zinc-200">
+                {summary.queueCount}
+              </strong>{" "}
+              queues
+            </span>
+          </div>
         </div>
       </div>
 
@@ -255,7 +284,7 @@ export function BuildWaterfall({
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2 w-4 rounded-sm border border-amber-500 bg-amber-300 dark:bg-amber-500" />
-            critical path
+            build-limiting
           </span>
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2 w-4 rounded-sm bg-zinc-300 dark:bg-zinc-700" /> queued
@@ -272,7 +301,7 @@ export function BuildWaterfall({
                 : "border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900"
             }`}
           >
-            Critical path only
+            {criticalOnly ? "Show all jobs" : "Show build-limiting jobs"}
           </button>
           {!criticalOnly && orderedLanes.length > INITIAL_LANE_LIMIT && (
             <button
@@ -338,7 +367,7 @@ export function BuildWaterfall({
                     <div className="flex items-center gap-2">
                       {lane.critical && (
                         <span
-                          aria-label="Inferred critical path"
+                          aria-label="Inferred build-limiting job"
                           className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
                         />
                       )}

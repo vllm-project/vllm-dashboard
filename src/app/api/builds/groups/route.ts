@@ -37,6 +37,7 @@ export async function GET(request: NextRequest) {
           groupsByBuild: {},
           jobNames: [],
           jobsByBuild: {},
+          startedJobCountsByBuild: {},
           jobOptions: [],
         },
         CDN_CACHE,
@@ -53,7 +54,8 @@ export async function GET(request: NextRequest) {
         j.build_id,
         j.name,
         j.state,
-        j.web_url
+        j.web_url,
+        j.started_at
       FROM vllm_data_warehouse.buildkite.build_job AS j
       WHERE j.build_id IN (${idList})
         AND j._fivetran_deleted = false
@@ -65,15 +67,23 @@ export async function GET(request: NextRequest) {
       string,
       { name: string; state: string; web_url?: string }[]
     >();
+    const startedJobCountsByBuild = Object.fromEntries(
+      buildIds.map((buildId) => [buildId, 0]),
+    ) as Record<string, number>;
     for (const job of jobs) {
-      const row = job as Record<string, string>;
-      const buildJobs = jobsByBuild.get(row.build_id) ?? [];
+      const row = job as Record<string, string | null>;
+      const buildId = row.build_id;
+      if (!buildId || !row.name || !row.state) continue;
+      if (row.started_at) {
+        startedJobCountsByBuild[buildId] += 1;
+      }
+      const buildJobs = jobsByBuild.get(buildId) ?? [];
       buildJobs.push({
         name: row.name,
         state: row.state,
-        web_url: row.web_url,
+        web_url: row.web_url ?? undefined,
       });
-      jobsByBuild.set(row.build_id, buildJobs);
+      jobsByBuild.set(buildId, buildJobs);
     }
 
     const groupedByBuild = new Map<string, GroupStatus[]>();
@@ -121,6 +131,7 @@ export async function GET(request: NextRequest) {
       groupsByBuild,
       jobNames,
       jobsByBuild: compactJobsByBuild,
+      startedJobCountsByBuild,
       jobOptions: [...jobToGroup.entries()]
         .map(([name, group]) => ({ name, group }))
         .sort((a, b) => a.name.localeCompare(b.name)),

@@ -54,6 +54,7 @@ interface BuildGroupsResponse {
     string,
     Record<string, Array<[nameIndex: number, state: string]>>
   >;
+  startedJobCountsByBuild: Record<string, number>;
   jobOptions: Array<{ name: string; group: string }>;
   error?: string;
 }
@@ -278,6 +279,7 @@ export default function BuildsPage() {
         builds={builds}
         jobNames={groupData?.jobNames ?? []}
         jobsByBuild={groupData?.jobsByBuild ?? {}}
+        startedJobCountsByBuild={groupData?.startedJobCountsByBuild ?? {}}
         showBranch={!branch}
         hideSoftFail={hideSoftFail}
         hideOptional={hideOptional}
