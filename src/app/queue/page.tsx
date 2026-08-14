@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
 import { QueueOverviewChart } from "@/components/queue-overview-chart";
+import { QueueWaitingJobs } from "@/components/queue-waiting-jobs";
 import { effectiveWaiting } from "@/lib/queue-plugins";
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -261,6 +262,8 @@ export default function QueuePage() {
           );
         })()}
       </div>
+
+      {queue && <QueueWaitingJobs queue={queue} />}
 
       {/* Queue Overview Chart */}
       <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">

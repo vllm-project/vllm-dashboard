@@ -43,8 +43,9 @@ Open http://localhost:3000.
 | `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID` | Databricks SQL Warehouse access |
 | `DATABASE_URL` | Postgres connection string for agent/queue samples |
 | `BUILDKITE_AGENT_TOKEN` | Buildkite agent registration token (for the Agent Metrics API) |
-| `BUILDKITE_API_TOKEN` | Buildkite personal API token; needs `read_suites` for Test Engine and notification-service scopes only when running the OTel setup script |
+| `BUILDKITE_API_TOKEN` | Buildkite personal API token; needs `read_suites` for Test Engine, GraphQL API access and `write_builds` for queue promotion, and notification-service scopes only when running the OTel setup script |
 | `BUILDKITE_ORGANIZATION`, `BUILDKITE_TEST_SUITE` | Test Engine organization and suite slug (defaults: `vllm`, `ci-1`) |
+| `BUILDKITE_QUEUE_OPERATOR_TOKEN` | Required to enable queue-job promotion; authorized operators enter it for the current browser tab |
 | `OTEL_INGEST_TOKEN` | Required Bearer token for the OTLP/HTTP trace receiver |
 | `OTEL_MAX_REQUEST_BYTES` | Optional OTLP request limit; defaults to 4 MiB |
 | `OTEL_ENDPOINT` | Buildkite notification-service base URL; defaults operationally to `https://ci.vllm.ai/api/otel` |
