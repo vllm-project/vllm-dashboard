@@ -81,7 +81,7 @@ async function graphqlQueueJobs(queue: string): Promise<QueueJob[]> {
       },
       body: JSON.stringify({
         query: `
-          query QueueJobs($organization: String!, $agentQueryRules: [String!], $first: Int!, $after: String) {
+          query QueueJobs($organization: ID!, $agentQueryRules: [String!], $first: Int!, $after: String) {
             organization(slug: $organization) {
               jobs(
                 first: $first
