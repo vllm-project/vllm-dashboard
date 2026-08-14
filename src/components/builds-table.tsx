@@ -1,12 +1,16 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { Fragment, useState, useCallback, useMemo } from "react";
 import useSWR from "swr";
+import { BuildWaterfall } from "@/components/build-waterfall";
 import type { GroupStatus } from "@/lib/test-groups";
 import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
 
 export interface Build {
   id: string;
+  build_number: string | null;
+  organization_slug: string | null;
+  pipeline_slug: string | null;
   web_url: string;
   message: string;
   commit_sha: string;
@@ -199,6 +203,7 @@ export function BuildsTable({
   selectedJobs,
 }: BuildsTableProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [expandedBuildId, setExpandedBuildId] = useState<string | null>(null);
   const buildIds = useMemo(
     () => builds.map((build) => build.id),
     [builds],
@@ -370,28 +375,75 @@ export function BuildsTable({
                   return [g.group, { ...g, jobs }];
                 })
               );
+              const canShowTrace = Boolean(
+                build.organization_slug &&
+                  build.pipeline_slug &&
+                  build.build_number,
+              );
+              const isTraceExpanded = expandedBuildId === build.id;
 
               return (
-                <tr
-                  key={build.id}
-                  className="border-b border-zinc-100 last:border-0 dark:border-zinc-800/50"
-                >
-                  <td className="sticky left-0 z-10 whitespace-nowrap bg-white px-4 py-2 dark:bg-zinc-950">
-                    {build.web_url ? (
-                      <a
-                        href={build.web_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-zinc-500 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
-                      >
-                        {build.created_at ? formatTime(build.created_at) : "—"}
-                      </a>
-                    ) : (
-                      <span className="text-zinc-500 dark:text-zinc-400">
-                        {build.created_at ? formatTime(build.created_at) : "—"}
-                      </span>
-                    )}
-                  </td>
+                <Fragment key={build.id}>
+                  <tr
+                    className={`border-b border-zinc-100 dark:border-zinc-800/50 ${
+                      isTraceExpanded ? "bg-zinc-50 dark:bg-zinc-900/30" : ""
+                    }`}
+                  >
+                    <td
+                      className={`sticky left-0 z-10 whitespace-nowrap px-4 py-2 ${
+                        isTraceExpanded
+                          ? "bg-zinc-50 dark:bg-zinc-900"
+                          : "bg-white dark:bg-zinc-950"
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        {canShowTrace ? (
+                          <button
+                            type="button"
+                            aria-label={`${isTraceExpanded ? "Hide" : "Show"} waterfall for build ${build.build_number}`}
+                            aria-expanded={isTraceExpanded}
+                            aria-controls={`build-trace-${build.id}`}
+                            onClick={() =>
+                              setExpandedBuildId((current) =>
+                                current === build.id ? null : build.id,
+                              )
+                            }
+                            className="dashboard-control inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-800 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                          >
+                            <svg
+                              viewBox="0 0 16 16"
+                              aria-hidden="true"
+                              className={`h-3.5 w-3.5 transition-transform motion-reduce:transition-none ${isTraceExpanded ? "rotate-90" : ""}`}
+                            >
+                              <path
+                                d="m6 3.5 4.5 4.5L6 12.5"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth="1.5"
+                              />
+                            </svg>
+                          </button>
+                        ) : (
+                          <span aria-hidden="true" className="h-7 w-7" />
+                        )}
+                        {build.web_url ? (
+                          <a
+                            href={build.web_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-zinc-500 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+                          >
+                            {build.created_at ? formatTime(build.created_at) : "—"}
+                          </a>
+                        ) : (
+                          <span className="text-zinc-500 dark:text-zinc-400">
+                            {build.created_at ? formatTime(build.created_at) : "—"}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                   <td className="px-4 py-2 font-mono text-xs">
                     {build.commit_sha ? (
                       <a
@@ -449,7 +501,7 @@ export function BuildsTable({
                   <td className="max-w-[16rem] truncate px-4 py-2 text-zinc-600 dark:text-zinc-400">
                     {build.message ?? "—"}
                   </td>
-                  {columns.map((col, i) => {
+                    {columns.map((col, i) => {
                     const key =
                       col.type === "job"
                         ? `${col.group}::${col.jobName}`
@@ -523,8 +575,23 @@ export function BuildsTable({
                         borderClass={borderR}
                       />
                     );
-                  })}
-                </tr>
+                    })}
+                  </tr>
+                  {isTraceExpanded && canShowTrace && (
+                    <tr id={`build-trace-${build.id}`}>
+                      <td
+                        colSpan={FIXED_COLS + columns.length}
+                        className="p-0"
+                      >
+                        <BuildWaterfall
+                          organization={build.organization_slug!}
+                          pipeline={build.pipeline_slug!}
+                          buildNumber={build.build_number!}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               );
             })}
             {builds.length === 0 && (
