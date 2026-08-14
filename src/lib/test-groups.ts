@@ -35,12 +35,12 @@ function getTestGroup(jobName: string, mapping: TestAreaMapping): string | null 
     const withoutTest = stripped.replace(/\s+Test$/, "");
     const withoutTestGroup = resolveGroup(withoutTest, mapping);
     if (withoutTestGroup) return withoutTestGroup;
-    return "Hardware - AMD";
+    return "Hardware-AMD Tests";
   }
 
   // AMD mirror jobs from CI pipeline (AMD: prefix)
   if (jobName.startsWith("AMD: ")) {
-    return "Hardware - AMD";
+    return "Hardware-AMD Tests";
   }
 
   // Filter out infrastructure steps (docker builds, bootstrap, etc.)
@@ -91,9 +91,10 @@ export function resolveGroupsToJobConditions(groups: string[]): { exactNames: st
     }
   }
 
-  if (groupSet.has("Hardware - AMD")) {
+  if (groupSet.has("Hardware-AMD Tests")) {
     regexPatterns.push("^mi\\d+[A-Z]?_\\d+:.*$");
-    regexPatterns.push("^AMD: .*$");
+    // AMD image preparation is its own Buildkite group.
+    regexPatterns.push("^AMD: (?!:docker: ).*$");
   }
 
   return { exactNames, regexPatterns };

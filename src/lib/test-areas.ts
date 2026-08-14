@@ -24,6 +24,43 @@ const GITHUB_RAW_BASE =
 const GITHUB_API_URL =
   "https://api.github.com/repos/vllm-project/vllm/contents/.buildkite/test_areas";
 
+// Pipeline groups that are not defined in .buildkite/test_areas.  Keep these
+// local rather than relying on the remote test-area refresh: that endpoint
+// intentionally only describes the main CUDA test matrix.
+const PIPELINE_GROUP_DATA: [string, string[]][] = [
+  ["Abuild", [
+    ":docker: Build image",
+    ":docker: :smoking: Non-root smoke tests",
+    ":docker: Build CPU image",
+    ":docker: Build HPU image",
+    ":docker: Build CPU arm64 image",
+    ":docker: Build arm64 image",
+  ]],
+  ["CPU", [
+    "Arm CPU Test",
+    "CPU-Kernel Tests",
+    "CPU-Language Generation and Pooling Model Tests",
+    "CPU-ModelRunnerV2 Tests",
+    "CPU-Quantization Model Tests",
+    "CPU-Distributed Tests (PP+TP)",
+    "CPU-Distributed Tests (DP+TP)",
+    "CPU-Multi-Modal Model Tests %N",
+    "CPU-Qwen2.5-VL Multimodal Tests",
+  ]],
+  ["Hardware", ["Ascend NPU Test", "GH200 Test", "Intel HPU Test"]],
+  ["Hardware - AMD Build", [
+    "AMD: :docker: refresh ROCm base",
+    "AMD: :docker: ensure ci_base",
+    "AMD: :docker: build test image and artifacts",
+  ]],
+  ["Intel", [
+    ":docker: Build XPU image",
+    "XPU V1 test",
+    "XPU example Test",
+    "XPU server test",
+  ]],
+];
+
 // Static seed mapping so the first request is instant.
 // Background refresh from GitHub picks up new/renamed tests within 1 hour.
 // Format: [group, [...labels]] — labels with %N are treated as patterns.
@@ -144,7 +181,6 @@ const SEED_DATA: [string, string[]][] = [
     "Spec Decode Ngram + Suffix", "Spec Decode Draft Model",
   ]],
   ["Weight Loading", ["Weight Loading Multiple GPU"]],
-  ["Hardware", ["Arm CPU Test", "Ascend NPU Test", "GH200 Test", "Intel GPU Test", "Intel HPU Test"]],
 ];
 
 function buildMapping(areas: { group: string; labels: string[] }[]): TestAreaMapping {
@@ -165,8 +201,9 @@ function buildMapping(areas: { group: string; labels: string[] }[]): TestAreaMap
     }
   }
 
-  // Hardware - AMD is handled by prefix matching, not yaml
-  groupSet.add("Hardware - AMD");
+  // AMD test jobs are distinguished by their Buildkite prefix. They do not
+  // live in test_areas, so keep the group available across remote refreshes.
+  groupSet.add("Hardware-AMD Tests");
 
   const groups = Array.from(groupSet).sort();
   return { jobToGroup, patterns, groups };
@@ -174,7 +211,7 @@ function buildMapping(areas: { group: string; labels: string[] }[]): TestAreaMap
 
 // Build static mapping immediately — no async, no network
 const STATIC_MAPPING = buildMapping(
-  SEED_DATA.map(([group, labels]) => ({ group, labels }))
+  [...SEED_DATA, ...PIPELINE_GROUP_DATA].map(([group, labels]) => ({ group, labels }))
 );
 
 let cachedMapping: TestAreaMapping = STATIC_MAPPING;
@@ -218,7 +255,10 @@ async function refreshMapping() {
   try {
     const areas = await fetchTestAreas();
     cachedMapping = buildMapping(
-      areas.map((a) => ({ group: a.group, labels: a.steps.map((s) => s.label) }))
+      [
+        ...areas.map((a) => ({ group: a.group, labels: a.steps.map((s) => s.label) })),
+        ...PIPELINE_GROUP_DATA.map(([group, labels]) => ({ group, labels })),
+      ]
     );
     cacheExpiry = Date.now() + CACHE_TTL;
   } catch (error) {
