@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
       { status: 503 },
     );
   }
-  if (!isOtlpAuthorized(request.headers)) {
+  if (!(await isOtlpAuthorized(request.headers))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

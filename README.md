@@ -46,7 +46,7 @@ Open http://localhost:3000.
 | `BUILDKITE_API_TOKEN` | Buildkite personal API token; needs `read_suites` for Test Engine, GraphQL API access and `write_builds` for queue promotion, and notification-service scopes only when running the OTel setup script |
 | `BUILDKITE_ORGANIZATION`, `BUILDKITE_TEST_SUITE` | Test Engine organization and suite slug (defaults: `vllm`, `ci-1`) |
 | `BUILDKITE_QUEUE_OPERATOR_TOKEN` | Required to enable queue-job promotion; authorized operators enter it for the current browser tab |
-| `OTEL_INGEST_TOKEN` | Required Bearer token for the OTLP/HTTP trace receiver |
+| `OTEL_INGEST_TOKEN` | Bearer token used by Buildkite's native OTel notification service; the receiver also accepts scoped Buildkite OIDC tokens |
 | `OTEL_MAX_REQUEST_BYTES` | Optional OTLP request limit; defaults to 4 MiB |
 | `OTEL_ENDPOINT` | Buildkite notification-service base URL; defaults operationally to `https://ci.vllm.ai/api/otel` |
 | `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` | Slack bot for queue-depth alerts (`chat:write`, `reactions:write`) |
@@ -95,8 +95,13 @@ job history without introducing another dashboard.
    ```
 
 The Vercel receiver accepts OTLP/HTTP protobuf with optional gzip compression;
-it is not a gRPC collector. To add agent-side checkout, hook, plugin, command,
-and artifact spans, Buildkite agent v3.101 or newer can be configured with:
+it is not a gRPC collector. It accepts the static ingest token above and
+short-lived Buildkite OIDC tokens for the `vllm/ci` pipeline. OIDC uploads are
+restricted to `main` builds or API-triggered `khluu/otel` treatment builds, so
+pull-request jobs cannot mint credentials accepted by the receiver.
+
+To add agent-side checkout, hook, plugin, command, and artifact spans,
+Buildkite agent v3.101 or newer can be configured with:
 
 ```bash
 BUILDKITE_TRACING_BACKEND=opentelemetry
