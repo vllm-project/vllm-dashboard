@@ -10,6 +10,8 @@ interface SearchableSelectProps {
   allLabel?: string;
   /** Optional per-option count, shown muted on the right (e.g. datapoints). */
   counts?: Record<string, number>;
+  /** Optional concise label for long machine-oriented option values. */
+  formatOption?: (option: string) => string;
 }
 
 export function SearchableSelect({
@@ -19,6 +21,7 @@ export function SearchableSelect({
   options,
   allLabel,
   counts,
+  formatOption = (option) => option,
 }: SearchableSelectProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -47,7 +50,9 @@ export function SearchableSelect({
   const filtered = !search
     ? options
     : options
-        .filter((o) => o.toLowerCase().includes(search.toLowerCase()))
+        .filter((o) =>
+          `${o} ${formatOption(o)}`.toLowerCase().includes(search.toLowerCase())
+        )
         .sort((a, b) => {
           const al = a.toLowerCase();
           const bl = b.toLowerCase();
@@ -93,7 +98,7 @@ export function SearchableSelect({
         className="dashboard-control flex min-h-11 w-full items-center justify-between rounded-md border border-zinc-200 bg-white px-3 text-left text-sm shadow-sm hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 sm:min-h-10 sm:w-52"
       >
         <span className={`min-w-0 truncate ${value ? "" : "text-zinc-400"}`}>
-          {value || allLabel}
+          {value ? formatOption(value) : allLabel}
         </span>
         <svg
           className={`ml-2 h-4 w-4 shrink-0 text-zinc-400 transition-transform duration-150 ease-[var(--ease-out)] motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
@@ -160,7 +165,9 @@ export function SearchableSelect({
                       : ""
                   }`}
                 >
-                  <span className="min-w-0 flex-1 truncate">{option}</span>
+                  <span className="min-w-0 flex-1 truncate" title={option}>
+                    {formatOption(option)}
+                  </span>
                   {counts?.[option] !== undefined && (
                     <span className="shrink-0 tabular-nums text-xs text-zinc-400 dark:text-zinc-500">
                       {counts[option]}

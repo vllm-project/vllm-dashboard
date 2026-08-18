@@ -1,11 +1,18 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { SearchableSelect } from "@/components/searchable-select";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { commitFromImage } from "@/lib/commit-from-image";
+import {
+  compareImageLabel,
+  latestNightlyPair,
+  latestReleasePair,
+  type CompareImagePair,
+  type NightlyImageEntry,
+} from "@/lib/compare-images";
 
 type Area = "perf" | "eval";
 type DeltaStatus = "regression" | "improvement" | "unchanged" | "noisy";
@@ -95,6 +102,12 @@ interface CompareFilters {
   device: string;
   task: string;
   perfThresholdPct: string;
+  startDate: string;
+  endDate: string;
+}
+
+interface NightlyResponse {
+  nightlies: NightlyImageEntry[];
 }
 
 const DEFAULT_EVAL_SIGMA = 2;
@@ -1210,6 +1223,10 @@ function CoverageCard({
 export default function ComparePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const hadExplicitImageParams = useRef(
+    searchParams.has("baseline") || searchParams.has("candidate")
+  );
+  const didApplyDefault = useRef(false);
   const [baseline, setBaseline] = useState(searchParams.get("baseline") ?? "");
   const [candidate, setCandidate] = useState(searchParams.get("candidate") ?? "");
   const [model, setModel] = useState(searchParams.get("model") ?? "");
@@ -1241,6 +1258,8 @@ export default function ComparePage() {
       device,
       task,
       perfThresholdPct,
+      startDate,
+      endDate,
       ...updates,
     };
     const params = new URLSearchParams();
@@ -1251,6 +1270,8 @@ export default function ComparePage() {
     setQueryParam(params, "model", next.model);
     setQueryParam(params, "device", next.device);
     setQueryParam(params, "task", next.task);
+    setQueryParam(params, "start", next.startDate);
+    setQueryParam(params, "end", next.endDate);
     if (
       Number.isFinite(perfThresholdParam) &&
       perfThresholdParam >= 0 &&
@@ -1295,6 +1316,18 @@ export default function ComparePage() {
     updateCompareUrl({ perfThresholdPct: value });
   };
 
+  const updateDateRange = (start: string, end: string) => {
+    setStartDate(start);
+    setEndDate(end);
+    updateCompareUrl({ startDate: start, endDate: end });
+  };
+
+  const applyImagePair = (pair: CompareImagePair) => {
+    setBaseline(pair.baseline);
+    setCandidate(pair.candidate);
+    updateCompareUrl(pair);
+  };
+
   const filtersQuery = useMemo(() => {
     const p = new URLSearchParams();
     if (startDate) p.set("start", startDate);
@@ -1311,11 +1344,46 @@ export default function ComparePage() {
     `/api/eval/filters${filtersQuery}`,
     fetcher
   );
+  const { data: nightlyData, error: nightlyError } = useSWR<NightlyResponse>(
+    "/api/nightly?limit=2",
+    fetcher,
+    { revalidateOnFocus: false }
+  );
 
   const imageOptions = useMemo(
     () => uniqueSorted([...(perfFilters?.images ?? []), ...(evalFilters?.images ?? [])]),
     [perfFilters?.images, evalFilters?.images]
   );
+
+  const nightlyPair = useMemo(
+    () => latestNightlyPair(nightlyData?.nightlies ?? [], imageOptions),
+    [nightlyData?.nightlies, imageOptions]
+  );
+  const releasePair = useMemo(
+    () => latestReleasePair(imageOptions),
+    [imageOptions]
+  );
+
+  useEffect(() => {
+    if (
+      didApplyDefault.current ||
+      hadExplicitImageParams.current ||
+      imageOptions.length === 0 ||
+      (!nightlyData && !nightlyError)
+    ) {
+      return;
+    }
+
+    didApplyDefault.current = true;
+    const pair = nightlyPair ?? releasePair;
+    if (!pair) return;
+
+    setBaseline(pair.baseline);
+    setCandidate(pair.candidate);
+    updateCompareUrl(pair);
+    // Only seed the initial blank state. Clearing a selection remains a user choice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageOptions, nightlyData, nightlyError, nightlyPair, releasePair]);
 
   useEffect(() => {
     if (imageOptions.length === 0) return;
@@ -1430,6 +1498,12 @@ export default function ComparePage() {
 
   const baselineShort = data ? shortImage(data.baseline) : null;
   const candidateShort = data ? shortImage(data.candidate) : null;
+  const selectedPreset =
+    nightlyPair?.baseline === baseline && nightlyPair.candidate === candidate
+      ? "nightly"
+      : releasePair?.baseline === baseline && releasePair.candidate === candidate
+        ? "release"
+        : null;
 
   return (
     <div className="space-y-5">
@@ -1450,6 +1524,7 @@ export default function ComparePage() {
               onChange={updateBaseline}
               options={imageOptions}
               allLabel="Select baseline"
+              formatOption={compareImageLabel}
             />
           </div>
           <div className="order-2 min-w-0 md:order-3">
@@ -1459,6 +1534,7 @@ export default function ComparePage() {
               onChange={updateCandidate}
               options={imageOptions}
               allLabel="Select candidate"
+              formatOption={compareImageLabel}
             />
           </div>
           <button
@@ -1474,6 +1550,48 @@ export default function ComparePage() {
             Swap
           </button>
         </div>
+        {(nightlyPair || releasePair) && (
+          <div className="flex flex-col gap-2 border-t border-zinc-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5 dark:border-zinc-900">
+            <div>
+              <div className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
+                Quick compare
+              </div>
+              <div className="mt-0.5 text-[11px] text-zinc-400">
+                Start with a useful pair, then refine either image.
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:flex">
+              {nightlyPair && (
+                <button
+                  type="button"
+                  aria-pressed={selectedPreset === "nightly"}
+                  onClick={() => applyImagePair(nightlyPair)}
+                  className={`min-h-11 rounded-md border px-3 text-xs font-medium transition-[background-color,border-color,transform] active:scale-[0.97] sm:min-h-10 ${
+                    selectedPreset === "nightly"
+                      ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                      : "border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:bg-zinc-800"
+                  }`}
+                >
+                  Latest nightlies
+                </button>
+              )}
+              {releasePair && (
+                <button
+                  type="button"
+                  aria-pressed={selectedPreset === "release"}
+                  onClick={() => applyImagePair(releasePair)}
+                  className={`min-h-11 rounded-md border px-3 text-xs font-medium transition-[background-color,border-color,transform] active:scale-[0.97] sm:min-h-10 ${
+                    selectedPreset === "release"
+                      ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                      : "border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:bg-zinc-800"
+                  }`}
+                >
+                  Latest releases
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         <details className="group border-t border-zinc-200 dark:border-zinc-800">
           <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-50 sm:min-h-10 sm:px-5 dark:text-zinc-300 dark:hover:bg-zinc-900/60 [&::-webkit-details-marker]:hidden">
             <span>Advanced filters</span>
@@ -1542,10 +1660,7 @@ export default function ComparePage() {
               <DateRangePicker
                 startDate={startDate}
                 endDate={endDate}
-                onChange={(s, e) => {
-                  setStartDate(s);
-                  setEndDate(e);
-                }}
+                onChange={updateDateRange}
               />
             </div>
           </div>
@@ -1593,8 +1708,8 @@ export default function ComparePage() {
           />
 
           <div className="rounded-xl border border-zinc-200/80 bg-white px-5 py-4 dark:border-zinc-800/80 dark:bg-zinc-950">
-            <div className="grid gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 md:grid-cols-[1fr_auto_1fr] dark:border-zinc-800 dark:bg-zinc-800">
-              <div className="bg-white p-4 dark:bg-zinc-950">
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] dark:border-zinc-800 dark:bg-zinc-800">
+              <div className="min-w-0 bg-white p-4 dark:bg-zinc-950">
                 <div className="mb-1.5 inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
                   <span className="h-1.5 w-1.5 rounded-full bg-zinc-400" />
                   Baseline image
@@ -1610,7 +1725,7 @@ export default function ComparePage() {
                 </div>
                 <ImageCommitInfo image={data.baseline} />
               </div>
-              <div className="grid place-items-center bg-white px-3 dark:bg-zinc-950">
+              <div className="grid min-w-0 place-items-center bg-white px-3 dark:bg-zinc-950">
                 <button
                   type="button"
                   onClick={() => {
@@ -1621,7 +1736,7 @@ export default function ComparePage() {
                       candidate: baseline,
                     });
                   }}
-                  className="grid h-8 w-8 place-items-center rounded-full border border-zinc-200 text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
+                  className="grid h-11 w-11 place-items-center rounded-full border border-zinc-200 text-zinc-600 transition-[border-color,color,transform] hover:border-zinc-300 hover:text-zinc-900 active:scale-[0.97] sm:h-10 sm:w-10 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
                   title="Swap baseline & candidate"
                   aria-label="Swap baseline and candidate"
                 >
@@ -1637,7 +1752,7 @@ export default function ComparePage() {
                   </svg>
                 </button>
               </div>
-              <div className="bg-white p-4 dark:bg-zinc-950">
+              <div className="min-w-0 bg-white p-4 dark:bg-zinc-950">
                 <div className="mb-1.5 inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
                   <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
                   Candidate image
