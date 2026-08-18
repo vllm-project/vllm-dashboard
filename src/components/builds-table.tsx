@@ -1,12 +1,16 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { Fragment, useState, useCallback, useMemo } from "react";
 import useSWR from "swr";
+import { BuildWaterfall } from "@/components/build-waterfall";
 import type { GroupStatus } from "@/lib/test-groups";
 import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
 
 export interface Build {
   id: string;
+  build_number: string | null;
+  organization_slug: string | null;
+  pipeline_slug: string | null;
   web_url: string;
   message: string;
   commit_sha: string;
@@ -179,6 +183,7 @@ interface BuildsTableProps {
   builds: Build[];
   jobNames: string[];
   jobsByBuild: CompactJobsByBuild;
+  startedJobCountsByBuild: Record<string, number>;
   showBranch?: boolean;
   hideSoftFail?: boolean;
   hideOptional?: boolean;
@@ -192,6 +197,7 @@ export function BuildsTable({
   builds,
   jobNames,
   jobsByBuild,
+  startedJobCountsByBuild,
   showBranch,
   hideSoftFail,
   hideOptional,
@@ -199,6 +205,7 @@ export function BuildsTable({
   selectedJobs,
 }: BuildsTableProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [expandedBuildId, setExpandedBuildId] = useState<string | null>(null);
   const buildIds = useMemo(
     () => builds.map((build) => build.id),
     [builds],
@@ -286,7 +293,7 @@ export function BuildsTable({
         <table className="text-sm" style={{ borderCollapse: "separate", borderSpacing: 0 }}>
           <thead>
             <tr className="border-b border-zinc-200 dark:border-zinc-800">
-              <th className="sticky left-0 z-10 bg-white px-4 pb-2 text-left align-bottom font-semibold text-zinc-500 dark:bg-zinc-950 dark:text-zinc-400">Started</th>
+              <th className="sticky left-0 z-10 bg-white px-4 pb-2 text-left align-bottom font-semibold text-zinc-500 dark:bg-zinc-950 dark:text-zinc-400">Build</th>
               <th className="px-4 pb-2 text-left align-bottom font-semibold text-zinc-500 dark:text-zinc-400">Commit</th>
               {showBranch && <th className="px-4 pb-2 text-left align-bottom font-semibold text-zinc-500 dark:text-zinc-400">Branch</th>}
               <th className="px-4 pb-2 text-left align-bottom font-semibold text-zinc-500 dark:text-zinc-400">PR</th>
@@ -370,28 +377,99 @@ export function BuildsTable({
                   return [g.group, { ...g, jobs }];
                 })
               );
+              const canShowTrace = Boolean(
+                build.organization_slug &&
+                  build.pipeline_slug &&
+                  build.build_number,
+              );
+              const isTraceExpanded = expandedBuildId === build.id;
+              const startedJobCount = startedJobCountsByBuild[build.id];
 
               return (
-                <tr
-                  key={build.id}
-                  className="border-b border-zinc-100 last:border-0 dark:border-zinc-800/50"
-                >
-                  <td className="sticky left-0 z-10 whitespace-nowrap bg-white px-4 py-2 dark:bg-zinc-950">
-                    {build.web_url ? (
-                      <a
-                        href={build.web_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-zinc-500 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
-                      >
-                        {build.created_at ? formatTime(build.created_at) : "—"}
-                      </a>
-                    ) : (
-                      <span className="text-zinc-500 dark:text-zinc-400">
-                        {build.created_at ? formatTime(build.created_at) : "—"}
-                      </span>
-                    )}
-                  </td>
+                <Fragment key={build.id}>
+                  <tr
+                    className={`group border-b border-zinc-100 transition-colors dark:border-zinc-800/50 ${
+                      isTraceExpanded ? "bg-zinc-50 dark:bg-zinc-900/30" : ""
+                    } ${isTraceExpanded ? "" : "hover:bg-zinc-50/80 dark:hover:bg-zinc-900/20"}`}
+                  >
+                    <td
+                      className={`sticky left-0 z-10 whitespace-nowrap px-4 py-2 ${
+                        isTraceExpanded
+                          ? "bg-zinc-50 dark:bg-zinc-900"
+                          : "bg-white group-hover:bg-zinc-50 dark:bg-zinc-950 dark:group-hover:bg-zinc-900"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        {canShowTrace ? (
+                          <button
+                            type="button"
+                            aria-label={`${isTraceExpanded ? "Hide" : "Show"} timeline for build ${build.build_number}`}
+                            aria-expanded={isTraceExpanded}
+                            aria-controls={`build-trace-${build.id}`}
+                            onClick={() =>
+                              setExpandedBuildId((current) =>
+                                current === build.id ? null : build.id,
+                              )
+                            }
+                            className={`dashboard-control inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors ${
+                              isTraceExpanded
+                                ? "border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-800 dark:bg-blue-950/60 dark:text-blue-300"
+                                : "border-zinc-300 bg-white text-zinc-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:border-blue-800 dark:hover:bg-blue-950/50 dark:hover:text-blue-300"
+                            }`}
+                          >
+                            <svg
+                              viewBox="0 0 16 16"
+                              aria-hidden="true"
+                              className="h-3.5 w-3.5"
+                            >
+                              <path
+                                d="M2.5 4.25h3v7.5h-3zm4-2h3v9.5h-3zm4 4h3v5.5h-3z"
+                                fill="currentColor"
+                              />
+                            </svg>
+                            <span>
+                              {isTraceExpanded ? "Hide timeline" : "View timeline"}
+                            </span>
+                            <svg
+                              viewBox="0 0 16 16"
+                              aria-hidden="true"
+                              className={`h-3.5 w-3.5 transition-transform motion-reduce:transition-none ${isTraceExpanded ? "rotate-90" : ""}`}
+                            >
+                              <path
+                                d="m6 3.5 4.5 4.5L6 12.5"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth="1.5"
+                              />
+                            </svg>
+                          </button>
+                        ) : (
+                          <span
+                            className="inline-flex min-h-8 items-center rounded-md border border-zinc-200 px-2.5 text-xs text-zinc-400 dark:border-zinc-800 dark:text-zinc-600"
+                            title="Timeline unavailable"
+                          >
+                            No timeline
+                          </span>
+                        )}
+                        <span className="text-zinc-500 dark:text-zinc-400">
+                          {build.created_at ? formatTime(build.created_at) : "—"}
+                        </span>
+                        {build.web_url && build.build_number ? (
+                          <a
+                            href={build.web_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            aria-label={`Open Buildkite build ${build.build_number}`}
+                            className="inline-flex items-center gap-1 font-medium text-blue-600 hover:underline dark:text-blue-400"
+                          >
+                            Buildkite #{build.build_number}
+                            <span aria-hidden="true">↗</span>
+                          </a>
+                        ) : null}
+                      </div>
+                    </td>
                   <td className="px-4 py-2 font-mono text-xs">
                     {build.commit_sha ? (
                       <a
@@ -449,7 +527,7 @@ export function BuildsTable({
                   <td className="max-w-[16rem] truncate px-4 py-2 text-zinc-600 dark:text-zinc-400">
                     {build.message ?? "—"}
                   </td>
-                  {columns.map((col, i) => {
+                    {columns.map((col, i) => {
                     const key =
                       col.type === "job"
                         ? `${col.group}::${col.jobName}`
@@ -523,8 +601,25 @@ export function BuildsTable({
                         borderClass={borderR}
                       />
                     );
-                  })}
-                </tr>
+                    })}
+                  </tr>
+                  {isTraceExpanded && canShowTrace && (
+                    <tr id={`build-trace-${build.id}`}>
+                      <td
+                        colSpan={FIXED_COLS + columns.length}
+                        className="p-0"
+                      >
+                        <BuildWaterfall
+                          organization={build.organization_slug!}
+                          pipeline={build.pipeline_slug!}
+                          buildNumber={build.build_number!}
+                          buildUrl={build.web_url}
+                          startedJobCount={startedJobCount}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               );
             })}
             {builds.length === 0 && (

@@ -1,12 +1,12 @@
 import yaml from "js-yaml";
 
-interface TestStep {
+export interface TestStep {
   label: string;
   parallelism?: number;
   optional?: boolean;
 }
 
-interface TestArea {
+export interface TestArea {
   group: string;
   steps: TestStep[];
 }
@@ -23,6 +23,43 @@ const GITHUB_RAW_BASE =
   "https://raw.githubusercontent.com/vllm-project/vllm/main/.buildkite/test_areas";
 const GITHUB_API_URL =
   "https://api.github.com/repos/vllm-project/vllm/contents/.buildkite/test_areas";
+
+// Pipeline groups that are not defined in .buildkite/test_areas.  Keep these
+// local rather than relying on the remote test-area refresh: that endpoint
+// intentionally only describes the main CUDA test matrix.
+const PIPELINE_GROUP_DATA: [string, string[]][] = [
+  ["Abuild", [
+    ":docker: Build image",
+    ":docker: :smoking: Non-root smoke tests",
+    ":docker: Build CPU image",
+    ":docker: Build HPU image",
+    ":docker: Build CPU arm64 image",
+    ":docker: Build arm64 image",
+  ]],
+  ["CPU", [
+    "Arm CPU Test",
+    "CPU-Kernel Tests",
+    "CPU-Language Generation and Pooling Model Tests",
+    "CPU-ModelRunnerV2 Tests",
+    "CPU-Quantization Model Tests",
+    "CPU-Distributed Tests (PP+TP)",
+    "CPU-Distributed Tests (DP+TP)",
+    "CPU-Multi-Modal Model Tests %N",
+    "CPU-Qwen2.5-VL Multimodal Tests",
+  ]],
+  ["Hardware", ["Ascend NPU Test", "GH200 Test", "Intel HPU Test"]],
+  ["Hardware - AMD Build", [
+    "AMD: :docker: refresh ROCm base",
+    "AMD: :docker: ensure ci_base",
+    "AMD: :docker: build test image and artifacts",
+  ]],
+  ["Intel", [
+    ":docker: Build XPU image",
+    "XPU V1 test",
+    "XPU example Test",
+    "XPU server test",
+  ]],
+];
 
 // Static seed mapping so the first request is instant.
 // Background refresh from GitHub picks up new/renamed tests within 1 hour.
@@ -144,7 +181,6 @@ const SEED_DATA: [string, string[]][] = [
     "Spec Decode Ngram + Suffix", "Spec Decode Draft Model",
   ]],
   ["Weight Loading", ["Weight Loading Multiple GPU"]],
-  ["Hardware", ["Arm CPU Test", "Ascend NPU Test", "GH200 Test", "Intel GPU Test", "Intel HPU Test"]],
 ];
 
 function buildMapping(areas: { group: string; labels: string[] }[]): TestAreaMapping {
@@ -165,21 +201,31 @@ function buildMapping(areas: { group: string; labels: string[] }[]): TestAreaMap
     }
   }
 
-  // Hardware - AMD is handled by prefix matching, not yaml
-  groupSet.add("Hardware - AMD");
+  // AMD test jobs are distinguished by their Buildkite prefix. They do not
+  // live in test_areas, so keep the group available across remote refreshes.
+  groupSet.add("Hardware-AMD Tests");
 
   const groups = Array.from(groupSet).sort();
   return { jobToGroup, patterns, groups };
 }
 
+export function buildTestAreaMapping(areas: TestArea[]): TestAreaMapping {
+  return buildMapping([
+    ...SEED_DATA.map(([group, labels]) => ({ group, labels })),
+    ...areas.map((area) => ({
+      group: area.group,
+      labels: area.steps.map((step) => step.label),
+    })),
+    ...PIPELINE_GROUP_DATA.map(([group, labels]) => ({ group, labels })),
+  ]);
+}
+
 // Build static mapping immediately — no async, no network
-const STATIC_MAPPING = buildMapping(
-  SEED_DATA.map(([group, labels]) => ({ group, labels }))
-);
+const STATIC_MAPPING = buildTestAreaMapping([]);
 
 let cachedMapping: TestAreaMapping = STATIC_MAPPING;
 let cacheExpiry = 0;
-let refreshing = false;
+let refreshPromise: Promise<void> | null = null;
 
 async function fetchTestAreas(): Promise<TestArea[]> {
   const listRes = await fetch(GITHUB_API_URL, {
@@ -212,22 +258,24 @@ async function fetchTestAreas(): Promise<TestArea[]> {
   return areas;
 }
 
-async function refreshMapping() {
-  if (refreshing) return;
-  refreshing = true;
-  try {
-    const areas = await fetchTestAreas();
-    cachedMapping = buildMapping(
-      areas.map((a) => ({ group: a.group, labels: a.steps.map((s) => s.label) }))
-    );
-    cacheExpiry = Date.now() + CACHE_TTL;
-  } catch (error) {
-    console.error("Failed to refresh test areas from GitHub:", error);
-    // Keep using existing mapping (static or previously fetched)
-    cacheExpiry = Date.now() + 5 * 60 * 1000; // retry in 5 min
-  } finally {
-    refreshing = false;
-  }
+function refreshMapping(): Promise<void> {
+  if (refreshPromise) return refreshPromise;
+
+  refreshPromise = (async () => {
+    try {
+      const areas = await fetchTestAreas();
+      cachedMapping = buildTestAreaMapping(areas);
+      cacheExpiry = Date.now() + CACHE_TTL;
+    } catch (error) {
+      console.error("Failed to refresh test areas from GitHub:", error);
+      // Keep using existing mapping (static or previously fetched)
+      cacheExpiry = Date.now() + 5 * 60 * 1000; // retry in 5 min
+    }
+  })().finally(() => {
+    refreshPromise = null;
+  });
+
+  return refreshPromise;
 }
 
 export function getTestAreaMapping(): TestAreaMapping {
@@ -235,6 +283,13 @@ export function getTestAreaMapping(): TestAreaMapping {
   if (Date.now() >= cacheExpiry) {
     // Trigger background refresh, don't await
     refreshMapping();
+  }
+  return cachedMapping;
+}
+
+export async function ensureTestAreaMapping(): Promise<TestAreaMapping> {
+  if (Date.now() >= cacheExpiry) {
+    await refreshMapping();
   }
   return cachedMapping;
 }

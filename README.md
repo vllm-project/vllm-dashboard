@@ -30,6 +30,7 @@ cp .env.local.example .env.local
 # fill in your own credentials
 npm install
 npm run migrate:gpu-rollups
+npm run migrate:otel
 npm run dev
 ```
 
@@ -42,8 +43,13 @@ Open http://localhost:3000.
 | `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID` | Databricks SQL Warehouse access |
 | `DATABASE_URL` | Postgres connection string for agent/queue samples |
 | `BUILDKITE_AGENT_TOKEN` | Buildkite agent registration token (for the Agent Metrics API) |
-| `BUILDKITE_API_TOKEN` | Buildkite personal API token with `read_suites` (for Test Engine data) |
+| `BUILDKITE_API_TOKEN` | Buildkite personal API token; needs `read_suites` for Test Engine, GraphQL API access and `write_builds` for queue promotion, and notification-service scopes only when running the OTel setup script |
 | `BUILDKITE_ORGANIZATION`, `BUILDKITE_TEST_SUITE` | Test Engine organization and suite slug (defaults: `vllm`, `ci-1`) |
+| `BUILDKITE_QUEUE_OPERATOR_TOKEN` | Required to enable queue-job promotion; authorized operators enter it for the current browser tab |
+| `OTEL_INGEST_TOKEN` | Shared Bearer token used by Buildkite's OTel notification service |
+| `OTEL_MAX_REQUEST_BYTES` | Optional OTLP request limit; defaults to 4 MiB |
+| `OTEL_ENDPOINT` | Buildkite notification-service base URL; defaults operationally to `https://ci.vllm.ai/api/otel` |
+| `OTEL_BUILDKITE_OIDC_AUDIENCE`, `OTEL_BUILDKITE_OIDC_ORGANIZATION`, `OTEL_BUILDKITE_OIDC_PIPELINE`, `OTEL_BUILDKITE_OIDC_BRANCH`, `OTEL_BUILDKITE_OIDC_TREATMENT_BRANCH` | Optional restrictions for short-lived Buildkite job tokens; defaults to the production vLLM main pipeline plus API-triggered `khluu/otel` treatment builds |
 | `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` | Slack bot for queue-depth alerts (`chat:write`, `reactions:write`) |
 | `CRON_SECRET` | Optional shared secret required by Vercel cron handlers |
 
@@ -54,6 +60,60 @@ GPU telemetry is written to raw `gpu_snapshots` rows and an incremental
 Run `npm run migrate:gpu-rollups` once before deploying a version that reads
 the rollup. The migration is idempotent and backfills existing raw snapshots;
 schema creation is intentionally kept out of user-facing request handlers.
+
+## OpenTelemetry trace ingestion
+
+The dashboard includes an authenticated OTLP/HTTP protobuf receiver at
+`/api/otel/v1/traces`. It stores normalized spans in the operational Postgres
+database so dashboard features can enrich the canonical Databricks build and
+job history without introducing another dashboard.
+
+1. Generate a dedicated random `OTEL_INGEST_TOKEN` with
+   `openssl rand -hex 32` and add it to the Vercel project. Do not reuse a
+   Buildkite or database credential.
+2. Run `npm run migrate:otel` against the production `DATABASE_URL`.
+3. Deploy the dashboard and verify the authenticated
+   `GET /api/otel/health` endpoint.
+4. Create or reconcile Buildkite's OpenTelemetry notification service:
+
+   ```bash
+   BUILDKITE_API_TOKEN=... \
+   OTEL_INGEST_TOKEN=... \
+   OTEL_ENDPOINT=https://ci.vllm.ai/api/otel \
+   npm run configure:buildkite-otel
+   ```
+
+   `OTEL_ENDPOINT` is the base endpoint. Buildkite appends `/v1/traces`.
+   The API token needs `read_notification_services` and
+   `write_notification_services`, and its owner needs organization admin or
+   Manage Notification Services access.
+
+5. Verify delivery without exposing span data publicly:
+
+   ```bash
+   curl -H "Authorization: Bearer $OTEL_INGEST_TOKEN" \
+     https://ci.vllm.ai/api/otel/health
+   ```
+
+The Vercel receiver accepts OTLP/HTTP protobuf with optional gzip compression;
+it is not a gRPC collector. Buildkite agent v3.100 and newer propagates its
+trace context to job processes, and the vLLM helper continues `TRACEPARENT`
+when it is present. The agent's own span exporter is OTLP/gRPC-only, so adding
+agent-internal checkout, hook, plugin, and artifact spans would still require a
+standard OpenTelemetry Collector in front of this HTTP endpoint.
+
+Detailed job timing does not distribute `OTEL_INGEST_TOKEN` to test code. An
+opted-in trusted main-branch job requests a five-minute Buildkite OIDC token for
+the dashboard audience when it uploads a batch. The receiver verifies the
+Buildkite signature and requires the token's organization, pipeline, branch,
+build number, and globally unique job ID to match every span. The receiver
+accepts normal `main` jobs and API-triggered `khluu/otel` treatment jobs;
+pull-request jobs and AMD mirrors are excluded from the initial pilot.
+
+The vLLM CI helper creates a span for each generated YAML command. When the
+command invokes pytest, its lightweight pytest plugin sends one child span per
+test node ID. The build timeline groups those spans as job → command → test;
+telemetry errors are warnings and never change the test command's exit status.
 
 ## Deployment
 

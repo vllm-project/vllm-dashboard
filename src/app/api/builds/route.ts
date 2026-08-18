@@ -1,12 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { resolveGroupsToJobConditions } from "@/lib/test-groups";
+import { ensureTestAreaMapping } from "@/lib/test-areas";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 
 const PAGE_SIZE = 50;
 const TTL = 30_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
+
+function parseBuildkiteBuildUrl(value: unknown) {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    if (url.hostname !== "buildkite.com") return null;
+    const match = url.pathname.match(
+      /^\/([^/]+)\/([^/]+)\/builds\/(\d+)\/?$/,
+    );
+    if (!match) return null;
+    return {
+      organization_slug: decodeURIComponent(match[1]),
+      pipeline_slug: decodeURIComponent(match[2]),
+      build_number: match[3],
+    };
+  } catch {
+    return null;
+  }
+}
 
 function buildJobFilterSubquery(jobGroups: string[], jobNames: string[]): string {
   const nameConditions: string[] = [];
@@ -70,6 +90,9 @@ export async function GET(request: NextRequest) {
       conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
     }
     const where = conditions.join(" AND ");
+    if (jobGroups.length > 0) {
+      await ensureTestAreaMapping();
+    }
     const jobFilter = buildJobFilterSubquery(jobGroups, jobNames);
 
     // First: fetch the page of builds + total count + daily stats
@@ -77,6 +100,7 @@ export async function GET(request: NextRequest) {
       queryDatabricks(`
         SELECT
           b.id AS id,
+          b.number AS build_number,
           b.web_url,
           b.message,
           b.commit AS commit_sha,
@@ -131,13 +155,24 @@ export async function GET(request: NextRequest) {
     // dedicated endpoints so the first screen does not carry 10k+ nested jobs.
     const buildsWithMetadata = builds.map((build) => {
       const b = build as Record<string, unknown>;
+      const traceIdentity = parseBuildkiteBuildUrl(b.web_url);
       // Parse PR number from commit message if not set (e.g. main branch)
       let prNumber = b.pr_number as string | null;
       if (!prNumber && b.message) {
         const match = (b.message as string).match(/\(#(\d+)\)/);
         if (match) prNumber = match[1];
       }
-      return { ...b, pr_number: prNumber };
+      return {
+        ...b,
+        pr_number: prNumber,
+        organization_slug: traceIdentity?.organization_slug ?? null,
+        pipeline_slug: traceIdentity?.pipeline_slug ?? null,
+        build_number:
+          traceIdentity?.build_number ??
+          (b.build_number === null || b.build_number === undefined
+            ? null
+            : String(b.build_number)),
+      };
     });
 
     const counts = countResult[0] as Record<string, string> ?? { total: "0", passed: "0", failed: "0" };

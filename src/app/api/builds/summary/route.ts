@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { aggregateJobsByGroup, resolveGroupsToJobConditions } from "@/lib/test-groups";
+import { ensureTestAreaMapping } from "@/lib/test-areas";
 import { getCached, setCache } from "@/lib/api-cache";
 
 const MAX_PER_PAGE = 30;
@@ -206,6 +207,7 @@ export async function GET(request: NextRequest) {
     if (endDate) conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
     if (state) conditions.push(`b.state = '${state.replace(/'/g, "''")}'`);
     const where = conditions.join(" AND ");
+    await ensureTestAreaMapping();
     const jobFilter = buildJobFilterSubquery(jobGroups, jobNames);
 
     const [builds, countResult] = await Promise.all([

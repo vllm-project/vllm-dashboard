@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
 import { QueueOverviewChart } from "@/components/queue-overview-chart";
+import { QueueWaitingJobs, useQueueWaitingJobs } from "@/components/queue-waiting-jobs";
 import { effectiveWaiting } from "@/lib/queue-plugins";
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -103,6 +104,13 @@ export default function QueuePage() {
     refreshInterval: 60 * 1000,
     keepPreviousData: true,
   });
+  const queueJobsQuery = useQueueWaitingJobs(queue);
+  // The Buildkite queue metric is the source of truth for the current
+  // waiting count. Individual job details may be unavailable when an Agent
+  // Stack has already reserved those jobs, but the metric remains available.
+  const liveWaitingJobs = queueJobsQuery.data
+    ? (queueJobsQuery.data.waitingCount ?? queueJobsQuery.data.jobs.length)
+    : undefined;
 
   const historyMatchesQueue = metricsData?.query.queue === (queue || null);
   const historyMatchesSelection =
@@ -113,21 +121,6 @@ export default function QueuePage() {
   const chartRequestPending =
     !historyMatchesSelection && (isLoading || isValidating || Boolean(metricsData));
 
-  interface WaitingBuild {
-    build_number: string;
-    build_url: string;
-    message: string;
-    author: string;
-    waiting_jobs: string;
-    total_jobs: string;
-    max_wait_min: string;
-  }
-  const { data: waitingBuildsData } = useSWR<{ builds: WaitingBuild[] }>(
-    queue ? `/api/metrics/waiting-builds?queue=${encodeURIComponent(queue)}` : null,
-    fetchJson,
-    { refreshInterval: 60 * 1000 },
-  );
-
   const metricsQueuesForFilter = metricsData?.queues ?? [];
 
   // Aggregate snapshots into chart data: sum running/scheduled/agents per time bucket.
@@ -136,7 +129,6 @@ export default function QueuePage() {
   const overviewChartData = useMemo(() => {
     if (!historyMatchesQueue) return [];
     const snapshots = metricsData?.snapshots ?? [];
-    if (snapshots.length === 0) return [];
 
     const bucketMap = new Map<number, { running: number; scheduled: number; waiting: number; agents: number }>();
     for (const row of snapshots) {
@@ -150,10 +142,36 @@ export default function QueuePage() {
       entry.agents += row.agents_total;
     }
 
-    return [...bucketMap.entries()]
+    const chartData = [...bucketMap.entries()]
       .map(([time, v]) => ({ time, ...v }))
       .sort((a, b) => a.time - b.time);
-  }, [historyMatchesQueue, metricsData, queue]);
+
+    // Agent Metrics records the controller's view of pending work, which can
+    // be zero after an Agent Stack reserves jobs. Add a current point from the
+    // Buildkite queue metric so the chart's latest Waiting value matches the
+    // live count shown above without rewriting historical snapshots.
+    if (queue && liveWaitingJobs !== undefined) {
+      const latest = chartData[chartData.length - 1];
+      const currentSnapshot = metricsData?.latest.find((metric) => metric.queue === queue);
+      const livePointTime = latest
+        ? latest.time + 60_000
+        : currentSnapshot
+          ? Date.parse(currentSnapshot.polled_at)
+          : undefined;
+
+      if (livePointTime !== undefined && Number.isFinite(livePointTime)) {
+        chartData.push({
+          time: livePointTime,
+          running: latest?.running ?? currentSnapshot?.jobs_running ?? 0,
+          scheduled: liveWaitingJobs,
+          waiting: latest?.waiting ?? currentSnapshot?.jobs_waiting ?? 0,
+          agents: latest?.agents ?? currentSnapshot?.agents_total ?? 0,
+        });
+      }
+    }
+
+    return chartData;
+  }, [historyMatchesQueue, liveWaitingJobs, metricsData, queue]);
 
   const chartTickInterval = Math.max(1, Math.floor(overviewChartData.length / 10));
 
@@ -197,8 +215,16 @@ export default function QueuePage() {
   const totalAgents = filtered.reduce((s, q) => s + q.agents_total, 0);
   const busyAgents = filtered.reduce((s, q) => s + q.agents_busy, 0);
   const idleAgents = filtered.reduce((s, q) => s + q.agents_idle, 0);
-  const waitingJobs = filtered.reduce((s, q) => s + effectiveWaiting(q.queue, q.jobs_scheduled, q.jobs_waiting), 0);
   const runningJobs = filtered.reduce((s, q) => s + q.jobs_running, 0);
+  const liveWaitingJobsDetail = !queue
+    ? "Select a queue"
+    : queueJobsQuery.error
+      ? "Live count unavailable"
+      : liveWaitingJobs === undefined
+        ? "Loading live queue"
+        : queueJobsQuery.data?.waitingCount != null
+          ? "Buildkite queue metric"
+          : "Live command jobs";
 
   return (
     <div className="space-y-6">
@@ -239,8 +265,9 @@ export default function QueuePage() {
         />
         <StatCard
           label="Waiting Jobs"
-          value={waitingJobs}
-          color={waitingJobs > 0 ? "yellow" : "default"}
+          value={liveWaitingJobs ?? "—"}
+          detail={liveWaitingJobsDetail}
+          color={liveWaitingJobs && liveWaitingJobs > 0 ? "yellow" : "default"}
         />
         <StatCard
           label="Running Jobs"
@@ -328,57 +355,7 @@ export default function QueuePage() {
         </div>
       </div>
 
-      {/* Waiting Builds */}
-      {waitingBuildsData && waitingBuildsData.builds.length > 0 && (
-        <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-          <div className="border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
-            <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-              Top Builds Waiting — {queue}
-            </h3>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                  <th className="px-5 py-2.5 font-medium">Build</th>
-                  <th className="px-5 py-2.5 font-medium">Author</th>
-                  <th className="px-5 py-2.5 font-medium">Waiting Jobs</th>
-                  <th className="px-5 py-2.5 font-medium">Max Wait</th>
-                </tr>
-              </thead>
-              <tbody>
-                {waitingBuildsData.builds.map((b) => (
-                  <tr
-                    key={b.build_number}
-                    className="border-b border-zinc-100 last:border-0 dark:border-zinc-800/50"
-                  >
-                    <td className="px-5 py-2.5">
-                      <a
-                        href={b.build_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="font-medium text-blue-600 hover:underline dark:text-blue-400"
-                      >
-                        #{b.build_number}
-                      </a>
-                      <p className="mt-0.5 max-w-xs truncate text-xs text-zinc-400">
-                        {b.message}
-                      </p>
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-2.5">{b.author}</td>
-                    <td className="px-5 py-2.5 font-medium text-yellow-600 dark:text-yellow-400">
-                      {b.waiting_jobs} <span className="font-normal text-zinc-400">/ {b.total_jobs}</span>
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-2.5 text-zinc-600 dark:text-zinc-400">
-                      {formatDuration(parseInt(b.max_wait_min, 10) * 60)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      {queue && <QueueWaitingJobs queue={queue} query={queueJobsQuery} />}
 
       {/* Queue Summary Table */}
       <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">

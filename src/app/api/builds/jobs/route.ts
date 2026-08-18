@@ -3,6 +3,7 @@ import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 import { aggregateJobsByGroup, type JobInfo } from "@/lib/test-groups";
+import { ensureTestAreaMapping } from "@/lib/test-areas";
 
 const TTL = 30_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -40,6 +41,8 @@ export async function GET(request: NextRequest) {
     const cacheKey = `build-jobs:${buildIds.join(",")}:${groups.join(",")}`;
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
+
+    await ensureTestAreaMapping();
 
     const idList = buildIds.map((id) => `'${escapeSql(id)}'`).join(",");
     const jobs = await queryDatabricks(`
