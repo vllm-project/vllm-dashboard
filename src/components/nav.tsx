@@ -5,17 +5,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { preload } from "swr";
 import { ThemeToggle } from "@/components/theme-toggle";
-
-const links = [
-  { href: "/", label: "CI Health", routes: ["/", "/jobs", "/queue"] },
-  { href: "/tests", label: "Tests", routes: ["/tests"] },
-  { href: "/nightly", label: "Nightly", routes: ["/nightly"] },
-  { href: "/gpu", label: "GPU", routes: ["/gpu"] },
-  { href: "/cost", label: "Cost", routes: ["/cost"] },
-  { href: "/perf", label: "Performance", routes: ["/perf"] },
-  { href: "/eval", label: "Evaluation", routes: ["/eval"] },
-  { href: "/compare", label: "Compare", routes: ["/compare"] },
-];
+import {
+  routeMatches,
+  TOP_LEVEL_NAV_ITEMS,
+} from "@/lib/dashboard-navigation";
 
 const prefetchedRoutes = new Set<string>();
 const fetcher = async (url: string) => {
@@ -163,12 +156,8 @@ export function Nav() {
     [],
   );
 
-  function isActive(link: (typeof links)[number]): boolean {
-    return link.routes.some((route) =>
-      route === "/"
-        ? pathname === "/"
-        : pathname === route || pathname.startsWith(`${route}/`),
-    );
+  function isActive(link: (typeof TOP_LEVEL_NAV_ITEMS)[number]): boolean {
+    return link.routes.some((route) => routeMatches(pathname, route));
   }
 
   return (
@@ -182,7 +171,7 @@ export function Nav() {
             vLLM Dashboard
           </Link>
           <div className="hidden min-w-0 flex-1 items-center gap-1 lg:flex">
-            {links.map((link) => {
+            {TOP_LEVEL_NAV_ITEMS.map((link) => {
               const active = isActive(link);
               return (
                 <Link
@@ -213,7 +202,7 @@ export function Nav() {
           className="scrollbar-hidden -mx-4 flex gap-1 overflow-x-auto px-4 pb-2 lg:hidden"
           aria-label="Dashboard sections"
         >
-          {links.map((link) => {
+          {TOP_LEVEL_NAV_ITEMS.map((link) => {
             const active = isActive(link);
             return (
               <Link

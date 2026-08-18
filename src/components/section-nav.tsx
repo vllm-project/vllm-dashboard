@@ -2,36 +2,33 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import {
+  routeMatches,
+  sectionForPathname,
+} from "@/lib/dashboard-navigation";
 
-const links = [
-  { href: "/", label: "Builds" },
-  { href: "/jobs", label: "Jobs" },
-  { href: "/queue", label: "Queue" },
-];
-
-const ciHealthRoutes = new Set(links.map((link) => link.href));
-
-export function CiHealthNav() {
+export function SectionNav() {
   const pathname = usePathname();
+  const section = sectionForPathname(pathname);
 
-  if (!ciHealthRoutes.has(pathname)) return null;
+  if (!section) return null;
 
   return (
     <div className="mb-6 border-b border-zinc-200 dark:border-zinc-800">
       <div className="mb-3">
         <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-zinc-500 dark:text-zinc-400">
-          CI Health
+          {section.label}
         </p>
         <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-          Build outcomes, job runs, and queue health in one operational view.
+          {section.description}
         </p>
       </div>
       <nav
-        aria-label="CI Health views"
+        aria-label={`${section.label} views`}
         className="scrollbar-hidden -mb-px flex gap-6 overflow-x-auto"
       >
-        {links.map((link) => {
-          const active = pathname === link.href;
+        {section.links.map((link) => {
+          const active = routeMatches(pathname, link.href);
           return (
             <Link
               key={link.href}
