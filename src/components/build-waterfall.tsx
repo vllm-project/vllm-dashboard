@@ -22,12 +22,14 @@ interface WaterfallLane {
   outcome: string | null;
   url: string | null;
   critical: boolean;
+  childCount: number;
 }
 
 interface TraceResponse {
   available: boolean;
   complete: boolean;
   truncated: boolean;
+  nextPage: number | null;
   lanes: WaterfallLane[];
   summary: {
     observedStart: string;
@@ -132,6 +134,11 @@ export function BuildWaterfall({
   const [criticalOnly, setCriticalOnly] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [jobDetails, setJobDetails] = useState<Record<string, WaterfallLane[]>>(
+    {},
+  );
+  const [loadingJobs, setLoadingJobs] = useState<Set<string>>(() => new Set());
+  const [detailErrors, setDetailErrors] = useState<Set<string>>(() => new Set());
   const params = new URLSearchParams({ organization, pipeline, buildNumber });
   const { data, error, isLoading, isValidating, mutate } = useSWR<TraceResponse>(
     `/api/builds/trace?${params.toString()}`,
@@ -143,7 +150,17 @@ export function BuildWaterfall({
   );
 
   const { jobLanes, childrenByParent } = useMemo(() => {
-    const lanes = data?.lanes ?? [];
+    const detailedJobIds = new Set(Object.keys(jobDetails));
+    const lanes = [
+      ...(data?.lanes ?? []).filter(
+        (lane) =>
+          !lane.jobId ||
+          !detailedJobIds.has(lane.jobId) ||
+          lane.kind === "job" ||
+          lane.kind === "step",
+      ),
+      ...Object.values(jobDetails).flat(),
+    ];
     const roots = lanes
       .filter((lane) => lane.kind === "job" || lane.kind === "step")
       .sort((a, b) => {
@@ -167,7 +184,7 @@ export function BuildWaterfall({
       });
     }
     return { jobLanes: roots, childrenByParent: children };
-  }, [data?.lanes]);
+  }, [data?.lanes, jobDetails]);
 
   const visibleJobs = useMemo(() => {
     const filtered = criticalOnly
@@ -197,11 +214,65 @@ export function BuildWaterfall({
     return flattened;
   }, [childrenByParent, expanded, visibleJobs]);
 
-  function toggleExpanded(id: string) {
+  async function loadJobDetails(jobId: string, jobParentId: string | null) {
+    if (jobDetails[jobId] || loadingJobs.has(jobId)) return;
+
+    setLoadingJobs((current) => new Set(current).add(jobId));
+    setDetailErrors((current) => {
+      const next = new Set(current);
+      next.delete(jobId);
+      return next;
+    });
+
+    try {
+      const lanes = new Map<string, WaterfallLane>();
+      let page: number | null = 0;
+      while (page !== null) {
+        const detailParams = new URLSearchParams({
+          organization,
+          pipeline,
+          buildNumber,
+          jobId,
+          page: String(page),
+        });
+        const response = await fetchTrace(
+          `/api/builds/trace?${detailParams.toString()}`,
+        );
+        for (const lane of response.lanes) {
+          if (lane.kind === "command" || lane.kind === "test") {
+            lanes.set(
+              lane.id,
+              lane.kind === "command" && jobParentId
+                ? { ...lane, parentId: jobParentId }
+                : lane,
+            );
+          }
+        }
+        page = response.nextPage;
+      }
+      setJobDetails((current) => ({
+        ...current,
+        [jobId]: [...lanes.values()],
+      }));
+    } catch {
+      setDetailErrors((current) => new Set(current).add(jobId));
+    } finally {
+      setLoadingJobs((current) => {
+        const next = new Set(current);
+        next.delete(jobId);
+        return next;
+      });
+    }
+  }
+
+  function toggleExpanded(lane: WaterfallLane) {
+    if (lane.kind === "command" && lane.jobId && lane.childCount > 0) {
+      void loadJobDetails(lane.jobId, lane.parentId);
+    }
     setExpanded((current) => {
       const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(lane.id)) next.delete(lane.id);
+      else next.add(lane.id);
       return next;
     });
   }
@@ -376,7 +447,20 @@ export function BuildWaterfall({
               const runLeft = clampPercent(((start - timelineStart) / timelineDuration) * 100);
               const runWidth = clampPercent(((end - start) / timelineDuration) * 100);
               const children = childrenByParent.get(lane.id) ?? [];
-              const isExpandable = children.length > 0;
+              const displayedChildCount = lane.kind === "command"
+                ? Math.max(lane.childCount, children.length)
+                : children.length;
+              const isExpandable = displayedChildCount > 0;
+              const isLoadingDetails = Boolean(
+                lane.kind === "command" &&
+                lane.jobId &&
+                loadingJobs.has(lane.jobId),
+              );
+              const hasDetailError = Boolean(
+                lane.kind === "command" &&
+                lane.jobId &&
+                detailErrors.has(lane.jobId),
+              );
               const depth = laneDepth(lane);
               const detail = `${lane.label} · ${formatTime(lane.startTime)}–${formatTime(lane.endTime)} · ${formatDuration(lane.durationMs)}${lane.outcome ? ` · ${lane.outcome}` : ""}`;
               const rowTone = depth === 0 ? "" : depth === 1 ? "bg-cyan-50/35 dark:bg-cyan-950/10" : "bg-emerald-50/30 dark:bg-emerald-950/10";
@@ -387,13 +471,15 @@ export function BuildWaterfall({
                     {depth > 0 && <span aria-hidden="true" className={`absolute inset-y-0 w-px ${depth === 1 ? "left-2 bg-cyan-200 dark:bg-cyan-900" : "left-6 bg-emerald-200 dark:bg-emerald-900"}`} />}
                     <div className="flex items-center gap-1.5">
                       {isExpandable ? (
-                        <button type="button" onClick={() => toggleExpanded(lane.id)} aria-expanded={expanded.has(lane.id)} aria-label={`${expanded.has(lane.id) ? "Collapse" : "Expand"} ${lane.label}`} className="dashboard-control flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-500 hover:bg-zinc-200/70 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100">
+                        <button type="button" onClick={() => toggleExpanded(lane)} aria-expanded={expanded.has(lane.id)} aria-label={`${expanded.has(lane.id) ? "Collapse" : "Expand"} ${lane.label}`} className="dashboard-control flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-500 hover:bg-zinc-200/70 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100">
                           <span aria-hidden="true" className={`transition-transform ${expanded.has(lane.id) ? "rotate-90" : ""}`}>›</span>
                         </button>
                       ) : <span className="w-6 shrink-0" />}
                       {lane.critical && <span aria-label="Inferred build-limiting job" className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
                       <span className={`truncate text-xs text-zinc-800 dark:text-zinc-200 ${depth === 0 ? "font-medium" : "font-mono text-[11px]"}`} title={lane.label}>{lane.label}</span>
-                      {isExpandable && <span className="shrink-0 rounded bg-zinc-200/70 px-1.5 py-0.5 font-mono text-[9px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">{children.length}</span>}
+                      {isExpandable && <span className="shrink-0 rounded bg-zinc-200/70 px-1.5 py-0.5 font-mono text-[9px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">{displayedChildCount}</span>}
+                      {isLoadingDetails && <span className="shrink-0 text-[9px] text-cyan-600 dark:text-cyan-400">loading tests…</span>}
+                      {hasDetailError && <span className="shrink-0 text-[9px] text-red-600 dark:text-red-400">test trace load failed; select again to retry</span>}
                       <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-400">{formatDuration(lane.durationMs)}</span>
                     </div>
                     {depth === 0 && (

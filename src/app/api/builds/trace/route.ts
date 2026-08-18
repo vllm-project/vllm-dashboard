@@ -3,9 +3,11 @@ import { getDb } from "@/lib/db";
 
 export const runtime = "nodejs";
 
-const MAX_SPANS = 5_000;
+const MAX_BUILD_SPANS = 5_000;
+const JOB_DETAIL_PAGE_SIZE = 2_000;
 const COMPLETION_CLOCK_SKEW_MS = 30_000;
 const SLUG = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/;
+const JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type TraceRow = {
   trace_id: string;
@@ -56,6 +58,12 @@ type Lane = {
   outcome: string | null;
   url: string | null;
   critical: boolean;
+  childCount: number;
+};
+
+type DetailCountRow = {
+  parent_span_id: string;
+  child_count: number;
 };
 
 function laneStatus(row: TraceRow): Lane["status"] {
@@ -126,6 +134,7 @@ function jobLane(row: TraceRow, id = row.span_id): Lane {
     outcome: row.job_state ?? row.step_outcome,
     url: row.job_url ?? row.step_url,
     critical: false,
+    childCount: 0,
   };
 }
 
@@ -145,6 +154,8 @@ export async function GET(request: NextRequest) {
   const organization = request.nextUrl.searchParams.get("organization") ?? "";
   const pipeline = request.nextUrl.searchParams.get("pipeline") ?? "";
   const buildNumber = request.nextUrl.searchParams.get("buildNumber") ?? "";
+  const jobId = request.nextUrl.searchParams.get("jobId");
+  const pageValue = request.nextUrl.searchParams.get("page") ?? "0";
 
   if (!SLUG.test(organization) || !SLUG.test(pipeline)) {
     return error("Invalid Buildkite organization or pipeline", 400);
@@ -152,10 +163,23 @@ export async function GET(request: NextRequest) {
   if (!/^\d{1,12}$/.test(buildNumber)) {
     return error("Invalid Buildkite build number", 400);
   }
+  if (jobId !== null && !JOB_ID.test(jobId)) {
+    return error("Invalid Buildkite job ID", 400);
+  }
+  if (
+    !/^\d{1,4}$/.test(pageValue) ||
+    (jobId === null && pageValue !== "0")
+  ) {
+    return error("Invalid trace page", 400);
+  }
 
   try {
     const db = getDb();
-    const rows = await db<TraceRow[]>`
+    const page = Number(pageValue);
+    const pageSize = jobId === null ? MAX_BUILD_SPANS : JOB_DETAIL_PAGE_SIZE;
+    const requestedJobId = jobId ?? null;
+    const offset = page * pageSize;
+    const fetchedRows = await db<TraceRow[]>`
       SELECT
         trace_id,
         span_id,
@@ -195,9 +219,25 @@ export async function GET(request: NextRequest) {
       WHERE organization_slug = ${organization}
         AND pipeline_slug = ${pipeline}
         AND build_number = ${buildNumber}::bigint
-      ORDER BY start_time ASC, duration_ms DESC
-      LIMIT ${MAX_SPANS}
+        AND (
+          (
+            ${requestedJobId}::text IS NULL
+            AND (
+              span_name IN ('buildkite.build', 'buildkite.job', 'buildkite.step')
+              OR span_attributes->>'ci.span.kind' = 'command'
+            )
+          )
+          OR (
+            ${requestedJobId}::text IS NOT NULL
+            AND job_id = ${requestedJobId}
+          )
+        )
+      ORDER BY start_time ASC, duration_ms DESC, span_id ASC
+      LIMIT ${pageSize + 1}
+      OFFSET ${offset}
     `;
+    const hasMore = fetchedRows.length > pageSize;
+    const rows = hasMore ? fetchedRows.slice(0, pageSize) : fetchedRows;
 
     if (rows.length === 0) {
       return NextResponse.json(
@@ -205,12 +245,30 @@ export async function GET(request: NextRequest) {
           available: false,
           complete: false,
           truncated: false,
+          nextPage: null,
           lanes: [],
           summary: null,
         },
         { headers: { "Cache-Control": "private, max-age=5" } },
       );
     }
+
+    const detailCounts = await db<DetailCountRow[]>`
+      SELECT
+        parent_span_id,
+        COUNT(*)::integer AS child_count
+      FROM otel_spans
+      WHERE organization_slug = ${organization}
+        AND pipeline_slug = ${pipeline}
+        AND build_number = ${buildNumber}::bigint
+        AND span_attributes->>'ci.span.kind' = 'test'
+        AND parent_span_id IS NOT NULL
+        AND (${requestedJobId}::text IS NULL OR job_id = ${requestedJobId})
+      GROUP BY parent_span_id
+    `;
+    const childCountByParent = new Map(
+      detailCounts.map((row) => [row.parent_span_id, Number(row.child_count)]),
+    );
 
     const childJobParents = new Set(
       rows
@@ -259,20 +317,13 @@ export async function GET(request: NextRequest) {
     }
 
     const jobLanes = markCompletionFrontier(baseJobLanes);
-    const commandIds = new Set(
-      details
-        .filter((row) => detailKind(row) === "command")
-        .map((row) => row.span_id),
-    );
     const detailLanes = details.map((row): Lane => {
       const kind = detailKind(row) as "command" | "test";
       const jobParent = row.job_id
         ? (jobLaneByJobId.get(row.job_id)?.id ?? null)
         : null;
       const parentId =
-        kind === "test" &&
-        row.parent_span_id &&
-        commandIds.has(row.parent_span_id)
+        kind === "test" && row.parent_span_id
           ? row.parent_span_id
           : jobParent;
       return {
@@ -293,6 +344,9 @@ export async function GET(request: NextRequest) {
         outcome: kind === "test" ? row.test_outcome : null,
         url: null,
         critical: false,
+        childCount: kind === "command"
+          ? (childCountByParent.get(row.span_id) ?? 0)
+          : 0,
       };
     });
     const lanes = [...jobLanes, ...detailLanes];
@@ -332,19 +386,22 @@ export async function GET(request: NextRequest) {
     const commandCount = detailLanes.filter(
       (lane) => lane.kind === "command",
     ).length;
-    const testCount = detailLanes.filter((lane) => lane.kind === "test").length;
+    const testCount = jobId === null
+      ? [...childCountByParent.values()].reduce((sum, count) => sum + count, 0)
+      : detailLanes.filter((lane) => lane.kind === "test").length;
 
     return NextResponse.json(
       {
         available: true,
         complete,
-        truncated: rows.length === MAX_SPANS,
+        truncated: hasMore,
+        nextPage: hasMore ? page + 1 : null,
         lanes,
         summary: {
           observedStart: new Date(observedStart).toISOString(),
           observedEnd: new Date(observedEnd).toISOString(),
           observedDurationMs: Math.max(0, observedEnd - observedStart),
-          spanCount: rows.length,
+          spanCount: jobId === null ? rows.length + testCount : rows.length,
           laneCount: jobLanes.length,
           commandCount,
           testCount,
