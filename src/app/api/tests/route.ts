@@ -14,6 +14,7 @@ const PERIODS = new Set([
   "28days",
 ]);
 const STATES = new Set(["enabled", "muted", "skipped"]);
+const LABELS = new Set(["flaky"]);
 const SORTS = new Set(["reliability", "duration_avg"]);
 const ORDERS = new Set(["asc", "desc"]);
 
@@ -48,6 +49,9 @@ export async function GET(request: NextRequest) {
   const state = STATES.has(params.get("state") ?? "")
     ? params.get("state")!
     : null;
+  const label = LABELS.has(params.get("label") ?? "")
+    ? params.get("label")!
+    : null;
   const sortBy = SORTS.has(params.get("sortBy") ?? "")
     ? params.get("sortBy")!
     : "reliability";
@@ -67,6 +71,7 @@ export async function GET(request: NextRequest) {
   upstreamUrl.searchParams.set("page", String(page));
   upstreamUrl.searchParams.set("per_page", String(PAGE_SIZE));
   if (state) upstreamUrl.searchParams.set("state", state);
+  if (label) upstreamUrl.searchParams.set("label", label);
 
   try {
     const response = await fetch(upstreamUrl, {

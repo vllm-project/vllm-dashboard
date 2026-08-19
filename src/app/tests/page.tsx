@@ -5,6 +5,7 @@ import useSWR from "swr";
 
 type Period = "1hour" | "4hours" | "1day" | "7days" | "14days" | "28days";
 type TestState = "all" | "enabled" | "muted" | "skipped";
+type TestLabel = "all" | "flaky";
 type SortBy = "reliability" | "duration_avg";
 
 interface TestRecord {
@@ -211,6 +212,7 @@ function LoadingRows() {
 export default function TestsPage() {
   const [period, setPeriod] = useState<Period>("1day");
   const [state, setState] = useState<TestState>("all");
+  const [label, setLabel] = useState<TestLabel>("all");
   const [sortBy, setSortBy] = useState<SortBy>("reliability");
   const [order, setOrder] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(1);
@@ -225,6 +227,7 @@ export default function TestsPage() {
     page: String(page),
   });
   if (state !== "all") params.set("state", state);
+  if (label !== "all") params.set("label", label);
 
   const { data, error, isLoading, isValidating } = useSWR<TestsResponse>(
     `/api/tests?${params.toString()}`,
@@ -312,6 +315,20 @@ export default function TestsPage() {
               <option value="enabled">Enabled</option>
               <option value="muted">Muted</option>
               <option value="skipped">Skipped</option>
+            </select>
+            <label className="sr-only" htmlFor="test-label">Test label</label>
+            <select
+              id="test-label"
+              value={label}
+              onChange={(event) => {
+                setLabel(event.target.value as TestLabel);
+                setPage(1);
+                setExpanded(null);
+              }}
+              className="dashboard-control min-h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+            >
+              <option value="all">All tests</option>
+              <option value="flaky">Flaky only</option>
             </select>
           </div>
           <label className="relative block w-full sm:w-72">
@@ -477,7 +494,7 @@ export default function TestsPage() {
                 <div>
                   <h2 className="text-sm font-semibold">No tests match this view</h2>
                   <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-                    {query ? "Clear the page search or change the filters." : "Try a longer history window or another state."}
+                    {query ? "Clear the page search or change the filters." : "Try a longer history window or another filter."}
                   </p>
                 </div>
               </div>
