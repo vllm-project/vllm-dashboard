@@ -7,6 +7,11 @@ const TTL = 5 * 60_000;
 const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
 const MAX_HISTORY_HOURS = 90 * 24;
 
+// Read the optional column through the row's JSON representation. Postgres
+// returns NULL when the key is absent, so a deployment can safely serve reads
+// before the poller has run the additive p99 schema migration.
+const P99_WAIT_EXPRESSION = `(to_jsonb(queue_snapshots) ->> 'p99_wait_secs')::real`;
+
 export async function GET(request: NextRequest) {
   try {
     const db = getDb();
@@ -30,7 +35,8 @@ export async function GET(request: NextRequest) {
             SELECT polled_at AS time_bucket, queue,
               agents_idle, agents_busy, agents_total,
               jobs_scheduled, jobs_running, jobs_waiting, jobs_total,
-              p50_wait_secs, p90_wait_secs, p95_wait_secs, p99_wait_secs
+              p50_wait_secs, p90_wait_secs, p95_wait_secs,
+              (to_jsonb(queue_snapshots) ->> 'p99_wait_secs')::real AS p99_wait_secs
             FROM queue_snapshots
             WHERE polled_at >= ${cutoff} AND queue = ${queue}
             ORDER BY polled_at
@@ -39,7 +45,8 @@ export async function GET(request: NextRequest) {
             SELECT polled_at AS time_bucket, queue,
               agents_idle, agents_busy, agents_total,
               jobs_scheduled, jobs_running, jobs_waiting, jobs_total,
-              p50_wait_secs, p90_wait_secs, p95_wait_secs, p99_wait_secs
+              p50_wait_secs, p90_wait_secs, p95_wait_secs,
+              (to_jsonb(queue_snapshots) ->> 'p99_wait_secs')::real AS p99_wait_secs
             FROM queue_snapshots
             WHERE polled_at >= ${cutoff}
             ORDER BY polled_at
@@ -61,7 +68,7 @@ export async function GET(request: NextRequest) {
               ROUND(AVG(p50_wait_secs))::int AS p50_wait_secs,
               ROUND(AVG(p90_wait_secs))::int AS p90_wait_secs,
               ROUND(AVG(p95_wait_secs))::int AS p95_wait_secs,
-              ROUND(AVG(p99_wait_secs))::int AS p99_wait_secs
+              ROUND(AVG(${P99_WAIT_EXPRESSION}))::int AS p99_wait_secs
             FROM queue_snapshots
             WHERE polled_at >= $1 AND queue = $2
             GROUP BY time_bucket, queue
@@ -80,7 +87,7 @@ export async function GET(request: NextRequest) {
               ROUND(AVG(p50_wait_secs))::int AS p50_wait_secs,
               ROUND(AVG(p90_wait_secs))::int AS p90_wait_secs,
               ROUND(AVG(p95_wait_secs))::int AS p95_wait_secs,
-              ROUND(AVG(p99_wait_secs))::int AS p99_wait_secs
+              ROUND(AVG(${P99_WAIT_EXPRESSION}))::int AS p99_wait_secs
             FROM queue_snapshots
             WHERE polled_at >= $1
             GROUP BY time_bucket, queue
@@ -107,7 +114,9 @@ export async function GET(request: NextRequest) {
           ORDER BY queue, polled_at DESC
         ) a
         LEFT JOIN (
-          SELECT DISTINCT ON (queue) queue, p50_wait_secs, p90_wait_secs, p95_wait_secs, p99_wait_secs
+          SELECT DISTINCT ON (queue) queue,
+            p50_wait_secs, p90_wait_secs, p95_wait_secs,
+            (to_jsonb(queue_snapshots) ->> 'p99_wait_secs')::real AS p99_wait_secs
           FROM queue_snapshots
           WHERE polled_at >= ${latestCutoff} AND p90_wait_secs IS NOT NULL
           ORDER BY queue, polled_at DESC
