@@ -3,7 +3,14 @@
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 
-type LaneKind = "job" | "step" | "command" | "test";
+type LaneKind =
+  | "job"
+  | "step"
+  | "command"
+  | "test"
+  | "docker-stage"
+  | "docker-instruction"
+  | "docker-internal";
 
 interface WaterfallLane {
   id: string;
@@ -39,6 +46,8 @@ interface TraceResponse {
     laneCount: number;
     commandCount: number;
     testCount: number;
+    dockerStageCount: number;
+    dockerInstructionCount: number;
     traceCount: number;
     queueCount: number;
     criticalCount: number;
@@ -108,8 +117,19 @@ function GridLines() {
 }
 
 function laneDepth(lane: WaterfallLane): number {
-  if (lane.kind === "test") return 2;
-  if (lane.kind === "command") return 1;
+  if (
+    lane.kind === "test" ||
+    lane.kind === "docker-instruction"
+  ) {
+    return 2;
+  }
+  if (
+    lane.kind === "command" ||
+    lane.kind === "docker-stage" ||
+    lane.kind === "docker-internal"
+  ) {
+    return 1;
+  }
   return 0;
 }
 
@@ -120,6 +140,9 @@ function laneColor(lane: WaterfallLane): string {
   if (lane.status === "failed") return "bg-red-500 dark:bg-red-500";
   if (lane.status === "skipped") return "bg-zinc-300 dark:bg-zinc-600";
   if (lane.kind === "test") return "bg-emerald-500 dark:bg-emerald-500";
+  if (lane.kind === "docker-stage") return "bg-violet-500 dark:bg-violet-500";
+  if (lane.kind === "docker-instruction") return "bg-teal-500 dark:bg-teal-500";
+  if (lane.kind === "docker-internal") return "bg-slate-400 dark:bg-slate-500";
   if (lane.kind === "command") return "bg-cyan-500 dark:bg-cyan-500";
   return "bg-blue-500 dark:bg-blue-500";
 }
@@ -202,14 +225,18 @@ export function BuildWaterfall({
 
   const visibleLanes = useMemo(() => {
     const flattened: WaterfallLane[] = [];
+    const appendChildren = (parentId: string, visited: Set<string>) => {
+      for (const child of childrenByParent.get(parentId) ?? []) {
+        if (visited.has(child.id)) continue;
+        visited.add(child.id);
+        flattened.push(child);
+        if (expanded.has(child.id)) appendChildren(child.id, visited);
+      }
+    };
     for (const job of visibleJobs) {
       flattened.push(job);
       if (!expanded.has(job.id)) continue;
-      for (const command of childrenByParent.get(job.id) ?? []) {
-        flattened.push(command);
-        if (!expanded.has(command.id)) continue;
-        flattened.push(...(childrenByParent.get(command.id) ?? []));
-      }
+      appendChildren(job.id, new Set([job.id]));
     }
     return flattened;
   }, [childrenByParent, expanded, visibleJobs]);
@@ -239,10 +266,14 @@ export function BuildWaterfall({
           `/api/builds/trace?${detailParams.toString()}`,
         );
         for (const lane of response.lanes) {
-          if (lane.kind === "command" || lane.kind === "test") {
+          if (lane.kind !== "job" && lane.kind !== "step") {
+            const isJobChild =
+              lane.kind === "command" ||
+              lane.kind === "docker-stage" ||
+              lane.kind === "docker-internal";
             lanes.set(
               lane.id,
-              lane.kind === "command" && jobParentId
+              isJobChild && jobParentId
                 ? { ...lane, parentId: jobParentId }
                 : lane,
             );
@@ -266,7 +297,11 @@ export function BuildWaterfall({
   }
 
   function toggleExpanded(lane: WaterfallLane) {
-    if (lane.kind === "command" && lane.jobId && lane.childCount > 0) {
+    if (
+      (lane.kind === "command" || lane.kind === "docker-stage") &&
+      lane.jobId &&
+      lane.childCount > 0
+    ) {
       void loadJobDetails(lane.jobId, lane.parentId);
     }
     setExpanded((current) => {
@@ -371,8 +406,9 @@ export function BuildWaterfall({
             {isValidating && <span className="text-[11px] text-zinc-400">Checking…</span>}
           </div>
           <p className="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
-            Select a traced job to see its commands. Select a pytest command to
-            see every test. Amber jobs are inferred build-limiting work.
+            Select a traced job to see commands and Docker stages. Expand a
+            command or stage for tests or Dockerfile instructions. Amber jobs
+            are inferred build-limiting work.
           </p>
         </div>
         <div className="flex flex-col items-start gap-3 lg:items-end">
@@ -389,6 +425,8 @@ export function BuildWaterfall({
             <span><strong className="font-mono font-semibold text-zinc-800 dark:text-zinc-200">{summary.laneCount}{coverageTotal !== null ? ` of ${coverageTotal}` : ""}</strong> jobs traced</span>
             {summary.commandCount > 0 && <span><strong className="font-mono font-semibold text-cyan-700 dark:text-cyan-300">{summary.commandCount}</strong> commands</span>}
             {summary.testCount > 0 && <span><strong className="font-mono font-semibold text-emerald-700 dark:text-emerald-300">{summary.testCount}</strong> tests</span>}
+            {summary.dockerStageCount > 0 && <span><strong className="font-mono font-semibold text-violet-700 dark:text-violet-300">{summary.dockerStageCount}</strong> Docker stages</span>}
+            {summary.dockerInstructionCount > 0 && <span><strong className="font-mono font-semibold text-teal-700 dark:text-teal-300">{summary.dockerInstructionCount}</strong> Docker steps</span>}
             <span><strong className="font-mono font-semibold text-amber-700 dark:text-amber-300">{summary.criticalCount}</strong> build-limiting</span>
           </div>
         </div>
@@ -399,13 +437,15 @@ export function BuildWaterfall({
           <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-blue-500" /> job</span>
           {summary.commandCount > 0 && <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-cyan-500" /> command</span>}
           {summary.testCount > 0 && <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-emerald-500" /> test</span>}
+          {summary.dockerStageCount > 0 && <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-violet-500" /> Docker stage</span>}
+          {summary.dockerInstructionCount > 0 && <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-teal-500" /> Dockerfile step</span>}
           <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-red-500" /> failed</span>
           <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-zinc-300 dark:bg-zinc-700" /> queued / skipped</span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {expandableJobs.length > 0 && (
             <button type="button" onClick={toggleAllJobs} className="dashboard-control min-h-9 rounded-md border border-cyan-300 bg-cyan-50 px-3 text-xs font-medium text-cyan-800 hover:bg-cyan-100 dark:border-cyan-800 dark:bg-cyan-950/40 dark:text-cyan-200 dark:hover:bg-cyan-950/70">
-              {allJobsExpanded ? "Collapse commands" : `Show commands (${summary.commandCount})`}
+              {allJobsExpanded ? "Collapse details" : "Show job details"}
             </button>
           )}
           <button
@@ -427,7 +467,7 @@ export function BuildWaterfall({
       <div className="overflow-x-auto pb-2">
         <div className="min-w-[760px] px-5">
           <div className="grid grid-cols-[minmax(16rem,21rem)_minmax(32rem,1fr)] gap-4 border-b border-zinc-200 pb-2 dark:border-zinc-800">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">Job / command / test</div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">Job / command / Docker / test</div>
             <div className="relative h-5 font-mono text-[10px] text-zinc-400">
               {TICKS.map((tick) => (
                 <span key={tick} className="absolute -translate-x-1/2 first:translate-x-0 last:-translate-x-full" style={{ left: `${tick * 100}%` }}>
@@ -447,28 +487,37 @@ export function BuildWaterfall({
               const runLeft = clampPercent(((start - timelineStart) / timelineDuration) * 100);
               const runWidth = clampPercent(((end - start) / timelineDuration) * 100);
               const children = childrenByParent.get(lane.id) ?? [];
-              const displayedChildCount = lane.kind === "command"
+              const displayedChildCount =
+                lane.kind === "command" || lane.kind === "docker-stage"
                 ? Math.max(lane.childCount, children.length)
                 : children.length;
               const isExpandable = displayedChildCount > 0;
               const isLoadingDetails = Boolean(
-                lane.kind === "command" &&
+                (lane.kind === "command" || lane.kind === "docker-stage") &&
                 lane.jobId &&
                 loadingJobs.has(lane.jobId),
               );
               const hasDetailError = Boolean(
-                lane.kind === "command" &&
+                (lane.kind === "command" || lane.kind === "docker-stage") &&
                 lane.jobId &&
                 detailErrors.has(lane.jobId),
               );
               const depth = laneDepth(lane);
               const detail = `${lane.label} · ${formatTime(lane.startTime)}–${formatTime(lane.endTime)} · ${formatDuration(lane.durationMs)}${lane.outcome ? ` · ${lane.outcome}` : ""}`;
-              const rowTone = depth === 0 ? "" : depth === 1 ? "bg-cyan-50/35 dark:bg-cyan-950/10" : "bg-emerald-50/30 dark:bg-emerald-950/10";
+              const rowTone = depth === 0
+                ? ""
+                : lane.kind === "docker-stage"
+                  ? "bg-violet-50/35 dark:bg-violet-950/10"
+                  : lane.kind === "docker-instruction" || lane.kind === "docker-internal"
+                    ? "bg-teal-50/30 dark:bg-teal-950/10"
+                    : depth === 1
+                      ? "bg-cyan-50/35 dark:bg-cyan-950/10"
+                      : "bg-emerald-50/30 dark:bg-emerald-950/10";
 
               return (
                 <div key={lane.id} className={`grid min-h-10 grid-cols-[minmax(16rem,21rem)_minmax(32rem,1fr)] items-center gap-4 border-b border-zinc-200/70 last:border-0 dark:border-zinc-800/70 ${rowTone}`}>
                   <div className="relative min-w-0 py-1.5" style={{ paddingLeft: `${depth * 18}px` }}>
-                    {depth > 0 && <span aria-hidden="true" className={`absolute inset-y-0 w-px ${depth === 1 ? "left-2 bg-cyan-200 dark:bg-cyan-900" : "left-6 bg-emerald-200 dark:bg-emerald-900"}`} />}
+                    {depth > 0 && <span aria-hidden="true" className={`absolute inset-y-0 w-px ${depth === 1 ? "left-2 bg-cyan-200 dark:bg-cyan-900" : "left-6 bg-zinc-200 dark:bg-zinc-800"}`} />}
                     <div className="flex items-center gap-1.5">
                       {isExpandable ? (
                         <button type="button" onClick={() => toggleExpanded(lane)} aria-expanded={expanded.has(lane.id)} aria-label={`${expanded.has(lane.id) ? "Collapse" : "Expand"} ${lane.label}`} className="dashboard-control flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-500 hover:bg-zinc-200/70 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100">
@@ -478,8 +527,8 @@ export function BuildWaterfall({
                       {lane.critical && <span aria-label="Inferred build-limiting job" className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
                       <span className={`truncate text-xs text-zinc-800 dark:text-zinc-200 ${depth === 0 ? "font-medium" : "font-mono text-[11px]"}`} title={lane.label}>{lane.label}</span>
                       {isExpandable && <span className="shrink-0 rounded bg-zinc-200/70 px-1.5 py-0.5 font-mono text-[9px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">{displayedChildCount}</span>}
-                      {isLoadingDetails && <span className="shrink-0 text-[9px] text-cyan-600 dark:text-cyan-400">loading tests…</span>}
-                      {hasDetailError && <span className="shrink-0 text-[9px] text-red-600 dark:text-red-400">test trace load failed; select again to retry</span>}
+                      {isLoadingDetails && <span className="shrink-0 text-[9px] text-cyan-600 dark:text-cyan-400">loading details…</span>}
+                      {hasDetailError && <span className="shrink-0 text-[9px] text-red-600 dark:text-red-400">trace details failed; select again to retry</span>}
                       <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-400">{formatDuration(lane.durationMs)}</span>
                     </div>
                     {depth === 0 && (
