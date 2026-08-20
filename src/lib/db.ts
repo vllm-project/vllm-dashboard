@@ -42,7 +42,8 @@ export async function initSchema() {
       jobs_total     INT NOT NULL DEFAULT 0,
       p50_wait_secs  REAL,
       p90_wait_secs  REAL,
-      p95_wait_secs  REAL
+      p95_wait_secs  REAL,
+      p99_wait_secs  REAL
     )
   `;
   await db`
@@ -54,18 +55,18 @@ export async function initSchema() {
     ON queue_snapshots (queue, polled_at DESC)
   `;
   // Add wait time columns if table already exists without them
-  for (const col of ["p50_wait_secs", "p90_wait_secs", "p95_wait_secs"]) {
+  for (const col of ["p50_wait_secs", "p90_wait_secs", "p95_wait_secs", "p99_wait_secs"]) {
     await db.unsafe(`
       ALTER TABLE queue_snapshots ADD COLUMN IF NOT EXISTS ${col} REAL
     `);
   }
   await db.unsafe(`
-    CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_snapshots_queue_polled_cover
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_snapshots_queue_polled_cover_v2
     ON queue_snapshots (queue, polled_at DESC)
     INCLUDE (
       agents_idle, agents_busy, agents_total,
       jobs_scheduled, jobs_running, jobs_waiting, jobs_total,
-      p50_wait_secs, p90_wait_secs, p95_wait_secs
+      p50_wait_secs, p90_wait_secs, p95_wait_secs, p99_wait_secs
     )
   `);
 

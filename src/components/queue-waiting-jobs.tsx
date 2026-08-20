@@ -14,6 +14,17 @@ export interface QueueJob {
 export interface QueueJobsResponse {
   jobs: QueueJob[];
   waitingCount: number | null;
+  metrics: {
+    polledAt: string;
+    connectedAgents: number | null;
+    runningJobs: number | null;
+    waitingJobs: number | null;
+    p50WaitSecs: number | null;
+    p90WaitSecs: number | null;
+    p95WaitSecs: number | null;
+    p99WaitSecs: number | null;
+    waitSampleSize: number;
+  };
   operatorAccessRequired: boolean;
 }
 
@@ -43,7 +54,7 @@ function formatScheduledAt(value: string): string {
 export function useQueueWaitingJobs(queue: string) {
   const url = queue ? `/api/queue/jobs?queue=${encodeURIComponent(queue)}` : null;
   return useSWR<QueueJobsResponse>(url, fetchJson, {
-    refreshInterval: 30_000,
+    refreshInterval: 5 * 60_000,
     keepPreviousData: true,
   });
 }

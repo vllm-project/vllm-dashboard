@@ -18,10 +18,15 @@ A Next.js dashboard for observing vLLM's Buildkite CI: build status, job runtime
 - **Warehouse**: Databricks SQL Warehouse — historical CI data is queried via the SQL Statements API.
 - **Operational store**: Postgres (Supabase) — short-term agent and queue-depth samples written by cron jobs.
 - **Sources polled**:
-  - Buildkite Agent Metrics API (queue depth, agent counts) — every minute
-  - Databricks warehouse (build/job history) — every 5 minutes
+  - Buildkite GraphQL API (queue depth, running jobs, connected agents, and current wait distribution) — every 5 minutes
+  - Databricks warehouse (build/job history) — on dashboard requests with short-lived caching
   - Queue alerting → Slack — every 15 minutes
 - Cron schedules live in `vercel.json`.
+
+The Queue page uses Buildkite's cluster-queue counts directly. Because the
+public queue metrics schema stops at p95, p99 is calculated from the current
+`SCHEDULED` command jobs as `now - runnableAt` using nearest-rank percentiles;
+the same five-minute snapshot feeds the historical chart.
 
 ## Local development
 
@@ -41,8 +46,7 @@ Open http://localhost:3000.
 | Variable | Purpose |
 | --- | --- |
 | `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID` | Databricks SQL Warehouse access |
-| `DATABASE_URL` | Postgres connection string for agent/queue samples |
-| `BUILDKITE_AGENT_TOKEN` | Buildkite agent registration token (for the Agent Metrics API) |
+| `DATABASE_URL` | Postgres connection string for queue and GPU samples |
 | `BUILDKITE_API_TOKEN` | Buildkite personal API token; needs `read_suites` for Test Engine, GraphQL API access and `write_builds` for queue promotion, and notification-service scopes only when running the OTel setup script |
 | `BUILDKITE_ORGANIZATION`, `BUILDKITE_TEST_SUITE` | Test Engine organization and suite slug (defaults: `vllm`, `ci-1`) |
 | `BUILDKITE_QUEUE_OPERATOR_TOKEN` | Required to enable queue-job promotion; authorized operators enter it for the current browser tab |

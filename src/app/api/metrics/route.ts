@@ -3,8 +3,8 @@ import { getDb } from "@/lib/db";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 
-const TTL = 15_000;
-const CDN_CACHE = { maxAge: 15, staleWhileRevalidate: 3_600 };
+const TTL = 5 * 60_000;
+const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
 const MAX_HISTORY_HOURS = 90 * 24;
 
 export async function GET(request: NextRequest) {
@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
             SELECT polled_at AS time_bucket, queue,
               agents_idle, agents_busy, agents_total,
               jobs_scheduled, jobs_running, jobs_waiting, jobs_total,
-              p50_wait_secs, p90_wait_secs, p95_wait_secs
+              p50_wait_secs, p90_wait_secs, p95_wait_secs, p99_wait_secs
             FROM queue_snapshots
             WHERE polled_at >= ${cutoff} AND queue = ${queue}
             ORDER BY polled_at
@@ -39,7 +39,7 @@ export async function GET(request: NextRequest) {
             SELECT polled_at AS time_bucket, queue,
               agents_idle, agents_busy, agents_total,
               jobs_scheduled, jobs_running, jobs_waiting, jobs_total,
-              p50_wait_secs, p90_wait_secs, p95_wait_secs
+              p50_wait_secs, p90_wait_secs, p95_wait_secs, p99_wait_secs
             FROM queue_snapshots
             WHERE polled_at >= ${cutoff}
             ORDER BY polled_at
@@ -60,7 +60,8 @@ export async function GET(request: NextRequest) {
               ROUND(AVG(jobs_total))::int AS jobs_total,
               ROUND(AVG(p50_wait_secs))::int AS p50_wait_secs,
               ROUND(AVG(p90_wait_secs))::int AS p90_wait_secs,
-              ROUND(AVG(p95_wait_secs))::int AS p95_wait_secs
+              ROUND(AVG(p95_wait_secs))::int AS p95_wait_secs,
+              ROUND(AVG(p99_wait_secs))::int AS p99_wait_secs
             FROM queue_snapshots
             WHERE polled_at >= $1 AND queue = $2
             GROUP BY time_bucket, queue
@@ -78,7 +79,8 @@ export async function GET(request: NextRequest) {
               ROUND(AVG(jobs_total))::int AS jobs_total,
               ROUND(AVG(p50_wait_secs))::int AS p50_wait_secs,
               ROUND(AVG(p90_wait_secs))::int AS p90_wait_secs,
-              ROUND(AVG(p95_wait_secs))::int AS p95_wait_secs
+              ROUND(AVG(p95_wait_secs))::int AS p95_wait_secs,
+              ROUND(AVG(p99_wait_secs))::int AS p99_wait_secs
             FROM queue_snapshots
             WHERE polled_at >= $1
             GROUP BY time_bucket, queue
@@ -96,7 +98,8 @@ export async function GET(request: NextRequest) {
           a.jobs_scheduled, a.jobs_running, a.jobs_waiting, a.jobs_total,
           CASE WHEN a.jobs_scheduled + a.jobs_waiting > 0 THEN w.p50_wait_secs ELSE NULL END AS p50_wait_secs,
           CASE WHEN a.jobs_scheduled + a.jobs_waiting > 0 THEN w.p90_wait_secs ELSE NULL END AS p90_wait_secs,
-          CASE WHEN a.jobs_scheduled + a.jobs_waiting > 0 THEN w.p95_wait_secs ELSE NULL END AS p95_wait_secs
+          CASE WHEN a.jobs_scheduled + a.jobs_waiting > 0 THEN w.p95_wait_secs ELSE NULL END AS p95_wait_secs,
+          CASE WHEN a.jobs_scheduled + a.jobs_waiting > 0 THEN w.p99_wait_secs ELSE NULL END AS p99_wait_secs
         FROM (
           SELECT DISTINCT ON (queue) *
           FROM queue_snapshots
@@ -104,7 +107,7 @@ export async function GET(request: NextRequest) {
           ORDER BY queue, polled_at DESC
         ) a
         LEFT JOIN (
-          SELECT DISTINCT ON (queue) queue, p50_wait_secs, p90_wait_secs, p95_wait_secs
+          SELECT DISTINCT ON (queue) queue, p50_wait_secs, p90_wait_secs, p95_wait_secs, p99_wait_secs
           FROM queue_snapshots
           WHERE polled_at >= ${latestCutoff} AND p90_wait_secs IS NOT NULL
           ORDER BY queue, polled_at DESC

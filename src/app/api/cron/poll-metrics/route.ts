@@ -1,18 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb, initSchema } from "@/lib/db";
-import { fetchAgentMetrics } from "@/lib/buildkite-metrics";
-import { queryDatabricks } from "@/lib/databricks";
+import { fetchBuildkiteQueueSnapshots } from "@/lib/buildkite-queue-metrics";
 
 export const maxDuration = 55;
 
 let schemaInitialized = false;
-
-interface WaitTimeRow {
-  queue: string;
-  p50_wait_secs: string;
-  p90_wait_secs: string;
-  p95_wait_secs: string;
-}
 
 export async function GET(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
@@ -23,10 +15,10 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const token = process.env.BUILDKITE_AGENT_TOKEN;
+  const token = process.env.BUILDKITE_API_TOKEN;
   if (!token) {
     return NextResponse.json(
-      { error: "BUILDKITE_AGENT_TOKEN not configured" },
+      { error: "BUILDKITE_API_TOKEN not configured" },
       { status: 500 },
     );
   }
@@ -39,79 +31,34 @@ export async function GET(request: NextRequest) {
       schemaInitialized = true;
     }
 
-    // Fetch agent/job counts and wait time percentiles in parallel
-    const [metrics, waitTimeRows] = await Promise.all([
-      fetchAgentMetrics(token),
-      queryDatabricks<WaitTimeRow>(`
-        SELECT
-          queue,
-          ROUND(PERCENTILE(wait_seconds, 0.5)) AS p50_wait_secs,
-          ROUND(PERCENTILE(wait_seconds, 0.9)) AS p90_wait_secs,
-          ROUND(PERCENTILE(wait_seconds, 0.95)) AS p95_wait_secs
-        FROM (
-          SELECT
-            SUBSTRING(r.rule, 7) AS queue,
-            TIMESTAMPDIFF(SECOND, j.runnable_at, current_timestamp()) AS wait_seconds
-          FROM vllm_data_warehouse.buildkite.build_job AS j
-          INNER JOIN vllm_data_warehouse.buildkite.build_job_agent_query_rule AS r
-            ON j.id = r.build_job_id
-          WHERE j._fivetran_deleted = false
-            AND j.type = 'script'
-            AND j.runnable_at IS NOT NULL
-            AND j.started_at IS NULL
-            AND j.state = 'scheduled'
-            AND r.rule LIKE 'queue=%'
-            AND j.runnable_at >= current_timestamp() - INTERVAL 24 HOUR
-        ) sub
-        GROUP BY queue
-      `).catch((err) => {
-        console.error("Databricks wait time query failed (non-fatal):", err);
-        return [] as WaitTimeRow[];
-      }),
-    ]);
-
     const now = new Date();
-
-    // Build wait time lookup by queue
-    const waitTimeMap = new Map<string, WaitTimeRow>();
-    for (const row of waitTimeRows) {
-      waitTimeMap.set(row.queue, row);
-    }
-
-    const agentQueues = metrics.agents.queues ?? {};
-    const jobQueues = metrics.jobs.queues ?? {};
-    const allQueues = new Set([
-      ...Object.keys(agentQueues),
-      ...Object.keys(jobQueues),
-      ...waitTimeMap.keys(),
-    ]);
+    const snapshots = await fetchBuildkiteQueueSnapshots(
+      token,
+      process.env.BUILDKITE_ORGANIZATION || "vllm",
+      now,
+    );
 
     let stored = 0;
-    for (const queue of allQueues) {
-      const agents = agentQueues[queue] ?? { idle: 0, busy: 0, total: 0 };
-      const jobs = jobQueues[queue] ?? {
-        scheduled: 0,
-        running: 0,
-        waiting: 0,
-        total: 0,
-      };
-      const waiting = jobs.waiting;
-      // Use Databricks wait times if Agent Metrics API shows jobs scheduled or waiting
-      const wt = jobs.scheduled + waiting > 0 ? waitTimeMap.get(queue) : undefined;
+    for (const snapshot of snapshots) {
+      const busyAgents = Math.min(snapshot.connectedAgents, snapshot.runningJobs);
+      const idleAgents = Math.max(0, snapshot.connectedAgents - busyAgents);
+      const hasWaitSamples = snapshot.waitingJobs > 0 && snapshot.sampleSize > 0;
 
       await db`
         INSERT INTO queue_snapshots (
           polled_at, queue,
           agents_idle, agents_busy, agents_total,
           jobs_scheduled, jobs_running, jobs_waiting, jobs_total,
-          p50_wait_secs, p90_wait_secs, p95_wait_secs
+          p50_wait_secs, p90_wait_secs, p95_wait_secs, p99_wait_secs
         ) VALUES (
-          ${now}, ${queue},
-          ${agents.idle}, ${agents.busy}, ${agents.total},
-          ${jobs.scheduled}, ${jobs.running}, ${waiting}, ${jobs.total},
-          ${wt ? parseFloat(wt.p50_wait_secs) : null},
-          ${wt ? parseFloat(wt.p90_wait_secs) : null},
-          ${wt ? parseFloat(wt.p95_wait_secs) : null}
+          ${now}, ${snapshot.queue},
+          ${idleAgents}, ${busyAgents}, ${snapshot.connectedAgents},
+          ${snapshot.waitingJobs}, ${snapshot.runningJobs}, 0,
+          ${snapshot.waitingJobs + snapshot.runningJobs},
+          ${hasWaitSamples ? snapshot.p50 : null},
+          ${hasWaitSamples ? snapshot.p90 : null},
+          ${hasWaitSamples ? snapshot.p95 : null},
+          ${hasWaitSamples ? snapshot.p99 : null}
         )
       `;
       stored++;
@@ -130,7 +77,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       ok: true,
       queues: stored,
-      waitTimeQueues: waitTimeRows.length,
+      waitTimeQueues: snapshots.filter((snapshot) => snapshot.sampleSize > 0).length,
       polled_at: now.toISOString(),
     });
   } catch (error) {

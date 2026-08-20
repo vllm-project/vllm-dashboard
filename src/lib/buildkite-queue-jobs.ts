@@ -1,3 +1,5 @@
+import { fetchBuildkiteQueueSnapshots } from "@/lib/buildkite-queue-metrics";
+
 const GRAPHQL_ENDPOINT = "https://graphql.buildkite.com/v1";
 const REST_ENDPOINT = "https://api.buildkite.com/v2";
 const JOBS_PAGE_SIZE = 100;
@@ -7,6 +9,7 @@ export interface QueueJob {
   label: string | null;
   url: string;
   scheduledAt: string;
+  runnableAt: string | null;
   priority: number;
 }
 
@@ -24,6 +27,7 @@ interface GraphQLResponse {
             label?: string | null;
             url?: string;
             scheduledAt?: string;
+            runnableAt?: string | null;
             priority?: { number?: number };
             clusterQueue?: { id?: string } | null;
           };
@@ -81,20 +85,20 @@ interface ClusterQueuePageGraphQLResponse {
   errors?: Array<{ message: string }>;
 }
 
-interface ClusterQueueMetricGraphQLResponse {
-  data?: {
-    node?: {
-      metrics?: {
-        waitingJobsCount?: number;
-      } | null;
-    } | null;
-  };
-  errors?: Array<{ message: string }>;
-}
-
 export interface QueueJobsResult {
   jobs: QueueJob[];
   waitingCount: number | null;
+  metrics: {
+    polledAt: string;
+    connectedAgents: number | null;
+    runningJobs: number | null;
+    waitingJobs: number | null;
+    p50WaitSecs: number | null;
+    p90WaitSecs: number | null;
+    p95WaitSecs: number | null;
+    p99WaitSecs: number | null;
+    waitSampleSize: number;
+  };
 }
 
 export class BuildkiteQueueError extends Error {
@@ -306,50 +310,6 @@ async function getClusterQueue(queue: string): Promise<ClusterQueueTarget | null
   return null;
 }
 
-async function getClusterQueueWaitingCount(queue: string): Promise<number | null> {
-  const token = getToken();
-  const clusterQueue = await getClusterQueue(queue);
-  if (!clusterQueue) return null;
-
-  const response = await fetch(GRAPHQL_ENDPOINT, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      query: `
-        query ClusterQueueMetric($queue: ID!) {
-          node(id: $queue) {
-            ... on ClusterQueue {
-              metrics {
-                waitingJobsCount
-              }
-            }
-          }
-        }
-      `,
-      variables: { queue: clusterQueue.queueId },
-    }),
-    cache: "no-store",
-  });
-
-  let result: ClusterQueueMetricGraphQLResponse;
-  try {
-    result = (await response.json()) as ClusterQueueMetricGraphQLResponse;
-  } catch {
-    throw new BuildkiteQueueError(
-      "Buildkite returned an invalid cluster-queue metric response.",
-      502,
-      "BUILDKITE_INVALID_RESPONSE",
-    );
-  }
-
-  if (!response.ok || result.errors?.length) throw requestError(response, result.errors);
-  return result.data?.node?.metrics?.waitingJobsCount ?? null;
-}
-
 async function graphqlQueueJobs(queue: string): Promise<QueueJob[]> {
   const token = getToken();
   const agentQueryRule = queueRule(queue);
@@ -388,6 +348,7 @@ async function graphqlQueueJobs(queue: string): Promise<QueueJob[]> {
                       label
                       url
                       scheduledAt
+                      runnableAt
                       priority { number }
                       clusterQueue { id }
                     }
@@ -438,6 +399,7 @@ async function graphqlQueueJobs(queue: string): Promise<QueueJob[]> {
         label: node.label ?? null,
         url: node.url,
         scheduledAt: node.scheduledAt,
+        runnableAt: node.runnableAt ?? null,
         priority: node.priority?.number ?? 0,
       });
     }
@@ -454,11 +416,26 @@ async function graphqlQueueJobs(queue: string): Promise<QueueJob[]> {
 }
 
 export async function getQueueJobs(queue: string): Promise<QueueJobsResult> {
-  const [jobs, waitingCount] = await Promise.all([
+  const [jobs, snapshots] = await Promise.all([
     graphqlQueueJobs(queue),
-    getClusterQueueWaitingCount(queue),
+    fetchBuildkiteQueueSnapshots(getToken(), organization()),
   ]);
-  return { jobs, waitingCount };
+  const snapshot = snapshots.find((candidate) => candidate.queue === queue);
+  return {
+    jobs,
+    waitingCount: snapshot?.waitingJobs ?? null,
+    metrics: {
+      polledAt: snapshot?.polledAt ?? new Date().toISOString(),
+      connectedAgents: snapshot?.connectedAgents ?? null,
+      runningJobs: snapshot?.runningJobs ?? null,
+      waitingJobs: snapshot?.waitingJobs ?? null,
+      p50WaitSecs: snapshot?.p50 ?? null,
+      p90WaitSecs: snapshot?.p90 ?? null,
+      p95WaitSecs: snapshot?.p95 ?? null,
+      p99WaitSecs: snapshot?.p99 ?? null,
+      waitSampleSize: snapshot?.sampleSize ?? 0,
+    },
+  };
 }
 
 export async function reprioritizeQueueJob(queue: string, jobUuid: string): Promise<{ priority: number }> {

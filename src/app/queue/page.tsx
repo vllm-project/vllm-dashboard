@@ -32,6 +32,7 @@ interface MetricsSnapshot {
   p50_wait_secs: number | null;
   p90_wait_secs: number | null;
   p95_wait_secs: number | null;
+  p99_wait_secs: number | null;
 }
 
 interface MetricsLatest {
@@ -47,6 +48,7 @@ interface MetricsLatest {
   p50_wait_secs: number | null;
   p90_wait_secs: number | null;
   p95_wait_secs: number | null;
+  p99_wait_secs: number | null;
 }
 
 function formatDuration(secs: number): string {
@@ -90,10 +92,10 @@ const RAW_WAITING_QUEUES = new Set(["mithril-h100-pool"]);
 export default function QueuePage() {
   const [queue, setQueue] = useState("gpu_1_queue");
   const [metricsHours, setMetricsHours] = useState(24);
-  const [sortCol, setSortCol] = useState<"queue" | "agents" | "running" | "idle" | "waiting" | "p50" | "p90" | "p95">("waiting");
+  const [sortCol, setSortCol] = useState<"queue" | "agents" | "running" | "idle" | "waiting" | "p50" | "p90" | "p95" | "p99">("waiting");
   const [sortAsc, setSortAsc] = useState(false);
 
-  const metricsUrl = `/api/metrics?hours=${metricsHours}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}&v=2`;
+  const metricsUrl = `/api/metrics?hours=${metricsHours}${queue ? `&queue=${encodeURIComponent(queue)}` : ""}&v=3`;
   const {
     data: metricsData,
     error,
@@ -101,10 +103,11 @@ export default function QueuePage() {
     isValidating,
     mutate: refreshMetrics,
   } = useSWR<MetricsResponse>(metricsUrl, fetchJson, {
-    refreshInterval: 60 * 1000,
+    refreshInterval: 5 * 60 * 1000,
     keepPreviousData: true,
   });
   const queueJobsQuery = useQueueWaitingJobs(queue);
+  const liveMetrics = queueJobsQuery.data?.metrics;
   // The Buildkite queue metric is the source of truth for the current
   // waiting count. Individual job details may be unavailable when an Agent
   // Stack has already reserved those jobs, but the metric remains available.
@@ -146,32 +149,35 @@ export default function QueuePage() {
       .map(([time, v]) => ({ time, ...v }))
       .sort((a, b) => a.time - b.time);
 
-    // Agent Metrics records the controller's view of pending work, which can
-    // be zero after an Agent Stack reserves jobs. Add a current point from the
-    // Buildkite queue metric so the chart's latest Waiting value matches the
-    // live count shown above without rewriting historical snapshots.
-    if (queue && liveWaitingJobs !== undefined) {
+    // Add or replace the current point with the direct Buildkite GraphQL
+    // snapshot. Historical points are persisted by the five-minute poller.
+    if (
+      queue &&
+      liveMetrics?.connectedAgents != null &&
+      liveMetrics.runningJobs != null &&
+      liveMetrics.waitingJobs != null
+    ) {
       const latest = chartData[chartData.length - 1];
-      const currentSnapshot = metricsData?.latest.find((metric) => metric.queue === queue);
-      const livePointTime = latest
-        ? latest.time + 60_000
-        : currentSnapshot
-          ? Date.parse(currentSnapshot.polled_at)
-          : undefined;
+      const livePointTime = Date.parse(liveMetrics.polledAt);
 
-      if (livePointTime !== undefined && Number.isFinite(livePointTime)) {
-        chartData.push({
+      if (Number.isFinite(livePointTime)) {
+        const livePoint = {
           time: livePointTime,
-          running: latest?.running ?? currentSnapshot?.jobs_running ?? 0,
-          scheduled: liveWaitingJobs,
-          waiting: latest?.waiting ?? currentSnapshot?.jobs_waiting ?? 0,
-          agents: latest?.agents ?? currentSnapshot?.agents_total ?? 0,
-        });
+          running: liveMetrics.runningJobs,
+          scheduled: liveMetrics.waitingJobs,
+          waiting: 0,
+          agents: liveMetrics.connectedAgents,
+        };
+        if (latest && Math.abs(livePointTime - latest.time) < 5 * 60_000) {
+          chartData[chartData.length - 1] = livePoint;
+        } else {
+          chartData.push(livePoint);
+        }
       }
     }
 
     return chartData;
-  }, [historyMatchesQueue, liveWaitingJobs, metricsData, queue]);
+  }, [historyMatchesQueue, liveMetrics, metricsData, queue]);
 
   const chartTickInterval = Math.max(1, Math.floor(overviewChartData.length / 10));
 
@@ -212,10 +218,29 @@ export default function QueuePage() {
   // filtered to one queue, so it remains safe and useful during chart loads.
   const allLatest = metricsData?.latest ?? [];
   const filtered = queue ? allLatest.filter((q) => q.queue === queue) : allLatest;
-  const totalAgents = filtered.reduce((s, q) => s + q.agents_total, 0);
-  const busyAgents = filtered.reduce((s, q) => s + q.agents_busy, 0);
-  const idleAgents = filtered.reduce((s, q) => s + q.agents_idle, 0);
-  const runningJobs = filtered.reduce((s, q) => s + q.jobs_running, 0);
+  const savedTotalAgents = filtered.reduce((sum, metric) => sum + metric.agents_total, 0);
+  const savedBusyAgents = filtered.reduce((sum, metric) => sum + metric.agents_busy, 0);
+  const savedIdleAgents = filtered.reduce((sum, metric) => sum + metric.agents_idle, 0);
+  const savedRunningJobs = filtered.reduce((sum, metric) => sum + metric.jobs_running, 0);
+  const savedWaitingJobs = filtered.reduce(
+    (sum, metric) => sum + effectiveWaiting(metric.queue, metric.jobs_scheduled, metric.jobs_waiting),
+    0,
+  );
+  const totalAgents = queue && liveMetrics?.connectedAgents != null
+    ? liveMetrics.connectedAgents
+    : savedTotalAgents;
+  const runningJobs = queue && liveMetrics?.runningJobs != null
+    ? liveMetrics.runningJobs
+    : savedRunningJobs;
+  const busyAgents = queue && liveMetrics?.connectedAgents != null
+    ? Math.min(totalAgents, runningJobs)
+    : savedBusyAgents;
+  const idleAgents = queue && liveMetrics?.connectedAgents != null
+    ? Math.max(0, totalAgents - busyAgents)
+    : savedIdleAgents;
+  const currentWaitingJobs = queue
+    ? (liveMetrics?.waitingJobs ?? liveWaitingJobs ?? savedWaitingJobs)
+    : savedWaitingJobs;
   const liveWaitingJobsDetail = !queue
     ? "Select a queue"
     : queueJobsQuery.error
@@ -226,10 +251,41 @@ export default function QueuePage() {
           ? "Buildkite queue metric"
           : "Live command jobs";
 
+  function waitMetric(
+    liveValue: number | null | undefined,
+    savedField: "p50_wait_secs" | "p95_wait_secs" | "p99_wait_secs",
+  ): { seconds: number | null; detail?: string } {
+    if (queue && liveMetrics) {
+      const sampleSize = liveMetrics?.waitSampleSize ?? 0;
+      return {
+        seconds: liveValue ?? null,
+        detail: sampleSize > 0
+          ? `${sampleSize} runnable job${sampleSize === 1 ? "" : "s"} · Buildkite API`
+          : "No runnable jobs · Buildkite API",
+      };
+    }
+    const withWait = filtered.filter((metric) => metric[savedField] != null);
+    if (withWait.length === 0) return { seconds: null };
+    const worst = withWait.reduce((a, b) => (a[savedField]! > b[savedField]! ? a : b));
+    return {
+      seconds: worst[savedField],
+      detail: queue ? "Buildkite snapshot" : worst.queue,
+    };
+  }
+
+  const p50Wait = waitMetric(liveMetrics?.p50WaitSecs, "p50_wait_secs");
+  const p95Wait = waitMetric(liveMetrics?.p95WaitSecs, "p95_wait_secs");
+  const p99Wait = waitMetric(liveMetrics?.p99WaitSecs, "p99_wait_secs");
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-semibold">Queue Metrics</h1>
+        <div>
+          <h1 className="text-2xl font-semibold">Queue Metrics</h1>
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            Buildkite API · refreshes every 5 minutes
+          </p>
+        </div>
         <div className="flex gap-3">
           <SearchableSelect
             label="Queue"
@@ -257,7 +313,7 @@ export default function QueuePage() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard
           label="Total Agents"
           value={totalAgents}
@@ -265,28 +321,30 @@ export default function QueuePage() {
         />
         <StatCard
           label="Waiting Jobs"
-          value={liveWaitingJobs ?? "—"}
+          value={currentWaitingJobs}
           detail={liveWaitingJobsDetail}
-          color={liveWaitingJobs && liveWaitingJobs > 0 ? "yellow" : "default"}
+          color={currentWaitingJobs > 0 ? "yellow" : "default"}
         />
         <StatCard
           label="Running Jobs"
           value={runningJobs}
         />
-        {(() => {
-          const withWait = filtered.filter((q) => q.p90_wait_secs != null);
-          if (withWait.length === 0) return <StatCard label="P90 Wait" value="—" />;
-          const worst = withWait.reduce((a, b) => (a.p90_wait_secs! > b.p90_wait_secs! ? a : b));
-          const secs = Math.round(worst.p90_wait_secs!);
+        {([
+          ["P50 Wait", p50Wait],
+          ["P95 Wait", p95Wait],
+          ["P99 Wait", p99Wait],
+        ] as const).map(([label, metric]) => {
+          const seconds = metric.seconds == null ? null : Math.round(metric.seconds);
           return (
             <StatCard
-              label="P90 Wait"
-              value={formatDuration(secs)}
-              detail={queue ? undefined : worst.queue}
-              color={secs > 1800 ? "red" : secs > 600 ? "yellow" : "default"}
+              key={label}
+              label={label}
+              value={seconds == null ? "—" : formatDuration(seconds)}
+              detail={metric.detail}
+              color={seconds == null ? "default" : seconds > 1800 ? "red" : seconds > 600 ? "yellow" : "default"}
             />
           );
-        })()}
+        })}
       </div>
 
       {/* Queue Overview Chart */}
@@ -377,6 +435,7 @@ export default function QueuePage() {
                   ["p50", "P50 Wait"],
                   ["p90", "P90 Wait"],
                   ["p95", "P95 Wait"],
+                  ["p99", "P99 Wait"],
                 ] as const).map(([key, label]) => (
                   <th
                     key={key}
@@ -403,7 +462,7 @@ export default function QueuePage() {
                     const bw = effectiveWaiting(b.queue, b.jobs_scheduled, b.jobs_waiting);
                     return sortAsc ? aw - bw : bw - aw;
                   }
-                  const colMap = { queue: "queue", agents: "agents_total", running: "jobs_running", idle: "agents_idle", waiting: "jobs_scheduled", p50: "p50_wait_secs", p90: "p90_wait_secs", p95: "p95_wait_secs" } as const;
+                  const colMap = { queue: "queue", agents: "agents_total", running: "jobs_running", idle: "agents_idle", waiting: "jobs_scheduled", p50: "p50_wait_secs", p90: "p90_wait_secs", p95: "p95_wait_secs", p99: "p99_wait_secs" } as const;
                   const field = colMap[sortCol];
                   const av = a[field], bv = b[field];
                   const cmp = typeof av === "string" ? av.localeCompare(bv as string) : ((av ?? -1) as number) - ((bv ?? -1) as number);
@@ -432,11 +491,14 @@ export default function QueuePage() {
                     <td className="whitespace-nowrap px-5 py-2.5 text-zinc-600 dark:text-zinc-400">
                       {q.p95_wait_secs != null ? formatDuration(Math.round(q.p95_wait_secs)) : "—"}
                     </td>
+                    <td className="whitespace-nowrap px-5 py-2.5 text-zinc-600 dark:text-zinc-400">
+                      {q.p99_wait_secs != null ? formatDuration(Math.round(q.p99_wait_secs)) : "—"}
+                    </td>
                   </tr>
                 ))}
               {allLatest.filter((q) => q.agents_total > 0 || q.jobs_total > 0).length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-5 py-8 text-center text-zinc-400">
+                  <td colSpan={9} className="px-5 py-8 text-center text-zinc-400">
                     No queue data found
                   </td>
                 </tr>

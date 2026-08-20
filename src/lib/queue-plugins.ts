@@ -37,8 +37,15 @@ export const DOCKER_PLUGIN_QUEUES = new Set([
   "small_cpu_queue_release",
 ]);
 
-/** Return the effective waiting-job count for a queue. */
+/**
+ * Return the effective waiting-job count for a queue.
+ *
+ * New snapshots store Buildkite's canonical ClusterQueue waiting count in
+ * jobs_scheduled and leave the legacy Agent Metrics jobs_waiting field at
+ * zero. Prefer that canonical value while retaining old snapshot behavior.
+ */
 export function effectiveWaiting(queue: string, jobsScheduled: number, jobsWaiting: number): number {
+  if (jobsScheduled > 0 && jobsWaiting === 0) return jobsScheduled;
   if (DOCKER_PLUGIN_QUEUES.has(queue)) return jobsScheduled;
   if (K8S_SCHEDULED_QUEUES.has(queue)) return jobsScheduled;
   if (SCHEDULED_PLUS_WAITING_QUEUES.has(queue)) return jobsScheduled + jobsWaiting;
