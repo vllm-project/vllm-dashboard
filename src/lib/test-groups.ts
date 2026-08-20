@@ -1,4 +1,5 @@
 import { getTestAreaMapping, type TestAreaMapping } from "./test-areas";
+import { getIntelJobMapping } from "./intel_jobs";
 
 // Strip device prefix from AMD CI pipeline jobs
 // e.g. "mi325_1: Basic Correctness" -> "Basic Correctness"
@@ -78,15 +79,16 @@ export function isFailedJobState(state: string): boolean {
 
 export function resolveGroupsToJobConditions(groups: string[]): { exactNames: string[]; regexPatterns: string[] } {
   const mapping = getTestAreaMapping();
+  const intelMapping = getIntelJobMapping();
   const exactNames: string[] = [];
   const regexPatterns: string[] = [];
   const groupSet = new Set(groups);
 
-  for (const [name, group] of mapping.jobToGroup) {
+  for (const [name, group] of [...mapping.jobToGroup, ...intelMapping.jobToGroup]) {
     if (groupSet.has(group)) exactNames.push(name);
   }
 
-  for (const { regex, group } of mapping.patterns) {
+  for (const { regex, group } of [...mapping.patterns, ...intelMapping.patterns]) {
     if (groupSet.has(group)) {
       regexPatterns.push(regex.source);
     }
@@ -106,6 +108,7 @@ export function aggregateJobsByGroup(
   jobs: { name: string; state: string; web_url?: string }[]
 ): GroupStatus[] {
   const mapping = getTestAreaMapping();
+  const intelMapping = getIntelJobMapping();
 
   const groupMap = new Map<
     string,
@@ -113,7 +116,7 @@ export function aggregateJobsByGroup(
   >();
 
   for (const job of jobs) {
-    const group = getTestGroup(job.name, mapping);
+    const group = getTestGroup(job.name, mapping) ?? getTestGroup(job.name, intelMapping);
     if (!group) continue;
 
     if (!groupMap.has(group)) {
@@ -132,7 +135,8 @@ export function aggregateJobsByGroup(
 
   // Use groups from yaml (sorted alphabetically) for consistent column ordering
   // Also include any groups that appeared in data but aren't in the yaml list
-  const orderedGroups = [...mapping.groups];
+  const allGroups = new Set([...mapping.groups, ...intelMapping.groups]);
+  const orderedGroups = [...allGroups];
   for (const group of groupMap.keys()) {
     if (!orderedGroups.includes(group)) {
       orderedGroups.push(group);
