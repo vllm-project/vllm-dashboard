@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BuildkiteQueueError, reprioritizeQueueJob } from "@/lib/buildkite-queue-jobs";
+import { isBuildkiteQueueError, reprioritizeQueueJob } from "@/lib/buildkite-queue-jobs";
 
 export const dynamic = "force-dynamic";
 
@@ -44,10 +44,14 @@ export async function POST(request: NextRequest) {
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
-    if (error instanceof BuildkiteQueueError) {
+    if (isBuildkiteQueueError(error)) {
+      const headers: Record<string, string> = { "Cache-Control": "no-store" };
+      if (error.retryAfterSeconds !== undefined) {
+        headers["Retry-After"] = String(error.retryAfterSeconds);
+      }
       return NextResponse.json(
         { error: error.message, code: error.code },
-        { status: error.status, headers: { "Cache-Control": "no-store" } },
+        { status: error.status, headers },
       );
     }
 

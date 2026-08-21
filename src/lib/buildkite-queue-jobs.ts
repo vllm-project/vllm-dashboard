@@ -1,4 +1,4 @@
-import { fetchBuildkiteQueueSnapshots } from "@/lib/buildkite-queue-metrics";
+import { unstable_cache } from "next/cache";
 
 const GRAPHQL_ENDPOINT = "https://graphql.buildkite.com/v1";
 const REST_ENDPOINT = "https://api.buildkite.com/v2";
@@ -56,6 +56,10 @@ interface ClusterQueueTarget {
   queueId: string;
 }
 
+interface ClusterQueueIndexEntry extends ClusterQueueTarget {
+  key: string;
+}
+
 interface ClusterQueuesGraphQLResponse {
   data?: {
     organization?: {
@@ -87,18 +91,6 @@ interface ClusterQueuePageGraphQLResponse {
 
 export interface QueueJobsResult {
   jobs: QueueJob[];
-  waitingCount: number | null;
-  metrics: {
-    polledAt: string;
-    connectedAgents: number | null;
-    runningJobs: number | null;
-    waitingJobs: number | null;
-    p50WaitSecs: number | null;
-    p90WaitSecs: number | null;
-    p95WaitSecs: number | null;
-    p99WaitSecs: number | null;
-    waitSampleSize: number;
-  };
 }
 
 export class BuildkiteQueueError extends Error {
@@ -106,9 +98,24 @@ export class BuildkiteQueueError extends Error {
     message: string,
     public readonly status: number,
     public readonly code: string,
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message);
+    this.name = "BuildkiteQueueError";
+    Object.setPrototypeOf(this, new.target.prototype);
   }
+}
+
+export function isBuildkiteQueueError(error: unknown): error is BuildkiteQueueError {
+  if (error instanceof BuildkiteQueueError) return true;
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as Partial<BuildkiteQueueError>;
+  return (
+    candidate.name === "BuildkiteQueueError" &&
+    typeof candidate.message === "string" &&
+    typeof candidate.status === "number" &&
+    typeof candidate.code === "string"
+  );
 }
 
 function getToken(): string {
@@ -136,6 +143,19 @@ function queueRule(queue: string): string {
 
 function requestError(response: Response, errors?: Array<{ message: string }>): BuildkiteQueueError {
   const detail = errors?.map((error) => error.message).join(" ");
+  const complexityLimit = detail?.match(
+    /exceeded the limit of \d+ complexity points.*?try again in (\d+) seconds/i,
+  );
+  if (complexityLimit) {
+    const retryAfterSeconds = Number.parseInt(complexityLimit[1], 10);
+    return new BuildkiteQueueError(
+      `Buildkite is temporarily rate-limiting queue details. Try again in ${retryAfterSeconds} seconds.`,
+      429,
+      "BUILDKITE_RATE_LIMITED",
+      retryAfterSeconds,
+    );
+  }
+
   const message =
     response.status === 401
       ? "The configured Buildkite API token is no longer valid."
@@ -144,7 +164,7 @@ function requestError(response: Response, errors?: Array<{ message: string }>): 
         : detail || "Buildkite could not load the queue jobs.";
   return new BuildkiteQueueError(
     message,
-    response.status >= 500 ? 502 : response.status || 502,
+    response.status >= 500 || response.ok ? 502 : response.status || 502,
     "BUILDKITE_REQUEST_FAILED",
   );
 }
@@ -216,8 +236,12 @@ async function getClusterQueuePage(
   return queues;
 }
 
-async function getClusterQueue(queue: string): Promise<ClusterQueueTarget | null> {
-  const token = getToken();
+async function fetchClusterQueueIndex(
+  token: string,
+  organizationSlug: string,
+): Promise<ClusterQueueIndexEntry[]> {
+  const index: ClusterQueueIndexEntry[] = [];
+  const seenKeys = new Set<string>();
   let after: string | null = null;
 
   do {
@@ -259,7 +283,7 @@ async function getClusterQueue(queue: string): Promise<ClusterQueueTarget | null
           }
         `,
         variables: {
-          organization: organization(),
+          organization: organizationSlug,
           first: JOBS_PAGE_SIZE,
           after,
         },
@@ -290,16 +314,22 @@ async function getClusterQueue(queue: string): Promise<ClusterQueueTarget | null
     }
 
     for (const { node: cluster } of clusters.edges) {
-      const clusterQueue = cluster.queues.edges.find(({ node }) => node.key === queue)?.node;
-      if (clusterQueue) return { clusterId: cluster.id, queueId: clusterQueue.id };
+      for (const { node } of cluster.queues.edges) {
+        if (seenKeys.has(node.key)) continue;
+        seenKeys.add(node.key);
+        index.push({ key: node.key, clusterId: cluster.id, queueId: node.id });
+      }
 
       let queueAfter = cluster.queues.pageInfo.hasNextPage
         ? cluster.queues.pageInfo.endCursor
         : null;
       while (queueAfter) {
         const queues = await getClusterQueuePage(token, cluster.id, queueAfter);
-        const paginatedQueue = queues.edges.find(({ node }) => node.key === queue)?.node;
-        if (paginatedQueue) return { clusterId: cluster.id, queueId: paginatedQueue.id };
+        for (const { node } of queues.edges) {
+          if (seenKeys.has(node.key)) continue;
+          seenKeys.add(node.key);
+          index.push({ key: node.key, clusterId: cluster.id, queueId: node.id });
+        }
         queueAfter = queues.pageInfo.hasNextPage ? queues.pageInfo.endCursor : null;
       }
     }
@@ -307,13 +337,27 @@ async function getClusterQueue(queue: string): Promise<ClusterQueueTarget | null
     after = clusters.pageInfo.hasNextPage ? clusters.pageInfo.endCursor : null;
   } while (after);
 
-  return null;
+  return index;
 }
 
-async function graphqlQueueJobs(queue: string): Promise<QueueJob[]> {
+const getCachedClusterQueueIndex = unstable_cache(
+  async (organizationSlug: string) => fetchClusterQueueIndex(getToken(), organizationSlug),
+  ["buildkite-cluster-queue-index-v1"],
+  { revalidate: 60 * 60 },
+);
+
+async function getClusterQueue(queue: string): Promise<ClusterQueueTarget | null> {
+  const index = await getCachedClusterQueueIndex(organization());
+  const target = index.find((candidate) => candidate.key === queue);
+  return target ? { clusterId: target.clusterId, queueId: target.queueId } : null;
+}
+
+async function graphqlQueueJobs(
+  queue: string,
+  clusterQueue: ClusterQueueTarget | null,
+): Promise<QueueJob[]> {
   const token = getToken();
   const agentQueryRule = queueRule(queue);
-  const clusterQueue = await getClusterQueue(queue);
   const jobs: QueueJob[] = [];
   let after: string | null = null;
 
@@ -416,26 +460,9 @@ async function graphqlQueueJobs(queue: string): Promise<QueueJob[]> {
 }
 
 export async function getQueueJobs(queue: string): Promise<QueueJobsResult> {
-  const [jobs, snapshots] = await Promise.all([
-    graphqlQueueJobs(queue),
-    fetchBuildkiteQueueSnapshots(getToken(), organization()),
-  ]);
-  const snapshot = snapshots.find((candidate) => candidate.queue === queue);
-  return {
-    jobs,
-    waitingCount: snapshot?.waitingJobs ?? null,
-    metrics: {
-      polledAt: snapshot?.polledAt ?? new Date().toISOString(),
-      connectedAgents: snapshot?.connectedAgents ?? null,
-      runningJobs: snapshot?.runningJobs ?? null,
-      waitingJobs: snapshot?.waitingJobs ?? null,
-      p50WaitSecs: snapshot?.p50 ?? null,
-      p90WaitSecs: snapshot?.p90 ?? null,
-      p95WaitSecs: snapshot?.p95 ?? null,
-      p99WaitSecs: snapshot?.p99 ?? null,
-      waitSampleSize: snapshot?.sampleSize ?? 0,
-    },
-  };
+  queueRule(queue);
+  const clusterQueue = await getClusterQueue(queue);
+  return { jobs: await graphqlQueueJobs(queue, clusterQueue) };
 }
 
 export async function reprioritizeQueueJob(queue: string, jobUuid: string): Promise<{ priority: number }> {
@@ -443,7 +470,7 @@ export async function reprioritizeQueueJob(queue: string, jobUuid: string): Prom
     throw new BuildkiteQueueError("A valid job UUID is required.", 400, "INVALID_JOB");
   }
 
-  const jobs = await graphqlQueueJobs(queue);
+  const { jobs } = await getQueueJobs(queue);
   const job = jobs.find((candidate) => candidate.uuid === jobUuid);
   if (!job) {
     throw new BuildkiteQueueError(

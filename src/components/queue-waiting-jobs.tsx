@@ -13,18 +13,6 @@ export interface QueueJob {
 
 export interface QueueJobsResponse {
   jobs: QueueJob[];
-  waitingCount: number | null;
-  metrics: {
-    polledAt: string;
-    connectedAgents: number | null;
-    runningJobs: number | null;
-    waitingJobs: number | null;
-    p50WaitSecs: number | null;
-    p90WaitSecs: number | null;
-    p95WaitSecs: number | null;
-    p99WaitSecs: number | null;
-    waitSampleSize: number;
-  };
   operatorAccessRequired: boolean;
 }
 
@@ -56,15 +44,18 @@ export function useQueueWaitingJobs(queue: string) {
   return useSWR<QueueJobsResponse>(url, fetchJson, {
     refreshInterval: 5 * 60_000,
     keepPreviousData: true,
+    shouldRetryOnError: false,
   });
 }
 
 export function QueueWaitingJobs({
   queue,
   query,
+  waitingCount,
 }: {
   queue: string;
   query: ReturnType<typeof useQueueWaitingJobs>;
+  waitingCount: number | null;
 }) {
   const [operatorToken, setOperatorToken] = useState("");
   const [showAccess, setShowAccess] = useState(false);
@@ -113,8 +104,10 @@ export function QueueWaitingJobs({
 
   const canPromote = Boolean(data?.operatorAccessRequired && operatorToken);
   const showTable = Boolean(data && (data.jobs.length > 0 || isValidating || error));
-  const reportedWaitingCount = data?.waitingCount ?? data?.jobs.length;
-  const hasReservedJobs = Boolean(data && data.waitingCount !== null && data.waitingCount > data.jobs.length);
+  const reportedWaitingCount = waitingCount ?? data?.jobs.length ?? null;
+  const hasReservedJobs = Boolean(
+    data && waitingCount !== null && waitingCount > data.jobs.length,
+  );
 
   return (
     <section className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
@@ -123,7 +116,7 @@ export function QueueWaitingJobs({
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-base font-semibold tracking-tight">Waiting jobs</h2>
-              {data && (
+              {reportedWaitingCount !== null && (
                 <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold tabular-nums text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
                   {reportedWaitingCount}
                 </span>
@@ -202,7 +195,7 @@ export function QueueWaitingJobs({
 
       {error && !data && (
         <div className="flex min-h-36 flex-col items-center justify-center gap-3 px-5 text-center text-sm text-zinc-500 dark:text-zinc-400">
-          <p>Waiting jobs couldn&apos;t be loaded.</p>
+          <p>{error instanceof Error ? error.message : "Waiting jobs couldn't be loaded."}</p>
           <button
             type="button"
             onClick={() => void mutate()}

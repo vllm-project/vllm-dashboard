@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BuildkiteQueueError, getQueueJobs } from "@/lib/buildkite-queue-jobs";
+import { getQueueJobs, isBuildkiteQueueError } from "@/lib/buildkite-queue-jobs";
 
 export const dynamic = "force-dynamic";
 
 function responseError(error: unknown) {
-  if (error instanceof BuildkiteQueueError) {
+  if (isBuildkiteQueueError(error)) {
+    const headers: Record<string, string> = { "Cache-Control": "no-store" };
+    if (error.retryAfterSeconds !== undefined) {
+      headers["Retry-After"] = String(error.retryAfterSeconds);
+    }
     return NextResponse.json(
       { error: error.message, code: error.code },
-      { status: error.status, headers: { "Cache-Control": "no-store" } },
+      { status: error.status, headers },
     );
   }
 
@@ -22,12 +26,10 @@ export async function GET(request: NextRequest) {
   const queue = request.nextUrl.searchParams.get("queue") ?? "";
 
   try {
-    const { jobs, waitingCount, metrics } = await getQueueJobs(queue);
+    const { jobs } = await getQueueJobs(queue);
     return NextResponse.json(
       {
         jobs,
-        waitingCount,
-        metrics,
         operatorAccessRequired: Boolean(process.env.BUILDKITE_QUEUE_OPERATOR_TOKEN),
       },
       { headers: { "Cache-Control": "no-store" } },
