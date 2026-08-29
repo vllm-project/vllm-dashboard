@@ -1209,7 +1209,7 @@ def build_full_ci_analysis_runtime(
     clock: Clock,
     runner: AnalyzerRunner | None = None,
     kimi_base_url: str = "https://api2.inferact.dev/v1",
-    kimi_model: str = "kimi-k3",
+    kimi_model: str = "moonshotai/Kimi-K3",
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
 ) -> AlertingRuntime:
     """Wire the production analyzer compatibility adapter into the runtime."""
