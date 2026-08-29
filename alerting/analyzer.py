@@ -572,11 +572,16 @@ class FullCIAnalysisHandler:
         )
         checkpoint = self._store.latest_checkpoint()
         if checkpoint is None:
-            raise AnalyzerError("no analyzer checkpoint is referenced")
-        blob = self._checkpoints.download(checkpoint.s3_uri)
-        if hashlib.sha256(blob).hexdigest() != checkpoint.sha256:
-            raise AnalyzerError(f"checkpoint checksum mismatch for {checkpoint.s3_uri}")
-        memory_files = unpack_checkpoint(blob)
+            # First-ever analysis has no durable memory yet; it starts empty
+            # and its own commit uploads the initial checkpoint.
+            memory_files: dict[str, bytes] = {}
+        else:
+            blob = self._checkpoints.download(checkpoint.s3_uri)
+            if hashlib.sha256(blob).hexdigest() != checkpoint.sha256:
+                raise AnalyzerError(
+                    f"checkpoint checksum mismatch for {checkpoint.s3_uri}"
+                )
+            memory_files = unpack_checkpoint(blob)
 
         commit_sha = str(build.get("commit") or context.current.commit_sha)
         with tempfile.TemporaryDirectory(prefix="full-ci-analysis-") as tmp:
