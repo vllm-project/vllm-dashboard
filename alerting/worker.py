@@ -33,12 +33,10 @@ def _required_environment(name: str) -> str:
 
 
 def _slack() -> SlackDeliveryPort:
-    webhook_urls = {}
-    if url := os.environ.get("VLLM_CI_SLACK_URL"):
-        webhook_urls["vllm-ci"] = url
+    # Both alert paths post through the bot token; no webhook destinations.
     return SlackDeliveryPort(
         bot_token=os.environ.get("SLACK_BOT_TOKEN"),
-        webhook_urls=webhook_urls,
+        webhook_urls={},
     )
 
 
