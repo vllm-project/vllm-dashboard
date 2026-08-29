@@ -85,7 +85,7 @@ def _runtime(
             kimi_base_url=os.environ.get(
                 "KIMI_BASE_URL", "https://api2.inferact.dev/v1"
             ),
-            kimi_model=os.environ.get("KIMI_MODEL", "kimi-k3"),
+            kimi_model=os.environ.get("KIMI_MODEL", "moonshotai/Kimi-K3"),
             slack=_slack(),
             clock=clock,
             delivery_mode=delivery_mode,
