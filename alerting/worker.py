@@ -80,6 +80,11 @@ def _runtime(
             buildkite_token=_required_environment("BUILDKITE_TOKEN"),
             github_token=_required_environment("GITHUB_TOKEN"),
             checkpoint_bucket=_required_environment("ALERTING_CHECKPOINT_BUCKET"),
+            kimi_api_key=_required_environment("KIMI_API_KEY"),
+            kimi_base_url=os.environ.get(
+                "KIMI_BASE_URL", "https://api2.inferact.dev/v1"
+            ),
+            kimi_model=os.environ.get("KIMI_MODEL", "kimi-k3"),
             slack=_slack(),
             clock=clock,
             delivery_mode=delivery_mode,

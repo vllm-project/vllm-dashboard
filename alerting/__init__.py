@@ -9,7 +9,6 @@ from alerting.analyzer import (
     AnalyzerError,
     CauseCategory,
     CheckpointRef,
-    ClaudeCodeRunner,
     ComparisonContext,
     CompletedAnalysis,
     FailureCache,
@@ -41,6 +40,7 @@ from alerting.full_ci import (
     FullCIReconciliationState,
     FullCIRun,
 )
+from alerting.kimi import KimiCodeRunner
 from alerting.ports import (
     ClaimOutcome,
     DestinationMode,
@@ -75,7 +75,6 @@ __all__ = [
     "CauseCategory",
     "CheckpointRef",
     "ClaimOutcome",
-    "ClaudeCodeRunner",
     "ScheduledCommand",
     "BuildkiteFullCISource",
     "BuildkiteRestClient",
@@ -101,6 +100,7 @@ __all__ = [
     "FullCIRun",
     "GitHubRestClient",
     "HandlerCompletion",
+    "KimiCodeRunner",
     "NotificationIntent",
     "NotificationIntentRecord",
     "OutboxStatus",

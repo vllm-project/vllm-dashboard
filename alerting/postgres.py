@@ -1204,25 +1204,32 @@ def build_full_ci_analysis_runtime(
     buildkite_token: str,
     github_token: str,
     checkpoint_bucket: str,
+    kimi_api_key: str,
     slack: SlackPort,
     clock: Clock,
     runner: AnalyzerRunner | None = None,
+    kimi_base_url: str = "https://api2.inferact.dev/v1",
+    kimi_model: str = "kimi-k3",
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
 ) -> AlertingRuntime:
     """Wire the production analyzer compatibility adapter into the runtime."""
     from alerting.analyzer import (
-        ClaudeCodeRunner,
         FullCIAnalysisHandler,
         GitHubRestClient,
         S3CheckpointStore,
     )
     from alerting.full_ci import BuildkiteRestClient
+    from alerting.kimi import KimiCodeRunner
 
     store = PostgresAlertStore.from_database_url(database_url)
     handler = FullCIAnalysisHandler(
         store=store,
         builds=BuildkiteRestClient(token=buildkite_token),
-        runner=runner if runner is not None else ClaudeCodeRunner(),
+        runner=runner
+        if runner is not None
+        else KimiCodeRunner(
+            api_key=kimi_api_key, base_url=kimi_base_url, model=kimi_model
+        ),
         checkpoints=S3CheckpointStore(bucket=checkpoint_bucket),
         github=GitHubRestClient(token=github_token),
         clock=clock,

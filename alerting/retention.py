@@ -27,7 +27,7 @@ def prune_fast_failure_events(
             "DELETE FROM alerting_fast_failure_events WHERE finished_at < %s",
             (cutoff,),
         )
-        return cursor.rowcount
+        return int(cursor.rowcount)
 
 
 def main() -> int:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,7 +18,6 @@ from alerting.analyzer import (
     CauseCategory,
     CheckpointRef,
     CompletedAnalysis,
-    ClaudeCodeRunner,
     FailureCache,
     FailureCondition,
     FailureLifecycle,
@@ -1002,32 +1000,6 @@ def test_incomplete_oldest_comparison_blocks_newer_analysis() -> None:
     assert result.status is ProcessStatus.COMPLETED
     assert harness.store.analyses() == []
     assert harness.runner.runs == 0
-
-
-def test_claude_runner_grants_only_required_read_only_tools(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    invocation: list[str] = []
-
-    def run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        invocation.extend(args)
-        return subprocess.CompletedProcess(args, 0, "", "")
-
-    monkeypatch.setattr("alerting.analyzer.subprocess.run", run)
-
-    ClaudeCodeRunner(binary="claude-test", prompt="analyze").run(tmp_path)
-
-    assert invocation[:4] == ["claude-test", "-p", "analyze", "--allowedTools"]
-    allowed = invocation[4].split(",")
-    assert allowed == [
-        "Read",
-        "Write",
-        "Edit",
-        "Glob",
-        "Grep",
-        "Task",
-        "Bash(curl:*)",
-    ]
 
 
 def test_missed_comparisons_are_analyzed_chronologically() -> None:
