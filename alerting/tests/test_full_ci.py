@@ -5,6 +5,7 @@ from typing import Any
 
 from alerting.commands import ScheduledCommand
 from alerting.full_ci import (
+    INITIAL_LOOKBACK,
     BuildkiteFullCISource,
     FullCIJobOutcome,
     FullCIReconciliationHandler,
@@ -129,7 +130,11 @@ def test_missed_runs_are_ingested_in_order_with_one_comparison_each() -> None:
         for comparison in full_ci.comparisons()
     ] == [("build-100", "build-101"), ("build-101", "build-102")]
     assert source.calls == [
-        (None, frozenset(), baseline.scheduled_at),
+        (
+            baseline.scheduled_at - INITIAL_LOOKBACK,
+            frozenset(),
+            baseline.scheduled_at,
+        ),
         (baseline.scheduled_at, frozenset({baseline.build_id}), START),
     ]
 
