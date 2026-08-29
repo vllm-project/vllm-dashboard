@@ -53,6 +53,7 @@ interface FastCIAlertsResponse {
 
 interface MainCIAlertsResponse {
   alerts?: MainCiJobAlert[];
+  schemaStatus?: "ready" | "pending";
   error?: string;
 }
 
@@ -100,7 +101,7 @@ function AlertSection({
         </div>
       ) : failed ? (
         <div className="flex h-48 items-center justify-center text-sm text-red-500">
-          Failed to load {title} alerts.
+          Failed to load {title}.
         </div>
       ) : (
         children
@@ -163,7 +164,14 @@ function MainCISection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
       isLoading={isLoading}
       failed={Boolean(error || data?.error)}
     >
-      <MainCIAlerts alerts={alerts} />
+      {data?.schemaStatus === "pending" ? (
+        <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-amber-300 px-6 text-center text-sm text-amber-700 dark:border-amber-800 dark:text-amber-300">
+          Backend rollout pending. Migration 0014 and the Main CI worker must be
+          deployed before this preview can show alerts.
+        </div>
+      ) : (
+        <MainCIAlerts alerts={alerts} />
+      )}
     </AlertSection>
   );
 }
