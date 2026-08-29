@@ -213,7 +213,7 @@ class KimiCodeRunner:
         api_key: str,
         base_url: str = "https://api2.inferact.dev/v1",
         model: str = "moonshotai/Kimi-K3",
-        timeout_seconds: int = 1200,
+        timeout_seconds: int = 3600,
         max_turns: int = 200,
         transport: Transport | None = None,
         clock: Callable[[], float] | None = None,
