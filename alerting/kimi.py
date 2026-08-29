@@ -37,13 +37,43 @@ KIMI_ANALYZER_PROMPT = (
     "available in the environment (default 1)."
 )
 
-READ_CHAR_LIMIT = 100_000
+READ_CHAR_LIMIT = 40_000
 GLOB_RESULT_LIMIT = 200
 GREP_RESULT_LIMIT = 200
-BASH_OUTPUT_LIMIT = 200_000
+BASH_OUTPUT_LIMIT = 40_000
 BASH_TIMEOUT_SECONDS = 60
 TASK_RESULT_LIMIT = 50_000
 REQUEST_TIMEOUT_SECONDS = 300.0
+# The inferact endpoint counts unset output budget as zero and rejects the
+# request when the prompt alone approaches the context window.
+MAX_OUTPUT_TOKENS = 16_384
+
+# Rough budget for the running conversation: ~4 chars per token against a
+# 1M-token context, minus headroom for system prompt, tools, and output.
+# When exceeded, the oldest tool outputs are elided (pairing with their
+# tool_calls stays intact; only the bulky content goes).
+HISTORY_CHAR_BUDGET = 1_500_000
+_ELIDED = "(older tool output elided to fit the context window)"
+
+
+def _prune_history(messages: list[dict[str, Any]]) -> None:
+    def total_chars() -> int:
+        return sum(len(str(message.get("content") or "")) for message in messages)
+
+    total = total_chars()
+    if total <= HISTORY_CHAR_BUDGET:
+        return
+    for message in messages[2:]:  # system and user prompt always stay
+        if total <= HISTORY_CHAR_BUDGET:
+            return
+        content = message.get("content")
+        if (
+            message.get("role") == "tool"
+            and isinstance(content, str)
+            and len(content) > len(_ELIDED)
+        ):
+            total -= len(content) - len(_ELIDED)
+            message["content"] = _ELIDED
 
 Transport = Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]]
 
@@ -240,6 +270,7 @@ class KimiCodeRunner:
                         ),
                     }
                 )
+            _prune_history(messages)
         raise AnalyzerError(f"kimi analyzer exceeded {self._max_turns} turns")
 
     def _complete(
@@ -250,6 +281,7 @@ class KimiCodeRunner:
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
+            "max_tokens": MAX_OUTPUT_TOKENS,
         }
         response = self._transport(
             f"{self._base_url}/chat/completions",
@@ -453,5 +485,6 @@ def _tool_bash(workdir: Path, command: str) -> str:
         return f"error: command failed: {exc}"
     output = (completed.stdout or "") + (completed.stderr or "")
     if len(output) > BASH_OUTPUT_LIMIT:
-        output = output[:BASH_OUTPUT_LIMIT] + "\n... (truncated)"
+        # Buildkite logs put the failure at the end; keep the tail.
+        output = "... (truncated)\n" + output[-BASH_OUTPUT_LIMIT:]
     return f"exit {completed.returncode}\n{output}"
