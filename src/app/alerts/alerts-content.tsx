@@ -170,10 +170,10 @@ function MainCISection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
 
 function FastCISection({
   timeWindow,
-  softFailedOnly,
+  showSoftFailed,
 }: {
   timeWindow: AlertTimeWindow;
-  softFailedOnly: boolean;
+  showSoftFailed: boolean;
 }) {
   const { data, isLoading, error } = useSWR<FastCIAlertsResponse>(
     "/api/alerts/fast-ci",
@@ -187,10 +187,10 @@ function FastCISection({
       (data?.events ?? []).filter(
         (event) =>
           withinAlertWindow(event.finishedAt, cutoff) &&
-          (!softFailedOnly || event.softFailed),
+          (showSoftFailed || !event.softFailed),
       ),
     );
-  }, [data, timeWindow, softFailedOnly]);
+  }, [data, timeWindow, showSoftFailed]);
 
   return (
     <AlertSection
@@ -199,7 +199,7 @@ function FastCISection({
       isLoading={isLoading}
       failed={Boolean(error || data?.error)}
     >
-      <FastCIAlerts groups={groups} softFailedOnly={softFailedOnly} />
+      <FastCIAlerts groups={groups} showSoftFailed={showSoftFailed} />
     </AlertSection>
   );
 }
@@ -214,18 +214,18 @@ export default function AlertsContent() {
   const timeWindow: AlertTimeWindow = isAlertTimeWindow(windowParam)
     ? windowParam
     : "7d";
-  const softFailedOnly = searchParams.get("soft") === "only";
+  const showSoftFailed = searchParams.get("soft") === "show";
 
   const navigate = (
     nextTab: AlertTab,
     nextWindow: AlertTimeWindow,
-    nextSoftFailedOnly: boolean,
+    nextShowSoftFailed: boolean,
   ) => {
     const params = new URLSearchParams(searchParams.toString());
     params.set("tab", nextTab);
     params.set("window", nextWindow);
-    if (nextSoftFailedOnly) {
-      params.set("soft", "only");
+    if (nextShowSoftFailed) {
+      params.set("soft", "show");
     } else {
       params.delete("soft");
     }
@@ -249,7 +249,7 @@ export default function AlertsContent() {
               type="button"
               role="tab"
               aria-selected={active}
-              onClick={() => navigate(item.value, timeWindow, softFailedOnly)}
+              onClick={() => navigate(item.value, timeWindow, showSoftFailed)}
               className={`dashboard-control -mb-px inline-flex min-h-11 items-center border-b-2 text-sm font-semibold sm:min-h-10 ${
                 active
                   ? "border-zinc-950 text-zinc-950 dark:border-zinc-50 dark:text-zinc-50"
@@ -275,7 +275,7 @@ export default function AlertsContent() {
                 key={item.value}
                 type="button"
                 aria-pressed={active}
-                onClick={() => navigate(tab, item.value, softFailedOnly)}
+                onClick={() => navigate(tab, item.value, showSoftFailed)}
                 className={`dashboard-control rounded-full border px-3 py-1.5 text-xs font-semibold ${
                   active
                     ? "border-zinc-950 bg-zinc-950 text-zinc-50 dark:border-zinc-50 dark:bg-zinc-50 dark:text-zinc-950"
@@ -290,15 +290,32 @@ export default function AlertsContent() {
         {tab === "fast-ci" && (
           <button
             type="button"
-            aria-pressed={softFailedOnly}
-            onClick={() => navigate(tab, timeWindow, !softFailedOnly)}
-            className={`dashboard-control rounded-full border px-3 py-1.5 text-xs font-semibold ${
-              softFailedOnly
-                ? "border-zinc-950 bg-zinc-950 text-zinc-50 dark:border-zinc-50 dark:bg-zinc-50 dark:text-zinc-950"
-                : "border-zinc-300 text-zinc-500 hover:text-zinc-950 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-50"
+            role="switch"
+            aria-checked={showSoftFailed}
+            onClick={() => navigate(tab, timeWindow, !showSoftFailed)}
+            className={`dashboard-control inline-flex items-center gap-2 text-xs font-semibold ${
+              showSoftFailed
+                ? "text-zinc-950 dark:text-zinc-50"
+                : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50"
             }`}
           >
-            Soft failed only
+            <span
+              aria-hidden="true"
+              className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full border p-0.5 transition-colors duration-150 ${
+                showSoftFailed
+                  ? "border-zinc-950 bg-zinc-950 dark:border-zinc-50 dark:bg-zinc-50"
+                  : "border-zinc-300 bg-zinc-200 dark:border-zinc-700 dark:bg-zinc-800"
+              }`}
+            >
+              <span
+                className={`h-3.5 w-3.5 rounded-full bg-white transition-transform duration-150 motion-reduce:transition-none ${
+                  showSoftFailed
+                    ? "translate-x-4 dark:bg-zinc-950"
+                    : "translate-x-0 dark:bg-zinc-400"
+                }`}
+              />
+            </span>
+            Show soft failed
           </button>
         )}
       </div>
@@ -306,7 +323,7 @@ export default function AlertsContent() {
       {tab === "main-ci" ? (
         <MainCISection timeWindow={timeWindow} />
       ) : tab === "fast-ci" ? (
-        <FastCISection timeWindow={timeWindow} softFailedOnly={softFailedOnly} />
+        <FastCISection timeWindow={timeWindow} showSoftFailed={showSoftFailed} />
       ) : (
         <FullCISection timeWindow={timeWindow} />
       )}

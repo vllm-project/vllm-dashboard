@@ -80,8 +80,16 @@ test("notification state is visible for every event", () => {
 
 test("an empty window says so instead of rendering an empty list", () => {
   const markup = renderToStaticMarkup(
-    createElement(FastCIAlerts, { groups: [] }),
+    createElement(FastCIAlerts, { groups: [], showSoftFailed: true }),
   );
 
   assert.match(markup, /No Fast CI failures/);
+});
+
+test("an empty window with soft failures hidden says they are hidden", () => {
+  const markup = renderToStaticMarkup(
+    createElement(FastCIAlerts, { groups: [] }),
+  );
+
+  assert.match(markup, /soft failures are hidden/);
 });
