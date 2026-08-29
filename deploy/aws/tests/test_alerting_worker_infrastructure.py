@@ -25,8 +25,8 @@ def test_stack_provisions_one_disposable_worker_without_deferred_services() -> N
     assert "DeleteOnTermination: true" in template
     assert "HttpTokens: required" in template
     assert "SecurityGroupIngress" not in template
-    assert "nodejs22" in template
-    assert "nodejs22-npm" in template
+    assert "nodejs22" not in template
+    assert "nodejs22-npm" not in template
 
 
 def test_instance_role_is_scoped_to_checkpoint_bucket_and_named_secrets() -> None:
@@ -124,10 +124,8 @@ def test_installation_creates_a_non_login_user_and_s3_controlled_timers() -> Non
     assert "useradd --system" in installer
     assert "--shell /sbin/nologin" in installer
     assert 'alerting[aws,postgres]' in installer
-    assert "@anthropic-ai/claude-code" in installer
-    assert "runuser -u alerting" in installer
-    assert "npm_config_cache=/opt/alerting/npm-cache" in installer
-    assert "HOME=/opt/alerting/home" in installer
+    assert "@anthropic-ai/claude-code" not in installer
+    assert "npm" not in installer
     assert "systemctl start alerting-control.service" in installer
     assert "systemctl enable --now alerting-control.timer" in installer
     assert "systemctl enable --now alerting-full-ci.timer" not in installer

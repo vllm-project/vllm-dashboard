@@ -50,15 +50,21 @@ repository-level relationship with the dashboard is recorded in
   pass. It writes raw lifecycle and Buildkite evidence only; Sherlock's
   diagnosis remains in Slack.
 - `analyzer.py` — the Full CI analyzer compatibility adapter. It materializes
-  the working files the unchanged analyzer skill expects (summary, full build
-  data, previous-failure cache, agent memory hydrated from the latest
-  referenced S3 checkpoint), invokes the skill non-interactively, validates
-  its outputs, uploads a new immutable versioned checkpoint, and commits the
-  classifications, PR attribution, rendered report, checkpoint reference, and
-  Slack notification intent in one Postgres transaction per comparison. A
-  fixed classification is persisted only for a positively observed pass, and
-  fixing-PR attribution only for a verified merged revert. Any failure leaves
-  the previous baseline authoritative and finalizes no outbox row.
+  the working files the bundled analyzer instructions expect (summary, full
+  build data, previous-failure cache, agent memory hydrated from the latest
+  referenced S3 checkpoint), invokes the analyzer runner non-interactively,
+  validates its outputs, uploads a new immutable versioned checkpoint, and
+  commits the classifications, PR attribution, rendered report, checkpoint
+  reference, and Slack notification intent in one Postgres transaction per
+  comparison. A fixed classification is persisted only for a positively
+  observed pass, and fixing-PR attribution only for a verified merged revert.
+  Any failure leaves the previous baseline authoritative and finalizes no
+  outbox row.
+- `kimi.py` — the analyzer runner backed by the Kimi chat-completions API. It
+  runs the bundled analyzer instructions as the system message and drives an
+  OpenAI-compatible tool-calling loop whose file tools are sandboxed to the
+  materialized working directory; the shell tool only executes `curl`, so
+  credentials stay in the server-side environment.
 - `migration.py` — the read-only-by-default one-time cutover importer for the
   legacy Full CI cache, last-reported build state, analyzer memory, and Fast CI
   SQLite deduplication keys.
@@ -148,6 +154,6 @@ enabling the new path, and preserves Postgres and S3 baselines on rollback.
 cd alerting
 uv sync --extra dev
 uv run pytest
-uv run mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py main_ci.py memory.py migration.py ports.py postgres.py runtime.py slack.py worker.py tests
+uv run mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py kimi.py main_ci.py memory.py migration.py ports.py postgres.py retention.py runtime.py slack.py worker.py tests
 uv run ruff check .
 ```

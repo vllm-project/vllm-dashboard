@@ -144,7 +144,7 @@ Resources:
             - |
               #!/bin/bash
               set -euo pipefail
-              dnf install -y git nodejs22 nodejs22-npm python3.12 python3.12-pip
+              dnf install -y git python3.12 python3.12-pip
               install -d -m 0755 /opt/alerting
               git clone --depth 1 --branch '${RepositoryRef}' '${RepositoryUrl}' /opt/alerting/source
               /opt/alerting/source/deploy/aws/install.sh '${BucketName}' '${WorkerSecret}' '${GitHubSecret}'

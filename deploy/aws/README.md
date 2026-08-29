@@ -12,7 +12,8 @@ must be JSON objects whose keys are environment-variable names.
 
 - `WorkerSecretArn` supplies `DATABASE_URL`, `BUILDKITE_TOKEN`,
   `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID`, and
-  `SLACK_BOT_TOKEN`, plus the LLM credential used by the Full CI analyzer.
+  `SLACK_BOT_TOKEN`, plus `KIMI_API_KEY`, the Kimi credential used by the
+  Full CI analyzer.
 - `GitHubReadOnlySecretArn` supplies `GITHUB_TOKEN`. Use a fine-grained token
   limited to read-only metadata and contents for required repositories. The
   worker must have no repository write permission.
@@ -24,10 +25,9 @@ instance role, writes them briefly under `/run/alerting`, removes the file
 before starting Python, and suppresses worker stdout and stderr so credentials,
 CI logs, model output, and Slack payloads do not enter the journal.
 
-The installer also installs the Claude Code CLI under the non-login `alerting`
-user. The Full CI analyzer uses the LLM credential from `WorkerSecretArn`, a
-bundled read-only analyzer definition, and the stack checkpoint bucket. It does
-not receive a GitHub write credential.
+The Full CI analyzer calls the Kimi API using `KIMI_API_KEY` from
+`WorkerSecretArn`, with a bundled read-only analyzer definition and the stack
+checkpoint bucket. It does not receive a GitHub write credential.
 
 ## Deploy
 
