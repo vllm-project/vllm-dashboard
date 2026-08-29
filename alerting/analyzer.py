@@ -73,6 +73,15 @@ class AnalyzerError(Exception):
     """The analyzer failed or produced an invalid result. Nothing persists."""
 
 
+class CheckpointUnavailable(AnalyzerError):
+    """The referenced checkpoint cannot be read from the configured bucket.
+
+    Raised when a stack recreation swapped the bucket out from under stored
+    references (foreign bucket, missing object, access denied). Recoverable:
+    the handler falls back to empty memory and uploads a fresh checkpoint.
+    """
+
+
 class CauseCategory(StrEnum):
     INFRASTRUCTURE = "infrastructure"
     FLAKY_TEST = "flaky_test"
@@ -579,12 +588,19 @@ class FullCIAnalysisHandler:
             # and its own commit uploads the initial checkpoint.
             memory_files: dict[str, bytes] = {}
         else:
-            blob = self._checkpoints.download(checkpoint.s3_uri)
-            if hashlib.sha256(blob).hexdigest() != checkpoint.sha256:
-                raise AnalyzerError(
-                    f"checkpoint checksum mismatch for {checkpoint.s3_uri}"
-                )
-            memory_files = unpack_checkpoint(blob)
+            try:
+                blob = self._checkpoints.download(checkpoint.s3_uri)
+            except CheckpointUnavailable:
+                # A stack recreation swaps the bucket and strands stored URIs.
+                # Restart from empty memory rather than wedging the analyzer;
+                # this run's commit uploads the new bucket's first checkpoint.
+                memory_files = {}
+            else:
+                if hashlib.sha256(blob).hexdigest() != checkpoint.sha256:
+                    raise AnalyzerError(
+                        f"checkpoint checksum mismatch for {checkpoint.s3_uri}"
+                    )
+                memory_files = unpack_checkpoint(blob)
 
         commit_sha = str(build.get("commit") or context.current.commit_sha)
         with tempfile.TemporaryDirectory(prefix="full-ci-analysis-") as tmp:
@@ -831,7 +847,7 @@ class S3CheckpointStore:
         self._prefix = prefix
 
     def _client(self) -> Any:
-        import boto3  # type: ignore[import-not-found,import-untyped]  # optional, production-only
+        import boto3  # type: ignore[import-untyped]  # optional, production-only
 
         return boto3.client("s3")
 
@@ -849,10 +865,18 @@ class S3CheckpointStore:
     def download(self, s3_uri: str) -> bytes:
         parsed = urllib.parse.urlsplit(s3_uri)
         if parsed.scheme != "s3" or parsed.netloc != self._bucket:
-            raise AnalyzerError(
+            raise CheckpointUnavailable(
                 f"checkpoint URI is outside the configured bucket: {s3_uri}"
             )
-        response = self._client().get_object(
-            Bucket=self._bucket, Key=parsed.path.lstrip("/")
-        )
+        try:
+            response = self._client().get_object(
+                Bucket=self._bucket, Key=parsed.path.lstrip("/")
+            )
+        except Exception as exc:
+            code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+            if code in {"NoSuchKey", "NoSuchBucket", "404", "AccessDenied"}:
+                raise CheckpointUnavailable(
+                    f"checkpoint cannot be read: {s3_uri} ({code})"
+                ) from exc
+            raise
         return cast(bytes, response["Body"].read())

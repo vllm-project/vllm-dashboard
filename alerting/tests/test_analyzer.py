@@ -17,6 +17,7 @@ from alerting.analyzer import (
     AnalyzerError,
     CauseCategory,
     CheckpointRef,
+    CheckpointUnavailable,
     CompletedAnalysis,
     FailureCache,
     FailureCondition,
@@ -182,9 +183,14 @@ class FakeCheckpoints:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
         self._fail = False
+        self._unavailable = False
 
     def fail_next(self) -> None:
         self._fail = True
+
+    def make_unavailable(self) -> None:
+        """Simulate a stack recreation stranding stored checkpoint URIs."""
+        self._unavailable = True
 
     def upload(self, files: Mapping[str, bytes]) -> CheckpointRef:
         if self._fail:
@@ -200,6 +206,8 @@ class FakeCheckpoints:
         )
 
     def download(self, s3_uri: str) -> bytes:
+        if self._unavailable:
+            raise CheckpointUnavailable(f"bucket is gone: {s3_uri}")
         if s3_uri not in self.objects:
             raise RuntimeError(f"checkpoint object missing: {s3_uri}")
         return self.objects[s3_uri]
@@ -872,6 +880,41 @@ def test_corrupted_checkpoint_leaves_baseline_authoritative() -> None:
     assert harness.store.analyses() == []
     assert harness.outbox.records() == []
     assert harness.runner.runs == 0
+
+
+def test_stranded_checkpoint_uri_restarts_from_empty_memory() -> None:
+    """A recreated stack's new bucket strands old URIs; analysis must not wedge."""
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs([("Job A", "failed", False)]),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+    assert harness.store.latest_checkpoint() is not None
+    harness.checkpoints.make_unavailable()
+    observed: dict[str, Any] = {}
+
+    def capture(working_dir: Path) -> None:
+        memory = working_dir / ".claude/agent-memory/vllm-ci-failure-analyzer"
+        observed["memory_files"] = (
+            list(memory.rglob("*")) if memory.is_dir() else []
+        )
+        well_behaved(working_dir)
+
+    harness.runner.on_run(capture)
+
+    assert harness.analyze().status is ProcessStatus.COMPLETED
+    assert observed["memory_files"] == []
+    # The completed analysis uploads the new bucket's first checkpoint.
+    assert harness.store.latest_checkpoint() is not None
+    analyses = harness.store.analyses()
+    assert [analysis.current_build_id for analysis in analyses] == [run2.build_id]
 
 
 def test_failure_before_analysis_persists_nothing() -> None:

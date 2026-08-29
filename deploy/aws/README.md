@@ -78,3 +78,6 @@ start the timers again. `Persistent=true` and `OnBootSec` start reconciliation,
 while the Postgres cursors and processed-run history recover missed Fast, Full,
 or Main CI observations. Each path has a separate timer and service, so a long
 Full CI execution cannot occupy either frequent poller.
+
+For instance replacement and stack recreation, see
+[disaster-recovery.md](disaster-recovery.md).
