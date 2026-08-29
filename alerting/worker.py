@@ -87,6 +87,7 @@ def _runtime(
             ),
             kimi_model=os.environ.get("KIMI_MODEL", "moonshotai/Kimi-K3"),
             kimi_timeout_seconds=int(os.environ.get("KIMI_TIMEOUT_SECONDS", "3600")),
+            kimi_reasoning_effort=os.environ.get("KIMI_REASONING_EFFORT", "low"),
             slack=_slack(),
             clock=clock,
             delivery_mode=delivery_mode,

@@ -1444,6 +1444,7 @@ def build_full_ci_analysis_runtime(
     kimi_base_url: str = "https://api2.inferact.dev/v1",
     kimi_model: str = "moonshotai/Kimi-K3",
     kimi_timeout_seconds: int = 3600,
+    kimi_reasoning_effort: str = "low",
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
 ) -> AlertingRuntime:
     """Wire the production analyzer compatibility adapter into the runtime."""
@@ -1466,6 +1467,7 @@ def build_full_ci_analysis_runtime(
             base_url=kimi_base_url,
             model=kimi_model,
             timeout_seconds=kimi_timeout_seconds,
+            reasoning_effort=kimi_reasoning_effort,
         ),
         checkpoints=S3CheckpointStore(bucket=checkpoint_bucket),
         github=GitHubRestClient(token=github_token),
