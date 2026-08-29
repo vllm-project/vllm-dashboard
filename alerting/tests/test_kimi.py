@@ -171,3 +171,33 @@ def test_max_turns_exhaustion_raises_analyzer_error(tmp_path: Path) -> None:
 
     with pytest.raises(AnalyzerError, match="exceeded 2 turns"):
         runner.run(tmp_path)
+
+
+def test_history_pruning_elides_oldest_tool_outputs(tmp_path: Path) -> None:
+    (tmp_path / "big.txt").write_text("x" * 40_000)
+    responses = [
+        tool_call("Read", {"path": "big.txt"}, call_id=f"c{index}")
+        for index in range(50)
+    ]
+    responses.append(final())
+    transport = ScriptedTransport(responses)
+
+    KimiCodeRunner(api_key="key", transport=transport).run(tmp_path)
+
+    tool_contents = [
+        str(message["content"])
+        for message in transport.payloads[-1]["messages"]
+        if message.get("role") == "tool"
+    ]
+    assert any("(older tool output elided" in content for content in tool_contents)
+    assert tool_contents[-1].startswith("x" * 100)
+    total = sum(len(content) for content in tool_contents)
+    assert total <= 1_500_000 + 40_000
+
+
+def test_requests_carry_an_explicit_output_token_budget(tmp_path: Path) -> None:
+    transport = ScriptedTransport([final()])
+
+    KimiCodeRunner(api_key="key", transport=transport).run(tmp_path)
+
+    assert transport.payloads[0]["max_tokens"] == 16_384
