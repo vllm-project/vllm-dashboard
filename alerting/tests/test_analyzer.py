@@ -562,6 +562,38 @@ def test_first_comparison_uses_imported_failure_cache_and_checkpoint() -> None:
     assert condition.lifecycle is FailureLifecycle.RECURRING
 
 
+def test_first_ever_analysis_without_any_checkpoint_starts_with_empty_memory() -> None:
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs([("Job A", "failed", False)]),
+                scheduled_at=RUN2_AT,
+            )
+        },
+        seed_checkpoint=False,
+    )
+    observed: dict[str, Any] = {}
+
+    def capture(working_dir: Path) -> None:
+        memory = working_dir / ".claude/agent-memory/vllm-ci-failure-analyzer"
+        observed["memory_files"] = (
+            list(memory.rglob("*")) if memory.is_dir() else []
+        )
+        well_behaved(working_dir)
+
+    harness.runner.on_run(capture)
+
+    assert harness.analyze().status is ProcessStatus.COMPLETED
+    assert observed["memory_files"] == []
+    checkpoint = harness.store.latest_checkpoint()
+    assert checkpoint is not None
+    assert harness.store.analyses()[0].current_build_id == run2.build_id
+
+
 def test_fixed_requires_a_positively_observed_pass() -> None:
     run1 = make_run(1, RUN1_AT)
     run2 = make_run(2, RUN2_AT)
@@ -812,29 +844,6 @@ def _write_cache_only(working_dir: Path, *, failed_tests: list[str]) -> None:
             }
         )
     )
-
-
-def test_missing_checkpoint_leaves_baseline_authoritative() -> None:
-    run1 = make_run(1, RUN1_AT)
-    run2 = make_run(2, RUN2_AT)
-    harness = Harness(
-        runs=[run1, run2],
-        builds={
-            2: build_json(
-                2,
-                mostly_passing_jobs([("Job A", "failed", False)]),
-                scheduled_at=RUN2_AT,
-            )
-        },
-        seed_checkpoint=False,
-    )
-
-    result = harness.analyze()
-
-    assert result.status is ProcessStatus.FAILED
-    assert harness.store.analyses() == []
-    assert harness.outbox.records() == []
-    assert harness.runner.runs == 0
 
 
 def test_corrupted_checkpoint_leaves_baseline_authoritative() -> None:
