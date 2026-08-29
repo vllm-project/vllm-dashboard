@@ -8,12 +8,16 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol, cast
 
 from alerting.commands import ScheduledCommand
 from alerting.ports import Clock
 from alerting.runtime import HandlerCompletion
+
+# First-ever reconciliation has no durable run to anchor a fetch window; two
+# days of runs is what an incident responder needs, not the pipeline's history.
+INITIAL_LOOKBACK = timedelta(days=2)
 
 
 @dataclass(frozen=True)
@@ -264,8 +268,11 @@ class FullCIReconciliationHandler:
 
     def __call__(self, command: ScheduledCommand) -> HandlerCompletion:
         state = self._store.reconciliation_state()
+        start_time = state.start_time
+        if start_time is None:
+            start_time = command.target_time - INITIAL_LOOKBACK
         observations = self._source.fetch_runs(
-            start_time=state.start_time,
+            start_time=start_time,
             processed_build_ids=state.processed_build_ids,
             up_to=command.target_time,
         )
