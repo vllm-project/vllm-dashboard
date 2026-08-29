@@ -215,6 +215,7 @@ class KimiCodeRunner:
         model: str = "moonshotai/Kimi-K3",
         timeout_seconds: int = 3600,
         max_turns: int = 200,
+        reasoning_effort: str = "low",
         transport: Transport | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
@@ -223,6 +224,7 @@ class KimiCodeRunner:
         self._model = model
         self._timeout_seconds = timeout_seconds
         self._max_turns = max_turns
+        self._reasoning_effort = reasoning_effort
         self._transport = transport or UrllibTransport()
         self._clock = clock or time.monotonic
 
@@ -282,6 +284,9 @@ class KimiCodeRunner:
             "tools": tools,
             "tool_choice": "auto",
             "max_tokens": MAX_OUTPUT_TOKENS,
+            # Log triage is mechanical; low thinking effort keeps the many
+            # sequential investigation calls fast enough for the time budget.
+            "reasoning_effort": self._reasoning_effort,
         }
         response = self._transport(
             f"{self._base_url}/chat/completions",

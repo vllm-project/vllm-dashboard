@@ -201,3 +201,11 @@ def test_requests_carry_an_explicit_output_token_budget(tmp_path: Path) -> None:
     KimiCodeRunner(api_key="key", transport=transport).run(tmp_path)
 
     assert transport.payloads[0]["max_tokens"] == 16_384
+
+
+def test_requests_default_to_low_reasoning_effort(tmp_path: Path) -> None:
+    transport = ScriptedTransport([final()])
+
+    KimiCodeRunner(api_key="key", transport=transport).run(tmp_path)
+
+    assert transport.payloads[0]["reasoning_effort"] == "low"
