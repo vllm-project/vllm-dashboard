@@ -71,3 +71,15 @@ def test_timer_worker_uses_explicit_live_delivery_mode(
 
     assert worker.main(["full-ci-analyze"]) == 0
     assert observed_modes == [DeliveryMode.LIVE]
+
+
+def test_main_ci_timer_uses_its_lifecycle_reconciliation_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(worker, "_runtime", lambda *args: runtime)
+
+    assert worker.main(["main-ci"]) == 0
+    assert [command.command_type for command in runtime.commands] == [
+        "main_ci_reconcile"
+    ]

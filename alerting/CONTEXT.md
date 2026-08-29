@@ -36,8 +36,21 @@ _Avoid_: Backup, snapshot of the database
 An observation that one Fast CI job entered an eligible failure state within 30 seconds. It has no resolution lifecycle.
 _Avoid_: Incident, alert lifecycle
 
+**Main CI Job Observation**:
+A hard terminal command-job outcome on the main branch, keyed by configured
+step identity plus rendered job name so matrix cells remain independent.
+_Avoid_: Test failure, diagnosis
+
+**Main CI Job Alert**:
+One failure episode for a Main CI job. Repeated hard failures refresh the open
+episode; only a positively observed pass of the same job in the same or a newer
+build resolves it. Missing, soft-failed, canceled, or older late-finishing jobs
+do not resolve an episode.
+_Avoid_: Full CI Failure Condition, automated diagnosis
+
 **Scan Cursor**:
-The latest durable Fast CI scan target used to derive the next overlapping observation window.
+The latest durable Fast or Main CI scan target used to derive the next
+overlapping observation window.
 _Avoid_: Last event time, checkpoint
 
 **Notification Intent**:

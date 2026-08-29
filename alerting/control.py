@@ -36,10 +36,12 @@ class UnitControl(Protocol):
 _UNITS = {
     AlertPath.FAST_CI: ("alerting-fast-ci.timer", "alerting-fast-ci.service"),
     AlertPath.FULL_CI: ("alerting-full-ci.timer", "alerting-full-ci.service"),
+    AlertPath.MAIN_CI: ("alerting-main-ci.timer", "alerting-main-ci.service"),
 }
 _MODE_FILES = {
     AlertPath.FAST_CI: "fast-ci.mode",
     AlertPath.FULL_CI: "full-ci.mode",
+    AlertPath.MAIN_CI: "main-ci.mode",
 }
 
 
@@ -78,7 +80,7 @@ def reconcile_controls(
 class S3AlertControl:
     def __init__(self, *, bucket: str, client: Any | None = None) -> None:
         if client is None:
-            import boto3  # type: ignore[import-untyped]
+            import boto3  # type: ignore[import-not-found,import-untyped]
 
             client = boto3.client("s3")
         self._bucket = bucket

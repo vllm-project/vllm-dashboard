@@ -48,12 +48,15 @@ when validating before merge.
 
 ## Shadow, cutover, and rollback
 
-Both paths start in shadow mode. Durable controls live at
+All three paths start in shadow mode. Durable controls live at
 `s3://CHECKPOINT_BUCKET/control/fast_ci.mode` and
-`s3://CHECKPOINT_BUCKET/control/full_ci.mode`; allowed values are `shadow`,
+`s3://CHECKPOINT_BUCKET/control/full_ci.mode`, plus
+`s3://CHECKPOINT_BUCKET/control/main_ci.mode`; allowed values are `shadow`,
 `live`, and `disabled`. A root oneshot reconciles those objects every minute,
 but workers run as the non-login `alerting` user. Shadow runs persist source
 observations and rendered Slack payloads without leasing them for delivery.
+Main CI currently writes dashboard lifecycle only and renders no Slack payload;
+its mode still controls the independent five-minute timer.
 
 Run the repeatable operator wizard from the repository root:
 
@@ -70,8 +73,8 @@ selected old producer, and never rewinds Postgres or S3 state.
 
 ## Recovery check
 
-Stop both timers before a scheduled tick, wait through the tick, then start the
-timers again. `Persistent=true` and `OnBootSec` start reconciliation, while the
-Postgres cursors and processed-run history recover every missed Fast or Full CI
-observation. Full and Fast CI have separate timers and services, so a long Full
-CI execution does not occupy or delay the Fast CI service.
+Stop all three timers before a scheduled tick, wait through the tick, then
+start the timers again. `Persistent=true` and `OnBootSec` start reconciliation,
+while the Postgres cursors and processed-run history recover missed Fast, Full,
+or Main CI observations. Each path has a separate timer and service, so a long
+Full CI execution cannot occupy either frequent poller.

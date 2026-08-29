@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { FastCIAlerts } from "@/components/fast-ci-alerts";
 import { FullCIAlerts } from "@/components/full-ci-alerts";
+import { MainCIAlerts } from "@/components/main-ci-alerts";
 import {
   groupFastFailureEvents,
   type FastFailureEvent,
@@ -13,6 +14,10 @@ import {
   viewFullCiComparisons,
   type FullCiComparison,
 } from "@/lib/alerts-full-ci";
+import {
+  viewMainCiJobAlerts,
+  type MainCiJobAlert,
+} from "@/lib/alerts-main-ci";
 import {
   ALERT_TIME_WINDOWS,
   alertWindowCutoff,
@@ -23,9 +28,10 @@ import {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
-type AlertTab = "fast-ci" | "full-ci";
+type AlertTab = "main-ci" | "fast-ci" | "full-ci";
 
 const ALERT_TABS: readonly { value: AlertTab; label: string }[] = [
+  { value: "main-ci", label: "Main CI jobs" },
   { value: "fast-ci", label: "Fast CI" },
   { value: "full-ci", label: "Full CI" },
 ];
@@ -42,6 +48,11 @@ interface FullCIAlertsResponse {
 interface FastCIAlertsResponse {
   events?: FastFailureEvent[];
   windowDays?: number;
+  error?: string;
+}
+
+interface MainCIAlertsResponse {
+  alerts?: MainCiJobAlert[];
   error?: string;
 }
 
@@ -125,6 +136,34 @@ function FullCISection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
       failed={Boolean(error || data?.error)}
     >
       <FullCIAlerts comparisons={comparisons} />
+    </AlertSection>
+  );
+}
+
+function MainCISection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
+  const { data, isLoading, error } = useSWR<MainCIAlertsResponse>(
+    "/api/alerts/main-ci",
+    fetcher,
+    { refreshInterval: 5 * 60 * 1000 },
+  );
+
+  const alerts = useMemo(
+    () =>
+      viewMainCiJobAlerts(
+        data?.alerts ?? [],
+        alertWindowCutoff(timeWindow),
+      ),
+    [data, timeWindow],
+  );
+
+  return (
+    <AlertSection
+      title="Main CI job alerts"
+      description="Hard command-job failures on the main branch. A failure stays open across builds until that exact Buildkite step positively passes again; soft failures, missing jobs, and older builds finishing late do not resolve it."
+      isLoading={isLoading}
+      failed={Boolean(error || data?.error)}
+    >
+      <MainCIAlerts alerts={alerts} />
     </AlertSection>
   );
 }
@@ -264,7 +303,9 @@ export default function AlertsContent() {
         )}
       </div>
 
-      {tab === "fast-ci" ? (
+      {tab === "main-ci" ? (
+        <MainCISection timeWindow={timeWindow} />
+      ) : tab === "fast-ci" ? (
         <FastCISection timeWindow={timeWindow} softFailedOnly={softFailedOnly} />
       ) : (
         <FullCISection timeWindow={timeWindow} />

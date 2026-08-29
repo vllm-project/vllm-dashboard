@@ -52,6 +52,7 @@ class OutboxStatus(Enum):
 class AlertPath(StrEnum):
     FAST_CI = "fast_ci"
     FULL_CI = "full_ci"
+    MAIN_CI = "main_ci"
 
 
 class DeliveryMode(StrEnum):

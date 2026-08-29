@@ -56,6 +56,9 @@ def test_expected_tables_are_created() -> None:
         "alerting_full_ci_failure_conditions",
         "alerting_full_ci_import_baselines",
         "alerting_fast_ci_imported_deduplication_keys",
+        "alerting_main_ci_scan_cursors",
+        "alerting_main_ci_job_states",
+        "alerting_main_ci_job_alerts",
     }
 
     for table in expected_tables:
@@ -141,6 +144,24 @@ def test_shadow_delivery_schema_is_path_scoped_and_never_due() -> None:
     assert "CHECK (alert_path IN ('fast_ci', 'full_ci'))" in sql
     assert "CHECK (delivery_mode IN ('live', 'shadow'))" in sql
     assert "WHERE delivery_mode = 'live'" in sql
+
+
+def test_main_ci_schema_preserves_one_open_episode_and_positive_pass_resolution() -> None:
+    sql = (MIGRATIONS_DIR / "0014_main_ci_job_alerts.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS alerting_main_ci_job_states" in sql
+    assert "latest_build_number         bigint NOT NULL" in sql
+    assert "CREATE TABLE IF NOT EXISTS alerting_main_ci_job_alerts" in sql
+    assert "WHERE status = 'open'" in sql
+    assert "status IN ('open', 'resolved')" in sql
+    assert "resolution_job_id           text" in sql
+    assert "'fast_ci', 'full_ci', 'main_ci'" in sql
+    for table in (
+        "alerting_main_ci_scan_cursors",
+        "alerting_main_ci_job_states",
+        "alerting_main_ci_job_alerts",
+    ):
+        assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
 
 
 def test_dashboard_schema_keeps_legacy_additive_columns_and_covering_index() -> None:

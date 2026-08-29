@@ -1,7 +1,8 @@
 # Alert Production
 
-This bounded context produces durable vLLM CI alert history for the Full CI
-comparison and Fast CI fast-failure signals. It processes scheduled
+This bounded context produces durable vLLM CI alert history for Full CI
+comparisons, Fast CI fast-failure signals, and exact Main CI job failure
+episodes. It processes scheduled
 reconciliation commands idempotently against Postgres as the system of record
 and delivers Slack notifications through a transactional outbox. The dashboard
 application in this repository reads its records but does not own ingestion.
@@ -10,9 +11,9 @@ application in this repository reads its records but does not own ingestion.
 
 The package uses vertical domain slices rather than layer-only folders:
 
-- `commands.py` defines the scheduled-command value object shared by both
+- `commands.py` defines the scheduled-command value object shared by all
   slices.
-- `fast_ci.py` and `full_ci.py` keep each signal's domain records,
+- `fast_ci.py`, `full_ci.py`, and `main_ci.py` keep each signal's domain records,
   reconciliation behavior, source port, and source adapter together.
 - `runtime.py` exposes the small application interface:
   `process_command` and `dispatch_due_notifications`.
@@ -43,6 +44,11 @@ repository-level relationship with the dashboard is recorded in
 - `full_ci.py` — the Buildkite query adapter, Full CI run and
   job-outcome records, and chronological reconciliation handler. Analyzer
   invocation remains outside this ingest-only slice.
+- `main_ci.py` — the five-minute Buildkite main-branch poller and exact-job
+  lifecycle. It ignores soft/non-command/non-terminal jobs, protects newer
+  outcomes from older builds finishing late, and resolves only on a positive
+  pass. It writes raw lifecycle and Buildkite evidence only; Sherlock's
+  diagnosis remains in Slack.
 - `analyzer.py` — the Full CI analyzer compatibility adapter. It materializes
   the working files the unchanged analyzer skill expects (summary, full build
   data, previous-failure cache, agent memory hydrated from the latest
@@ -57,16 +63,18 @@ repository-level relationship with the dashboard is recorded in
   legacy Full CI cache, last-reported build state, analyzer memory, and Fast CI
   SQLite deduplication keys.
 - `control.py` — applies durable per-path `shadow`, `live`, or `disabled`
-  controls from S3 to the two systemd timers. Missing controls default to
+  controls from S3 to the three systemd timers. Missing controls default to
   `shadow`.
 - `cutover.py` — exports persisted shadow payloads for comparison and archives
   pending live payloads as non-deliverable shadow records during rollback.
-- `postgres.py` — production execution, outbox, Fast CI, and Full CI
+- `postgres.py` — production execution, outbox, Fast CI, Full CI, and Main CI
   stores.
   `PostgresAlertStore.commit_scan` performs the event inserts, batch inserts,
   cursor update, and execution completion in one Postgres transaction;
   `commit_reconciliation` atomically stores ordered Full CI runs, outcomes,
-  comparisons, and execution completion. Runtime factories wire the production
+  comparisons, and execution completion; `commit_main_ci_scan` atomically
+  advances exact job state, opens/updates/resolves alert episodes, advances the
+  cursor, and completes execution. Runtime factories wire the production
   Databricks and Buildkite clients.
 - `slack.py` — configured incoming-webhook and bot-token delivery. It resolves
   logical webhook destinations without storing webhook secrets in Postgres,
@@ -119,8 +127,10 @@ enabling the new path, and preserves Postgres and S3 baselines on rollback.
 
 - `FastCIScanHandler` registers as `fast_ci_scan`,
   `FullCIReconciliationHandler` registers as `full_ci_reconcile`, and
-  `FullCIAnalysisHandler` registers as `full_ci_analyze`. The Full CI worker
-  exposes them as the `full-ci` and `full-ci-analyze` consumers so the
+  `FullCIAnalysisHandler` registers as `full_ci_analyze`, while
+  `MainCIReconciliationHandler` registers as `main_ci_reconcile`. Workers
+  expose them as the `fast-ci`, `full-ci`, `full-ci-analyze`, and `main-ci`
+  consumers so the
   long-running LLM analysis never blocks ingest.
 - The Postgres adapters must mark an execution complete in the same
   transaction that commits the handler's durable effects, and lease outbox
@@ -138,6 +148,6 @@ enabling the new path, and preserves Postgres and S3 baselines on rollback.
 cd alerting
 uv sync --extra dev
 uv run pytest
-uv run mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py memory.py migration.py ports.py postgres.py runtime.py slack.py worker.py tests
+uv run mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py main_ci.py memory.py migration.py ports.py postgres.py runtime.py slack.py worker.py tests
 uv run ruff check .
 ```

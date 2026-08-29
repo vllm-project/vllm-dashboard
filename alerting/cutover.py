@@ -12,6 +12,8 @@ from typing import Any
 from alerting.ports import AlertPath, NotificationIntentRecord
 from alerting.postgres import PostgresAlertStore
 
+_SLACK_DELIVERY_PATHS = (AlertPath.FAST_CI, AlertPath.FULL_CI)
+
 
 def _database_url() -> str:
     value = os.environ.get("DATABASE_URL")
@@ -39,12 +41,16 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     export = commands.add_parser("export-shadow")
     export.add_argument(
-        "--path", choices=[path.value for path in AlertPath], required=True
+        "--path",
+        choices=[path.value for path in _SLACK_DELIVERY_PATHS],
+        required=True,
     )
     export.add_argument("--limit", type=int, default=10)
     archive = commands.add_parser("archive-pending")
     archive.add_argument(
-        "--path", choices=[path.value for path in AlertPath], required=True
+        "--path",
+        choices=[path.value for path in _SLACK_DELIVERY_PATHS],
+        required=True,
     )
     archive.add_argument("--confirm-path", required=True)
     return parser

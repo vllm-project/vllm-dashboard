@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol, cast
 
 from alerting.commands import ScheduledCommand
@@ -134,7 +134,7 @@ class BuildkiteRestClient:
     def list_builds(
         self, *, start_time: datetime | None, up_to: datetime
     ) -> list[dict[str, Any]]:
-        query: dict[str, str | int] = {
+        query: dict[str, str | int | list[str]] = {
             "branch": "main",
             "created_to": _iso8601(up_to),
             "exclude_jobs": "true",
@@ -142,11 +142,16 @@ class BuildkiteRestClient:
         }
         if start_time is not None:
             query["created_from"] = _iso8601(start_time)
+        return self._list_build_pages(query)
+
+    def _list_build_pages(
+        self, query: dict[str, str | int | list[str]]
+    ) -> list[dict[str, Any]]:
         builds: list[dict[str, Any]] = []
         page = 1
         while True:
             query["page"] = page
-            url = f"{self._BUILDS_URL}?{urllib.parse.urlencode(query)}"
+            url = f"{self._BUILDS_URL}?{urllib.parse.urlencode(query, doseq=True)}"
             payload = self._get_json(url)
             if not isinstance(payload, list):
                 raise RuntimeError("Buildkite builds response was not a list")
@@ -155,6 +160,40 @@ class BuildkiteRestClient:
             if len(rows) < 100:
                 return builds
             page += 1
+
+    def list_job_builds(
+        self, *, observed_from: datetime, up_to: datetime
+    ) -> list[dict[str, Any]]:
+        """Return active plus recently finished main builds with embedded jobs.
+
+        The two bounded queries avoid re-downloading days of large build
+        matrices while still catching jobs from an older build that becomes
+        terminal between polling ticks.
+        """
+        common: dict[str, str | int | list[str]] = {
+            "branch": "main",
+            "created_from": _iso8601(observed_from - timedelta(days=2)),
+            "created_to": _iso8601(up_to),
+            "include_retried_jobs": "false",
+            "per_page": 100,
+        }
+        active = self._list_build_pages(
+            {
+                **common,
+                "state": ["creating", "scheduled", "running", "failing", "canceling"],
+            }
+        )
+        finished = self._list_build_pages(
+            {
+                **common,
+                "state": "finished",
+                "finished_from": _iso8601(observed_from),
+            }
+        )
+        by_id: dict[str, dict[str, Any]] = {}
+        for build in [*active, *finished]:
+            by_id[str(build["id"])] = build
+        return list(by_id.values())
 
     def list_jobs(self, build_number: int) -> list[dict[str, Any]]:
         url: str | None = (

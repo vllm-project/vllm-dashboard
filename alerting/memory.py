@@ -35,6 +35,11 @@ from alerting.full_ci import (
     FullCIRun,
     ordered_unique_runs,
 )
+from alerting.main_ci import (
+    MainCIJobAlert,
+    MainCIJobObservation,
+    ordered_unique_observations,
+)
 from alerting.ports import (
     AlertPath,
     ClaimOutcome,
@@ -437,6 +442,87 @@ class InMemoryFullCIStore:
             for run in self.runs()
             if run.build_id in self._comparisons
         ]
+
+
+class InMemoryMainCIStore:
+    """Atomic in-memory model of Main CI current state and alert episodes."""
+
+    def __init__(self, *, executions: InMemoryAutomationExecutionStore) -> None:
+        self._executions = executions
+        self._cursor: datetime | None = None
+        self._states: dict[str, MainCIJobObservation] = {}
+        self._alerts: list[MainCIJobAlert] = []
+        self._active: dict[str, int] = {}
+
+    def main_ci_scan_cursor(self) -> datetime | None:
+        return self._cursor
+
+    def commit_main_ci_scan(
+        self,
+        *,
+        command: ScheduledCommand,
+        observations: list[MainCIJobObservation],
+        scanned_through: datetime,
+        now: datetime,
+    ) -> None:
+        execution_snapshot = self._executions._snapshot()
+        cursor_snapshot = self._cursor
+        states_snapshot = dict(self._states)
+        alerts_snapshot = list(self._alerts)
+        active_snapshot = dict(self._active)
+        try:
+            for observation in ordered_unique_observations(observations):
+                previous = self._states.get(observation.job_key)
+                if previous is not None and previous.order >= observation.order:
+                    continue
+                self._states[observation.job_key] = observation
+                active_index = self._active.get(observation.job_key)
+                if observation.failed:
+                    if active_index is None:
+                        alert = MainCIJobAlert(
+                            alert_id=len(self._alerts) + 1,
+                            job_key=observation.job_key,
+                            job_name=observation.job_name,
+                            opened_at=observation.finished_at,
+                            first_failure=observation,
+                            last_failure=observation,
+                            failure_count=1,
+                        )
+                        self._alerts.append(alert)
+                        self._active[observation.job_key] = len(self._alerts) - 1
+                    else:
+                        active = self._alerts[active_index]
+                        self._alerts[active_index] = replace(
+                            active,
+                            job_name=observation.job_name,
+                            last_failure=observation,
+                            failure_count=active.failure_count + 1,
+                        )
+                elif active_index is not None:
+                    active = self._alerts[active_index]
+                    self._alerts[active_index] = replace(
+                        active,
+                        job_name=observation.job_name,
+                        resolved_at=observation.finished_at,
+                        resolution=observation,
+                    )
+                    del self._active[observation.job_key]
+            if self._cursor is None or scanned_through > self._cursor:
+                self._cursor = scanned_through
+            self._executions.complete(command.idempotency_key, now=now)
+        except Exception:
+            self._executions._restore(execution_snapshot)
+            self._cursor = cursor_snapshot
+            self._states = states_snapshot
+            self._alerts = alerts_snapshot
+            self._active = active_snapshot
+            raise
+
+    def alerts(self) -> list[MainCIJobAlert]:
+        return list(self._alerts)
+
+    def state(self, job_key: str) -> MainCIJobObservation | None:
+        return self._states.get(job_key)
 
 
 class InMemoryAnalyzerStore:

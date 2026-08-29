@@ -876,7 +876,7 @@ class S3CheckpointStore:
         self._prefix = prefix
 
     def _client(self) -> Any:
-        import boto3  # type: ignore[import-untyped]  # optional, production-only
+        import boto3  # type: ignore[import-not-found,import-untyped]  # optional, production-only
 
         return boto3.client("s3")
 

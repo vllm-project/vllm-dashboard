@@ -33,6 +33,7 @@ from alerting.full_ci import (
     FullCIRun,
     ordered_unique_runs,
 )
+from alerting.main_ci import MainCIJobObservation, ordered_unique_observations
 from alerting.ports import (
     AlertPath,
     ClaimOutcome,
@@ -778,6 +779,215 @@ class PostgresAlertStore:
             processed_build_ids=frozenset(row[0] for row in rows),
         )
 
+    def main_ci_scan_cursor(self) -> datetime | None:
+        with self._connection_factory() as connection:
+            row = connection.execute(
+                """
+                SELECT scanned_through
+                FROM alerting_main_ci_scan_cursors
+                WHERE cursor_name = 'main_ci'
+                """
+            ).fetchone()
+        return row[0] if row is not None else None
+
+    def commit_main_ci_scan(
+        self,
+        *,
+        command: ScheduledCommand,
+        observations: list[MainCIJobObservation],
+        scanned_through: datetime,
+        now: datetime,
+    ) -> None:
+        with self._connection_factory() as connection:
+            with connection.transaction():
+                connection.execute(
+                    """
+                    SELECT pg_advisory_xact_lock(
+                        hashtext('alerting_main_ci_reconcile')
+                    )
+                    """
+                )
+                for observation in ordered_unique_observations(observations):
+                    current = connection.execute(
+                        """
+                        SELECT latest_build_number, latest_finished_at,
+                               latest_job_id
+                        FROM alerting_main_ci_job_states
+                        WHERE job_key = %s
+                        FOR UPDATE
+                        """,
+                        (observation.job_key,),
+                    ).fetchone()
+                    if current is not None and (
+                        current[0], current[1], current[2]
+                    ) >= observation.order:
+                        continue
+
+                    connection.execute(
+                        """
+                        INSERT INTO alerting_main_ci_job_states (
+                            job_key, job_name, latest_job_id, latest_job_state,
+                            latest_finished_at, latest_build_id,
+                            latest_build_number, latest_build_url,
+                            latest_job_url, latest_commit_sha, updated_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (job_key) DO UPDATE
+                        SET job_name = EXCLUDED.job_name,
+                            latest_job_id = EXCLUDED.latest_job_id,
+                            latest_job_state = EXCLUDED.latest_job_state,
+                            latest_finished_at = EXCLUDED.latest_finished_at,
+                            latest_build_id = EXCLUDED.latest_build_id,
+                            latest_build_number = EXCLUDED.latest_build_number,
+                            latest_build_url = EXCLUDED.latest_build_url,
+                            latest_job_url = EXCLUDED.latest_job_url,
+                            latest_commit_sha = EXCLUDED.latest_commit_sha,
+                            updated_at = EXCLUDED.updated_at
+                        """,
+                        (
+                            observation.job_key,
+                            observation.job_name,
+                            observation.job_id,
+                            observation.state,
+                            observation.finished_at,
+                            observation.build_id,
+                            observation.build_number,
+                            observation.build_url,
+                            observation.job_url,
+                            observation.commit_sha,
+                            now,
+                        ),
+                    )
+
+                    if observation.failed:
+                        updated = connection.execute(
+                            """
+                            UPDATE alerting_main_ci_job_alerts
+                            SET job_name = %s,
+                                last_failed_at = %s,
+                                last_failure_job_id = %s,
+                                last_failure_state = %s,
+                                last_failure_build_id = %s,
+                                last_failure_build_number = %s,
+                                last_failure_build_url = %s,
+                                last_failure_job_url = %s,
+                                last_failure_commit_sha = %s,
+                                failure_count = failure_count + 1,
+                                updated_at = %s
+                            WHERE job_key = %s AND status = 'open'
+                            RETURNING alert_id
+                            """,
+                            (
+                                observation.job_name,
+                                observation.finished_at,
+                                observation.job_id,
+                                observation.state,
+                                observation.build_id,
+                                observation.build_number,
+                                observation.build_url,
+                                observation.job_url,
+                                observation.commit_sha,
+                                now,
+                                observation.job_key,
+                            ),
+                        ).fetchone()
+                        if updated is None:
+                            connection.execute(
+                                """
+                                INSERT INTO alerting_main_ci_job_alerts (
+                                    job_key, job_name, status, opened_at,
+                                    first_failure_job_id, first_failure_state,
+                                    first_failure_build_id,
+                                    first_failure_build_number,
+                                    first_failure_build_url,
+                                    first_failure_job_url,
+                                    first_failure_commit_sha,
+                                    last_failed_at, last_failure_job_id,
+                                    last_failure_state, last_failure_build_id,
+                                    last_failure_build_number,
+                                    last_failure_build_url, last_failure_job_url,
+                                    last_failure_commit_sha, failure_count,
+                                    created_at, updated_at
+                                ) VALUES (
+                                    %s, %s, 'open', %s, %s, %s, %s, %s, %s,
+                                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                    1, %s, %s
+                                )
+                                """,
+                                (
+                                    observation.job_key,
+                                    observation.job_name,
+                                    observation.finished_at,
+                                    observation.job_id,
+                                    observation.state,
+                                    observation.build_id,
+                                    observation.build_number,
+                                    observation.build_url,
+                                    observation.job_url,
+                                    observation.commit_sha,
+                                    observation.finished_at,
+                                    observation.job_id,
+                                    observation.state,
+                                    observation.build_id,
+                                    observation.build_number,
+                                    observation.build_url,
+                                    observation.job_url,
+                                    observation.commit_sha,
+                                    now,
+                                    now,
+                                ),
+                            )
+                    else:
+                        connection.execute(
+                            """
+                            UPDATE alerting_main_ci_job_alerts
+                            SET status = 'resolved', resolved_at = %s,
+                                resolution_job_id = %s,
+                                resolution_build_id = %s,
+                                resolution_build_number = %s,
+                                resolution_build_url = %s,
+                                resolution_job_url = %s,
+                                resolution_commit_sha = %s,
+                                updated_at = %s
+                            WHERE job_key = %s AND status = 'open'
+                            """,
+                            (
+                                observation.finished_at,
+                                observation.job_id,
+                                observation.build_id,
+                                observation.build_number,
+                                observation.build_url,
+                                observation.job_url,
+                                observation.commit_sha,
+                                now,
+                                observation.job_key,
+                            ),
+                        )
+
+                connection.execute(
+                    """
+                    INSERT INTO alerting_main_ci_scan_cursors (
+                        cursor_name, scanned_through
+                    ) VALUES ('main_ci', %s)
+                    ON CONFLICT (cursor_name) DO UPDATE
+                    SET scanned_through = GREATEST(
+                        alerting_main_ci_scan_cursors.scanned_through,
+                        EXCLUDED.scanned_through
+                    )
+                    """,
+                    (scanned_through,),
+                )
+                completed = connection.execute(
+                    """
+                    UPDATE alerting_automation_executions
+                    SET status = 'completed', completed_at = %s,
+                        lease_expires_at = NULL, last_error = NULL
+                    WHERE idempotency_key = %s AND status = 'running'
+                    """,
+                    (now, command.idempotency_key),
+                )
+                if completed.rowcount != 1:
+                    raise RuntimeError("Main CI execution was not running at commit")
+
     def commit_reconciliation(
         self,
         *,
@@ -1197,6 +1407,29 @@ def build_full_ci_runtime(
         alert_path=AlertPath.FULL_CI,
     )
 
+
+def build_main_ci_runtime(
+    *,
+    database_url: str,
+    buildkite_token: str,
+    slack: SlackPort,
+    clock: Clock,
+) -> AlertingRuntime:
+    """Wire Main CI exact-job lifecycle reconciliation into the runtime."""
+    from alerting.full_ci import BuildkiteRestClient
+    from alerting.main_ci import BuildkiteMainCISource, MainCIReconciliationHandler
+
+    store = PostgresAlertStore.from_database_url(database_url)
+    source = BuildkiteMainCISource(BuildkiteRestClient(token=buildkite_token))
+    handler = MainCIReconciliationHandler(source=source, store=store, clock=clock)
+    return AlertingRuntime(
+        executions=store,
+        outbox=store,
+        slack=slack,
+        clock=clock,
+        handlers={"main_ci_reconcile": handler},
+        alert_path=AlertPath.MAIN_CI,
+    )
 
 def build_full_ci_analysis_runtime(
     *,

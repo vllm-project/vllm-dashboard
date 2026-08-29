@@ -41,6 +41,12 @@ from alerting.full_ci import (
     FullCIReconciliationState,
     FullCIRun,
 )
+from alerting.main_ci import (
+    BuildkiteMainCISource,
+    MainCIJobAlert,
+    MainCIJobObservation,
+    MainCIReconciliationHandler,
+)
 from alerting.ports import (
     ClaimOutcome,
     DestinationMode,
@@ -57,6 +63,7 @@ from alerting.postgres import (
     build_fast_ci_runtime,
     build_full_ci_analysis_runtime,
     build_full_ci_runtime,
+    build_main_ci_runtime,
 )
 from alerting.runtime import (
     AlertingRuntime,
@@ -79,6 +86,7 @@ __all__ = [
     "ScheduledCommand",
     "BuildkiteFullCISource",
     "BuildkiteRestClient",
+    "BuildkiteMainCISource",
     "ComparisonContext",
     "CompletedAnalysis",
     "DatabricksFastCISource",
@@ -99,6 +107,9 @@ __all__ = [
     "FullCIReconciliationHandler",
     "FullCIReconciliationState",
     "FullCIRun",
+    "MainCIJobAlert",
+    "MainCIJobObservation",
+    "MainCIReconciliationHandler",
     "GitHubRestClient",
     "HandlerCompletion",
     "NotificationIntent",
@@ -119,6 +130,7 @@ __all__ = [
     "build_fast_ci_runtime",
     "build_full_ci_analysis_runtime",
     "build_full_ci_runtime",
+    "build_main_ci_runtime",
     "pack_checkpoint",
     "unpack_checkpoint",
 ]

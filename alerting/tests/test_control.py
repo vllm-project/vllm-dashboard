@@ -45,6 +45,7 @@ def test_reconcile_controls_defaults_missing_path_to_shadow_and_disables_one_pat
         {
             AlertPath.FAST_CI: None,
             AlertPath.FULL_CI: ControlMode.DISABLED,
+            AlertPath.MAIN_CI: ControlMode.DISABLED,
         }
     )
     units = RecordingUnits()
@@ -58,9 +59,15 @@ def test_reconcile_controls_defaults_missing_path_to_shadow_and_disables_one_pat
     assert (tmp_path / "full-ci.mode").read_text() == (
         "ALERTING_DELIVERY_MODE=shadow\n"
     )
+    assert (tmp_path / "main-ci.mode").read_text() == (
+        "ALERTING_DELIVERY_MODE=shadow\n"
+    )
     assert units.enabled == ["alerting-fast-ci.timer"]
-    assert units.disabled == ["alerting-full-ci.timer"]
-    assert units.stopped == ["alerting-full-ci.service"]
+    assert units.disabled == ["alerting-full-ci.timer", "alerting-main-ci.timer"]
+    assert units.stopped == [
+        "alerting-full-ci.service",
+        "alerting-main-ci.service",
+    ]
 
 
 def test_live_control_enables_only_selected_path(tmp_path: Path) -> None:
@@ -68,6 +75,7 @@ def test_live_control_enables_only_selected_path(tmp_path: Path) -> None:
         {
             AlertPath.FAST_CI: ControlMode.DISABLED,
             AlertPath.FULL_CI: ControlMode.LIVE,
+            AlertPath.MAIN_CI: ControlMode.DISABLED,
         }
     )
     units = RecordingUnits()
@@ -76,3 +84,21 @@ def test_live_control_enables_only_selected_path(tmp_path: Path) -> None:
 
     assert (tmp_path / "full-ci.mode").read_text() == ("ALERTING_DELIVERY_MODE=live\n")
     assert units.enabled == ["alerting-full-ci.timer"]
+
+
+def test_main_ci_live_control_enables_its_independent_timer(tmp_path: Path) -> None:
+    controls = MemoryAlertControl(
+        {
+            AlertPath.FAST_CI: ControlMode.DISABLED,
+            AlertPath.FULL_CI: ControlMode.DISABLED,
+            AlertPath.MAIN_CI: ControlMode.LIVE,
+        }
+    )
+    units = RecordingUnits()
+
+    reconcile_controls(controls=controls, units=units, mode_dir=tmp_path)
+
+    assert (tmp_path / "main-ci.mode").read_text() == (
+        "ALERTING_DELIVERY_MODE=live\n"
+    )
+    assert units.enabled == ["alerting-main-ci.timer"]

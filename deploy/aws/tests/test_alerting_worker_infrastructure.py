@@ -58,25 +58,39 @@ def test_fast_ci_timer_uses_pacific_wall_clock_every_fifteen_minutes() -> None:
     assert "Persistent=true" in timer
 
 
+def test_main_ci_timer_polls_every_five_minutes_and_recovers_after_downtime() -> None:
+    timer = read("systemd/alerting-main-ci.timer")
+
+    assert "OnCalendar=*-*-* *:00/5:00 UTC" in timer
+    assert "OnBootSec=" in timer
+    assert "Persistent=true" in timer
+
+
 def test_consumers_are_independent_and_units_never_contain_sensitive_data() -> None:
     full_service = read("systemd/alerting-full-ci.service")
     fast_service = read("systemd/alerting-fast-ci.service")
+    main_service = read("systemd/alerting-main-ci.service")
     unit_text = "\n".join(
         [
             full_service,
             fast_service,
+            main_service,
             read("systemd/alerting-full-ci.timer"),
             read("systemd/alerting-fast-ci.timer"),
+            read("systemd/alerting-main-ci.timer"),
         ]
     )
 
     assert "run-worker full-ci" in full_service
     assert "run-worker full-ci-analyze" in full_service
     assert "run-worker fast-ci" in fast_service
+    assert "run-worker main-ci" in main_service
     assert "StandardOutput=null" in full_service
     assert "StandardError=null" in full_service
     assert "StandardOutput=null" in fast_service
     assert "StandardError=null" in fast_service
+    assert "StandardOutput=null" in main_service
+    assert "StandardError=null" in main_service
     for sensitive_name in (
         "DATABASE_URL",
         "TOKEN",
@@ -118,6 +132,7 @@ def test_installation_creates_a_non_login_user_and_s3_controlled_timers() -> Non
     assert "systemctl enable --now alerting-control.timer" in installer
     assert "systemctl enable --now alerting-full-ci.timer" not in installer
     assert "systemctl enable --now alerting-fast-ci.timer" not in installer
+    assert "systemctl enable --now alerting-main-ci.timer" not in installer
 
 
 def test_s3_control_reconciles_each_path_without_cloudwatch_or_sqs() -> None:
@@ -172,7 +187,11 @@ def test_retention_timer_prunes_daily_without_sensitive_data() -> None:
 
 @pytest.mark.parametrize(
     ("consumer", "command_type"),
-    [("full-ci", "full_ci_reconcile"), ("fast-ci", "fast_ci_scan")],
+    [
+        ("full-ci", "full_ci_reconcile"),
+        ("fast-ci", "fast_ci_scan"),
+        ("main-ci", "main_ci_reconcile"),
+    ],
 )
 def test_timer_wake_up_creates_a_minute_stable_reconciliation_command(
     consumer: str, command_type: str

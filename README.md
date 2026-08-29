@@ -6,6 +6,8 @@ A Next.js dashboard for observing vLLM's Buildkite CI: build status, job runtime
 
 - **Builds** — pass/fail rates, durations, and per-job breakdowns for recent pipeline builds.
 - **Jobs** — latest job failures and per-job historical run times.
+- **Alerts** — Fast CI observations, analyzed Full CI comparisons, and exact
+  main-branch job failures that remain open until the same job passes again.
 - **Tests** — Test Engine reliability, execution counts, and duration history.
 - **Queue** — live agent queue depth, waiting builds, and Slack alerts when queues back up.
 - **Cost** — compute hours and dollar cost per queue, derived from AWS on-demand pricing.
@@ -19,10 +21,12 @@ A Next.js dashboard for observing vLLM's Buildkite CI: build status, job runtime
 - **Operational store**: Postgres (Supabase) — short-term agent and queue-depth samples written by cron jobs.
 - **Sources polled**:
   - Buildkite GraphQL API (queue depth, running jobs, connected agents, and current wait distribution) — every 5 minutes
+  - Buildkite REST API (main-branch failed-job lifecycle) — every 5 minutes
   - Databricks warehouse (build/job history) — on dashboard requests with short-lived caching
   - Queue alerting → Slack — every 15 minutes
 - **Alert production**: The separately deployed Python worker lives in
-  [`alerting/`](./alerting).
+  [`alerting/`](./alerting). Main CI lifecycle records intentionally contain
+  no automated diagnosis; curated analysis continues in Slack.
 - **Schema migrations**: All Postgres table definitions and migration execution
   live in the Python [`migrations/`](./migrations) module. Runtime request
   handlers never create or alter tables.

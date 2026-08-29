@@ -13,6 +13,7 @@ from alerting.postgres import (
     build_fast_ci_runtime,
     build_full_ci_analysis_runtime,
     build_full_ci_runtime,
+    build_main_ci_runtime,
 )
 from alerting.runtime import AlertingRuntime, ProcessStatus
 from alerting.slack import SlackDeliveryPort
@@ -84,6 +85,13 @@ def _runtime(
             clock=clock,
             delivery_mode=delivery_mode,
         )
+    if consumer == "main-ci":
+        return build_main_ci_runtime(
+            database_url=database_url,
+            buildkite_token=_required_environment("BUILDKITE_TOKEN"),
+            slack=_slack(),
+            clock=clock,
+        )
     raise ValueError(f"unknown consumer: {consumer}")
 
 
@@ -95,6 +103,7 @@ def scheduled_command(consumer: str, target_time: datetime) -> ScheduledCommand:
         "fast-ci": "fast_ci_scan",
         "full-ci": "full_ci_reconcile",
         "full-ci-analyze": "full_ci_analyze",
+        "main-ci": "main_ci_reconcile",
     }
     try:
         command_type = command_types[consumer]
@@ -106,7 +115,12 @@ def scheduled_command(consumer: str, target_time: datetime) -> ScheduledCommand:
 
 def main(arguments: Sequence[str] | None = None) -> int:
     args = list(arguments if arguments is not None else sys.argv[1:])
-    if len(args) != 1 or args[0] not in {"fast-ci", "full-ci", "full-ci-analyze"}:
+    if len(args) != 1 or args[0] not in {
+        "fast-ci",
+        "full-ci",
+        "full-ci-analyze",
+        "main-ci",
+    }:
         return 2
 
     consumer = args[0]
