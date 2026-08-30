@@ -20,12 +20,18 @@ function comparisonRow(
     current_commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     current_message: "Second run",
     current_state: "failed",
+    current_commit_pr_number: null,
+    current_commit_pr_url: null,
+    current_commit_pr_title: null,
     previous_build_id: "build-1",
     previous_build_number: 9001,
     previous_scheduled_at: new Date("2026-08-27T06:00:00.000Z"),
     previous_commit_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     previous_message: "First run",
     previous_state: "failed",
+    previous_commit_pr_number: null,
+    previous_commit_pr_url: null,
+    previous_commit_pr_title: null,
     analyzed_at: new Date("2026-08-27T22:00:00.000Z"),
     notification_status: "delivered",
     ...overrides,
@@ -66,6 +72,7 @@ test("a comparison exposes both of its runs so the baseline is auditable", () =>
     message: "Second run",
     state: "failed",
     buildUrl: "https://buildkite.com/vllm/ci/builds/9002",
+    commitPullRequest: null,
   });
   assert.deepEqual(comparison.previousRun, {
     buildkiteBuildId: "build-1",
@@ -75,6 +82,7 @@ test("a comparison exposes both of its runs so the baseline is auditable", () =>
     message: "First run",
     state: "failed",
     buildUrl: "https://buildkite.com/vllm/ci/builds/9001",
+    commitPullRequest: null,
   });
 });
 
@@ -298,4 +306,25 @@ test("a query matches a condition summary and its culprit pull request", () => {
     filterFullCiComparisonViews([view()], "Rework async output").length,
     1,
   );
+});
+
+test("a recorded commit pull request reaches the run it belongs to", () => {
+  const [comparison] = toFullCiComparisons(
+    [
+      comparisonRow({
+        current_commit_pr_number: 54353,
+        current_commit_pr_url:
+          "https://github.com/vllm-project/vllm/pull/54353",
+        current_commit_pr_title: "[Bugfix] Bound cache_salt length",
+      }),
+    ],
+    [conditionRow()],
+  );
+
+  assert.deepEqual(comparison.currentRun.commitPullRequest, {
+    number: 54353,
+    url: "https://github.com/vllm-project/vllm/pull/54353",
+    title: "[Bugfix] Bound cache_salt length",
+  });
+  assert.equal(comparison.previousRun.commitPullRequest, null);
 });

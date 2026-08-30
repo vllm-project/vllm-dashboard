@@ -49,6 +49,12 @@ export interface FullCiRun {
   message: string;
   state: string;
   buildUrl: string;
+  /**
+   * The pull request this run's head commit merged, as the analyzer resolved
+   * it against GitHub. Null for a commit no pull request reaches, and for runs
+   * analyzed before that answer was recorded.
+   */
+  commitPullRequest: PullRequestRef | null;
 }
 
 /** How one job actually ended in one run, or null when it did not run at all. */
@@ -94,12 +100,18 @@ export interface FullCiComparisonRow {
   current_commit_sha: string;
   current_message: string;
   current_state: string;
+  current_commit_pr_number: number | null;
+  current_commit_pr_url: string | null;
+  current_commit_pr_title: string | null;
   previous_build_id: string;
   previous_build_number: number;
   previous_scheduled_at: Date;
   previous_commit_sha: string;
   previous_message: string;
   previous_state: string;
+  previous_commit_pr_number: number | null;
+  previous_commit_pr_url: string | null;
+  previous_commit_pr_title: string | null;
   analyzed_at: Date;
   notification_status: NotificationStatus | null;
 }
@@ -181,6 +193,11 @@ export function toFullCiComparisons(
       message: row.current_message,
       state: row.current_state,
       buildUrl: buildUrlForNumber(row.current_build_number),
+      commitPullRequest: toPullRequest(
+        row.current_commit_pr_number,
+        row.current_commit_pr_url,
+        row.current_commit_pr_title,
+      ),
     },
     previousRun: {
       buildkiteBuildId: row.previous_build_id,
@@ -190,6 +207,11 @@ export function toFullCiComparisons(
       message: row.previous_message,
       state: row.previous_state,
       buildUrl: buildUrlForNumber(row.previous_build_number),
+      commitPullRequest: toPullRequest(
+        row.previous_commit_pr_number,
+        row.previous_commit_pr_url,
+        row.previous_commit_pr_title,
+      ),
     },
     analyzedAt: row.analyzed_at.toISOString(),
     notificationStatus: row.notification_status,

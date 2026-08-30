@@ -17,6 +17,7 @@ from alerting.analyzer import (
     CheckpointRef,
     FailureLifecycle,
     FullCIAnalysisHandler,
+    PullRequestRef,
     pack_checkpoint,
     unpack_checkpoint,
 )
@@ -77,6 +78,9 @@ def _run_row(build_number: int, scheduled_at: datetime) -> tuple[Any, ...]:
         f"commit-{build_number}",
         "Full CI run - nightly",
         "passed",
+        None,
+        None,
+        None,
     )
 
 
@@ -246,6 +250,11 @@ class FakePostgresConnection:
             assert self.transaction_depth == 1
             self.state["checkpoints"].append(params)
             return Result(rowcount=1)
+        if statement.startswith("UPDATE alerting_full_ci_runs"):
+            assert self.transaction_depth == 1
+            run = self.state["runs"][params[3]]
+            self.state["runs"][params[3]] = (*run[:6], params[0], params[1], params[2])
+            return Result(rowcount=1)
         if statement.startswith("INSERT INTO alerting_notification_outbox"):
             assert self.transaction_depth == 1
             delivery_id = params[0]
@@ -329,8 +338,13 @@ class FakeCheckpoints:
 
 
 class FakeGitHub:
-    def pull_for_commit(self, commit_sha: str) -> None:
-        return None
+    """No pull request by default; a test that wants one sets `pull`."""
+
+    def __init__(self, pull: PullRequestRef | None = None) -> None:
+        self.pull = pull
+
+    def pull_for_commit(self, commit_sha: str) -> PullRequestRef | None:
+        return self.pull
 
     def find_merged_revert(self, pr_number: int) -> None:
         return None
@@ -338,6 +352,7 @@ class FakeGitHub:
 
 def make_harness(
     connection: FakePostgresConnection,
+    pull: PullRequestRef | None = None,
 ) -> tuple[AlertingRuntime, FakeCheckpoints]:
     checkpoints = FakeCheckpoints()
     checkpoints.add("s3://test-checkpoints/seed.tar.gz", {"MEMORY.md": b"# seed\n"})
@@ -374,7 +389,7 @@ def make_harness(
                 builds=FakeBuildPort(build),
                 runner=WellBehavedRunner(),
                 checkpoints=checkpoints,
-                github=FakeGitHub(),
+                github=FakeGitHub(pull),
                 clock=clock,
             )
         },
@@ -479,3 +494,38 @@ def test_postgres_first_comparison_uses_imported_failure_baseline() -> None:
 
     condition = connection.state["conditions"][("build-101", "Job A")]
     assert condition[2] == FailureLifecycle.RECURRING.value
+
+
+def test_analysis_records_the_pull_request_its_commit_merged() -> None:
+    """The GitHub lookup the report needs is kept, not thrown away.
+
+    Slack names the change a run carried because the analyzer resolves the head
+    commit against GitHub. Recording that answer on the run is what lets the
+    dashboard name it too, without a second request from anywhere else.
+    """
+    connection = FakePostgresConnection()
+    runtime, _ = make_harness(
+        connection,
+        pull=PullRequestRef(
+            number=54353,
+            url="https://github.com/vllm-project/vllm/pull/54353",
+            title="[Bugfix] Bound cache_salt length",
+        ),
+    )
+
+    runtime.process_command(analyze_command())
+
+    assert connection.state["runs"]["build-101"][6:] == (
+        54353,
+        "https://github.com/vllm-project/vllm/pull/54353",
+        "[Bugfix] Bound cache_salt length",
+    )
+
+
+def test_a_commit_reachable_by_no_pull_request_records_none() -> None:
+    connection = FakePostgresConnection()
+    runtime, _ = make_harness(connection)
+
+    runtime.process_command(analyze_command())
+
+    assert connection.state["runs"]["build-101"][6:] == (None, None, None)

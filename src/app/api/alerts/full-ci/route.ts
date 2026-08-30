@@ -26,11 +26,17 @@ export async function GET() {
              cur.commit_sha    AS current_commit_sha,
              cur.message       AS current_message,
              cur.state         AS current_state,
+             cur.commit_pr_number AS current_commit_pr_number,
+             cur.commit_pr_url    AS current_commit_pr_url,
+             cur.commit_pr_title  AS current_commit_pr_title,
              prev.build_number AS previous_build_number,
              prev.scheduled_at AS previous_scheduled_at,
              prev.commit_sha   AS previous_commit_sha,
              prev.message      AS previous_message,
              prev.state        AS previous_state,
+             prev.commit_pr_number AS previous_commit_pr_number,
+             prev.commit_pr_url    AS previous_commit_pr_url,
+             prev.commit_pr_title  AS previous_commit_pr_title,
              -- The analyzer writes one outbox row per comparison under this
              -- deterministic delivery_id, which is the outbox primary key.
              (SELECT o.status

@@ -379,6 +379,42 @@ class PostgresAlertStore:
             ).fetchall()
         return [self._outbox_record(row) for row in rows]
 
+    def runs_missing_commit_pull_request(
+        self, *, limit: int
+    ) -> list[tuple[str, str]]:
+        """Analyzed runs whose commit was never resolved to a pull request.
+
+        Rows analyzed before the run carried those columns keep a null there
+        forever, since an analysis never runs twice for the same build.
+        """
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT buildkite_build_id, commit_sha
+                FROM alerting_full_ci_runs
+                WHERE commit_pr_number IS NULL
+                ORDER BY scheduled_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [(str(row[0]), str(row[1])) for row in rows]
+
+    def record_commit_pull_request(
+        self, *, build_id: str, number: int, url: str, title: str
+    ) -> None:
+        with self._connection_factory() as connection:
+            connection.execute(
+                """
+                UPDATE alerting_full_ci_runs
+                SET commit_pr_number = %s,
+                    commit_pr_url = %s,
+                    commit_pr_title = %s
+                WHERE buildkite_build_id = %s
+                """,
+                (number, url, title, build_id),
+            )
+
     def archive_pending_live(self, *, alert_path: AlertPath) -> int:
         with self._connection_factory() as connection:
             result = connection.execute(
@@ -1230,6 +1266,25 @@ class PostgresAlertStore:
                 ).fetchone()
                 if inserted is None:
                     return  # already committed by an earlier attempt
+                if analysis.commit_pull_request is not None:
+                    # The run row is written at ingest, before anything has
+                    # asked GitHub what its commit belongs to, so the pull
+                    # request lands here where the answer already exists.
+                    connection.execute(
+                        """
+                        UPDATE alerting_full_ci_runs
+                        SET commit_pr_number = %s,
+                            commit_pr_url = %s,
+                            commit_pr_title = %s
+                        WHERE buildkite_build_id = %s
+                        """,
+                        (
+                            analysis.commit_pull_request.number,
+                            analysis.commit_pull_request.url,
+                            analysis.commit_pull_request.title,
+                            analysis.current_build_id,
+                        ),
+                    )
                 if analysis.conditions:
                     _executemany(connection,
                         """

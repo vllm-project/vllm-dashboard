@@ -177,6 +177,10 @@ class CompletedAnalysis:
     suspicious_prs: tuple[SuspiciousPR, ...]
     conditions: tuple[FailureCondition, ...]
     checkpoint: CheckpointRef
+    """The pull request the analyzed run's head commit merged, when GitHub
+    reaches one. Resolved anyway to write the report, so recording it costs no
+    extra request and lets readers name the change a run carried."""
+    commit_pull_request: PullRequestRef | None = None
 
 
 @dataclass(frozen=True)
@@ -605,11 +609,12 @@ class FullCIAnalysisHandler:
         commit_sha = str(build.get("commit") or context.current.commit_sha)
         with tempfile.TemporaryDirectory(prefix="full-ci-analysis-") as tmp:
             workdir = Path(tmp)
+            commit_pull_request = self._github.pull_for_commit(commit_sha)
             summary = _build_summary(
                 build=build,
                 jobs=jobs,
                 cache=cache,
-                pr=self._github.pull_for_commit(commit_sha),
+                pr=commit_pull_request,
                 now=self._clock.now(),
             )
             _materialize_workdir(
@@ -637,6 +642,7 @@ class FullCIAnalysisHandler:
                     suspicious_prs=outputs.suspicious_prs,
                     conditions=conditions,
                     checkpoint=checkpoint,
+                    commit_pull_request=commit_pull_request,
                 ),
                 notification=NotificationIntent(
                     delivery_id=f"full-ci:{context.current.build_id}",

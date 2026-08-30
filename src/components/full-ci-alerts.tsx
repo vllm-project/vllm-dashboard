@@ -60,19 +60,28 @@ function RunState({ state }: { state: string }) {
 }
 
 /**
- * vLLM commit subjects end in the pull request they merged. That trailing
- * "(#12345)" is the link a reader wants, but the subject line is truncated, so
- * the number is lifted out and shown beside the commit instead of being the
- * first thing an ellipsis eats.
+ * What a run's commit actually changed. A scheduled run's Buildkite message
+ * says only "Full CI run - nightly", so the pull request the analyzer resolved
+ * for the head commit is the description worth showing; where no pull request
+ * was recorded, a message ending in the "(#12345)" it merged is the next best
+ * source, and the bare message is the fallback.
  */
-function splitCommitSubject(message: string): {
+function commitDescription(run: FullCiRun): {
   subject: string;
-  prNumber: string | null;
+  pr: PullRequestRef | null;
 } {
-  const subject = message.split("\n", 1)[0];
+  if (run.commitPullRequest !== null) {
+    return { subject: run.commitPullRequest.title, pr: run.commitPullRequest };
+  }
+
+  const subject = run.message.split("\n", 1)[0];
   const match = subject.match(/^(.*?)\s*\(#(\d+)\)\s*$/);
-  if (match === null) return { subject, prNumber: null };
-  return { subject: match[1], prNumber: match[2] };
+  if (match === null) return { subject, pr: null };
+
+  const number = Number(match[2]);
+  const url = pullRequestUrl(match[2]);
+  if (url === null) return { subject: match[1], pr: null };
+  return { subject: match[1], pr: { number, url, title: match[1] } };
 }
 
 function PullRequestLink({
@@ -256,7 +265,7 @@ function ConditionSummary({
 }
 
 function ComparisonCard({ comparison }: { comparison: FullCiComparisonView }) {
-  const commit = splitCommitSubject(comparison.currentRun.message);
+  const commit = commitDescription(comparison.currentRun);
   const builds: ComparedBuilds = {
     previousBuildNumber: comparison.previousRun.buildNumber,
     currentBuildNumber: comparison.currentRun.buildNumber,
@@ -283,14 +292,14 @@ function ComparisonCard({ comparison }: { comparison: FullCiComparisonView }) {
             >
               {comparison.currentRun.commitSha.slice(0, 7)}
             </a>
-            {commit.prNumber !== null && (
+            {commit.pr !== null && (
               <a
-                href={pullRequestUrl(commit.prNumber) ?? undefined}
+                href={commit.pr.url}
                 target="_blank"
                 rel="noreferrer"
                 className="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
               >
-                #{commit.prNumber}
+                #{commit.pr.number}
               </a>
             )}
           </h2>

@@ -20,12 +20,18 @@ function comparisonRow(
     current_commit_sha: "bbbbbbb0000000000000000000000000000000000",
     current_message: "Second run",
     current_state: "failed",
+    current_commit_pr_number: null,
+    current_commit_pr_url: null,
+    current_commit_pr_title: null,
     previous_build_id: "build-1",
     previous_build_number: 9001,
     previous_scheduled_at: new Date("2026-08-27T06:00:00.000Z"),
     previous_commit_sha: "aaaaaaa0000000000000000000000000000000000",
     previous_message: "First run",
     previous_state: "failed",
+    previous_commit_pr_number: null,
+    previous_commit_pr_url: null,
+    previous_commit_pr_title: null,
     analyzed_at: new Date("2026-08-27T22:00:00.000Z"),
     notification_status: "delivered",
     ...overrides,
@@ -237,4 +243,28 @@ test("a failed run is marked as failed rather than described in passing text", (
   const markup = render([comparisonRow()], [conditionRow()]);
 
   assert.match(markup, /text-red-600[^"]*"><svg/);
+});
+
+test("a run names the change it carried from the pull request the analyzer recorded", () => {
+  const markup = render(
+    [
+      comparisonRow({
+        current_message: "Full CI run - nightly",
+        current_commit_pr_number: 54353,
+        current_commit_pr_url:
+          "https://github.com/vllm-project/vllm/pull/54353",
+        current_commit_pr_title:
+          "[Bugfix] Bound cache_salt length to prevent DoS",
+      }),
+    ],
+    [conditionRow()],
+  );
+
+  assert.match(
+    markup,
+    /href="https:\/\/github\.com\/vllm-project\/vllm\/pull\/54353"/,
+  );
+  assert.match(markup, /#54353/);
+  assert.match(markup, /Bound cache_salt length to prevent DoS/);
+  assert.doesNotMatch(markup, /Full CI run - nightly/);
 });
