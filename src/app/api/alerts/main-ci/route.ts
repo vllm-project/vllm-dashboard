@@ -4,6 +4,7 @@ import {
   toMainCiJobAlert,
   type MainCiJobAlertRow,
 } from "@/lib/alerts-main-ci";
+import { hasPostgresErrorCode } from "@/lib/postgres-errors";
 
 export const dynamic = "force-dynamic";
 
@@ -32,10 +33,19 @@ export async function GET() {
       LIMIT ${MAX_ALERTS}
     `;
     return NextResponse.json(
-      { alerts: rows.map(toMainCiJobAlert) },
+      { alerts: rows.map(toMainCiJobAlert), schemaStatus: "ready" },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
+    // Preview deployments are created before migration 0014 is intentionally
+    // applied to the shared database. Treat that ordered rollout state as a
+    // neutral, explicit response instead of presenting a broken dashboard.
+    if (hasPostgresErrorCode(error, "42P01")) {
+      return NextResponse.json(
+        { alerts: [], schemaStatus: "pending" },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    }
     console.error("Failed to load Main CI job alerts:", error);
     return NextResponse.json(
       { error: "Main CI job alerts could not be loaded." },
