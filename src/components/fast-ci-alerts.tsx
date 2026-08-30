@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { NotificationBadge } from "@/components/alert-notification-badge";
+import { AlertPagination } from "@/components/alert-pagination";
 import { JobName } from "@/components/job-name";
 import { type FastFailureGroup } from "@/lib/alerts-fast-ci";
 import {
@@ -131,32 +132,13 @@ export function FastCIAlerts({
       {pageGroups.map((group) => (
         <GroupCard key={group.key} group={group} />
       ))}
-      {pageCount > 1 && (
-        <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400">
-          <span>
-            Page {currentPage + 1} of {pageCount} · {groups.length}{" "}
-            {groups.length === 1 ? "group" : "groups"}
-          </span>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              disabled={currentPage === 0}
-              onClick={() => setPage(currentPage - 1)}
-              className="dashboard-control rounded-full border border-zinc-300 px-3 py-1.5 font-semibold disabled:opacity-40 dark:border-zinc-700"
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              disabled={currentPage >= pageCount - 1}
-              onClick={() => setPage(currentPage + 1)}
-              className="dashboard-control rounded-full border border-zinc-300 px-3 py-1.5 font-semibold disabled:opacity-40 dark:border-zinc-700"
-            >
-              Next
-            </button>
-          </div>
-        </div>
-      )}
+      <AlertPagination
+        currentPage={currentPage}
+        pageCount={pageCount}
+        total={groups.length}
+        unit={{ one: "group", many: "groups" }}
+        onPageChange={setPage}
+      />
     </div>
   );
 }

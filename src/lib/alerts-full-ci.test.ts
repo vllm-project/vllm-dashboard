@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildUrlForNumber,
+  filterFullCiComparisonViews,
   toFullCiComparisons,
   viewFullCiComparisons,
   type FullCiComparisonRow,
+  type FullCiComparisonView,
   type FullCiConditionRow,
 } from "./alerts-full-ci";
 
@@ -242,5 +244,58 @@ test("build numbers resolve to Buildkite builds", () => {
   assert.equal(
     buildUrlForNumber(9001),
     "https://buildkite.com/vllm/ci/builds/9001",
+  );
+});
+
+function view(): FullCiComparisonView {
+  const [comparison] = viewFullCiComparisons(
+    toFullCiComparisons(
+      [comparisonRow()],
+      [
+        conditionRow({ job_name: "GPU memory profiling test" }),
+        conditionRow({
+          job_name: "Async engine test",
+          lifecycle: "fixed",
+          summary: "passes again after the revert",
+        }),
+      ],
+    ),
+  );
+  return comparison;
+}
+
+test("an empty query leaves every comparison untouched", () => {
+  assert.deepEqual(filterFullCiComparisonViews([view()], "   "), [view()]);
+});
+
+test("a query keeps only the conditions whose job name matches", () => {
+  const [filtered] = filterFullCiComparisonViews([view()], "gpu");
+
+  assert.deepEqual(
+    filtered.ongoing.map((condition) => condition.jobName),
+    ["GPU memory profiling test"],
+  );
+  assert.deepEqual(filtered.fixed, []);
+});
+
+test("a query matching nothing in a comparison drops the comparison", () => {
+  assert.deepEqual(filterFullCiComparisonViews([view()], "rocm"), []);
+});
+
+test("a query naming the comparison itself keeps all of its conditions", () => {
+  const [filtered] = filterFullCiComparisonViews([view()], "9002");
+
+  assert.equal(filtered.ongoing.length, 1);
+  assert.equal(filtered.fixed.length, 1);
+});
+
+test("a query matches a condition summary and its culprit pull request", () => {
+  assert.equal(
+    filterFullCiComparisonViews([view()], "async output processor").length,
+    1,
+  );
+  assert.equal(
+    filterFullCiComparisonViews([view()], "Rework async output").length,
+    1,
   );
 });

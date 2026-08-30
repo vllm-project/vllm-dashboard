@@ -199,3 +199,42 @@ test("a comparison shows how far its Slack notification got", () => {
 
   assert.match(markup, /Slack dead-lettered/);
 });
+
+test("the commit subject links the pull request it merged", () => {
+  const markup = render(
+    [
+      comparisonRow({
+        current_message: "[Bugfix] Bound cache_salt length (#54353)",
+      }),
+    ],
+    [conditionRow()],
+  );
+
+  assert.match(
+    markup,
+    /href="https:\/\/github\.com\/vllm-project\/vllm\/pull\/54353"/,
+  );
+  assert.match(markup, /Bound cache_salt length/);
+});
+
+test("a comparison header counts each lifecycle it classified", () => {
+  const markup = render(
+    [comparisonRow()],
+    [
+      conditionRow({ job_name: "New job", lifecycle: "new" }),
+      conditionRow({ job_name: "Old job", lifecycle: "recurring" }),
+      conditionRow({ job_name: "Other old job", lifecycle: "recurring" }),
+      conditionRow({ job_name: "Recovered job", lifecycle: "fixed" }),
+    ],
+  );
+
+  assert.match(markup, /1 new/);
+  assert.match(markup, /2 recurring/);
+  assert.match(markup, /1 fixed/);
+});
+
+test("a failed run is marked as failed rather than described in passing text", () => {
+  const markup = render([comparisonRow()], [conditionRow()]);
+
+  assert.match(markup, /text-red-600[^"]*"><svg/);
+});

@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { NotificationBadge } from "@/components/alert-notification-badge";
+import { AlertPagination } from "@/components/alert-pagination";
 import { JobName } from "@/components/job-name";
 import {
   CAUSE_LABELS,
@@ -10,7 +12,11 @@ import {
   type FullCiRun,
   type PullRequestRef,
 } from "@/lib/alerts-full-ci";
-import { commitUrl, formatAlertDateTime } from "@/lib/alerts-shared";
+import {
+  commitUrl,
+  formatAlertDateTime,
+  pullRequestUrl,
+} from "@/lib/alerts-shared";
 
 const LIFECYCLE_CLASSES: Record<FullCiLifecycle, string> = {
   new: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
@@ -24,6 +30,49 @@ const LIFECYCLE_CLASSES: Record<FullCiLifecycle, string> = {
 function outcomeLabel(outcome: FullCiJobOutcome | null): string {
   if (outcome === null) return "did not run";
   return outcome.softFailed ? `${outcome.state} (soft failed)` : outcome.state;
+}
+
+/** A failed run is the reason the card exists, so it is marked, not narrated. */
+function RunState({ state }: { state: string }) {
+  const failed = state.toLowerCase() === "failed";
+  if (!failed) {
+    return <span className="text-zinc-500 dark:text-zinc-400">{state}</span>;
+  }
+  // An inline-flex wrapper would take its own baseline and lift the whole
+  // phrase off the line it sits in, so the icon is an inline box aligned to
+  // the surrounding text instead.
+  return (
+    <span className="font-medium text-red-600 dark:text-red-400">
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 16 16"
+        className="mr-1 inline h-3 w-3 align-[-0.1em]"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2.2}
+        strokeLinecap="round"
+      >
+        <path d="M4 4l8 8M12 4l-8 8" />
+      </svg>
+      {state}
+    </span>
+  );
+}
+
+/**
+ * vLLM commit subjects end in the pull request they merged. That trailing
+ * "(#12345)" is the link a reader wants, but the subject line is truncated, so
+ * the number is lifted out and shown beside the commit instead of being the
+ * first thing an ellipsis eats.
+ */
+function splitCommitSubject(message: string): {
+  subject: string;
+  prNumber: string | null;
+} {
+  const subject = message.split("\n", 1)[0];
+  const match = subject.match(/^(.*?)\s*\(#(\d+)\)\s*$/);
+  if (match === null) return { subject, prNumber: null };
+  return { subject: match[1], prNumber: match[2] };
 }
 
 function PullRequestLink({
@@ -72,7 +121,7 @@ function RunSummary({ label, run }: { label: string; run: FullCiRun }) {
         {run.commitSha.slice(0, 7)}
       </a>
       <span className="text-zinc-500 dark:text-zinc-400">
-        {run.state} · {formatAlertDateTime(run.scheduledAt)}
+        <RunState state={run.state} /> · {formatAlertDateTime(run.scheduledAt)}
       </span>
     </span>
   );
@@ -139,7 +188,7 @@ function ConditionSection({
 }) {
   return (
     <section>
-      <h3 className="border-b border-zinc-100 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.08em] text-zinc-500 sm:px-5 dark:border-zinc-800/60 dark:text-zinc-400">
+      <h3 className="border-b border-zinc-100 px-4 py-2 text-[11px] font-bold uppercase tracking-[0.08em] text-zinc-600 sm:px-5 dark:border-zinc-800/60 dark:text-zinc-300">
         {title}
       </h3>
       {conditions.length === 0 ? (
@@ -161,7 +210,53 @@ function ConditionSection({
   );
 }
 
+/**
+ * The split a responder reads first: how many conditions are new, how many
+ * carried over, and how many this comparison saw pass again, against the
+ * baseline build they are all measured from. Zero counts are left out rather
+ * than shown as noise.
+ */
+function ConditionSummary({
+  comparison,
+}: {
+  comparison: FullCiComparisonView;
+}) {
+  const counts = [
+    {
+      lifecycle: "new" as FullCiLifecycle,
+      count: comparison.ongoing.filter((c) => c.lifecycle === "new").length,
+    },
+    {
+      lifecycle: "recurring" as FullCiLifecycle,
+      count: comparison.ongoing.filter((c) => c.lifecycle === "recurring")
+        .length,
+    },
+    { lifecycle: "fixed" as FullCiLifecycle, count: comparison.fixed.length },
+  ].filter((entry) => entry.count > 0);
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+      {counts.length === 0 ? (
+        <span className="text-zinc-500 dark:text-zinc-400">
+          No failure conditions
+        </span>
+      ) : (
+        counts.map(({ lifecycle, count }) => (
+          <span
+            key={lifecycle}
+            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${LIFECYCLE_CLASSES[lifecycle]}`}
+          >
+            {count} {LIFECYCLE_LABELS[lifecycle].toLowerCase()}
+            {lifecycle === "fixed" ? "" : count === 1 ? " failure" : " failures"}
+          </span>
+        ))
+      )}
+    </div>
+  );
+}
+
 function ComparisonCard({ comparison }: { comparison: FullCiComparisonView }) {
+  const commit = splitCommitSubject(comparison.currentRun.message);
   const builds: ComparedBuilds = {
     previousBuildNumber: comparison.previousRun.buildNumber,
     currentBuildNumber: comparison.currentRun.buildNumber,
@@ -169,9 +264,36 @@ function ComparisonCard({ comparison }: { comparison: FullCiComparisonView }) {
 
   return (
     <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="border-b border-zinc-200 px-4 py-3 sm:px-5 dark:border-zinc-800">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
-          <RunSummary label="Current" run={comparison.currentRun} />
+      <div className="border-b border-zinc-200 bg-zinc-50 px-4 py-3 sm:px-5 dark:border-zinc-800 dark:bg-zinc-900/40">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h2 className="flex flex-wrap items-baseline gap-x-2 text-base font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">
+            <a
+              href={comparison.currentRun.buildUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="hover:underline"
+            >
+              build {comparison.currentRun.buildNumber}
+            </a>
+            <a
+              href={commitUrl(comparison.currentRun.commitSha)}
+              target="_blank"
+              rel="noreferrer"
+              className="font-mono text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
+            >
+              {comparison.currentRun.commitSha.slice(0, 7)}
+            </a>
+            {commit.prNumber !== null && (
+              <a
+                href={pullRequestUrl(commit.prNumber) ?? undefined}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
+              >
+                #{commit.prNumber}
+              </a>
+            )}
+          </h2>
           {comparison.isLatest && (
             <span className="inline-flex shrink-0 items-center rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
               Latest comparison
@@ -182,15 +304,18 @@ function ComparisonCard({ comparison }: { comparison: FullCiComparisonView }) {
             className="ml-auto"
           />
         </div>
-        <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
-          <RunSummary label="Baseline" run={comparison.previousRun} />
-          <span className="ml-auto shrink-0 text-zinc-500 dark:text-zinc-400">
-            analyzed {formatAlertDateTime(comparison.analyzedAt)}
-          </span>
-        </div>
-        <p className="mt-1 w-full truncate text-xs text-zinc-500 dark:text-zinc-400">
-          {comparison.currentRun.message}
+        <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+          <RunState state={comparison.currentRun.state} /> ·{" "}
+          {formatAlertDateTime(comparison.currentRun.scheduledAt)} · analyzed{" "}
+          {formatAlertDateTime(comparison.analyzedAt)}
         </p>
+        <p className="mt-1 w-full truncate text-xs text-zinc-500 dark:text-zinc-400">
+          {commit.subject}
+        </p>
+        <ConditionSummary comparison={comparison} />
+        <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs">
+          <RunSummary label="Baseline" run={comparison.previousRun} />
+        </div>
       </div>
 
       <ConditionSection
@@ -215,27 +340,47 @@ function ComparisonCard({ comparison }: { comparison: FullCiComparisonView }) {
  * condition is shown against the two runs it was classified from; the
  * analyzer's raw report, cache, and memory checkpoints are never rendered.
  */
+const PAGE_SIZE = 10;
+
 export function FullCIAlerts({
   comparisons,
+  emptyMessage = "No Full CI comparisons have been analyzed yet.",
 }: {
   comparisons: FullCiComparisonView[];
+  emptyMessage?: string;
 }) {
+  const [page, setPage] = useState(0);
+
   if (comparisons.length === 0) {
     return (
       <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-zinc-300 text-sm text-zinc-400 dark:border-zinc-700">
-        No Full CI comparisons have been analyzed yet.
+        {emptyMessage}
       </div>
     );
   }
 
+  const pageCount = Math.ceil(comparisons.length / PAGE_SIZE);
+  const currentPage = Math.min(page, pageCount - 1);
+  const pageComparisons = comparisons.slice(
+    currentPage * PAGE_SIZE,
+    (currentPage + 1) * PAGE_SIZE,
+  );
+
   return (
-    <div className="space-y-3">
-      {comparisons.map((comparison) => (
+    <div className="space-y-4">
+      {pageComparisons.map((comparison) => (
         <ComparisonCard
           key={comparison.currentRun.buildkiteBuildId}
           comparison={comparison}
         />
       ))}
+      <AlertPagination
+        currentPage={currentPage}
+        pageCount={pageCount}
+        total={comparisons.length}
+        unit={{ one: "comparison", many: "comparisons" }}
+        onPageChange={setPage}
+      />
     </div>
   );
 }

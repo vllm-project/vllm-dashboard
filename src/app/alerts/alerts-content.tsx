@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { FastCIAlerts } from "@/components/fast-ci-alerts";
@@ -11,6 +11,7 @@ import {
   type FastFailureEvent,
 } from "@/lib/alerts-fast-ci";
 import {
+  filterFullCiComparisonViews,
   viewFullCiComparisons,
   type FullCiComparison,
 } from "@/lib/alerts-full-ci";
@@ -109,7 +110,13 @@ function AlertSection({
   );
 }
 
-function FullCISection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
+function FullCISection({
+  timeWindow,
+  query,
+}: {
+  timeWindow: AlertTimeWindow;
+  query: string;
+}) {
   const { data, isLoading, error } = useSWR<FullCIAlertsResponse>(
     "/api/alerts/full-ci",
     fetcher,
@@ -118,12 +125,15 @@ function FullCISection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
 
   const comparisons = useMemo(() => {
     const cutoff = alertWindowCutoff(timeWindow);
-    return viewFullCiComparisons(
-      (data?.comparisons ?? []).filter((comparison) =>
-        withinAlertWindow(comparison.currentRun.scheduledAt, cutoff),
+    return filterFullCiComparisonViews(
+      viewFullCiComparisons(
+        (data?.comparisons ?? []).filter((comparison) =>
+          withinAlertWindow(comparison.currentRun.scheduledAt, cutoff),
+        ),
       ),
+      query,
     );
-  }, [data, timeWindow]);
+  }, [data, timeWindow, query]);
 
   return (
     <AlertSection
@@ -135,7 +145,14 @@ function FullCISection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
       isLoading={isLoading}
       failed={Boolean(error || data?.error)}
     >
-      <FullCIAlerts comparisons={comparisons} />
+      <FullCIAlerts
+        comparisons={comparisons}
+        emptyMessage={
+          query.trim() === ""
+            ? "No Full CI comparisons have been analyzed yet."
+            : `No Full CI comparisons match "${query.trim()}".`
+        }
+      />
     </AlertSection>
   );
 }
@@ -215,6 +232,9 @@ export default function AlertsContent() {
     ? windowParam
     : "7d";
   const showSoftFailed = searchParams.get("soft") === "show";
+  // Typing is per-keystroke, so the query stays in component state rather than
+  // the URL the other controls navigate through.
+  const [fullCiQuery, setFullCiQuery] = useState("");
 
   const navigate = (
     nextTab: AlertTab,
@@ -318,6 +338,30 @@ export default function AlertsContent() {
             Show soft failed
           </button>
         )}
+        {tab === "full-ci" && (
+          <div className="relative w-full min-w-56 sm:ml-auto sm:w-72">
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 16 16"
+              className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400 dark:text-zinc-500"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.8}
+              strokeLinecap="round"
+            >
+              <circle cx="7" cy="7" r="4.5" />
+              <path d="M10.5 10.5 14 14" />
+            </svg>
+            <input
+              type="search"
+              value={fullCiQuery}
+              onChange={(event) => setFullCiQuery(event.target.value)}
+              placeholder="Filter by job, cause, PR, or commit"
+              aria-label="Filter Full CI comparisons"
+              className="dashboard-control w-full rounded-full border border-zinc-300 bg-white py-1.5 pl-8 pr-3 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-950 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100 dark:focus:border-zinc-50"
+            />
+          </div>
+        )}
       </div>
 
       {tab === "main-ci" ? (
@@ -325,7 +369,7 @@ export default function AlertsContent() {
       ) : tab === "fast-ci" ? (
         <FastCISection timeWindow={timeWindow} showSoftFailed={showSoftFailed} />
       ) : (
-        <FullCISection timeWindow={timeWindow} />
+        <FullCISection timeWindow={timeWindow} query={fullCiQuery} />
       )}
     </div>
   );

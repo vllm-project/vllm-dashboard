@@ -237,3 +237,53 @@ export function viewFullCiComparisons(
         .sort((a, b) => a.jobName.localeCompare(b.jobName)),
     }));
 }
+
+function conditionMatches(
+  condition: FullCiFailureCondition,
+  needle: string,
+): boolean {
+  return [
+    condition.jobName,
+    condition.summary,
+    LIFECYCLE_LABELS[condition.lifecycle],
+    CAUSE_LABELS[condition.cause],
+    condition.culpritPr?.title,
+    condition.fixingPr?.title,
+  ].some((field) => field?.toLowerCase().includes(needle));
+}
+
+function runMatches(run: FullCiRun, needle: string): boolean {
+  return [String(run.buildNumber), run.commitSha, run.message].some((field) =>
+    field.toLowerCase().includes(needle),
+  );
+}
+
+/**
+ * Keyword filter over the rendered comparisons. A comparison whose own build,
+ * commit, or commit message matches is kept whole, since the query names the
+ * comparison itself rather than anything inside it. Otherwise the query is read
+ * as naming failure conditions, so the card keeps only its matching rows and
+ * drops out entirely when none match.
+ */
+export function filterFullCiComparisonViews(
+  views: readonly FullCiComparisonView[],
+  query: string,
+): FullCiComparisonView[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return [...views];
+
+  return views.flatMap((view) => {
+    if (
+      runMatches(view.currentRun, needle) ||
+      runMatches(view.previousRun, needle)
+    ) {
+      return [view];
+    }
+
+    const ongoing = view.ongoing.filter((c) => conditionMatches(c, needle));
+    const fixed = view.fixed.filter((c) => conditionMatches(c, needle));
+    if (ongoing.length === 0 && fixed.length === 0) return [];
+
+    return [{ ...view, ongoing, fixed }];
+  });
+}
