@@ -437,8 +437,8 @@ def test_analysis_persists_conditions_report_checkpoint_and_notification() -> No
     memory_files = unpack_checkpoint(harness.checkpoints.objects[checkpoint.s3_uri])
     assert memory_files["MEMORY.md"] == b"# learned"
     notification = notification_for(harness, run2.build_id)
-    assert notification.destination_mode is DestinationMode.BOT_TOKEN
-    assert notification.destination == "C0ANHBE642Y"
+    assert notification.destination_mode is DestinationMode.WEBHOOK
+    assert notification.destination == "vllm-ci"
     assert "Job B" in notification.payload["text"]
 
 

@@ -37,7 +37,6 @@ from typing import Any, Protocol, cast
 from zoneinfo import ZoneInfo
 
 from alerting.commands import ScheduledCommand, SCHEMA_VERSION
-from alerting.fast_ci import FAST_CI_SLACK_CHANNEL
 from alerting.full_ci import FullCIJobOutcome, FullCIRun
 from alerting.ports import (
     AlertPath,
@@ -49,9 +48,10 @@ from alerting.ports import (
 
 COMPLETENESS_THRESHOLD = 0.95
 REPORT_CHAR_LIMIT = 2800
-# Full CI reports post through the Slack bot token to the same channel Fast CI
-# uses; no separate webhook destination.
-FULL_CI_SLACK_DESTINATION = FAST_CI_SLACK_CHANNEL
+# Full CI reports post through a dedicated incoming webhook (the logical
+# destination name is resolved from VLLM_CI_SLACK_URL at delivery time), so
+# they land in the Full CI channel rather than the Fast CI bot channel.
+FULL_CI_SLACK_DESTINATION = "vllm-ci"
 CHECKPOINT_SCHEMA_VERSION = SCHEMA_VERSION
 PACIFIC = ZoneInfo("America/Los_Angeles")
 
@@ -649,7 +649,7 @@ class FullCIAnalysisHandler:
                     alert_ref=f"full-ci-comparison:{context.current.build_id}",
                     alert_path=AlertPath.FULL_CI,
                     delivery_mode=self._delivery_mode,
-                    destination_mode=DestinationMode.BOT_TOKEN,
+                    destination_mode=DestinationMode.WEBHOOK,
                     destination=FULL_CI_SLACK_DESTINATION,
                     payload={"text": outputs.report_text},
                 ),

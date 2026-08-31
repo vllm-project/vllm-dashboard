@@ -30,7 +30,9 @@ INITIAL_LOOKBACK = timedelta(minutes=30)
 SAFETY_OVERLAP = timedelta(minutes=15)
 MAX_DURATION_SECONDS = 30
 SLACK_BATCH_SIZE = 8
-FAST_CI_SLACK_CHANNEL = "C0ANHBE642Y"
+# Both alert paths deliver through the vllm-ci incoming webhook; the logical
+# name is resolved from VLLM_CI_SLACK_URL at delivery time.
+SLACK_WEBHOOK_DESTINATION = "vllm-ci"
 STALE_NOTIFICATION_AGE = timedelta(minutes=30)
 
 
@@ -379,8 +381,8 @@ def _notification_batches(
                     alert_ref=delivery_id,
                     alert_path=AlertPath.FAST_CI,
                     delivery_mode=delivery_mode,
-                    destination_mode=DestinationMode.BOT_TOKEN,
-                    destination=FAST_CI_SLACK_CHANNEL,
+                    destination_mode=DestinationMode.WEBHOOK,
+                    destination=SLACK_WEBHOOK_DESTINATION,
                     payload={"text": _build_message(group, index, len(groups))},
                 ),
                 job_ids=job_ids,
@@ -401,8 +403,8 @@ def recovery_notification(
             alert_ref=delivery_id,
             alert_path=AlertPath.FAST_CI,
             delivery_mode=DeliveryMode.LIVE,
-            destination_mode=DestinationMode.BOT_TOKEN,
-            destination=FAST_CI_SLACK_CHANNEL,
+            destination_mode=DestinationMode.WEBHOOK,
+            destination=SLACK_WEBHOOK_DESTINATION,
             payload={"text": _build_message(ordered_events, 1, 1, recovery=True)},
         ),
         job_ids=tuple(event.job_id for event in ordered_events),
