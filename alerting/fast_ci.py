@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import os
 import json
 import re
 import time
@@ -30,10 +31,15 @@ INITIAL_LOOKBACK = timedelta(minutes=30)
 SAFETY_OVERLAP = timedelta(minutes=15)
 MAX_DURATION_SECONDS = 30
 SLACK_BATCH_SIZE = 8
-# Both alert paths deliver through the vllm-ci incoming webhook; the logical
-# name is resolved from VLLM_CI_SLACK_URL at delivery time.
-SLACK_WEBHOOK_DESTINATION = "vllm-ci"
+# Both alert paths deliver through the Slack bot token. The channel comes from
+# SLACK_CHANNEL_ID so a channel move is a secret edit, not a code change.
+ALERTS_SLACK_CHANNEL = "C0ANHBE642Y"
 STALE_NOTIFICATION_AGE = timedelta(minutes=30)
+
+
+def slack_channel() -> str:
+    """The channel alert intents post to; SLACK_CHANNEL_ID wins when set."""
+    return os.environ.get("SLACK_CHANNEL_ID", ALERTS_SLACK_CHANNEL)
 
 
 class FastFailureState(StrEnum):
@@ -381,8 +387,8 @@ def _notification_batches(
                     alert_ref=delivery_id,
                     alert_path=AlertPath.FAST_CI,
                     delivery_mode=delivery_mode,
-                    destination_mode=DestinationMode.WEBHOOK,
-                    destination=SLACK_WEBHOOK_DESTINATION,
+                    destination_mode=DestinationMode.BOT_TOKEN,
+                    destination=slack_channel(),
                     payload={"text": _build_message(group, index, len(groups))},
                 ),
                 job_ids=job_ids,
@@ -403,8 +409,8 @@ def recovery_notification(
             alert_ref=delivery_id,
             alert_path=AlertPath.FAST_CI,
             delivery_mode=DeliveryMode.LIVE,
-            destination_mode=DestinationMode.WEBHOOK,
-            destination=SLACK_WEBHOOK_DESTINATION,
+            destination_mode=DestinationMode.BOT_TOKEN,
+            destination=slack_channel(),
             payload={"text": _build_message(ordered_events, 1, 1, recovery=True)},
         ),
         job_ids=tuple(event.job_id for event in ordered_events),

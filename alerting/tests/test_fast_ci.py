@@ -393,3 +393,12 @@ def test_fast_failure_event_has_no_resolution_lifecycle() -> None:
 
     assert not hasattr(stored, "status")
     assert not hasattr(stored, "resolved_at")
+
+
+def test_slack_channel_env_override_wins(monkeypatch: Any) -> None:
+    import alerting.fast_ci as fast_ci
+
+    monkeypatch.delenv("SLACK_CHANNEL_ID", raising=False)
+    assert fast_ci.slack_channel() == fast_ci.ALERTS_SLACK_CHANNEL
+    monkeypatch.setenv("SLACK_CHANNEL_ID", "C0NEWCHANNEL")
+    assert fast_ci.slack_channel() == "C0NEWCHANNEL"
