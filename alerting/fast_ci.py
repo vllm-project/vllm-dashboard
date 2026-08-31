@@ -33,7 +33,7 @@ MAX_DURATION_SECONDS = 30
 SLACK_BATCH_SIZE = 8
 # Both alert paths deliver through the Slack bot token. The channel comes from
 # SLACK_CHANNEL_ID so a channel move is a secret edit, not a code change.
-ALERTS_SLACK_CHANNEL = "C0ANHBE642Y"
+ALERTS_SLACK_CHANNEL = "C0ABTNM9L5U"
 STALE_NOTIFICATION_AGE = timedelta(minutes=30)
 
 
