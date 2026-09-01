@@ -150,6 +150,21 @@ function detailLabel(row: TraceRow, kind: "command" | "test"): string {
   return `${prefix}${row.command_label ?? row.span_name}`;
 }
 
+export type BuildTraceQuery = {
+  organization: string; // required, 400 when missing/invalid
+  pipeline: string; // required, 400 when missing/invalid
+  buildNumber: string; // required, 400 when missing/invalid
+  jobId?: string; // UUID; switches to paged job detail spans
+  page?: number; // 0-based (default 0); must be 0 unless jobId is set
+};
+
+/**
+ * OTel span lanes for a single CI build
+ * @description available=false with empty lanes when the build has no spans. Whole-build views cap at 5000 spans; job detail pages at 2000.
+ * @params BuildTraceQuery
+ * @tag Builds
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   const organization = request.nextUrl.searchParams.get("organization") ?? "";
   const pipeline = request.nextUrl.searchParams.get("pipeline") ?? "";

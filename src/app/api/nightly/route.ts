@@ -16,6 +16,12 @@ import {
   type PerfRun,
 } from "@/lib/compare";
 
+export type NightlyQuery = {
+  limit?: number; // default 10, clamped to 30
+  perf_threshold?: number; // default 0.02
+  eval_sigma?: number; // default 2
+};
+
 interface BuildRow {
   id: string;
   number: string;
@@ -358,6 +364,13 @@ function groupEvalByImage(rows: EvalRow[]): Map<string, EvalRow[]> {
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
 
+/**
+ * List nightly CI runs
+ * @description Nightly image entries pairing the perf-eval build with its matched full-CI build. deltaVsPrev compares against the previous nightly using the perf_threshold and eval_sigma parameters.
+ * @params NightlyQuery
+ * @tag Nightly
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const sp = request.nextUrl.searchParams;

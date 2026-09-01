@@ -6,6 +6,20 @@ import { cachedJson } from "@/lib/api-response";
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
 
+export type JobsQuery = {
+  pipeline?: string; // default "CI"
+  branch?: string; // default "main"
+  startDate?: string;
+  endDate?: string;
+};
+
+/**
+ * Job failure ranking and duration stats
+ * @description Without startDate/endDate, only jobs with runs in the last 7 days are included.
+ * @params JobsQuery
+ * @tag Jobs
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;

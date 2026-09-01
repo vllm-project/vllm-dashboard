@@ -176,6 +176,27 @@ function formatText(
   return lines.join("\n");
 }
 
+export type BuildSummaryQuery = {
+  pipeline?: string;
+  branch?: string;
+  startDate?: string;
+  endDate?: string;
+  state?: string;
+  page?: number; // 0-based (default 0)
+  per_page?: number; // clamped to 1-30 (default 10)
+  format?: "text" | "json"; // default "text" returns text/plain
+  jobs?: "true" | "false"; // "false" omits failed job detail
+  jobGroups?: string; // comma-separated group names
+  jobNames?: string; // comma-separated exact job names
+};
+
+/**
+ * Compact build summary for agents and CLI use
+ * @description Defaults to a text/plain summary; pass format=json for JSON.
+ * @params BuildSummaryQuery
+ * @tag Builds
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;

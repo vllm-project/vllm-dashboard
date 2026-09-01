@@ -6,6 +6,16 @@ import { cachedJson } from "@/lib/api-response";
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 30, staleWhileRevalidate: 3_600 };
 
+export type WaitingBuildsQuery = {
+  queue: string; // Required; 400 when missing
+};
+
+/**
+ * Top builds with jobs waiting in a queue
+ * @params WaitingBuildsQuery
+ * @tag Metrics
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   const queue = request.nextUrl.searchParams.get("queue");
   if (!queue) {

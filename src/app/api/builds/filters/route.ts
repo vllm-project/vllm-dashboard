@@ -6,6 +6,12 @@ import { cachedJson } from "@/lib/api-response";
 const TTL = 300_000;
 const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 86_400 };
 
+/**
+ * List available pipeline and branch filter options
+ * @description Branches only cover builds from the last 30 days.
+ * @tag Builds
+ * @openapi
+ */
 export async function GET() {
   try {
     const cacheKey = "builds:filters";

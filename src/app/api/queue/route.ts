@@ -6,6 +6,20 @@ import { cachedJson } from "@/lib/api-response";
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
 
+export type QueueStatsQuery = {
+  pipeline?: string;
+  queue?: string;
+  startDate?: string;
+  endDate?: string;
+};
+
+/**
+ * Historical queue wait-time statistics
+ * @description Bucket width adapts to the requested span (5 minutes up to 1 week).
+ * @params QueueStatsQuery
+ * @tag Queue
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;

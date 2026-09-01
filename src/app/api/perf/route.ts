@@ -12,6 +12,20 @@ import {
 const TTL = 300_000;
 const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
 
+export type PerfQuery = {
+  model?: string;
+  device?: string;
+  tp?: number;
+  conc?: number;
+  start?: string; // ISO date (YYYY-MM-DD); omitted or invalid falls back to 2026-06-14
+};
+
+/**
+ * Benchmark performance data
+ * @params PerfQuery
+ * @tag Perf
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const sp = request.nextUrl.searchParams;

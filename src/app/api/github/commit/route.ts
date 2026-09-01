@@ -13,6 +13,17 @@ interface GithubCommitResponse {
   };
 }
 
+export type GithubCommitQuery = {
+  sha: string; // Commit SHA matching ^[0-9a-f]{7,40}$ (case-insensitive); 400 if missing/invalid, 404 if not found
+};
+
+/**
+ * Look up a commit in vllm-project/vllm
+ * @description Proxies the GitHub API for a commit in vllm-project/vllm.
+ * @params GithubCommitQuery
+ * @tag GitHub
+ * @openapi
+ */
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const sha = (searchParams.get("sha") ?? "").trim();

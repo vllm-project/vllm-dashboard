@@ -1,0 +1,1895 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "vLLM CI Dashboard API",
+    "version": "1.0.0",
+    "description": "Public read-only API backing https://ci.vllm.ai. All documented GET endpoints are unauthenticated and return JSON; errors use `{ \"error\": string }`. Responses are cached via `Vercel-CDN-Cache-Control`; treat data as eventually consistent (30s-10min staleness)."
+  },
+  "servers": [
+    {
+      "url": "https://ci.vllm.ai",
+      "description": "Production"
+    }
+  ],
+  "paths": {
+    "/alerts/fast-ci": {
+      "get": {
+        "operationId": "get-alerts-fast-ci",
+        "summary": "Recent Fast CI failure events.",
+        "description": "Fast Failure Events from the last 7 days, newest first, max 500.",
+        "tags": [
+          "Alerts"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/alerts/full-ci": {
+      "get": {
+        "operationId": "get-alerts-full-ci",
+        "summary": "Recent analyzed Full CI comparisons.",
+        "description": "Up to 30 analyzed comparisons of consecutive scheduled Full CI runs, newest first.",
+        "tags": [
+          "Alerts"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/alerts/main-ci": {
+      "get": {
+        "operationId": "get-alerts-main-ci",
+        "summary": "Main-branch CI job alerts.",
+        "description": "Open alerts plus alerts resolved in the last 30 days, max 500. Responds with schemaStatus \"pending\" and empty alerts when the alerting tables are not migrated yet.",
+        "tags": [
+          "Alerts"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/builds": {
+      "get": {
+        "operationId": "get-builds",
+        "summary": "List CI builds",
+        "description": "Paginated Buildkite builds with pass/fail summary and duration history. Group and job details are served by `/api/builds/groups` and `/api/builds/jobs`.",
+        "tags": [
+          "Builds"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "pipeline",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "branch",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "startDate",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "endDate",
+            "schema": {
+              "type": "string",
+              "description": "Inclusive"
+            },
+            "required": false,
+            "description": "Inclusive"
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "type": "number",
+              "description": "0-based, 50 builds per page"
+            },
+            "required": false,
+            "description": "0-based, 50 builds per page"
+          },
+          {
+            "in": "query",
+            "name": "jobGroups",
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated test-area groups"
+            },
+            "required": false,
+            "description": "Comma-separated test-area groups"
+          },
+          {
+            "in": "query",
+            "name": "jobNames",
+            "schema": {
+              "type": "string",
+              "description": "Comma-separated exact job names"
+            },
+            "required": false,
+            "description": "Comma-separated exact job names"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/builds/filters": {
+      "get": {
+        "operationId": "get-builds-filters",
+        "summary": "List available pipeline and branch filter options",
+        "description": "Branches only cover builds from the last 30 days.",
+        "tags": [
+          "Builds"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/builds/groups": {
+      "get": {
+        "operationId": "get-builds-groups",
+        "summary": "Per-build test group summaries",
+        "description": "jobsByBuild encodes jobs as [jobNames index, state] pairs; jobNames is the shared dictionary. Empty buildIds returns an empty payload, not a 400.",
+        "tags": [
+          "Builds"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "buildIds",
+            "schema": {
+              "type": "string",
+              "description": "comma-separated build UUIDs (max 50)"
+            },
+            "required": false,
+            "description": "comma-separated build UUIDs (max 50)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/builds/jobs": {
+      "get": {
+        "operationId": "get-builds-jobs",
+        "summary": "Expanded job lists per build and group",
+        "description": "Missing buildIds or groups returns an empty payload, not a 400.",
+        "tags": [
+          "Builds"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "buildIds",
+            "schema": {
+              "type": "string",
+              "description": "comma-separated build UUIDs (max 50)"
+            },
+            "required": false,
+            "description": "comma-separated build UUIDs (max 50)"
+          },
+          {
+            "in": "query",
+            "name": "groups",
+            "schema": {
+              "type": "string",
+              "description": "comma-separated group names (max 20)"
+            },
+            "required": false,
+            "description": "comma-separated group names (max 20)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/builds/summary": {
+      "get": {
+        "operationId": "get-builds-summary",
+        "summary": "Compact build summary for agents and CLI use",
+        "description": "Defaults to a text/plain summary; pass format=json for JSON.",
+        "tags": [
+          "Builds"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "pipeline",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "branch",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "startDate",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "endDate",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "type": "number",
+              "description": "0-based (default 0)"
+            },
+            "required": false,
+            "description": "0-based (default 0)"
+          },
+          {
+            "in": "query",
+            "name": "per_page",
+            "schema": {
+              "type": "number",
+              "description": "clamped to 1-30 (default 10)"
+            },
+            "required": false,
+            "description": "clamped to 1-30 (default 10)"
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "text",
+                "json"
+              ],
+              "description": "default \"text\" returns text/plain"
+            },
+            "required": false,
+            "description": "default \"text\" returns text/plain"
+          },
+          {
+            "in": "query",
+            "name": "jobs",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "\"false\" omits failed job detail"
+            },
+            "required": false,
+            "description": "\"false\" omits failed job detail"
+          },
+          {
+            "in": "query",
+            "name": "jobGroups",
+            "schema": {
+              "type": "string",
+              "description": "comma-separated group names"
+            },
+            "required": false,
+            "description": "comma-separated group names"
+          },
+          {
+            "in": "query",
+            "name": "jobNames",
+            "schema": {
+              "type": "string",
+              "description": "comma-separated exact job names"
+            },
+            "required": false,
+            "description": "comma-separated exact job names"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/builds/trace": {
+      "get": {
+        "operationId": "get-builds-trace",
+        "summary": "OTel span lanes for a single CI build",
+        "description": "available=false with empty lanes when the build has no spans. Whole-build views cap at 5000 spans; job detail pages at 2000.",
+        "tags": [
+          "Builds"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "organization",
+            "schema": {
+              "type": "string",
+              "description": "required, 400 when missing/invalid"
+            },
+            "required": false,
+            "description": "required, 400 when missing/invalid"
+          },
+          {
+            "in": "query",
+            "name": "pipeline",
+            "schema": {
+              "type": "string",
+              "description": "required, 400 when missing/invalid"
+            },
+            "required": false,
+            "description": "required, 400 when missing/invalid"
+          },
+          {
+            "in": "query",
+            "name": "buildNumber",
+            "schema": {
+              "type": "string",
+              "description": "required, 400 when missing/invalid"
+            },
+            "required": false,
+            "description": "required, 400 when missing/invalid"
+          },
+          {
+            "in": "query",
+            "name": "jobId",
+            "schema": {
+              "type": "string",
+              "description": "UUID; switches to paged job detail spans"
+            },
+            "required": false,
+            "description": "UUID; switches to paged job detail spans"
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "type": "number",
+              "description": "0-based (default 0); must be 0 unless jobId is set"
+            },
+            "required": false,
+            "description": "0-based (default 0); must be 0 unless jobId is set"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/compare": {
+      "get": {
+        "operationId": "get-compare",
+        "summary": "Compare two vLLM Docker images",
+        "description": "Returns perf and eval deltas between a baseline and candidate image.",
+        "tags": [
+          "Compare"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "baseline",
+            "schema": {
+              "type": "string",
+              "description": "Baseline image ref (required, 400 if missing)"
+            },
+            "required": false,
+            "description": "Baseline image ref (required, 400 if missing)"
+          },
+          {
+            "in": "query",
+            "name": "candidate",
+            "schema": {
+              "type": "string",
+              "description": "Candidate image ref (required, 400 if missing)"
+            },
+            "required": false,
+            "description": "Candidate image ref (required, 400 if missing)"
+          },
+          {
+            "in": "query",
+            "name": "model",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "device",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "task",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "perf_threshold",
+            "schema": {
+              "type": "number",
+              "description": "Regression/improvement threshold (default 0.02)"
+            },
+            "required": false,
+            "description": "Regression/improvement threshold (default 0.02)"
+          },
+          {
+            "in": "query",
+            "name": "eval_sigma",
+            "schema": {
+              "type": "number",
+              "description": "Sigma below which eval deltas count as \"noisy\" (default 2)"
+            },
+            "required": false,
+            "description": "Sigma below which eval deltas count as \"noisy\" (default 2)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cost": {
+      "get": {
+        "operationId": "get-cost",
+        "summary": "CI compute cost breakdown",
+        "description": "",
+        "tags": [
+          "Cost"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "pipeline",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "branch",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "startDate",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "endDate",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/eval": {
+      "get": {
+        "operationId": "get-eval",
+        "summary": "Eval result rows",
+        "description": "",
+        "tags": [
+          "Eval"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "model",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "task",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "image",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/eval/filters": {
+      "get": {
+        "operationId": "get-eval-filters",
+        "summary": "Available eval filter values",
+        "description": "Distinct models, tasks, images, metric filters, and metric names in the given date range.",
+        "tags": [
+          "Eval"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start",
+            "schema": {
+              "type": "string",
+              "description": "Any Date.parse-able date (e.g. YYYY-MM-DD); invalid values are ignored"
+            },
+            "required": false,
+            "description": "Any Date.parse-able date (e.g. YYYY-MM-DD); invalid values are ignored"
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "schema": {
+              "type": "string",
+              "description": "Any Date.parse-able date; a bare YYYY-MM-DD is bumped to end-of-day so the day is inclusive"
+            },
+            "required": false,
+            "description": "Any Date.parse-able date; a bare YYYY-MM-DD is bumped to end-of-day so the day is inclusive"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/eval/samples": {
+      "get": {
+        "operationId": "get-eval-samples",
+        "summary": "Per-sample eval results",
+        "description": "",
+        "tags": [
+          "Eval"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "build_id",
+            "schema": {
+              "type": "string",
+              "description": "Required; 400 when missing"
+            },
+            "required": false,
+            "description": "Required; 400 when missing"
+          },
+          {
+            "in": "query",
+            "name": "task",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "workload",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "correct",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "Omit to return all samples"
+            },
+            "required": false,
+            "description": "Omit to return all samples"
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "number",
+              "description": "Clamped to 1-5000 (default 200)"
+            },
+            "required": false,
+            "description": "Clamped to 1-5000 (default 200)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/github/commit": {
+      "get": {
+        "operationId": "get-github-commit",
+        "summary": "Look up a commit in vllm-project/vllm",
+        "description": "Proxies the GitHub API for a commit in vllm-project/vllm.",
+        "tags": [
+          "GitHub"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "sha",
+            "schema": {
+              "type": "string",
+              "description": "Commit SHA matching ^[0-9a-f]{7,40}$ (case-insensitive); 400 if missing/invalid, 404 if not found"
+            },
+            "required": false,
+            "description": "Commit SHA matching ^[0-9a-f]{7,40}$ (case-insensitive); 400 if missing/invalid, 404 if not found"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gpu": {
+      "get": {
+        "operationId": "get-gpu",
+        "summary": "Get GPU metrics (legacy combined endpoint)",
+        "description": "History plus latest per-GPU readings in one response; kept for backward compatibility, superseded by `/api/gpu/history` and `/api/gpu/latest`.",
+        "tags": [
+          "GPU"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hours",
+            "schema": {
+              "type": "number",
+              "description": "Clamped to 1-720, non-numeric falls back to 24 (default 24)"
+            },
+            "required": false,
+            "description": "Clamped to 1-720, non-numeric falls back to 24 (default 24)"
+          },
+          {
+            "in": "query",
+            "name": "hostname",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gpu/history": {
+      "get": {
+        "operationId": "get-gpu-history",
+        "summary": "Get GPU utilization history",
+        "description": "Time-bucketed aggregates read from raw snapshots for windows up to 6 hours, from the 5-minute rollup for longer windows.",
+        "tags": [
+          "GPU"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hours",
+            "schema": {
+              "type": "number",
+              "description": "Clamped to 1-720, non-numeric falls back to 24 (default 24)"
+            },
+            "required": false,
+            "description": "Clamped to 1-720, non-numeric falls back to 24 (default 24)"
+          },
+          {
+            "in": "query",
+            "name": "hostname",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/gpu/latest": {
+      "get": {
+        "operationId": "get-gpu-latest",
+        "summary": "Get latest GPU readings",
+        "description": "",
+        "tags": [
+          "GPU"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs": {
+      "get": {
+        "operationId": "get-jobs",
+        "summary": "Job failure ranking and duration stats",
+        "description": "Without startDate/endDate, only jobs with runs in the last 7 days are included.",
+        "tags": [
+          "Jobs"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "pipeline",
+            "schema": {
+              "type": "string",
+              "description": "default \"CI\""
+            },
+            "required": false,
+            "description": "default \"CI\""
+          },
+          {
+            "in": "query",
+            "name": "branch",
+            "schema": {
+              "type": "string",
+              "description": "default \"main\""
+            },
+            "required": false,
+            "description": "default \"main\""
+          },
+          {
+            "in": "query",
+            "name": "startDate",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "endDate",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/runs": {
+      "get": {
+        "operationId": "get-jobs-runs",
+        "summary": "Run history for a single job",
+        "description": "",
+        "tags": [
+          "Jobs"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "jobName",
+            "schema": {
+              "type": "string",
+              "description": "required; 400 if missing"
+            },
+            "required": false,
+            "description": "required; 400 if missing"
+          },
+          {
+            "in": "query",
+            "name": "pipeline",
+            "schema": {
+              "type": "string",
+              "description": "default \"CI\""
+            },
+            "required": false,
+            "description": "default \"CI\""
+          },
+          {
+            "in": "query",
+            "name": "branch",
+            "schema": {
+              "type": "string",
+              "description": "default \"main\""
+            },
+            "required": false,
+            "description": "default \"main\""
+          },
+          {
+            "in": "query",
+            "name": "startDate",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "endDate",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "get-metrics",
+        "summary": "Queue agent and job metrics over time",
+        "description": "Bucket width adapts to the requested span: raw rows up to 6h, then 15-minute, 1-hour, or 6-hour buckets.",
+        "tags": [
+          "Metrics"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hours",
+            "schema": {
+              "type": "number",
+              "description": "History window in hours (default 24, capped at 2160); bucket width adapts to the span"
+            },
+            "required": false,
+            "description": "History window in hours (default 24, capped at 2160); bucket width adapts to the span"
+          },
+          {
+            "in": "query",
+            "name": "queue",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics/waiting-builds": {
+      "get": {
+        "operationId": "get-metrics-waiting-builds",
+        "summary": "Top builds with jobs waiting in a queue",
+        "description": "",
+        "tags": [
+          "Metrics"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "queue",
+            "schema": {
+              "type": "string",
+              "description": "Required; 400 when missing"
+            },
+            "required": false,
+            "description": "Required; 400 when missing"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/nightly": {
+      "get": {
+        "operationId": "get-nightly",
+        "summary": "List nightly CI runs",
+        "description": "Nightly image entries pairing the perf-eval build with its matched full-CI build. deltaVsPrev compares against the previous nightly using the perf_threshold and eval_sigma parameters.",
+        "tags": [
+          "Nightly"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "number",
+              "description": "default 10, clamped to 30"
+            },
+            "required": false,
+            "description": "default 10, clamped to 30"
+          },
+          {
+            "in": "query",
+            "name": "perf_threshold",
+            "schema": {
+              "type": "number",
+              "description": "default 0.02"
+            },
+            "required": false,
+            "description": "default 0.02"
+          },
+          {
+            "in": "query",
+            "name": "eval_sigma",
+            "schema": {
+              "type": "number",
+              "description": "default 2"
+            },
+            "required": false,
+            "description": "default 2"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/perf": {
+      "get": {
+        "operationId": "get-perf",
+        "summary": "Benchmark performance data",
+        "description": "",
+        "tags": [
+          "Perf"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "model",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "device",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "tp",
+            "schema": {
+              "type": "number"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "conc",
+            "schema": {
+              "type": "number"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "start",
+            "schema": {
+              "type": "string",
+              "description": "ISO date (YYYY-MM-DD); omitted or invalid falls back to 2026-06-14"
+            },
+            "required": false,
+            "description": "ISO date (YYYY-MM-DD); omitted or invalid falls back to 2026-06-14"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/perf/filters": {
+      "get": {
+        "operationId": "get-perf-filters",
+        "summary": "Available perf filter values",
+        "description": "Distinct models (with per-model datapoint counts), devices, tps, concs, precisions, and images in the given date range. Note: tps/concs are returned as strings even though `/api/perf` accepts them as integers.",
+        "tags": [
+          "Perf"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start",
+            "schema": {
+              "type": "string",
+              "description": "ISO date (YYYY-MM-DD); omitted or invalid falls back to 2026-06-14"
+            },
+            "required": false,
+            "description": "ISO date (YYYY-MM-DD); omitted or invalid falls back to 2026-06-14"
+          },
+          {
+            "in": "query",
+            "name": "end",
+            "schema": {
+              "type": "string",
+              "description": "ISO date (YYYY-MM-DD); ignored if not a valid date"
+            },
+            "required": false,
+            "description": "ISO date (YYYY-MM-DD); ignored if not a valid date"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/queue": {
+      "get": {
+        "operationId": "get-queue",
+        "summary": "Historical queue wait-time statistics",
+        "description": "Bucket width adapts to the requested span (5 minutes up to 1 week).",
+        "tags": [
+          "Queue"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "pipeline",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "queue",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "startDate",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "endDate",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/queue/jobs": {
+      "get": {
+        "operationId": "get-queue-jobs",
+        "summary": "Live jobs currently waiting in a queue",
+        "description": "Fetched live from the Buildkite GraphQL API (no caching). Errors surface Buildkite status codes, e.g. 400 INVALID_QUEUE, 503 BUILDKITE_NOT_CONFIGURED, 429 with Retry-After when rate-limited.",
+        "tags": [
+          "Queue"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "queue",
+            "schema": {
+              "type": "string",
+              "description": "Empty or invalid queue returns a 400 error"
+            },
+            "required": false,
+            "description": "Empty or invalid queue returns a 400 error"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tests": {
+      "get": {
+        "operationId": "get-tests",
+        "summary": "List Buildkite Test Engine tests",
+        "description": "Proxies the Buildkite Test Engine analytics API. Returns 503 with code BUILDKITE_NOT_CONFIGURED when BUILDKITE_API_TOKEN is not set.",
+        "tags": [
+          "Tests"
+        ],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "period",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1hour",
+                "4hours",
+                "1day",
+                "7days",
+                "14days",
+                "28days"
+              ],
+              "description": "default \"1day\""
+            },
+            "required": false,
+            "description": "default \"1day\""
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "enabled",
+                "muted",
+                "skipped"
+              ]
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "label",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "flaky"
+              ]
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "sortBy",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "reliability",
+                "duration_avg"
+              ]
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "order",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "description": "default: \"asc\" for sortBy=reliability, \"desc\" for sortBy=duration_avg"
+            },
+            "required": false,
+            "description": "default: \"asc\" for sortBy=reliability, \"desc\" for sortBy=duration_avg"
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "type": "number",
+              "description": "1-based (default 1); page size is fixed at 30"
+            },
+            "required": false,
+            "description": "1-based (default 1); page size is fixed at 30"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BuildsGroupsQuery": {
+        "type": "object",
+        "properties": {
+          "buildIds": {
+            "type": "string",
+            "description": "comma-separated build UUIDs (max 50)"
+          }
+        }
+      },
+      "BuildJobsQuery": {
+        "type": "object",
+        "properties": {
+          "buildIds": {
+            "type": "string",
+            "description": "comma-separated build UUIDs (max 50)"
+          },
+          "groups": {
+            "type": "string",
+            "description": "comma-separated group names (max 20)"
+          }
+        }
+      },
+      "BuildsQuery": {
+        "type": "object",
+        "properties": {
+          "pipeline": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "startDate": {
+            "type": "string"
+          },
+          "endDate": {
+            "type": "string",
+            "description": "Inclusive"
+          },
+          "page": {
+            "type": "number",
+            "description": "0-based, 50 builds per page"
+          },
+          "jobGroups": {
+            "type": "string",
+            "description": "Comma-separated test-area groups"
+          },
+          "jobNames": {
+            "type": "string",
+            "description": "Comma-separated exact job names"
+          }
+        }
+      },
+      "BuildSummaryQuery": {
+        "type": "object",
+        "properties": {
+          "pipeline": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "startDate": {
+            "type": "string"
+          },
+          "endDate": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "page": {
+            "type": "number",
+            "description": "0-based (default 0)"
+          },
+          "per_page": {
+            "type": "number",
+            "description": "clamped to 1-30 (default 10)"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "text",
+              "json"
+            ],
+            "description": "default \"text\" returns text/plain"
+          },
+          "jobs": {
+            "type": "string",
+            "enum": [
+              "true",
+              "false"
+            ],
+            "description": "\"false\" omits failed job detail"
+          },
+          "jobGroups": {
+            "type": "string",
+            "description": "comma-separated group names"
+          },
+          "jobNames": {
+            "type": "string",
+            "description": "comma-separated exact job names"
+          }
+        }
+      },
+      "BuildTraceQuery": {
+        "type": "object",
+        "properties": {
+          "organization": {
+            "type": "string",
+            "description": "required, 400 when missing/invalid"
+          },
+          "pipeline": {
+            "type": "string",
+            "description": "required, 400 when missing/invalid"
+          },
+          "buildNumber": {
+            "type": "string",
+            "description": "required, 400 when missing/invalid"
+          },
+          "jobId": {
+            "type": "string",
+            "description": "UUID; switches to paged job detail spans"
+          },
+          "page": {
+            "type": "number",
+            "description": "0-based (default 0); must be 0 unless jobId is set"
+          }
+        }
+      },
+      "CompareQuery": {
+        "type": "object",
+        "properties": {
+          "baseline": {
+            "type": "string",
+            "description": "Baseline image ref (required, 400 if missing)"
+          },
+          "candidate": {
+            "type": "string",
+            "description": "Candidate image ref (required, 400 if missing)"
+          },
+          "model": {
+            "type": "string"
+          },
+          "device": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "perf_threshold": {
+            "type": "number",
+            "description": "Regression/improvement threshold (default 0.02)"
+          },
+          "eval_sigma": {
+            "type": "number",
+            "description": "Sigma below which eval deltas count as \"noisy\" (default 2)"
+          }
+        }
+      },
+      "CostQuery": {
+        "type": "object",
+        "properties": {
+          "pipeline": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "startDate": {
+            "type": "string"
+          },
+          "endDate": {
+            "type": "string"
+          }
+        }
+      },
+      "EvalFiltersQuery": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "string",
+            "description": "Any Date.parse-able date (e.g. YYYY-MM-DD); invalid values are ignored"
+          },
+          "end": {
+            "type": "string",
+            "description": "Any Date.parse-able date; a bare YYYY-MM-DD is bumped to end-of-day so the day is inclusive"
+          }
+        }
+      },
+      "EvalQuery": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "image": {
+            "type": "string"
+          }
+        }
+      },
+      "EvalSamplesQuery": {
+        "type": "object",
+        "properties": {
+          "build_id": {
+            "type": "string",
+            "description": "Required; 400 when missing"
+          },
+          "task": {
+            "type": "string"
+          },
+          "workload": {
+            "type": "string"
+          },
+          "correct": {
+            "type": "string",
+            "enum": [
+              "true",
+              "false"
+            ],
+            "description": "Omit to return all samples"
+          },
+          "limit": {
+            "type": "number",
+            "description": "Clamped to 1-5000 (default 200)"
+          }
+        }
+      },
+      "GithubCommitQuery": {
+        "type": "object",
+        "properties": {
+          "sha": {
+            "type": "string",
+            "description": "Commit SHA matching ^[0-9a-f]{7,40}$ (case-insensitive); 400 if missing/invalid, 404 if not found"
+          }
+        }
+      },
+      "GpuHistoryQuery": {
+        "type": "object",
+        "properties": {
+          "hours": {
+            "type": "number",
+            "description": "Clamped to 1-720, non-numeric falls back to 24 (default 24)"
+          },
+          "hostname": {
+            "type": "string"
+          }
+        }
+      },
+      "GpuQuery": {
+        "type": "object",
+        "properties": {
+          "hours": {
+            "type": "number",
+            "description": "Clamped to 1-720, non-numeric falls back to 24 (default 24)"
+          },
+          "hostname": {
+            "type": "string"
+          }
+        }
+      },
+      "JobsQuery": {
+        "type": "object",
+        "properties": {
+          "pipeline": {
+            "type": "string",
+            "description": "default \"CI\""
+          },
+          "branch": {
+            "type": "string",
+            "description": "default \"main\""
+          },
+          "startDate": {
+            "type": "string"
+          },
+          "endDate": {
+            "type": "string"
+          }
+        }
+      },
+      "JobRunsQuery": {
+        "type": "object",
+        "properties": {
+          "jobName": {
+            "type": "string",
+            "description": "required; 400 if missing"
+          },
+          "pipeline": {
+            "type": "string",
+            "description": "default \"CI\""
+          },
+          "branch": {
+            "type": "string",
+            "description": "default \"main\""
+          },
+          "startDate": {
+            "type": "string"
+          },
+          "endDate": {
+            "type": "string"
+          }
+        }
+      },
+      "MetricsQuery": {
+        "type": "object",
+        "properties": {
+          "hours": {
+            "type": "number",
+            "description": "History window in hours (default 24, capped at 2160); bucket width adapts to the span"
+          },
+          "queue": {
+            "type": "string"
+          }
+        }
+      },
+      "WaitingBuildsQuery": {
+        "type": "object",
+        "properties": {
+          "queue": {
+            "type": "string",
+            "description": "Required; 400 when missing"
+          }
+        }
+      },
+      "NightlyQuery": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "number",
+            "description": "default 10, clamped to 30"
+          },
+          "perf_threshold": {
+            "type": "number",
+            "description": "default 0.02"
+          },
+          "eval_sigma": {
+            "type": "number",
+            "description": "default 2"
+          }
+        }
+      },
+      "PerfFiltersQuery": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "string",
+            "description": "ISO date (YYYY-MM-DD); omitted or invalid falls back to 2026-06-14"
+          },
+          "end": {
+            "type": "string",
+            "description": "ISO date (YYYY-MM-DD); ignored if not a valid date"
+          }
+        }
+      },
+      "PerfQuery": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "device": {
+            "type": "string"
+          },
+          "tp": {
+            "type": "number"
+          },
+          "conc": {
+            "type": "number"
+          },
+          "start": {
+            "type": "string",
+            "description": "ISO date (YYYY-MM-DD); omitted or invalid falls back to 2026-06-14"
+          }
+        }
+      },
+      "QueueJobsQuery": {
+        "type": "object",
+        "properties": {
+          "queue": {
+            "type": "string",
+            "description": "Empty or invalid queue returns a 400 error"
+          }
+        }
+      },
+      "QueueStatsQuery": {
+        "type": "object",
+        "properties": {
+          "pipeline": {
+            "type": "string"
+          },
+          "queue": {
+            "type": "string"
+          },
+          "startDate": {
+            "type": "string"
+          },
+          "endDate": {
+            "type": "string"
+          }
+        }
+      },
+      "TestsQuery": {
+        "type": "object",
+        "properties": {
+          "period": {
+            "type": "string",
+            "enum": [
+              "1hour",
+              "4hours",
+              "1day",
+              "7days",
+              "14days",
+              "28days"
+            ],
+            "description": "default \"1day\""
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "enabled",
+              "muted",
+              "skipped"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "enum": [
+              "flaky"
+            ]
+          },
+          "sortBy": {
+            "type": "string",
+            "enum": [
+              "reliability",
+              "duration_avg"
+            ]
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "description": "default: \"asc\" for sortBy=reliability, \"desc\" for sortBy=duration_avg"
+          },
+          "page": {
+            "type": "number",
+            "description": "1-based (default 1); page size is fixed at 30"
+          }
+        }
+      }
+    },
+    "responses": {}
+  }
+}

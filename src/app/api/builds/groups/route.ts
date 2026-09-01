@@ -17,10 +17,21 @@ type GroupSummary = Omit<GroupStatus, "jobs"> & {
   failedJobs: Array<{ name: string; web_url: string }>;
 };
 
+export type BuildsGroupsQuery = {
+  buildIds?: string; // comma-separated build UUIDs (max 50)
+};
+
 function escapeSql(value: string): string {
   return value.replace(/'/g, "''");
 }
 
+/**
+ * Per-build test group summaries
+ * @description jobsByBuild encodes jobs as [jobNames index, state] pairs; jobNames is the shared dictionary. Empty buildIds returns an empty payload, not a 400.
+ * @params BuildsGroupsQuery
+ * @tag Builds
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const buildIds = [

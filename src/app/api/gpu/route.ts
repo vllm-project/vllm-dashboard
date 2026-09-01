@@ -4,9 +4,18 @@ import {
   queryGpuHistory,
   queryGpuLatest,
 } from "@/lib/gpu-data";
+export type GpuQuery = {
+  hours?: number; // Clamped to 1-720, non-numeric falls back to 24 (default 24)
+  hostname?: string;
+};
 
-// Backward-compatible combined endpoint. The dashboard uses the split history
-// and latest endpoints so current state never waits on a historical query.
+/**
+ * Get GPU metrics (legacy combined endpoint)
+ * @description History plus latest per-GPU readings in one response; kept for backward compatibility, superseded by `/api/gpu/history` and `/api/gpu/latest`.
+ * @params GpuQuery
+ * @tag GPU
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   const hours = parseGpuHours(request.nextUrl.searchParams.get("hours"));
   const hostname = request.nextUrl.searchParams.get("hostname") ?? "";

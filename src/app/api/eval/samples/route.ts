@@ -16,6 +16,14 @@ export interface EvalSample {
   metrics: string[];
 }
 
+export type EvalSamplesQuery = {
+  build_id: string; // Required; 400 when missing
+  task?: string;
+  workload?: string;
+  correct?: "true" | "false"; // Omit to return all samples
+  limit?: number; // Clamped to 1-5000 (default 200)
+};
+
 interface FlatRow {
   task: string;
   doc_id: string | number | null;
@@ -69,6 +77,12 @@ function buildBaseCte(conds: string[]): string {
   `;
 }
 
+/**
+ * Per-sample eval results
+ * @params EvalSamplesQuery
+ * @tag Eval
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const sp = request.nextUrl.searchParams;

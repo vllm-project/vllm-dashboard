@@ -12,6 +12,12 @@ export const dynamic = "force-dynamic";
 // cap bounds the response rather than trimming a feed anyone reads to the end.
 const MAX_COMPARISONS = 30;
 
+/**
+ * Recent analyzed Full CI comparisons.
+ * @description Up to 30 analyzed comparisons of consecutive scheduled Full CI runs, newest first.
+ * @tag Alerts
+ * @openapi
+ */
 export async function GET() {
   try {
     const db = getDb();

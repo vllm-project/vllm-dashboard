@@ -10,6 +10,12 @@ export const dynamic = "force-dynamic";
 
 const MAX_ALERTS = 500;
 
+/**
+ * Main-branch CI job alerts.
+ * @description Open alerts plus alerts resolved in the last 30 days, max 500. Responds with schemaStatus "pending" and empty alerts when the alerting tables are not migrated yet.
+ * @tag Alerts
+ * @openapi
+ */
 export async function GET() {
   try {
     const db = getDb();

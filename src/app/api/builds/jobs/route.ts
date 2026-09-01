@@ -10,10 +10,22 @@ const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
 const MAX_BUILD_IDS = 50;
 const MAX_GROUPS = 20;
 
+export type BuildJobsQuery = {
+  buildIds?: string; // comma-separated build UUIDs (max 50)
+  groups?: string; // comma-separated group names (max 20)
+};
+
 function escapeSql(value: string): string {
   return value.replace(/'/g, "''");
 }
 
+/**
+ * Expanded job lists per build and group
+ * @description Missing buildIds or groups returns an empty payload, not a 400.
+ * @params BuildJobsQuery
+ * @tag Builds
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;

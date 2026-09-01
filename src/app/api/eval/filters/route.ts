@@ -33,6 +33,18 @@ function parseDateParam(s: string | null): number | null {
 const TTL = 300_000;
 const CDN_CACHE = { maxAge: 600, staleWhileRevalidate: 86_400 };
 
+export type EvalFiltersQuery = {
+  start?: string; // Any Date.parse-able date (e.g. YYYY-MM-DD); invalid values are ignored
+  end?: string; // Any Date.parse-able date; a bare YYYY-MM-DD is bumped to end-of-day so the day is inclusive
+};
+
+/**
+ * Available eval filter values
+ * @description Distinct models, tasks, images, metric filters, and metric names in the given date range.
+ * @params EvalFiltersQuery
+ * @tag Eval
+ * @openapi
+ */
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);

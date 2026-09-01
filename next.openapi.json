@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "vLLM CI Dashboard API",
+    "version": "1.0.0",
+    "description": "Public read-only API backing https://ci.vllm.ai. All documented GET endpoints are unauthenticated and return JSON; errors use `{ \"error\": string }`. Responses are cached via `Vercel-CDN-Cache-Control`; treat data as eventually consistent (30s-10min staleness)."
+  },
+  "servers": [
+    {
+      "url": "https://ci.vllm.ai",
+      "description": "Production"
+    }
+  ],
+  "apiDir": "src/app/api",
+  "routerType": "app",
+  "schemaDir": ["src/app/api", "src/lib"],
+  "schemaType": "typescript",
+  "outputFile": "openapi.json",
+  "outputDir": "./public",
+  "includeOpenApiRoutes": true,
+  "ignoreRoutes": [],
+  "debug": false
+}

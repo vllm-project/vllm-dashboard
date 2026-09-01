@@ -9,6 +9,16 @@ const PAGE_SIZE = 50;
 const TTL = 30_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
 
+export type BuildsQuery = {
+  pipeline?: string;
+  branch?: string;
+  startDate?: string;
+  endDate?: string; // Inclusive
+  page?: number; // 0-based, 50 builds per page
+  jobGroups?: string; // Comma-separated test-area groups
+  jobNames?: string; // Comma-separated exact job names
+};
+
 function parseBuildkiteBuildUrl(value: unknown) {
   if (typeof value !== "string") return null;
   try {
@@ -60,6 +70,13 @@ function buildJobFilterSubquery(jobGroups: string[], jobNames: string[]): string
   )`;
 }
 
+/**
+ * List CI builds
+ * @description Paginated Buildkite builds with pass/fail summary and duration history. Group and job details are served by `/api/builds/groups` and `/api/builds/jobs`.
+ * @params BuildsQuery
+ * @tag Builds
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;

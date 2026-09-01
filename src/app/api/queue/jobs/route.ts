@@ -3,6 +3,10 @@ import { getQueueJobs, isBuildkiteQueueError } from "@/lib/buildkite-queue-jobs"
 
 export const dynamic = "force-dynamic";
 
+export type QueueJobsQuery = {
+  queue?: string; // Empty or invalid queue returns a 400 error
+};
+
 function responseError(error: unknown) {
   if (isBuildkiteQueueError(error)) {
     const headers: Record<string, string> = { "Cache-Control": "no-store" };
@@ -22,6 +26,13 @@ function responseError(error: unknown) {
   );
 }
 
+/**
+ * Live jobs currently waiting in a queue
+ * @description Fetched live from the Buildkite GraphQL API (no caching). Errors surface Buildkite status codes, e.g. 400 INVALID_QUEUE, 503 BUILDKITE_NOT_CONFIGURED, 429 with Retry-After when rate-limited.
+ * @params QueueJobsQuery
+ * @tag Queue
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   const queue = request.nextUrl.searchParams.get("queue") ?? "";
 

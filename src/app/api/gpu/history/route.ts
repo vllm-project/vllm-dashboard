@@ -1,6 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseGpuHours, queryGpuHistory } from "@/lib/gpu-data";
 
+export type GpuHistoryQuery = {
+  hours?: number; // Clamped to 1-720, non-numeric falls back to 24 (default 24)
+  hostname?: string;
+};
+
+/**
+ * Get GPU utilization history
+ * @description Time-bucketed aggregates read from raw snapshots for windows up to 6 hours, from the 5-minute rollup for longer windows.
+ * @params GpuHistoryQuery
+ * @tag GPU
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   const hours = parseGpuHours(request.nextUrl.searchParams.get("hours"));
   const hostname = request.nextUrl.searchParams.get("hostname") ?? "";

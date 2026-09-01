@@ -10,10 +10,22 @@ import {
 const TTL = 300_000;
 const CDN_CACHE = { maxAge: 600, staleWhileRevalidate: 86_400 };
 
+export type PerfFiltersQuery = {
+  start?: string; // ISO date (YYYY-MM-DD); omitted or invalid falls back to 2026-06-14
+  end?: string; // ISO date (YYYY-MM-DD); ignored if not a valid date
+};
+
 function isIsoDate(s: string): boolean {
   return /^\d{4}-\d{2}-\d{2}/.test(s);
 }
 
+/**
+ * Available perf filter values
+ * @description Distinct models (with per-model datapoint counts), devices, tps, concs, precisions, and images in the given date range. Note: tps/concs are returned as strings even though `/api/perf` accepts them as integers.
+ * @params PerfFiltersQuery
+ * @tag Perf
+ * @openapi
+ */
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
