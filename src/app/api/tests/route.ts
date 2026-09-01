@@ -18,6 +18,15 @@ const LABELS = new Set(["flaky"]);
 const SORTS = new Set(["reliability", "duration_avg"]);
 const ORDERS = new Set(["asc", "desc"]);
 
+export type TestsQuery = {
+  period?: "1hour" | "4hours" | "1day" | "7days" | "14days" | "28days"; // default "1day"
+  state?: "enabled" | "muted" | "skipped";
+  label?: "flaky";
+  sortBy?: "reliability" | "duration_avg";
+  order?: "asc" | "desc"; // default: "asc" for sortBy=reliability, "desc" for sortBy=duration_avg
+  page?: number; // 1-based (default 1); page size is fixed at 30
+};
+
 function positiveInteger(value: string | null, fallback: number): number {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -27,6 +36,13 @@ function hasNextPage(linkHeader: string | null): boolean {
   return linkHeader?.split(",").some((link) => /rel="next"/.test(link)) ?? false;
 }
 
+/**
+ * List Buildkite Test Engine tests
+ * @description Proxies the Buildkite Test Engine analytics API. Returns 503 with code BUILDKITE_NOT_CONFIGURED when BUILDKITE_API_TOKEN is not set.
+ * @params TestsQuery
+ * @tag Tests
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   const token = process.env.BUILDKITE_API_TOKEN;
   if (!token) {

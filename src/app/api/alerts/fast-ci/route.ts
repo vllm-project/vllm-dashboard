@@ -50,6 +50,12 @@ function toEvent(row: FastFailureEventRow): FastFailureEvent {
   };
 }
 
+/**
+ * Recent Fast CI failure events.
+ * @description Fast Failure Events from the last 7 days, newest first, max 500.
+ * @tag Alerts
+ * @openapi
+ */
 export async function GET() {
   try {
     const db = getDb();

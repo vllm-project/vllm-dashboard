@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { queryGpuLatest } from "@/lib/gpu-data";
 
+/**
+ * Get latest GPU readings
+ * @tag GPU
+ * @openapi
+ */
 export async function GET() {
   try {
     const latest = await queryGpuLatest();

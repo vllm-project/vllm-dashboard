@@ -12,6 +12,18 @@ const MAX_HISTORY_HOURS = 90 * 24;
 // before the poller has run the additive p99 schema migration.
 const P99_WAIT_EXPRESSION = `(to_jsonb(queue_snapshots) ->> 'p99_wait_secs')::real`;
 
+export type MetricsQuery = {
+  hours?: number; // History window in hours (default 24, capped at 2160); bucket width adapts to the span
+  queue?: string;
+};
+
+/**
+ * Queue agent and job metrics over time
+ * @description Bucket width adapts to the requested span: raw rows up to 6h, then 15-minute, 1-hour, or 6-hour buckets.
+ * @params MetricsQuery
+ * @tag Metrics
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const db = getDb();

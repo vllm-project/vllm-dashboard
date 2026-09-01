@@ -13,6 +13,23 @@ import { cachedJson } from "@/lib/api-response";
 
 const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
 
+export type CompareQuery = {
+  baseline: string; // Baseline image ref (required, 400 if missing)
+  candidate: string; // Candidate image ref (required, 400 if missing)
+  model?: string;
+  device?: string;
+  task?: string;
+  perf_threshold?: number; // Regression/improvement threshold (default 0.02)
+  eval_sigma?: number; // Sigma below which eval deltas count as "noisy" (default 2)
+};
+
+/**
+ * Compare two vLLM Docker images
+ * @description Returns perf and eval deltas between a baseline and candidate image.
+ * @params CompareQuery
+ * @tag Compare
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const sp = request.nextUrl.searchParams;

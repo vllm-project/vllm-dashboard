@@ -9,7 +9,8 @@
     "test": "tsx --test src/**/*.test.ts",
     "lint": "eslint",
     "migrate": "uv run --project migrations vllm-dashboard-migrate",
-    "configure:buildkite-otel": "node scripts/configure-buildkite-otel.mjs"
+    "configure:buildkite-otel": "node scripts/configure-buildkite-otel.mjs",
+    "docs:generate": "next-openapi-gen generate"
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",
@@ -33,6 +34,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.7",
+    "next-openapi-gen": "^0.10.5",
     "tailwindcss": "^4",
     "tsx": "^4.23.12",
     "typescript": "^5"

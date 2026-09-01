@@ -6,6 +6,18 @@ import { cachedJson } from "@/lib/api-response";
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
 
+export type EvalQuery = {
+  model?: string;
+  task?: string;
+  image?: string;
+};
+
+/**
+ * Eval result rows
+ * @params EvalQuery
+ * @tag Eval
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const sp = request.nextUrl.searchParams;

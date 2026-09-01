@@ -8,6 +8,19 @@ export const maxDuration = 55;
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 120, staleWhileRevalidate: 3_600 };
 
+export type CostQuery = {
+  pipeline?: string;
+  branch?: string;
+  startDate?: string;
+  endDate?: string;
+};
+
+/**
+ * CI compute cost breakdown
+ * @params CostQuery
+ * @tag Cost
+ * @openapi
+ */
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
