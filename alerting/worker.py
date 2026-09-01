@@ -116,8 +116,17 @@ def _runtime(
                 "KIMI_BASE_URL", "https://api2.inferact.dev/v1"
             ),
             kimi_model=os.environ.get("KIMI_MODEL", "moonshotai/Kimi-K3"),
-            kimi_timeout_seconds=int(os.environ.get("KIMI_TIMEOUT_SECONDS", "600")),
-            kimi_reasoning_effort=os.environ.get("KIMI_REASONING_EFFORT", "low"),
+            # Main CI analysis is intentionally independent of the shared
+            # KIMI_REASONING_EFFORT / KIMI_TIMEOUT_SECONDS so it can run
+            # hotter (max reasoning, longer budget) than the Full CI analyzer.
+            # The 10-minute timer cadence and 30-minute execution lease still
+            # fence the larger timeout.
+            kimi_timeout_seconds=int(
+                os.environ.get("KIMI_MAIN_CI_TIMEOUT_SECONDS", "1200")
+            ),
+            kimi_reasoning_effort=os.environ.get(
+                "KIMI_MAIN_CI_REASONING_EFFORT", "max"
+            ),
             slack=_slack(),
             clock=clock,
         )

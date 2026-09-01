@@ -29,6 +29,17 @@ The Full CI analyzer calls the Kimi API using `KIMI_API_KEY` from
 `WorkerSecretArn`, with a bundled read-only analyzer definition and the stack
 checkpoint bucket. It does not receive a GitHub write credential.
 
+Two stack parameters tune the Kimi analyzers and are written to
+`/etc/alerting/worker.env` by `install.sh`:
+
+- `KimiReasoningEffort` (default `high`) sets `KIMI_REASONING_EFFORT`, the
+  shared effort used by the Full CI analyzer.
+- `KimiMainCIReasoningEffort` (default `max`) sets
+  `KIMI_MAIN_CI_REASONING_EFFORT`, used only by the Main CI failure analyzer.
+  It is intentionally independent — Main CI does not fall back to
+  `KIMI_REASONING_EFFORT` — so it can run hotter than Full CI, together with
+  its longer default timeout (`KIMI_MAIN_CI_TIMEOUT_SECONDS`, 1200s).
+
 ## Deploy
 
 ```bash
@@ -45,6 +56,13 @@ aws cloudformation deploy \
 
 `RepositoryRef` defaults to `main`; set it to the reviewed deployment branch
 when validating before merge.
+
+**Gotcha:** a stack update that only changes UserData (including parameter
+changes such as `KimiMainCIReasoningEffort`) makes CloudFormation stop/start
+the instance **without** re-running provisioning — cloud-init runs UserData
+only once per instance, so `/etc/alerting/worker.env` is not rewritten. Any
+parameter or environment change requires a real instance replacement (see
+[disaster-recovery.md](disaster-recovery.md)).
 
 ## Shadow, cutover, and rollback
 

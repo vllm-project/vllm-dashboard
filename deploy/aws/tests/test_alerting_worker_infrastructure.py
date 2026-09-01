@@ -163,6 +163,17 @@ def test_installation_creates_a_non_login_user_and_s3_controlled_timers() -> Non
     assert "systemctl enable --now alerting-main-ci.timer" not in installer
 
 
+def test_main_ci_kimi_effort_is_an_independent_deploy_knob() -> None:
+    template = read("alerting-worker.yaml")
+    installer = read("install.sh")
+
+    assert "KimiMainCIReasoningEffort:" in template
+    assert "KimiMainCIEffort:" in template
+    assert "Ref: KimiMainCIReasoningEffort" in template
+    assert "KIMI_MAIN_CI_REASONING_EFFORT" in installer
+    assert installer.count("KIMI_MAIN_CI_REASONING_EFFORT") == 2
+
+
 def test_s3_control_reconciles_each_path_without_cloudwatch_or_sqs() -> None:
     service = read("systemd/alerting-control.service")
     timer = read("systemd/alerting-control.timer")

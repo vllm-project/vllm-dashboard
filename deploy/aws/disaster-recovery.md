@@ -17,6 +17,14 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_IAM
 ```
 
+Note: a stack update whose only effect is a UserData change (including
+parameter changes such as `KimiMainCIReasoningEffort`) merely stop/starts the
+instance. cloud-init runs UserData once per instance, so provisioning does
+**not** re-run and `/etc/alerting/worker.env` keeps its old values. To apply a
+parameter or environment change you must replace the instance — e.g. redeploy
+with an AMI/`InstanceType` change, or terminate the instance and redeploy so
+CloudFormation recreates it.
+
 The bucket, role, and secrets are reused (`DeletionPolicy: Retain`). After
 boot:
 

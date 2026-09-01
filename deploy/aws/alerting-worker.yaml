@@ -26,8 +26,18 @@ Parameters:
     Description: ARN of a JSON secret containing a read-only GITHUB_TOKEN
   KimiReasoningEffort:
     Type: String
-    Description: Thinking effort for the Kimi analyzer
+    Description: Thinking effort for the Full CI Kimi analyzer
     Default: high
+    AllowedValues:
+      - low
+      - high
+      - max
+  KimiMainCIReasoningEffort:
+    Type: String
+    Description: >-
+      Thinking effort for the Main CI failure analyzer; independent of
+      KimiReasoningEffort so Main CI can run hotter than Full CI
+    Default: max
     AllowedValues:
       - low
       - high
@@ -155,7 +165,7 @@ Resources:
               dnf install -y git python3.12 python3.12-pip
               install -d -m 0755 /opt/alerting
               git clone --depth 1 --branch '${RepositoryRef}' '${RepositoryUrl}' /opt/alerting/source
-              /opt/alerting/source/deploy/aws/install.sh '${BucketName}' '${WorkerSecret}' '${GitHubSecret}' '${KimiEffort}'
+              /opt/alerting/source/deploy/aws/install.sh '${BucketName}' '${WorkerSecret}' '${GitHubSecret}' '${KimiEffort}' '${KimiMainCIEffort}'
             - BucketName:
                 Ref: CheckpointBucket
               WorkerSecret:
@@ -164,6 +174,8 @@ Resources:
                 Ref: GitHubReadOnlySecretArn
               KimiEffort:
                 Ref: KimiReasoningEffort
+              KimiMainCIEffort:
+                Ref: KimiMainCIReasoningEffort
 
 Outputs:
   CheckpointBucketName:
