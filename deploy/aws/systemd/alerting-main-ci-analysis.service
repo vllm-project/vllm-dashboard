@@ -1,0 +1,22 @@
+[Unit]
+Description=Analyze failing Main CI job alerts with the Kimi runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=alerting
+Group=alerting
+ExecStart=/opt/alerting/bin/run-worker main-ci-analyze
+StandardOutput=null
+StandardError=null
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+TimeoutStartSec=infinity

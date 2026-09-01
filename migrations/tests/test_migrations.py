@@ -59,6 +59,7 @@ def test_expected_tables_are_created() -> None:
         "alerting_main_ci_scan_cursors",
         "alerting_main_ci_job_states",
         "alerting_main_ci_job_alerts",
+        "alerting_main_ci_job_analysis",
     }
 
     for table in expected_tables:
@@ -162,6 +163,21 @@ def test_main_ci_schema_preserves_one_open_episode_and_positive_pass_resolution(
         "alerting_main_ci_job_alerts",
     ):
         assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
+
+
+def test_main_ci_analysis_schema_is_a_cascading_sidecar_to_alert_lifecycle() -> None:
+    sql = (MIGRATIONS_DIR / "0016_main_ci_job_analysis.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS alerting_main_ci_job_analysis" in sql
+    assert "REFERENCES alerting_main_ci_job_alerts (alert_id) ON DELETE CASCADE" in sql
+    assert "'infra', 'flaky', 'code', 'test', 'unknown'" in sql
+    assert "'high', 'medium', 'low'" in sql
+    assert "analyzed_failure_job_id" in sql
+    assert "model_version" in sql
+    assert (
+        "ALTER TABLE public.alerting_main_ci_job_analysis ENABLE ROW LEVEL SECURITY"
+        in sql
+    )
 
 
 def test_dashboard_schema_keeps_legacy_additive_columns_and_covering_index() -> None:

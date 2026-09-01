@@ -2,8 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MainCIAlerts } from "./main-ci-alerts";
-import type { MainCiJobAlert } from "../lib/alerts-main-ci";
+import { MainCIAlerts, MainCiAlertRow } from "./main-ci-alerts";
+import type { MainCiJobAlert, MainCiJobAnalysis } from "../lib/alerts-main-ci";
+
+function analysis(overrides: Partial<MainCiJobAnalysis> = {}): MainCiJobAnalysis {
+  return {
+    analyzedFailureJobId: "job-2",
+    classification: "infra",
+    confidence: "high",
+    summary: "The runner lost its GPU agent before tests started.",
+    evidenceUrls: ["https://buildkite.com/vllm/ci/builds/101#job-2"],
+    recommendedAction: "Re-run the job on a fresh agent.",
+    suspectedFixPrs: [
+      {
+        number: 123,
+        url: "https://github.com/vllm-project/vllm/pull/123",
+        title: "Guard against agent loss",
+      },
+    ],
+    modelVersion: "moonshotai/Kimi-K3",
+    analyzedAt: "2026-08-29T09:05:00.000Z",
+    stale: false,
+    ...overrides,
+  };
+}
 
 function alert(overrides: Partial<MainCiJobAlert> = {}): MainCiJobAlert {
   return {
@@ -35,6 +57,7 @@ function alert(overrides: Partial<MainCiJobAlert> = {}): MainCiJobAlert {
     failureCount: 2,
     resolvedAt: null,
     resolution: null,
+    analysis: null,
     ...overrides,
   };
 }
@@ -44,16 +67,80 @@ test("empty lifecycle history renders an explicit empty state", () => {
   assert.match(markup, /No Main CI job alerts/);
 });
 
+test("status filter chips carry per-status counts and default to open", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MainCIAlerts, {
+      alerts: [
+        alert(),
+        alert({
+          alertId: "2",
+          status: "resolved",
+          resolvedAt: "2026-08-29T09:30:00.000Z",
+        }),
+      ],
+    }),
+  );
+
+  assert.match(markup, />Open 1</);
+  assert.match(markup, />Resolved 1</);
+  assert.match(markup, />All 2</);
+  // The default Open filter hides the resolved row.
+  assert.equal(markup.match(/GPU test/g)?.length, 1);
+});
+
 test("open alert renders first and latest exact failure evidence", () => {
   const markup = renderToStaticMarkup(
     createElement(MainCIAlerts, { alerts: [alert()] }),
   );
 
-  assert.match(markup, /Open/);
+  assert.match(markup, />Open</);
   assert.match(markup, /2 failed runs/);
   assert.match(markup, /First failure/);
   assert.match(markup, /Latest failure/);
+  assert.match(markup, /opened/);
   assert.match(markup, /https:\/\/buildkite\.com\/vllm\/ci\/builds\/101/);
+});
+
+test("analyzed alert renders classification and the analysis panel", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MainCIAlerts, { alerts: [alert({ analysis: analysis() })] }),
+  );
+
+  assert.match(markup, /infra/);
+  assert.match(markup, /· high/);
+  assert.match(markup, /The runner lost its GPU agent/);
+  assert.match(markup, /Re-run the job on a fresh agent/);
+  assert.match(markup, /PR #123 — Guard against agent loss/);
+  assert.match(markup, /moonshotai\/Kimi-K3/);
+  // Classification filters appear once analysis data exists.
+  assert.match(markup, />unanalyzed</);
+});
+
+test("stale analysis carries a visible warning", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MainCIAlerts, {
+      alerts: [
+        alert({
+          analysis: analysis({
+            analyzedFailureJobId: "job-1",
+            stale: true,
+          }),
+        }),
+      ],
+    }),
+  );
+
+  assert.match(markup, /Analysis stale — a newer failure was observed/);
+  assert.match(markup, /· stale/);
+});
+
+test("unanalyzed alert renders a subtle placeholder and no classification chips", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MainCIAlerts, { alerts: [alert()] }),
+  );
+
+  assert.match(markup, /No analysis yet\./);
+  assert.doesNotMatch(markup, />unanalyzed</);
 });
 
 test("resolved alert renders the exact pass that closed it", () => {
@@ -68,15 +155,14 @@ test("resolved alert renders the exact pass that closed it", () => {
     jobUrl: "https://example.test/job-3",
     commitSha: "cccccccccccccccccccccccccccccccccccccccc",
   };
+  // The list defaults to the Open filter, so render the row directly.
   const markup = renderToStaticMarkup(
-    createElement(MainCIAlerts, {
-      alerts: [
-        alert({
-          status: "resolved",
-          resolvedAt: passed.finishedAt,
-          resolution: passed,
-        }),
-      ],
+    createElement(MainCiAlertRow, {
+      alert: alert({
+        status: "resolved",
+        resolvedAt: passed.finishedAt,
+        resolution: passed,
+      }),
     }),
   );
 
@@ -84,4 +170,3 @@ test("resolved alert renders the exact pass that closed it", () => {
   assert.match(markup, /Passed again/);
   assert.match(markup, /https:\/\/buildkite\.com\/vllm\/ci\/builds\/102/);
 });
-

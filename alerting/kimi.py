@@ -1,13 +1,15 @@
 """Full CI analyzer runner backed by the Kimi K3 chat-completions API.
 
-`KimiCodeRunner` replaces the Claude Code CLI invocation: it runs the bundled
-analyzer instructions (`assets/vllm-ci-failure-analyzer.md`, frontmatter
-stripped) as the system message and drives an OpenAI-compatible tool-calling
-loop. File tools are sandboxed to the materialized working directory and the
-shell tool only executes `curl`, so credentials stay in the server-side
-environment. Tool failures are returned to the model as tool messages so it
-can recover; only transport failures, turn exhaustion, or the overall time
-budget raise `AnalyzerError`, which leaves the previous baseline authoritative.
+`KimiCodeRunner` replaces the Claude Code CLI invocation: it runs bundled
+analyzer instructions (by default `assets/vllm-ci-failure-analyzer.md`,
+frontmatter stripped) as the system message and drives an OpenAI-compatible
+tool-calling loop. File tools are sandboxed to the materialized working
+directory and the shell tool only executes `curl`, so credentials stay in the
+server-side environment. Tool failures are returned to the model as tool
+messages so it can recover; only transport failures, turn exhaustion, or the
+overall time budget raise `AnalyzerError`, which leaves the previous baseline
+authoritative. Slices other than Full CI pass their own instructions and task
+prompt to `run`.
 """
 
 from __future__ import annotations
@@ -36,6 +38,8 @@ KIMI_ANALYZER_PROMPT = (
     "their values in prompts, files, or output. REVERT_THRESHOLD is "
     "available in the environment (default 1)."
 )
+
+DEFAULT_INSTRUCTIONS_ASSET = "assets/vllm-ci-failure-analyzer.md"
 
 READ_CHAR_LIMIT = 40_000
 GLOB_RESULT_LIMIT = 200
@@ -228,13 +232,27 @@ class KimiCodeRunner:
         self._transport = transport or UrllibTransport()
         self._clock = clock or time.monotonic
 
-    def run(self, working_dir: Path) -> None:
+    def run(
+        self,
+        working_dir: Path,
+        *,
+        instructions: str | None = None,
+        prompt: str | None = None,
+    ) -> None:
+        """Run `prompt` under `instructions` in `working_dir`.
+
+        Both default to the bundled Full CI analyzer instructions and task
+        prompt so existing callers keep their behavior; other slices supply
+        their own bundled instructions and per-task prompt.
+        """
         workdir = working_dir.resolve()
         deadline = self._clock() + self._timeout_seconds
         self._loop(
             workdir,
-            _load_system_prompt(),
-            KIMI_ANALYZER_PROMPT,
+            instructions
+            if instructions is not None
+            else load_instructions(DEFAULT_INSTRUCTIONS_ASSET),
+            prompt if prompt is not None else KIMI_ANALYZER_PROMPT,
             deadline,
             allow_task=True,
         )
@@ -369,11 +387,10 @@ class KimiCodeRunner:
             return f"error: {exc}"
 
 
-def _load_system_prompt() -> str:
-    text = (
-        importlib.resources.files("alerting")
-        .joinpath("assets/vllm-ci-failure-analyzer.md")
-        .read_text(encoding="utf-8")
+def load_instructions(asset: str) -> str:
+    """Bundled analyzer instructions with the frontmatter block stripped."""
+    text = importlib.resources.files("alerting").joinpath(asset).read_text(
+        encoding="utf-8"
     )
     if text.startswith("---\n"):
         end = text.find("\n---", 4)

@@ -134,10 +134,13 @@ enabling the new path, and preserves Postgres and S3 baselines on rollback.
 - `FastCIScanHandler` registers as `fast_ci_scan`,
   `FullCIReconciliationHandler` registers as `full_ci_reconcile`, and
   `FullCIAnalysisHandler` registers as `full_ci_analyze`, while
-  `MainCIReconciliationHandler` registers as `main_ci_reconcile`. Workers
-  expose them as the `fast-ci`, `full-ci`, `full-ci-analyze`, and `main-ci`
-  consumers so the
-  long-running LLM analysis never blocks ingest.
+  `MainCIReconciliationHandler` registers as `main_ci_reconcile` and
+  `MainCIAnalysisHandler` registers as `main_ci_analyze`. Workers expose them
+  as the `fast-ci`, `full-ci`, `full-ci-analyze`, `main-ci`, and
+  `main-ci-analyze` consumers so the
+  long-running LLM analysis never blocks ingest. The Main CI analysis consumer
+  writes only the `alerting_main_ci_job_analysis` sidecar table; the
+  deterministic alert lifecycle stays owned by `main_ci_reconcile`.
 - The Postgres adapters must mark an execution complete in the same
   transaction that commits the handler's durable effects, and lease outbox
   rows with `FOR UPDATE SKIP LOCKED`. Connect with prepared statements
@@ -154,6 +157,6 @@ enabling the new path, and preserves Postgres and S3 baselines on rollback.
 cd alerting
 uv sync --extra dev
 uv run pytest
-uv run mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py kimi.py main_ci.py memory.py migration.py ports.py postgres.py retention.py runtime.py slack.py worker.py tests
+uv run mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py kimi.py main_ci.py main_ci_analysis.py memory.py migration.py ports.py postgres.py retention.py runtime.py slack.py worker.py tests
 uv run ruff check .
 ```

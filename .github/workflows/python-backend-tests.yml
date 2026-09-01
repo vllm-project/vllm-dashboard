@@ -47,7 +47,7 @@ jobs:
 
       - name: Type check
         working-directory: alerting
-        run: python -m mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py memory.py migration.py ports.py postgres.py runtime.py slack.py worker.py tests
+        run: python -m mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py kimi.py main_ci.py main_ci_analysis.py memory.py migration.py ports.py postgres.py retention.py runtime.py slack.py worker.py tests
 
       - name: Type check migrations
         working-directory: migrations

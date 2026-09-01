@@ -38,7 +38,36 @@ function alertRow(
     resolution_build_url: null,
     resolution_job_url: null,
     resolution_commit_sha: null,
+    analysis_analyzed_failure_job_id: null,
+    analysis_classification: null,
+    analysis_confidence: null,
+    analysis_summary: null,
+    analysis_evidence_urls: null,
+    analysis_recommended_action: null,
+    analysis_suspected_fix_prs: null,
+    analysis_model_version: null,
+    analysis_analyzed_at: null,
     ...overrides,
+  };
+}
+
+function analyzedRow(): Partial<MainCiJobAlertRow> {
+  return {
+    analysis_analyzed_failure_job_id: "job-2",
+    analysis_classification: "flaky",
+    analysis_confidence: "medium",
+    analysis_summary: "Test passes on retry with no code change.",
+    analysis_evidence_urls: ["https://buildkite.com/vllm/ci/builds/101#job-2"],
+    analysis_recommended_action: "Quarantine and re-run the test.",
+    analysis_suspected_fix_prs: [
+      {
+        url: "https://github.com/vllm-project/vllm/pull/77",
+        number: 77,
+        title: "Deflake GPU test",
+      },
+    ],
+    analysis_model_version: "moonshotai/Kimi-K3",
+    analysis_analyzed_at: new Date("2026-08-29T09:05:00.000Z"),
   };
 }
 
@@ -51,6 +80,40 @@ test("row mapping exposes only the alert episode and exact Buildkite evidence", 
   assert.equal(alert.firstFailure.buildNumber, 100);
   assert.equal(alert.lastFailure.buildNumber, 101);
   assert.equal(alert.resolution, null);
+  assert.equal(alert.analysis, null);
+});
+
+test("analysis columns map to a nested object with a computed stale flag", () => {
+  const alert = toMainCiJobAlert(alertRow(analyzedRow()));
+
+  assert.equal(alert.analysis?.classification, "flaky");
+  assert.equal(alert.analysis?.confidence, "medium");
+  assert.equal(alert.analysis?.summary, "Test passes on retry with no code change.");
+  assert.deepEqual(alert.analysis?.evidenceUrls, [
+    "https://buildkite.com/vllm/ci/builds/101#job-2",
+  ]);
+  assert.deepEqual(alert.analysis?.suspectedFixPrs, [
+    {
+      url: "https://github.com/vllm-project/vllm/pull/77",
+      number: 77,
+      title: "Deflake GPU test",
+    },
+  ]);
+  assert.equal(alert.analysis?.modelVersion, "moonshotai/Kimi-K3");
+  assert.equal(alert.analysis?.analyzedAt, "2026-08-29T09:05:00.000Z");
+  // The analyzed job is the latest failure: not stale.
+  assert.equal(alert.analysis?.stale, false);
+});
+
+test("an analysis of an older failure is marked stale", () => {
+  const alert = toMainCiJobAlert(
+    alertRow({
+      ...analyzedRow(),
+      analysis_analyzed_failure_job_id: "job-1",
+    }),
+  );
+
+  assert.equal(alert.analysis?.stale, true);
 });
 
 test("a positive pass is represented as the resolution", () => {

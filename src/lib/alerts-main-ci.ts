@@ -2,6 +2,36 @@
 
 export type MainCiAlertStatus = "open" | "resolved";
 
+export type MainCiAnalysisClassification =
+  | "infra"
+  | "flaky"
+  | "code"
+  | "test"
+  | "unknown";
+
+export type MainCiAnalysisConfidence = "high" | "medium" | "low";
+
+export interface MainCiSuspectedFixPr {
+  number: number | null;
+  url: string;
+  title: string;
+}
+
+/** One worker-written diagnosis, keyed to the failure it was computed from. */
+export interface MainCiJobAnalysis {
+  analyzedFailureJobId: string;
+  classification: MainCiAnalysisClassification;
+  confidence: MainCiAnalysisConfidence;
+  summary: string;
+  evidenceUrls: string[];
+  recommendedAction: string;
+  suspectedFixPrs: MainCiSuspectedFixPr[];
+  modelVersion: string;
+  analyzedAt: string;
+  /** True when the alert's latest failure is newer than the analyzed one. */
+  stale: boolean;
+}
+
 export interface MainCiOutcomeRef {
   buildkiteJobId: string;
   state: string;
@@ -24,6 +54,7 @@ export interface MainCiJobAlert {
   failureCount: number;
   resolvedAt: string | null;
   resolution: MainCiOutcomeRef | null;
+  analysis: MainCiJobAnalysis | null;
 }
 
 export interface MainCiJobAlertRow {
@@ -55,6 +86,15 @@ export interface MainCiJobAlertRow {
   resolution_build_url: string | null;
   resolution_job_url: string | null;
   resolution_commit_sha: string | null;
+  analysis_analyzed_failure_job_id: string | null;
+  analysis_classification: MainCiAnalysisClassification | null;
+  analysis_confidence: MainCiAnalysisConfidence | null;
+  analysis_summary: string | null;
+  analysis_evidence_urls: unknown;
+  analysis_recommended_action: string | null;
+  analysis_suspected_fix_prs: unknown;
+  analysis_model_version: string | null;
+  analysis_analyzed_at: Date | null;
 }
 
 function outcome(
@@ -76,6 +116,50 @@ function outcome(
     buildUrl,
     jobUrl,
     commitSha,
+  };
+}
+
+function toMainCiJobAnalysis(row: MainCiJobAlertRow): MainCiJobAnalysis | null {
+  if (
+    row.analysis_analyzed_failure_job_id === null ||
+    row.analysis_classification === null ||
+    row.analysis_confidence === null ||
+    row.analysis_summary === null ||
+    row.analysis_recommended_action === null ||
+    row.analysis_model_version === null ||
+    row.analysis_analyzed_at === null
+  ) {
+    return null;
+  }
+  const evidenceUrls = Array.isArray(row.analysis_evidence_urls)
+    ? row.analysis_evidence_urls.filter(
+        (url): url is string => typeof url === "string",
+      )
+    : [];
+  const suspectedFixPrs = Array.isArray(row.analysis_suspected_fix_prs)
+    ? row.analysis_suspected_fix_prs
+        .filter(
+          (entry): entry is { url?: unknown; number?: unknown; title?: unknown } =>
+            typeof entry === "object" && entry !== null,
+        )
+        .filter((entry) => typeof entry.url === "string")
+        .map((entry) => ({
+          url: entry.url as string,
+          number: typeof entry.number === "number" ? entry.number : null,
+          title: typeof entry.title === "string" ? entry.title : "",
+        }))
+    : [];
+  return {
+    analyzedFailureJobId: row.analysis_analyzed_failure_job_id,
+    classification: row.analysis_classification,
+    confidence: row.analysis_confidence,
+    summary: row.analysis_summary,
+    evidenceUrls,
+    recommendedAction: row.analysis_recommended_action,
+    suspectedFixPrs,
+    modelVersion: row.analysis_model_version,
+    analyzedAt: row.analysis_analyzed_at.toISOString(),
+    stale: row.analysis_analyzed_failure_job_id !== row.last_failure_job_id,
   };
 }
 
@@ -128,6 +212,7 @@ export function toMainCiJobAlert(row: MainCiJobAlertRow): MainCiJobAlert {
     failureCount: Number(row.failure_count),
     resolvedAt: row.resolved_at?.toISOString() ?? null,
     resolution,
+    analysis: toMainCiJobAnalysis(row),
   };
 }
 

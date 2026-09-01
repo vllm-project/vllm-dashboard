@@ -34,9 +34,14 @@ class UnitControl(Protocol):
 
 
 _UNITS = {
-    AlertPath.FAST_CI: ("alerting-fast-ci.timer", "alerting-fast-ci.service"),
-    AlertPath.FULL_CI: ("alerting-full-ci.timer", "alerting-full-ci.service"),
-    AlertPath.MAIN_CI: ("alerting-main-ci.timer", "alerting-main-ci.service"),
+    AlertPath.FAST_CI: (("alerting-fast-ci.timer", "alerting-fast-ci.service"),),
+    AlertPath.FULL_CI: (("alerting-full-ci.timer", "alerting-full-ci.service"),),
+    # The analysis sidecar follows the Main CI control: disabling the path
+    # stops both its lifecycle reconciliation and its AI analysis.
+    AlertPath.MAIN_CI: (
+        ("alerting-main-ci.timer", "alerting-main-ci.service"),
+        ("alerting-main-ci-analysis.timer", "alerting-main-ci-analysis.service"),
+    ),
 }
 _MODE_FILES = {
     AlertPath.FAST_CI: "fast-ci.mode",
@@ -65,16 +70,16 @@ def reconcile_controls(
             mode = ControlMode.SHADOW
             controls.write(alert_path, mode)
 
-        timer, service = _UNITS[alert_path]
         delivery_mode = (
             DeliveryMode.LIVE if mode is ControlMode.LIVE else DeliveryMode.SHADOW
         )
         _write_mode(mode_dir / _MODE_FILES[alert_path], delivery_mode)
-        if mode is ControlMode.DISABLED:
-            units.disable(timer)
-            units.stop(service)
-        else:
-            units.enable(timer)
+        for timer, service in _UNITS[alert_path]:
+            if mode is ControlMode.DISABLED:
+                units.disable(timer)
+                units.stop(service)
+            else:
+                units.enable(timer)
 
 
 class S3AlertControl:

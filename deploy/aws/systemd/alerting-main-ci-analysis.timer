@@ -1,0 +1,13 @@
+[Unit]
+Description=Schedule Main CI job alert analysis every ten minutes
+
+[Timer]
+OnBootSec=3min
+OnCalendar=*-*-* *:00/10:00 UTC
+Persistent=true
+AccuracySec=30s
+RandomizedDelaySec=0
+Unit=alerting-main-ci-analysis.service
+
+[Install]
+WantedBy=timers.target

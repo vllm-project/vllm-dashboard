@@ -34,6 +34,11 @@ from alerting.full_ci import (
     ordered_unique_runs,
 )
 from alerting.main_ci import MainCIJobObservation, ordered_unique_observations
+from alerting.main_ci_analysis import (
+    MainCIAnalysisRunner,
+    MainCIAnalysisTarget,
+    MainCIJobAnalysis,
+)
 from alerting.ports import (
     AlertPath,
     ClaimOutcome,
@@ -1024,6 +1029,99 @@ class PostgresAlertStore:
                 if completed.rowcount != 1:
                     raise RuntimeError("Main CI execution was not running at commit")
 
+    def pending_main_ci_analyses(self, *, limit: int) -> list[MainCIAnalysisTarget]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT a.alert_id, a.job_key, a.job_name, a.opened_at,
+                       a.last_failed_at, a.failure_count, a.last_failure_job_id,
+                       a.last_failure_build_number, a.last_failure_build_url,
+                       a.last_failure_job_url, a.last_failure_commit_sha
+                FROM alerting_main_ci_job_alerts AS a
+                LEFT JOIN alerting_main_ci_job_analysis AS an
+                    ON an.alert_id = a.alert_id
+                WHERE a.status = 'open'
+                  AND (an.alert_id IS NULL
+                       OR an.analyzed_failure_job_id <> a.last_failure_job_id)
+                ORDER BY a.last_failed_at DESC, a.alert_id DESC
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            MainCIAnalysisTarget(
+                alert_id=int(row[0]),
+                job_key=row[1],
+                job_name=row[2],
+                opened_at=row[3],
+                last_failed_at=row[4],
+                failure_count=int(row[5]),
+                failure_job_id=row[6],
+                failure_build_number=int(row[7]),
+                failure_build_url=row[8],
+                failure_job_url=row[9],
+                failure_commit_sha=row[10],
+            )
+            for row in rows
+        ]
+
+    def commit_main_ci_analysis(
+        self, *, analysis: MainCIJobAnalysis, now: datetime
+    ) -> None:
+        with self._connection_factory() as connection:
+            with connection.transaction():
+                current = connection.execute(
+                    """
+                    SELECT last_failure_job_id
+                    FROM alerting_main_ci_job_alerts
+                    WHERE alert_id = %s
+                    FOR UPDATE
+                    """,
+                    (analysis.alert_id,),
+                ).fetchone()
+                # The reconcile slice may have observed a newer failure while
+                # this analysis ran; a diagnosis of an old job must not win.
+                if current is None or current[0] != analysis.analyzed_failure_job_id:
+                    return
+                connection.execute(
+                    """
+                    INSERT INTO alerting_main_ci_job_analysis (
+                        alert_id, analyzed_failure_job_id, classification,
+                        confidence, summary, evidence_urls, recommended_action,
+                        suspected_fix_prs, model_version, analyzed_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s)
+                    ON CONFLICT (alert_id) DO UPDATE
+                    SET analyzed_failure_job_id = EXCLUDED.analyzed_failure_job_id,
+                        classification = EXCLUDED.classification,
+                        confidence = EXCLUDED.confidence,
+                        summary = EXCLUDED.summary,
+                        evidence_urls = EXCLUDED.evidence_urls,
+                        recommended_action = EXCLUDED.recommended_action,
+                        suspected_fix_prs = EXCLUDED.suspected_fix_prs,
+                        model_version = EXCLUDED.model_version,
+                        analyzed_at = EXCLUDED.analyzed_at,
+                        updated_at = EXCLUDED.updated_at
+                    """,
+                    (
+                        analysis.alert_id,
+                        analysis.analyzed_failure_job_id,
+                        analysis.classification,
+                        analysis.confidence,
+                        analysis.summary,
+                        json.dumps(list(analysis.evidence_urls)),
+                        analysis.recommended_action,
+                        json.dumps(
+                            [
+                                {"url": pr.url, "number": pr.number, "title": pr.title}
+                                for pr in analysis.suspected_fix_prs
+                            ]
+                        ),
+                        analysis.model_version,
+                        now,
+                        now,
+                    ),
+                )
+
     def commit_reconciliation(
         self,
         *,
@@ -1483,6 +1581,59 @@ def build_main_ci_runtime(
         slack=slack,
         clock=clock,
         handlers={"main_ci_reconcile": handler},
+        alert_path=AlertPath.MAIN_CI,
+    )
+
+
+def build_main_ci_analysis_runtime(
+    *,
+    database_url: str,
+    buildkite_token: str,
+    github_token: str,
+    kimi_api_key: str,
+    slack: SlackPort,
+    clock: Clock,
+    runner: MainCIAnalysisRunner | None = None,
+    kimi_base_url: str = "https://api2.inferact.dev/v1",
+    kimi_model: str = "moonshotai/Kimi-K3",
+    kimi_timeout_seconds: int = 600,
+    kimi_reasoning_effort: str = "low",
+) -> AlertingRuntime:
+    """Wire the Main CI analysis sidecar into the runtime.
+
+    The sidecar never enqueues notifications and never writes alert state;
+    it only reads open alerts and upserts rows in the analysis table.
+    """
+    from alerting.analyzer import GitHubRestClient
+    from alerting.kimi import KimiCodeRunner
+    from alerting.main_ci_analysis import (
+        BuildkiteJobLogClient,
+        MainCIAnalysisHandler,
+    )
+
+    store = PostgresAlertStore.from_database_url(database_url)
+    handler = MainCIAnalysisHandler(
+        store=store,
+        logs=BuildkiteJobLogClient(token=buildkite_token),
+        github=GitHubRestClient(token=github_token),
+        runner=runner
+        if runner is not None
+        else KimiCodeRunner(
+            api_key=kimi_api_key,
+            base_url=kimi_base_url,
+            model=kimi_model,
+            timeout_seconds=kimi_timeout_seconds,
+            reasoning_effort=kimi_reasoning_effort,
+        ),
+        clock=clock,
+        model_version=kimi_model,
+    )
+    return AlertingRuntime(
+        executions=store,
+        outbox=store,
+        slack=slack,
+        clock=clock,
+        handlers={"main_ci_analyze": handler},
         alert_path=AlertPath.MAIN_CI,
     )
 

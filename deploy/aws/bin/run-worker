@@ -6,7 +6,7 @@ credentials_path="/run/alerting/${consumer}.env"
 case "$consumer" in
   fast-ci) alert_path=fast-ci ;;
   full-ci|full-ci-analyze) alert_path=full-ci ;;
-  main-ci) alert_path=main-ci ;;
+  main-ci|main-ci-analyze) alert_path=main-ci ;;
   *) echo "unknown consumer: $consumer" >&2; exit 2 ;;
 esac
 mode_path="/run/alerting/${alert_path}.mode"

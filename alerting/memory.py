@@ -40,6 +40,7 @@ from alerting.main_ci import (
     MainCIJobObservation,
     ordered_unique_observations,
 )
+from alerting.main_ci_analysis import MainCIAnalysisTarget, MainCIJobAnalysis
 from alerting.ports import (
     AlertPath,
     ClaimOutcome,
@@ -523,6 +524,57 @@ class InMemoryMainCIStore:
 
     def state(self, job_key: str) -> MainCIJobObservation | None:
         return self._states.get(job_key)
+
+
+class InMemoryMainCIAnalysisStore:
+    """In-memory model of the Main CI analysis sidecar table."""
+
+    def __init__(self, *, main_ci: InMemoryMainCIStore) -> None:
+        self._main_ci = main_ci
+        self._analyses: dict[int, MainCIJobAnalysis] = {}
+
+    def pending_main_ci_analyses(self, *, limit: int) -> list[MainCIAnalysisTarget]:
+        targets: list[MainCIAnalysisTarget] = []
+        for alert in self._main_ci.alerts():
+            if alert.status != "open":
+                continue
+            existing = self._analyses.get(alert.alert_id)
+            if (
+                existing is not None
+                and existing.analyzed_failure_job_id == alert.last_failure.job_id
+            ):
+                continue
+            targets.append(
+                MainCIAnalysisTarget(
+                    alert_id=alert.alert_id,
+                    job_key=alert.job_key,
+                    job_name=alert.job_name,
+                    opened_at=alert.opened_at,
+                    last_failed_at=alert.last_failure.finished_at,
+                    failure_count=alert.failure_count,
+                    failure_job_id=alert.last_failure.job_id,
+                    failure_build_number=alert.last_failure.build_number,
+                    failure_build_url=alert.last_failure.build_url,
+                    failure_job_url=alert.last_failure.job_url,
+                    failure_commit_sha=alert.last_failure.commit_sha,
+                )
+            )
+        targets.sort(key=lambda target: target.last_failed_at, reverse=True)
+        return targets[:limit]
+
+    def commit_main_ci_analysis(
+        self, *, analysis: MainCIJobAnalysis, now: datetime
+    ) -> None:
+        # Mirror the Postgres freshness guard: a newer observed failure wins.
+        for alert in self._main_ci.alerts():
+            if alert.alert_id != analysis.alert_id:
+                continue
+            if alert.last_failure.job_id == analysis.analyzed_failure_job_id:
+                self._analyses[analysis.alert_id] = analysis
+            return
+
+    def analyses(self) -> list[MainCIJobAnalysis]:
+        return list(self._analyses.values())
 
 
 class InMemoryAnalyzerStore:
