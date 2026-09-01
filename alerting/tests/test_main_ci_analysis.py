@@ -13,7 +13,9 @@ from alerting.analyzer import AnalyzerError, PullRequestRef
 from alerting.commands import ScheduledCommand
 from alerting.main_ci import MainCIJobObservation
 from alerting.main_ci_analysis import (
+    ACTION_CHAR_LIMIT,
     ANALYSES_PER_TICK,
+    SUMMARY_CHAR_LIMIT,
     MainCIAnalysisHandler,
     MainCIAnalysisTarget,
     MainCIJobAnalysis,
@@ -365,8 +367,6 @@ def test_read_analysis_accepts_the_valid_schema(tmp_path: Path) -> None:
         {"classification": "broken"},
         {"confidence": "certain"},
         {"summary": ""},
-        {"summary": "x" * 501},
-        {"recommended_action": "x" * 301},
         {"evidence_urls": "not-a-list"},
         {"evidence_urls": [42]},
         {"suspected_fix_prs": [{"number": 1}]},
@@ -384,6 +384,42 @@ def test_read_analysis_rejects_out_of_schema_output(
             target=_target(),
             model_version="model",
         )
+
+
+@pytest.mark.parametrize(
+    ("key", "limit"),
+    [
+        ("summary", SUMMARY_CHAR_LIMIT),
+        ("recommended_action", ACTION_CHAR_LIMIT),
+    ],
+)
+def test_read_analysis_truncates_over_limit_strings(
+    tmp_path: Path, key: str, limit: int
+) -> None:
+    over_limit = "x" * (limit + 50)
+    payload = {**VALID_PAYLOAD, key: over_limit}
+
+    analysis = read_analysis(
+        _write_payload(tmp_path, payload),
+        target=_target(),
+        model_version="model",
+    )
+
+    value = getattr(analysis, key)
+    assert len(value) == limit
+    assert value == "x" * (limit - 1) + "…"
+
+
+def test_read_analysis_accepts_summary_up_to_the_limit(tmp_path: Path) -> None:
+    payload = {**VALID_PAYLOAD, "summary": "x" * SUMMARY_CHAR_LIMIT}
+
+    analysis = read_analysis(
+        _write_payload(tmp_path, payload),
+        target=_target(),
+        model_version="model",
+    )
+
+    assert analysis.summary == "x" * SUMMARY_CHAR_LIMIT
 
 
 def test_read_analysis_requires_the_output_file(tmp_path: Path) -> None:

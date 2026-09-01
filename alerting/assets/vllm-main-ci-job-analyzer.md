@@ -40,7 +40,7 @@ commentary — with exactly these keys:
 {
   "classification": "infra | flaky | code | test | unknown",
   "confidence": "high | medium | low",
-  "summary": "one to three sentences naming the root cause and error",
+  "summary": "one or two sentences naming the root cause",
   "evidence_urls": ["https://... build, job, log, or PR links you relied on"],
   "recommended_action": "the single most useful next step for an on-call",
   "suspected_fix_prs": [
@@ -58,9 +58,27 @@ commentary — with exactly these keys:
 - `confidence`: `high` only when the log shows the failing line and the cause
   is unambiguous; `medium` when the evidence points one way but is incomplete;
   `low` otherwise. `unknown` classifications should carry `low` confidence.
+- `summary`: short and concise — one or two sentences naming the root cause;
+  hard cap 1000 characters.
 - `evidence_urls`: only URLs you actually read; an empty array is valid.
-- `suspected_fix_prs`: merged or open PRs that plausibly fix this failure; an
-  empty array is valid. Never invent PR numbers.
-- Keep `summary` under 500 characters and `recommended_action` under 300.
+- `suspected_fix_prs`: merged or open PRs that plausibly fix this failure.
+  Never invent PR numbers. For `code` and `test` classifications you MUST try
+  to identify the concrete introducing PR and/or an open fix PR before leaving
+  this array empty:
+  - `context.json` carries the failure commit SHA and, when known, the merged
+    PR it belongs to — that PR is the prime suspect for a `code` regression.
+  - Use the GitHub API via `curl` with an
+    `Authorization: Bearer $GITHUB_TOKEN` header to dig further, for example:
+    - the commit's associated PRs
+      (`/repos/vllm-project/vllm/commits/<sha>/pulls` with
+      `Accept: application/vnd.github+json`),
+    - recent commits touching the failing test or source file
+      (`/repos/vllm-project/vllm/commits?path=<file>`),
+    - open PRs mentioning the failing test or error
+      (`/search/issues?q=repo:vllm-project/vllm+is:pr+is:open+<term>`).
+  - An empty array is allowed ONLY after this search genuinely finds nothing.
+- `recommended_action`: the single most useful next step, under 300
+  characters. When you identified a culprit PR, say so concretely (e.g.
+  "revert #NNN" or "merge #NNN").
 
 Write only `analysis.json`. Do not modify `context.json` or `job_log.txt`.

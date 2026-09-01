@@ -42,7 +42,7 @@ ANALYSIS_FILE = Path("analysis.json")
 # latency; a slow tick is fenced by the execution lease either way.
 ANALYSES_PER_TICK = 5
 JOB_LOG_CHAR_LIMIT = 200_000
-SUMMARY_CHAR_LIMIT = 500
+SUMMARY_CHAR_LIMIT = 1000
 ACTION_CHAR_LIMIT = 300
 
 CLASSIFICATIONS = frozenset({"infra", "flaky", "code", "test", "unknown"})
@@ -187,8 +187,10 @@ def _require_string(payload: dict[str, Any], key: str, limit: int) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
         raise AnalyzerError(f"analysis {key} is missing or not a string")
+    # Over-limit prose is truncated, not rejected: a good analysis of a big
+    # failure must not be discarded just because the model ran long.
     if len(value) > limit:
-        raise AnalyzerError(f"analysis {key} exceeds {limit} characters")
+        value = value[: limit - 1] + "…"
     return value
 
 
