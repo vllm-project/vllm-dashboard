@@ -93,3 +93,15 @@ def test_main_ci_analysis_timer_uses_its_sidecar_command(
 
     assert worker.main(["main-ci-analyze"]) == 0
     assert [command.command_type for command in runtime.commands] == ["main_ci_analyze"]
+
+
+def test_main_ci_backstop_timer_uses_its_sweep_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(worker, "_runtime", lambda *args: runtime)
+
+    assert worker.main(["main-ci-backstop"]) == 0
+    assert [command.command_type for command in runtime.commands] == [
+        "main_ci_backstop"
+    ]

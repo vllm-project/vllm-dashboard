@@ -33,7 +33,11 @@ from alerting.full_ci import (
     FullCIRun,
     ordered_unique_runs,
 )
-from alerting.main_ci import MainCIJobObservation, ordered_unique_observations
+from alerting.main_ci import (
+    MainCIJobObservation,
+    MainCIOpenAlertRef,
+    ordered_unique_observations,
+)
 from alerting.main_ci_analysis import (
     MainCIAnalysisRunner,
     MainCIAnalysisTarget,
@@ -1029,6 +1033,21 @@ class PostgresAlertStore:
                 if completed.rowcount != 1:
                     raise RuntimeError("Main CI execution was not running at commit")
 
+    def open_main_ci_alert_builds(self) -> list[MainCIOpenAlertRef]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT job_key, last_failure_build_number
+                FROM alerting_main_ci_job_alerts
+                WHERE status = 'open'
+                ORDER BY job_key
+                """
+            ).fetchall()
+        return [
+            MainCIOpenAlertRef(job_key=row[0], build_number=int(row[1]))
+            for row in rows
+        ]
+
     def pending_main_ci_analyses(self, *, limit: int) -> list[MainCIAnalysisTarget]:
         with self._connection_factory() as connection:
             rows = connection.execute(
@@ -1581,6 +1600,33 @@ def build_main_ci_runtime(
         slack=slack,
         clock=clock,
         handlers={"main_ci_reconcile": handler},
+        alert_path=AlertPath.MAIN_CI,
+    )
+
+
+def build_main_ci_backstop_runtime(
+    *,
+    database_url: str,
+    buildkite_token: str,
+    slack: SlackPort,
+    clock: Clock,
+) -> AlertingRuntime:
+    """Wire the hourly Main CI retry-resolution backstop into the runtime."""
+    from alerting.full_ci import BuildkiteRestClient
+    from alerting.main_ci import MainCIBackstopHandler
+
+    store = PostgresAlertStore.from_database_url(database_url)
+    handler = MainCIBackstopHandler(
+        builds=BuildkiteRestClient(token=buildkite_token),
+        store=store,
+        clock=clock,
+    )
+    return AlertingRuntime(
+        executions=store,
+        outbox=store,
+        slack=slack,
+        clock=clock,
+        handlers={"main_ci_backstop": handler},
         alert_path=AlertPath.MAIN_CI,
     )
 

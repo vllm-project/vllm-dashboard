@@ -172,13 +172,15 @@ class BuildkiteRestClient:
 
         The two bounded queries avoid re-downloading days of large build
         matrices while still catching jobs from an older build that becomes
-        terminal between polling ticks.
+        terminal between polling ticks. Retried executions are included so
+        both the original failure and a retry pass of the same step are
+        visible; downstream ordering then picks the newest outcome.
         """
         common: dict[str, str | int | list[str]] = {
             "branch": "main",
             "created_from": _iso8601(observed_from - timedelta(days=2)),
             "created_to": _iso8601(up_to),
-            "include_retried_jobs": "false",
+            "include_retried_jobs": "true",
             "per_page": 100,
         }
         active = self._list_build_pages(
@@ -218,8 +220,13 @@ class BuildkiteRestClient:
             url = str(next_url) if next_url else None
         return jobs
 
-    def get_build(self, build_number: int) -> dict[str, Any]:
-        payload = self._get_json(f"{self._BUILDS_URL}/{build_number}")
+    def get_build(
+        self, build_number: int, *, include_retried_jobs: bool = False
+    ) -> dict[str, Any]:
+        url = f"{self._BUILDS_URL}/{build_number}"
+        if include_retried_jobs:
+            url += "?include_retried_jobs=true"
+        payload = self._get_json(url)
         if not isinstance(payload, dict):
             raise RuntimeError("Buildkite build response was not an object")
         return cast(dict[str, Any], payload)

@@ -14,6 +14,7 @@ from alerting.postgres import (
     build_full_ci_analysis_runtime,
     build_full_ci_runtime,
     build_main_ci_analysis_runtime,
+    build_main_ci_backstop_runtime,
     build_main_ci_runtime,
 )
 from alerting.runtime import AlertingRuntime, ProcessStatus
@@ -98,6 +99,13 @@ def _runtime(
             slack=_slack(),
             clock=clock,
         )
+    if consumer == "main-ci-backstop":
+        return build_main_ci_backstop_runtime(
+            database_url=database_url,
+            buildkite_token=_required_environment("BUILDKITE_TOKEN"),
+            slack=_slack(),
+            clock=clock,
+        )
     if consumer == "main-ci-analyze":
         return build_main_ci_analysis_runtime(
             database_url=database_url,
@@ -125,6 +133,7 @@ def scheduled_command(consumer: str, target_time: datetime) -> ScheduledCommand:
         "full-ci": "full_ci_reconcile",
         "full-ci-analyze": "full_ci_analyze",
         "main-ci": "main_ci_reconcile",
+        "main-ci-backstop": "main_ci_backstop",
         "main-ci-analyze": "main_ci_analyze",
     }
     try:
@@ -142,6 +151,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "full-ci",
         "full-ci-analyze",
         "main-ci",
+        "main-ci-backstop",
         "main-ci-analyze",
     }:
         return 2

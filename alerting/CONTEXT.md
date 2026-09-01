@@ -48,6 +48,12 @@ build resolves it. Missing, soft-failed, canceled, or older late-finishing jobs
 do not resolve an episode.
 _Avoid_: Full CI Failure Condition, automated diagnosis
 
+**Main CI Backstop Sweep**:
+An hourly re-check of every open Main CI Job Alert against the build where it
+last failed, so a retry pass the observation window moved past still resolves
+the episode within an hour. It never advances the Scan Cursor.
+_Avoid_: Re-poll, full rescan
+
 **Scan Cursor**:
 The latest durable Fast or Main CI scan target used to derive the next
 overlapping observation window.

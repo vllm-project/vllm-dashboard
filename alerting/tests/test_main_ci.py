@@ -9,6 +9,7 @@ from alerting.main_ci import (
     INITIAL_LOOKBACK,
     SAFETY_OVERLAP,
     BuildkiteMainCISource,
+    MainCIBackstopHandler,
     MainCIJobObservation,
     MainCIReconciliationHandler,
 )
@@ -276,5 +277,324 @@ def test_buildkite_client_unions_active_and_recently_finished_builds() -> None:
     assert client.queries[1]["finished_from"] == "2026-08-29T09:30:00Z"
     for query in client.queries:
         assert query["branch"] == "main"
-        assert query["include_retried_jobs"] == "false"
+        assert query["include_retried_jobs"] == "true"
         assert "exclude_jobs" not in query
+
+
+def buildkite_job(
+    *,
+    job_id: str,
+    state: str,
+    finished_at: datetime | None,
+    name: str = "GPU correctness",
+    step_key: str | None = "gpu-test",
+) -> dict[str, Any]:
+    job: dict[str, Any] = {
+        "id": job_id,
+        "name": name,
+        "type": "script",
+        "state": state,
+        "soft_failed": False,
+        "finished_at": (
+            finished_at.isoformat().replace("+00:00", "Z") if finished_at else None
+        ),
+    }
+    if step_key is not None:
+        job["step_key"] = step_key
+    return job
+
+
+def buildkite_build(number: int, jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "id": f"build-{number}",
+        "number": number,
+        "web_url": f"https://buildkite.com/vllm/ci/builds/{number}",
+        "commit": f"commit-{number}",
+        "jobs": jobs,
+    }
+
+
+def source_runtime_for(
+    buildkite: RecordingBuildkite,
+) -> tuple[AlertingRuntime, InMemoryMainCIStore, FixedClock]:
+    clock = FixedClock(START)
+    executions = InMemoryAutomationExecutionStore()
+    store = InMemoryMainCIStore(executions=executions)
+    runtime = AlertingRuntime(
+        executions=executions,
+        outbox=InMemoryOutboxStore(),
+        slack=RecordingSlackPort(),
+        clock=clock,
+        handlers={
+            "main_ci_reconcile": MainCIReconciliationHandler(
+                source=BuildkiteMainCISource(buildkite),
+                store=store,
+                clock=clock,
+            )
+        },
+    )
+    return runtime, store, clock
+
+
+def test_retry_pass_inside_window_resolves_original_failure() -> None:
+    failure = buildkite_job(
+        job_id="orig", state="failed", finished_at=START - timedelta(hours=3)
+    )
+    buildkite = RecordingBuildkite([buildkite_build(300, [failure])])
+    runtime, store, _ = source_runtime_for(buildkite)
+    key = "step:gpu-test|name:GPU correctness"
+
+    reconcile(runtime, START - timedelta(hours=2, minutes=55))
+    assert [(alert.status, alert.failure_count) for alert in store.alerts()] == [
+        ("open", 1)
+    ]
+    # Advance the cursor so the original failure falls outside the window.
+    reconcile(runtime, START - timedelta(hours=2, minutes=20))
+
+    buildkite.builds[0]["jobs"].append(
+        buildkite_job(
+            job_id="retry", state="passed", finished_at=START - timedelta(minutes=5)
+        )
+    )
+    reconcile(runtime, START)
+
+    assert [(alert.status, alert.failure_count) for alert in store.alerts()] == [
+        ("resolved", 1)
+    ]
+    resolution = store.alerts()[0].resolution
+    assert resolution is not None
+    assert resolution.job_id == "retry"
+    state = store.state(key)
+    assert state is not None
+    assert state.job_id == "retry"
+
+
+def test_retry_pass_outside_window_still_resolves_when_build_is_fetched() -> None:
+    original = buildkite_job(
+        job_id="orig", state="failed", finished_at=START - timedelta(hours=3)
+    )
+    buildkite = RecordingBuildkite([buildkite_build(300, [original])])
+    runtime, store, _ = source_runtime_for(buildkite)
+
+    reconcile(runtime, START - timedelta(hours=2, minutes=55))
+    assert [alert.status for alert in store.alerts()] == ["open"]
+    # The build drops out of the fetched set while the retry passes, so the
+    # pass's finished_at ends up behind the scan window.
+    buildkite.builds = []
+    reconcile(runtime, START - timedelta(hours=1))
+
+    buildkite.builds = [
+        buildkite_build(
+            300,
+            [
+                original,
+                buildkite_job(
+                    job_id="retry",
+                    state="passed",
+                    finished_at=START - timedelta(hours=2, minutes=45),
+                ),
+            ],
+        ),
+        # An older build's late failure must not win over the newer pass.
+        buildkite_build(
+            299,
+            [
+                buildkite_job(
+                    job_id="old",
+                    state="failed",
+                    finished_at=START + timedelta(minutes=10),
+                )
+            ],
+        ),
+    ]
+    reconcile(runtime, START + timedelta(minutes=30))
+
+    assert [alert.status for alert in store.alerts()] == ["resolved"]
+    resolution = store.alerts()[0].resolution
+    assert resolution is not None
+    assert resolution.job_id == "retry"
+
+
+def test_retry_execution_without_step_key_resolves_original_alert() -> None:
+    buildkite = RecordingBuildkite(
+        [
+            buildkite_build(
+                300,
+                [
+                    buildkite_job(
+                        job_id="orig",
+                        state="failed",
+                        finished_at=START - timedelta(hours=3),
+                    )
+                ],
+            )
+        ]
+    )
+    runtime, store, _ = source_runtime_for(buildkite)
+
+    reconcile(runtime, START - timedelta(hours=2, minutes=55))
+    assert [alert.status for alert in store.alerts()] == ["open"]
+
+    buildkite.builds[0]["jobs"].append(
+        buildkite_job(
+            job_id="retry",
+            state="passed",
+            finished_at=START - timedelta(minutes=5),
+            step_key=None,
+        )
+    )
+    reconcile(runtime, START)
+
+    assert [alert.status for alert in store.alerts()] == ["resolved"]
+    resolution = store.alerts()[0].resolution
+    assert resolution is not None
+    assert resolution.job_id == "retry"
+    # The retried execution inherits the step key instead of opening a
+    # parallel "name:..." identity.
+    assert store.state("step:gpu-test|name:GPU correctness") is not None
+    assert store.state("name:GPU correctness") is None
+
+
+def test_newer_failure_wins_over_older_pass() -> None:
+    source = FixtureSource()
+    runtime, store, _ = runtime_for(source)
+    source.observations = [
+        observation(build_number=101, state="failed", minutes=1, job_id="newer")
+    ]
+    reconcile(runtime, START + timedelta(minutes=2))
+    assert [alert.status for alert in store.alerts()] == ["open"]
+
+    # An older build's pass finishing late must not resolve the newer failure.
+    source.observations.append(
+        observation(build_number=100, state="passed", minutes=3, job_id="older")
+    )
+    reconcile(runtime, START + timedelta(minutes=4))
+
+    assert [alert.status for alert in store.alerts()] == ["open"]
+    state = store.state("step:gpu-test|name:GPU correctness")
+    assert state is not None
+    assert state.job_id == "newer"
+
+
+class FixtureBuilds:
+    def __init__(self, builds: dict[int, dict[str, Any]]) -> None:
+        self.builds = builds
+        self.calls: list[tuple[int, bool]] = []
+
+    def get_build(
+        self, build_number: int, *, include_retried_jobs: bool
+    ) -> dict[str, Any]:
+        self.calls.append((build_number, include_retried_jobs))
+        return self.builds[build_number]
+
+
+def combined_runtime_for(
+    source: FixtureSource, builds: FixtureBuilds
+) -> tuple[AlertingRuntime, InMemoryMainCIStore, FixedClock]:
+    clock = FixedClock(START)
+    executions = InMemoryAutomationExecutionStore()
+    store = InMemoryMainCIStore(executions=executions)
+    runtime = AlertingRuntime(
+        executions=executions,
+        outbox=InMemoryOutboxStore(),
+        slack=RecordingSlackPort(),
+        clock=clock,
+        handlers={
+            "main_ci_reconcile": MainCIReconciliationHandler(
+                source=source, store=store, clock=clock
+            ),
+            "main_ci_backstop": MainCIBackstopHandler(
+                builds=builds, store=store, clock=clock
+            ),
+        },
+    )
+    return runtime, store, clock
+
+
+def backstop(runtime: AlertingRuntime, target: datetime) -> None:
+    result = runtime.process_command(
+        ScheduledCommand(command_type="main_ci_backstop", target_time=target)
+    )
+    assert result.status is ProcessStatus.COMPLETED
+
+
+def open_alert(runtime: AlertingRuntime, source: FixtureSource) -> None:
+    source.observations = [
+        observation(
+            build_number=300, state="failed", minutes=-180, job_id="orig"
+        )
+    ]
+    reconcile(runtime, START - timedelta(hours=2, minutes=55))
+
+
+def test_backstop_resolves_open_alert_whose_retried_job_now_passes() -> None:
+    source = FixtureSource()
+    builds = FixtureBuilds({})
+    runtime, store, _ = combined_runtime_for(source, builds)
+    open_alert(runtime, source)
+    assert [alert.status for alert in store.alerts()] == ["open"]
+    cursor = store.main_ci_scan_cursor()
+
+    builds.builds[300] = buildkite_build(
+        300,
+        [
+            buildkite_job(
+                job_id="orig", state="failed", finished_at=START - timedelta(hours=3)
+            ),
+            buildkite_job(
+                job_id="retry",
+                state="passed",
+                finished_at=START - timedelta(hours=1),
+            ),
+        ],
+    )
+    backstop(runtime, START + timedelta(hours=2))
+
+    alert = store.alerts()[0]
+    assert alert.status == "resolved"
+    assert alert.resolution is not None
+    assert alert.resolution.job_id == "retry"
+    assert builds.calls == [(300, True)]
+    # The sweep must not advance the poller's scan cursor.
+    assert store.main_ci_scan_cursor() == cursor
+
+
+def test_backstop_leaves_still_failing_alert_open() -> None:
+    source = FixtureSource()
+    builds = FixtureBuilds({})
+    runtime, store, _ = combined_runtime_for(source, builds)
+    open_alert(runtime, source)
+
+    builds.builds[300] = buildkite_build(
+        300,
+        [
+            buildkite_job(
+                job_id="orig", state="failed", finished_at=START - timedelta(hours=3)
+            )
+        ],
+    )
+    backstop(runtime, START + timedelta(hours=2))
+
+    assert [(alert.status, alert.failure_count) for alert in store.alerts()] == [
+        ("open", 1)
+    ]
+
+
+def test_backstop_ignores_resolved_alerts() -> None:
+    source = FixtureSource()
+    builds = FixtureBuilds({})
+    runtime, store, _ = combined_runtime_for(source, builds)
+    open_alert(runtime, source)
+    source.observations.append(
+        observation(build_number=300, state="passed", minutes=-170, job_id="retry")
+    )
+    reconcile(runtime, START - timedelta(hours=2, minutes=45))
+    assert [alert.status for alert in store.alerts()] == ["resolved"]
+
+    backstop(runtime, START + timedelta(hours=2))
+
+    assert builds.calls == []
+    alert = store.alerts()[0]
+    assert alert.status == "resolved"
+    assert alert.resolution is not None
+    assert alert.resolution.job_id == "retry"

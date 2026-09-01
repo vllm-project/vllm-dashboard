@@ -67,11 +67,13 @@ def test_reconcile_controls_defaults_missing_path_to_shadow_and_disables_one_pat
         "alerting-full-ci.timer",
         "alerting-main-ci.timer",
         "alerting-main-ci-analysis.timer",
+        "alerting-main-ci-backstop.timer",
     ]
     assert units.stopped == [
         "alerting-full-ci.service",
         "alerting-main-ci.service",
         "alerting-main-ci-analysis.service",
+        "alerting-main-ci-backstop.service",
     ]
 
 
@@ -109,4 +111,5 @@ def test_main_ci_live_control_enables_its_independent_timers(tmp_path: Path) -> 
     assert units.enabled == [
         "alerting-main-ci.timer",
         "alerting-main-ci-analysis.timer",
+        "alerting-main-ci-backstop.timer",
     ]

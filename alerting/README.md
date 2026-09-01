@@ -44,10 +44,16 @@ repository-level relationship with the dashboard is recorded in
 - `full_ci.py` — the Buildkite query adapter, Full CI run and
   job-outcome records, and chronological reconciliation handler. Analyzer
   invocation remains outside this ingest-only slice.
-- `main_ci.py` — the five-minute Buildkite main-branch poller and exact-job
+- `main_ci.py` — the two-minute Buildkite main-branch poller and exact-job
   lifecycle. It ignores soft/non-command/non-terminal jobs, protects newer
   outcomes from older builds finishing late, and resolves only on a positive
-  pass. It writes raw lifecycle and Buildkite evidence only; Sherlock's
+  pass. Retried executions are fetched alongside originals (`include_retried_jobs`),
+  retried-out executions that lack a step key inherit it from the same-named
+  job in the build, and a pass that fell behind the scan window still
+  resolves when its build is fetched. An hourly backstop sweep
+  (`main_ci_backstop`) re-checks every open alert against the build where it
+  last failed, so a retry pass missed by the windowed poller resolves within
+  an hour. It writes raw lifecycle and Buildkite evidence only; Sherlock's
   diagnosis remains in Slack.
 - `analyzer.py` — the Full CI analyzer compatibility adapter. It materializes
   the working files the bundled analyzer instructions expect (summary, full
@@ -134,9 +140,11 @@ enabling the new path, and preserves Postgres and S3 baselines on rollback.
 - `FastCIScanHandler` registers as `fast_ci_scan`,
   `FullCIReconciliationHandler` registers as `full_ci_reconcile`, and
   `FullCIAnalysisHandler` registers as `full_ci_analyze`, while
-  `MainCIReconciliationHandler` registers as `main_ci_reconcile` and
+  `MainCIReconciliationHandler` registers as `main_ci_reconcile`,
+  `MainCIBackstopHandler` registers as `main_ci_backstop`, and
   `MainCIAnalysisHandler` registers as `main_ci_analyze`. Workers expose them
-  as the `fast-ci`, `full-ci`, `full-ci-analyze`, `main-ci`, and
+  as the `fast-ci`, `full-ci`, `full-ci-analyze`, `main-ci`,
+  `main-ci-backstop`, and
   `main-ci-analyze` consumers so the
   long-running LLM analysis never blocks ingest. The Main CI analysis consumer
   writes only the `alerting_main_ci_job_analysis` sidecar table; the

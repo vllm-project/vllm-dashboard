@@ -1,9 +1,9 @@
 [Unit]
-Description=Schedule Main CI job alert reconciliation every five minutes
+Description=Schedule Main CI job alert reconciliation every two minutes
 
 [Timer]
 OnBootSec=2min
-OnCalendar=*-*-* *:00/5:00 UTC
+OnCalendar=*-*-* *:00/2:00 UTC
 Persistent=true
 AccuracySec=30s
 RandomizedDelaySec=0

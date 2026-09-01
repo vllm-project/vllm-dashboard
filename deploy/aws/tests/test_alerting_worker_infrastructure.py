@@ -58,12 +58,27 @@ def test_fast_ci_timer_uses_pacific_wall_clock_every_fifteen_minutes() -> None:
     assert "Persistent=true" in timer
 
 
-def test_main_ci_timer_polls_every_five_minutes_and_recovers_after_downtime() -> None:
+def test_main_ci_timer_polls_every_two_minutes_and_recovers_after_downtime() -> None:
     timer = read("systemd/alerting-main-ci.timer")
 
-    assert "OnCalendar=*-*-* *:00/5:00 UTC" in timer
+    assert "OnCalendar=*-*-* *:00/2:00 UTC" in timer
     assert "OnBootSec=" in timer
     assert "Persistent=true" in timer
+
+
+def test_main_ci_backstop_timer_runs_hourly_off_the_hour_mark() -> None:
+    timer = read("systemd/alerting-main-ci-backstop.timer")
+    service = read("systemd/alerting-main-ci-backstop.service")
+
+    assert "OnCalendar=*-*-* *:17:00 UTC" in timer
+    assert "OnBootSec=" in timer
+    assert "Persistent=true" in timer
+    assert "Unit=alerting-main-ci-backstop.service" in timer
+    assert "run-worker main-ci-backstop" in service
+    assert "StandardOutput=null" in service
+    assert "StandardError=null" in service
+    for sensitive_name in ("DATABASE_URL", "TOKEN", "PASSWORD"):
+        assert sensitive_name not in service + timer
 
 
 def test_main_ci_analysis_timer_runs_every_ten_minutes() -> None:
@@ -204,6 +219,7 @@ def test_retention_timer_prunes_daily_without_sensitive_data() -> None:
         ("full-ci", "full_ci_reconcile"),
         ("fast-ci", "fast_ci_scan"),
         ("main-ci", "main_ci_reconcile"),
+        ("main-ci-backstop", "main_ci_backstop"),
         ("main-ci-analyze", "main_ci_analyze"),
     ],
 )

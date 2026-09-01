@@ -56,7 +56,7 @@ All three paths start in shadow mode. Durable controls live at
 but workers run as the non-login `alerting` user. Shadow runs persist source
 observations and rendered Slack payloads without leasing them for delivery.
 Main CI currently writes dashboard lifecycle only and renders no Slack payload;
-its mode still controls the independent five-minute timer.
+its mode still controls the independent two-minute timer.
 
 Run the repeatable operator wizard from the repository root:
 
@@ -77,8 +77,9 @@ Stop all alert timers before a scheduled tick, wait through the tick, then
 start the timers again. `Persistent=true` and `OnBootSec` start reconciliation,
 while the Postgres cursors and processed-run history recover missed Fast, Full,
 or Main CI observations. Each path has a separate timer and service — Main CI
-has two, one for lifecycle reconciliation and one for AI analysis — so a long
-Full CI execution cannot occupy either frequent poller.
+has three: one for lifecycle reconciliation, one for AI analysis, and one
+hourly backstop sweep that resolves retry passes the poller's window missed —
+so a long Full CI execution cannot occupy either frequent poller.
 
 For instance replacement and stack recreation, see
 [disaster-recovery.md](disaster-recovery.md).

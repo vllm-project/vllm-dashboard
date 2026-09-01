@@ -38,6 +38,7 @@ from alerting.full_ci import (
 from alerting.main_ci import (
     MainCIJobAlert,
     MainCIJobObservation,
+    MainCIOpenAlertRef,
     ordered_unique_observations,
 )
 from alerting.main_ci_analysis import MainCIAnalysisTarget, MainCIJobAnalysis
@@ -521,6 +522,17 @@ class InMemoryMainCIStore:
 
     def alerts(self) -> list[MainCIJobAlert]:
         return list(self._alerts)
+
+    def open_main_ci_alert_builds(self) -> list[MainCIOpenAlertRef]:
+        refs = {
+            (alert.job_key, alert.last_failure.build_number)
+            for alert in self._alerts
+            if alert.resolved_at is None
+        }
+        return [
+            MainCIOpenAlertRef(job_key=job_key, build_number=build_number)
+            for job_key, build_number in sorted(refs)
+        ]
 
     def state(self, job_key: str) -> MainCIJobObservation | None:
         return self._states.get(job_key)
