@@ -1,5 +1,6 @@
 """Fast CI behavior through the scheduled-command runtime seam."""
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -134,8 +135,14 @@ def test_more_than_eight_failures_are_persisted_in_existing_slack_batches() -> N
     assert len(fast_ci.events()) == 10
     records = outbox.records()
     assert [record.status for record in records] == [OutboxStatus.PENDING] * 2
-    assert "8 jobs failed in 30s or less — batch 1/2" in records[0].payload["text"]
-    assert "2 jobs failed in 30s or less — batch 2/2" in records[1].payload["text"]
+    assert (
+        "8 jobs failed in 30s or less (main branch, required jobs only) — batch 1/2"
+        in records[0].payload["text"]
+    )
+    assert (
+        "2 jobs failed in 30s or less (main branch, required jobs only) — batch 2/2"
+        in records[1].payload["text"]
+    )
     assert records[0].payload["text"].count(":red_circle:") == 8
     assert records[1].payload["text"].count(":red_circle:") == 2
     assert "GPU &lt;fast&gt; 'test'" in records[0].payload["text"]
@@ -184,7 +191,8 @@ def test_stale_batches_become_one_recovery_summary_while_fresh_batch_stays_detai
     assert (
         recovery.payload["text"].splitlines()[0]
         == ":rotating_light: *Fast CI recovery summary* — "
-        "10 jobs failed in 30s or less while notifications were unavailable"
+        "10 jobs failed in 30s or less (main branch, required jobs only) "
+        "while notifications were unavailable"
     )
     assert recovery.payload["text"].count(":red_circle:") == 10
     assert "Fast CI job failure alert" in fresh.payload["text"]
@@ -386,6 +394,32 @@ def test_databricks_source_maps_fixture_to_fast_failure_event() -> None:
             pipeline="CI",
         )
     ]
+
+
+def test_databricks_query_scopes_to_main_branch_required_jobs() -> None:
+    databricks = RecordingDatabricks([])
+    source = DatabricksFastCISource(databricks)
+
+    source.fetch_failures(start_time=START - timedelta(minutes=30), end_time=START)
+
+    assert len(databricks.queries) == 1
+    assert "b.branch = 'main'" in databricks.queries[0]
+    assert "j.soft_failed = false" in databricks.queries[0]
+
+
+def test_leading_job_emoji_stays_outside_the_slack_link_label() -> None:
+    named = replace(event("job-1"), job_name=":nvidia: (L4) Distributed 2-Node")
+    source = FixtureFastCISource([named])
+    runtime, _, outbox, _ = make_runtime(source)
+
+    runtime.process_command(ScheduledCommand(command_type="fast_ci_scan", target_time=START))
+
+    text = outbox.records()[0].payload["text"]
+    assert (
+        ":red_circle: :nvidia: "
+        "<https://buildkite.com/vllm/ci/builds/123#job-1|(L4) Distributed 2-Node>"
+    ) in text
+    assert "|:nvidia:" not in text
 
 
 def test_fast_failure_event_has_no_resolution_lifecycle() -> None:

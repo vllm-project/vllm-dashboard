@@ -33,7 +33,7 @@ An immutable, versioned S3 object holding the analyzer's memory after one comple
 _Avoid_: Backup, snapshot of the database
 
 **Fast Failure Event**:
-An observation that one Fast CI job entered an eligible failure state within 30 seconds. It has no resolution lifecycle.
+An observation that one required Fast CI job on the main branch entered an eligible failure state within 30 seconds. It has no resolution lifecycle.
 _Avoid_: Incident, alert lifecycle
 
 **Main CI Job Observation**:

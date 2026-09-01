@@ -226,6 +226,8 @@ def _alert_query(start_time: datetime, end_time: datetime) -> str:
         AND j.type = 'script'
         AND j.name IS NOT NULL
         AND p.name = 'CI'
+        AND b.branch = 'main'
+        AND j.soft_failed = false
         AND j.state IN ({states})
         AND j.started_at IS NOT NULL
         AND j.finished_at IS NOT NULL
@@ -318,6 +320,18 @@ def _build_number(build_url: str) -> str:
     return match.group(1) if match else "?"
 
 
+_LEADING_JOB_EMOJI = re.compile(r"^((?::[a-z0-9_+-]+:\s*)+)", re.IGNORECASE)
+
+
+def _split_job_emoji(name: str) -> tuple[str, str]:
+    """Custom emoji shortcodes are not reliably rendered inside Slack link
+    labels; keep a leading job emoji (":nvidia:") outside the linked name."""
+    match = _LEADING_JOB_EMOJI.match(name)
+    if match is None:
+        return "", name
+    return match.group(1).strip(), name[match.end() :].strip()
+
+
 def _build_message(
     events: list[FastFailureEvent],
     batch_number: int,
@@ -329,14 +343,15 @@ def _build_message(
         heading = (
             f":rotating_light: *Fast CI recovery summary* — {len(events)} "
             f"job{'s' if len(events) != 1 else ''} failed in "
-            f"{MAX_DURATION_SECONDS}s or less while notifications were unavailable"
+            f"{MAX_DURATION_SECONDS}s or less (main branch, required jobs only) "
+            "while notifications were unavailable"
         )
     else:
         suffix = f" — batch {batch_number}/{batch_count}" if batch_count > 1 else ""
         heading = (
             f":rotating_light: *Fast CI job failure alert* — {len(events)} "
             f"job{'s' if len(events) != 1 else ''} failed in "
-            f"{MAX_DURATION_SECONDS}s or less{suffix}"
+            f"{MAX_DURATION_SECONDS}s or less (main branch, required jobs only){suffix}"
         )
     lines = [
         heading,
@@ -359,7 +374,10 @@ def _build_message(
             details.append(f"by {_slack_escape(event.author)}")
         if event.soft_failed:
             details.append("_soft fail_")
-        job = _slack_link(event.job_url, event.job_name or "Unknown job")
+        job_emoji, job_name = _split_job_emoji(event.job_name or "Unknown job")
+        job = _slack_link(event.job_url, job_name)
+        if job_emoji:
+            job = f"{job_emoji} {job}"
         lines.append(f":red_circle: {job} — {' · '.join(details)}")
         if event.message:
             lines.append(f"> {_slack_escape(_one_line(event.message))}")
