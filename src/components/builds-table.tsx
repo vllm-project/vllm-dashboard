@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useState, useCallback, useMemo } from "react";
+import { Fragment, useState, useCallback, useMemo, type MouseEvent, type ReactNode } from "react";
 import useSWR from "swr";
 import { BuildWaterfall } from "@/components/build-waterfall";
 import type { GroupStatus } from "@/lib/test-groups";
@@ -101,63 +101,126 @@ function dotColor(state: string) {
   }
 }
 
+const HIGHLIGHT = "bg-blue-50 dark:bg-blue-950/40";
+
 function DotWithTooltip({
   color,
-  label,
-  detail,
+  ariaLabel,
+  tooltip,
   borderClass,
   href,
   onClick,
+  highlight,
+  onHover,
 }: {
   color: string;
-  label: string;
-  detail: string;
+  ariaLabel: string;
+  tooltip: ReactNode;
   borderClass?: string;
   href?: string;
   onClick?: () => void;
+  highlight?: boolean;
+  onHover?: (hovering: boolean) => void;
 }) {
-  const [show, setShow] = useState(false);
+  // Viewport coordinates of the dot, so the popup can be position:fixed and
+  // escape the table's overflow-x-auto clipping.
+  const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
+  const enter = (e: MouseEvent<HTMLElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setAnchor({ x: r.left + r.width / 2, y: r.top });
+    onHover?.(true);
+  };
+  const leave = () => {
+    setAnchor(null);
+    onHover?.(false);
+  };
+  const nearRightEdge =
+    anchor !== null &&
+    typeof window !== "undefined" &&
+    anchor.x > window.innerWidth * 0.7;
+  const dot = <span className={`block h-3.5 w-3.5 rounded-sm ${color}`} />;
+  const cls = "inline-flex h-5 w-5 items-center justify-center";
   return (
-    <td className={`relative px-0 py-2 text-center ${borderClass ?? ""}`}>
+    <td
+      className={`relative px-0 py-2 text-center ${borderClass ?? ""} ${highlight ? HIGHLIGHT : ""}`}
+    >
       {href ? (
         <a
           href={href}
           target="_blank"
           rel="noopener noreferrer"
-          aria-label={`${label}: ${detail}`}
-          className="inline-flex h-5 w-5 cursor-pointer items-center justify-center"
-          onMouseEnter={() => setShow(true)}
-          onMouseLeave={() => setShow(false)}
+          aria-label={ariaLabel}
+          className={`${cls} cursor-pointer`}
+          onMouseEnter={enter}
+          onMouseLeave={leave}
         >
-          <span className={`block h-3.5 w-3.5 rounded-sm ${color}`} />
+          {dot}
         </a>
       ) : onClick ? (
         <button
           type="button"
-          aria-label={`${label}: ${detail}`}
-          className="inline-flex h-5 w-5 cursor-pointer items-center justify-center"
+          aria-label={ariaLabel}
+          className={`${cls} cursor-pointer`}
           onClick={onClick}
-          onMouseEnter={() => setShow(true)}
-          onMouseLeave={() => setShow(false)}
+          onMouseEnter={enter}
+          onMouseLeave={leave}
         >
-          <span className={`block h-3.5 w-3.5 rounded-sm ${color}`} />
+          {dot}
         </button>
       ) : (
         <div
-          className="inline-flex h-5 w-5 cursor-default items-center justify-center"
-          onMouseEnter={() => setShow(true)}
-          onMouseLeave={() => setShow(false)}
+          className={`${cls} cursor-default`}
+          onMouseEnter={enter}
+          onMouseLeave={leave}
         >
-          <span className={`block h-3.5 w-3.5 rounded-sm ${color}`} />
+          {dot}
         </div>
       )}
-      {show && (
-        <div className="absolute bottom-full left-1/2 z-50 mb-2 -translate-x-1/2 whitespace-nowrap rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
-          <p className="font-medium">{label}</p>
-          <p className="text-zinc-500 dark:text-zinc-400">{detail}</p>
+      {anchor && (
+        <div
+          className="pointer-events-none fixed z-50 whitespace-nowrap rounded-md border border-zinc-200 bg-white px-3 py-2 text-left text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+          style={{
+            left: anchor.x,
+            top: anchor.y - 8,
+            transform: nearRightEdge
+              ? "translate(-100%, -100%)"
+              : "translate(-50%, -100%)",
+          }}
+        >
+          {tooltip}
         </div>
       )}
     </td>
+  );
+}
+
+function stateTextColor(state: string) {
+  switch (state) {
+    case "passed":
+      return "text-emerald-600 dark:text-emerald-400";
+    case "failed":
+    case "failing":
+    case "broken":
+    case "timed_out":
+      return "text-red-600 dark:text-red-400";
+    case "running":
+    case "scheduled":
+    case "reserved":
+    case "mixed":
+      return "text-yellow-600 dark:text-yellow-400";
+    default:
+      return "text-zinc-500 dark:text-zinc-400";
+  }
+}
+
+function BuildContext({ build }: { build: Build }) {
+  return (
+    <p className="mt-1.5 border-t border-zinc-100 pt-1.5 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+      {build.build_number ? `Build #${build.build_number}` : "Build"}
+      {build.commit_sha ? ` · ${build.commit_sha.slice(0, 7)}` : ""}
+      {build.author ? ` · ${build.author}` : ""}
+      {build.created_at ? ` · ${formatTime(build.created_at)}` : ""}
+    </p>
   );
 }
 
@@ -206,6 +269,7 @@ export function BuildsTable({
 }: BuildsTableProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedBuildId, setExpandedBuildId] = useState<string | null>(null);
+  const [hoveredCol, setHoveredCol] = useState<string | null>(null);
   const buildIds = useMemo(
     () => builds.map((build) => build.id),
     [builds],
@@ -313,7 +377,7 @@ export function BuildsTable({
                   return (
                     <th
                       key={key}
-                      className="relative p-0 align-bottom"
+                      className={`relative p-0 align-bottom ${hoveredCol === key ? HIGHLIGHT : ""}`}
                       style={{ width: 28, minWidth: 28, height: 160 }}
                     >
                       {/* Short vertical tick at the bottom of the header */}
@@ -390,13 +454,13 @@ export function BuildsTable({
                   <tr
                     className={`group border-b border-zinc-100 transition-colors dark:border-zinc-800/50 ${
                       isTraceExpanded ? "bg-zinc-50 dark:bg-zinc-900/30" : ""
-                    } ${isTraceExpanded ? "" : "hover:bg-zinc-50/80 dark:hover:bg-zinc-900/20"}`}
+                    } ${isTraceExpanded ? "" : "hover:bg-blue-50 dark:hover:bg-blue-950/40"}`}
                   >
                     <td
                       className={`sticky left-0 z-10 whitespace-nowrap px-4 py-2 ${
                         isTraceExpanded
                           ? "bg-zinc-50 dark:bg-zinc-900"
-                          : "bg-white group-hover:bg-zinc-50 dark:bg-zinc-950 dark:group-hover:bg-zinc-900"
+                          : "bg-white group-hover:bg-blue-50 dark:bg-zinc-950 dark:group-hover:bg-blue-950"
                       }`}
                     >
                       <div className="flex items-center gap-2.5">
@@ -545,11 +609,14 @@ export function BuildsTable({
                     const borderR = isLastJob
                       ? "border-r border-zinc-300 dark:border-zinc-600"
                       : "";
+                    const colHighlight = hoveredCol === key ? HIGHLIGHT : "";
+                    const onHover = (hovering: boolean) =>
+                      setHoveredCol(hovering ? key : null);
 
                     if (isGroup) {
                       if (!groupStatus) {
                         return (
-                          <td key={key} className={`px-0 py-2 text-center ${borderL}`}>
+                          <td key={key} className={`px-0 py-2 text-center ${borderL} ${colHighlight}`}>
                             <div className="inline-flex h-5 w-5 items-center justify-center">
                               <span className="block h-3.5 w-3.5 rounded-sm bg-zinc-200 dark:bg-zinc-800" />
                             </div>
@@ -565,8 +632,38 @@ export function BuildsTable({
                         <DotWithTooltip
                           key={key}
                           color={dotColor(groupStatus.state)}
-                          label={groupStatus.group}
-                          detail={`${groupStatus.passed} passed, ${groupStatus.failed} failed, ${groupStatus.running} running, ${groupStatus.blocked} blocked`}
+                          ariaLabel={`${groupStatus.group}: ${groupStatus.passed} passed, ${groupStatus.failed} failed, ${groupStatus.running} running, ${groupStatus.blocked} blocked`}
+                          tooltip={
+                            <>
+                              <p className="font-medium">{groupStatus.group}</p>
+                              <p className={stateTextColor(groupStatus.state)}>
+                                <span className="capitalize">{groupStatus.state}</span>
+                                <span className="text-zinc-500 dark:text-zinc-400">
+                                  {` · ${groupStatus.passed} passed, ${groupStatus.failed} failed, ${groupStatus.running} running, ${groupStatus.blocked} blocked`}
+                                </span>
+                              </p>
+                              {failedJobLinks.length > 0 && (
+                                <ul className="mt-1 text-red-600 dark:text-red-400">
+                                  {failedJobLinks.slice(0, 5).map((job) => (
+                                    <li key={job.name}>✕ {job.name}</li>
+                                  ))}
+                                  {failedJobLinks.length > 5 && (
+                                    <li className="text-zinc-500 dark:text-zinc-400">
+                                      +{failedJobLinks.length - 5} more
+                                    </li>
+                                  )}
+                                </ul>
+                              )}
+                              <BuildContext build={build} />
+                              {failedJobHref ? (
+                                <p className="mt-1 text-zinc-400 dark:text-zinc-500">Click to open job in Buildkite ↗</p>
+                              ) : groupStatus.failed > 1 && failedJobLinks.length > 0 ? (
+                                <p className="mt-1 text-zinc-400 dark:text-zinc-500">Click to expand jobs</p>
+                              ) : null}
+                            </>
+                          }
+                          highlight={hoveredCol === key}
+                          onHover={onHover}
                           borderClass={borderL}
                           href={failedJobHref}
                           onClick={
@@ -584,7 +681,7 @@ export function BuildsTable({
                     );
                     if (!job) {
                       return (
-                        <td key={key} className={`px-0 py-2 text-center ${borderR}`}>
+                        <td key={key} className={`px-0 py-2 text-center ${borderR} ${colHighlight}`}>
                           <div className="inline-flex h-5 w-5 items-center justify-center">
                             <span className="block h-3.5 w-3.5 rounded-sm bg-zinc-200 dark:bg-zinc-800" />
                           </div>
@@ -595,9 +692,23 @@ export function BuildsTable({
                       <DotWithTooltip
                         key={key}
                         color={dotColor(job.state)}
-                        label={job.name}
-                        detail={job.state}
+                        ariaLabel={`${job.name}: ${job.state}`}
+                        tooltip={
+                          <>
+                            <p className="font-medium">{job.name}</p>
+                            <p className="text-zinc-500 dark:text-zinc-400">{col.group}</p>
+                            <p className={`capitalize ${stateTextColor(job.state)}`}>
+                              {job.state.replace(/_/g, " ")}
+                            </p>
+                            <BuildContext build={build} />
+                            {job.web_url && (
+                              <p className="mt-1 text-zinc-400 dark:text-zinc-500">Click to open in Buildkite ↗</p>
+                            )}
+                          </>
+                        }
                         href={job.web_url}
+                        highlight={hoveredCol === key}
+                        onHover={onHover}
                         borderClass={borderR}
                       />
                     );
