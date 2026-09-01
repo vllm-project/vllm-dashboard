@@ -373,11 +373,12 @@ export function BuildsTable({
                   const isLastJob =
                     col.type === "job" &&
                     (i === columns.length - 1 || columns[i + 1].type === "group");
+                  const isHovered = hoveredCol === key;
 
                   return (
                     <th
                       key={key}
-                      className={`relative p-0 align-bottom ${hoveredCol === key ? HIGHLIGHT : ""}`}
+                      className="relative p-0 align-bottom"
                       style={{ width: 28, minWidth: 28, height: 160 }}
                     >
                       {/* Short vertical tick at the bottom of the header */}
@@ -392,11 +393,15 @@ export function BuildsTable({
                         className={`absolute bottom-2 left-1/2 origin-bottom-left whitespace-nowrap ${
                           isGroup
                             ? `cursor-pointer text-[12px] font-semibold ${
-                                isExpanded
+                                isExpanded || isHovered
                                   ? "text-blue-600 dark:text-blue-400"
                                   : "text-zinc-700 hover:text-zinc-900 dark:text-zinc-200 dark:hover:text-zinc-100"
                               }`
-                            : "text-[10px] font-normal text-zinc-400 dark:text-zinc-500"
+                            : `text-[10px] ${
+                                isHovered
+                                  ? "font-semibold text-blue-600 dark:text-blue-400"
+                                  : "font-normal text-zinc-400 dark:text-zinc-500"
+                              }`
                         }`}
                         style={{
                           transform: "rotate(-55deg)",
