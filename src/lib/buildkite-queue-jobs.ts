@@ -1,4 +1,5 @@
 import { unstable_cache } from "next/cache";
+import { queueKeyFromAgentQueryRules } from "@/lib/buildkite-agent-query";
 
 const GRAPHQL_ENDPOINT = "https://graphql.buildkite.com/v1";
 const REST_ENDPOINT = "https://api.buildkite.com/v2";
@@ -30,6 +31,7 @@ interface GraphQLResponse {
             runnableAt?: string | null;
             priority?: { number?: number };
             clusterQueue?: { id?: string } | null;
+            agentQueryRules?: string[] | null;
           };
         }>;
       };
@@ -395,6 +397,7 @@ async function graphqlQueueJobs(
                       runnableAt
                       priority { number }
                       clusterQueue { id }
+                      agentQueryRules
                     }
                   }
                 }
@@ -437,7 +440,13 @@ async function graphqlQueueJobs(
 
     for (const { node } of connection.edges) {
       if (!node.uuid || !node.url || !node.scheduledAt) continue;
-      if (clusterQueue && node.clusterQueue?.id !== clusterQueue.queueId) continue;
+      if (
+        clusterQueue &&
+        node.clusterQueue?.id !== clusterQueue.queueId &&
+        queueKeyFromAgentQueryRules(node.agentQueryRules) !== queue
+      ) {
+        continue;
+      }
       jobs.push({
         uuid: node.uuid,
         label: node.label ?? null,

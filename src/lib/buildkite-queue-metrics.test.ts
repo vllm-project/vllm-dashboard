@@ -111,3 +111,47 @@ test("aggregateQueueSnapshots keeps Buildkite counts and groups waits by queue",
     },
   ]);
 });
+
+test("aggregateQueueSnapshots maps Kubernetes jobs by their queue agent rule", () => {
+  const snapshots = aggregateQueueSnapshots(
+    [
+      {
+        id: "l4-cluster-queue",
+        key: "l4-k8s",
+        metrics: {
+          connectedAgentsCount: 35,
+          runningJobsCount: 35,
+          waitingJobsCount: 2,
+        },
+      },
+    ],
+    [
+      {
+        clusterQueueId: null,
+        queueKey: "l4-k8s",
+        runnableAt: new Date(NOW.getTime() - 30 * 1000).toISOString(),
+      },
+      {
+        clusterQueueId: null,
+        queueKey: "l4-k8s",
+        runnableAt: new Date(NOW.getTime() - 90 * 1000).toISOString(),
+      },
+    ],
+    NOW,
+  );
+
+  assert.deepEqual(snapshots, [
+    {
+      queue: "l4-k8s",
+      polledAt: NOW.toISOString(),
+      connectedAgents: 35,
+      runningJobs: 35,
+      waitingJobs: 2,
+      p50: 30,
+      p90: 90,
+      p95: 90,
+      p99: 90,
+      sampleSize: 2,
+    },
+  ]);
+});

@@ -1,3 +1,5 @@
+import { queueKeyFromAgentQueryRules } from "@/lib/buildkite-agent-query";
+
 const GRAPHQL_ENDPOINT = "https://graphql.buildkite.com/v1";
 const PAGE_SIZE = 100;
 
@@ -67,6 +69,7 @@ interface ScheduledJobsConnection {
     node: {
       runnableAt: string | null;
       clusterQueue: { id: string } | null;
+      agentQueryRules: string[] | null;
     };
   }>;
 }
@@ -83,6 +86,7 @@ interface GraphQLResponse<T> {
 interface ScheduledQueueJob {
   runnableAt: string | null;
   clusterQueueId: string | null;
+  queueKey?: string | null;
 }
 
 async function graphqlRequest<T>(
@@ -147,11 +151,17 @@ export function aggregateQueueSnapshots(
   now: Date,
 ): BuildkiteQueueSnapshot[] {
   const jobsByQueue = new Map<string, Array<string | null>>();
+  const jobsByQueueKey = new Map<string, Array<string | null>>();
   for (const job of jobs) {
-    if (!job.clusterQueueId) continue;
-    const queueJobs = jobsByQueue.get(job.clusterQueueId) ?? [];
-    queueJobs.push(job.runnableAt);
-    jobsByQueue.set(job.clusterQueueId, queueJobs);
+    if (job.clusterQueueId) {
+      const queueJobs = jobsByQueue.get(job.clusterQueueId) ?? [];
+      queueJobs.push(job.runnableAt);
+      jobsByQueue.set(job.clusterQueueId, queueJobs);
+    } else if (job.queueKey) {
+      const queueJobs = jobsByQueueKey.get(job.queueKey) ?? [];
+      queueJobs.push(job.runnableAt);
+      jobsByQueueKey.set(job.queueKey, queueJobs);
+    }
   }
 
   const queuesByKey = new Map<string, {
@@ -177,7 +187,10 @@ export function aggregateQueueSnapshots(
 
   return [...queuesByKey.entries()]
     .map(([queue, aggregate]) => {
-      const runnableAtValues = aggregate.ids.flatMap((id) => jobsByQueue.get(id) ?? []);
+      const runnableAtValues = [
+        ...aggregate.ids.flatMap((id) => jobsByQueue.get(id) ?? []),
+        ...(jobsByQueueKey.get(queue) ?? []),
+      ];
       const wait = calculateWaitPercentiles(runnableAtValues, now);
       return {
         queue,
@@ -305,6 +318,7 @@ async function fetchScheduledJobs(token: string, organization: string): Promise<
                   ... on JobTypeCommand {
                     runnableAt
                     clusterQueue { id }
+                    agentQueryRules
                   }
                 }
               }
@@ -322,6 +336,7 @@ async function fetchScheduledJobs(token: string, organization: string): Promise<
       ...connection.edges.map(({ node }) => ({
         runnableAt: node.runnableAt,
         clusterQueueId: node.clusterQueue?.id ?? null,
+        queueKey: queueKeyFromAgentQueryRules(node.agentQueryRules),
       })),
     );
     after = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
