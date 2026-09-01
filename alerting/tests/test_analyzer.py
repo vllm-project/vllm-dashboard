@@ -442,6 +442,53 @@ def test_analysis_persists_conditions_report_checkpoint_and_notification() -> No
     assert "Job B" in notification.payload["text"]
 
 
+def test_wrapped_bullet_job_names_are_posted_plain_and_attributed() -> None:
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs(
+                    [("Job A", "failed", False), (":nvidia: Job B", "failed", False)]
+                ),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+    harness.seed_analysis(run1, failed_tests=("Job A",))
+    harness.runner.on_run(
+        lambda wd: well_behaved(
+            wd,
+            report=(
+                "*Build:* fine\n"
+                "*New failures (1):*\n"
+                "• <https://buildkite.com/vllm/ci/builds/2#job-b|`:nvidia: Job B`>"
+                " — _env: disk full_\n"
+                "*Recurring failures (1):*\n"
+                "• `Job A`\n"
+            ),
+        )
+    )
+
+    result = harness.analyze()
+
+    assert result.status is ProcessStatus.COMPLETED
+    text = notification_for(harness, run2.build_id).payload["text"]
+    assert "• :nvidia: Job B — _env: disk full_" in text
+    assert "• Job A\n" in text
+    assert "<https://buildkite.com/vllm/ci/builds/2#job-b|" not in text
+    conditions = {
+        condition.job_name: condition
+        for condition in harness.store.analyses()[-1].conditions
+    }
+    # The unwrapped name matches the Buildkite job name, so the report
+    # attribution is found instead of falling back to UNKNOWN.
+    assert conditions[":nvidia: Job B"].cause is CauseCategory.INFRASTRUCTURE
+    assert conditions[":nvidia: Job B"].summary == "env: disk full"
+
+
 def test_shadow_analysis_persists_report_without_slack_delivery() -> None:
     run1 = make_run(1, RUN1_AT)
     run2 = make_run(2, RUN2_AT)

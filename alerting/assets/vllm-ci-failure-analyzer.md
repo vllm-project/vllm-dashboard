@@ -61,7 +61,9 @@ Count only hard failures in `Y failed`. Add sections for new, recurring, fixed,
 and soft failures when present. Investigation summaries must be concise. Show
 at most five bullets per section and link to the build for omitted entries.
 Keep the complete report at or below 2,800 characters without breaking Slack
-links or formatting.
+links or formatting. Write job names as plain text with their leading emoji
+shortcode (e.g. `:nvidia:`) outside any link or code span; shortcodes inside
+link labels or backticks render as literal text in Slack.
 
 ## Phase D — Update outputs
 

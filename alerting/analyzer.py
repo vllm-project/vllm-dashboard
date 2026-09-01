@@ -317,6 +317,31 @@ def _pr_number(summary: str) -> int | None:
     return int(match.group("number")) if match is not None else None
 
 
+_BULLET_NAME_LINK = re.compile(r"^(?P<prefix>\s*•\s+)<https?://[^|>]+\|(?P<label>[^>]+)>")
+_BULLET_NAME_CODE = re.compile(r"^(?P<prefix>\s*•\s+)`(?P<name>[^`]+)`")
+
+
+def _plain_bullet_names(report_text: str) -> str:
+    """Unwrap links and code spans around job names at bullet starts.
+
+    The model wraps names inconsistently; Slack does not render custom emoji
+    shortcodes (":nvidia:") inside link labels or code spans, and the mangled
+    names also fail to match Buildkite job names during attribution parsing.
+    """
+    lines = []
+    for line in report_text.splitlines():
+        linked = _BULLET_NAME_LINK.match(line)
+        if linked is not None:
+            name = linked.group("label").strip().strip("`")
+            line = f"{linked.group('prefix')}{name}{line[linked.end():]}"
+        coded = _BULLET_NAME_CODE.match(line)
+        if coded is not None:
+            line = f"{coded.group('prefix')}{coded.group('name')}{line[coded.end():]}"
+        lines.append(line)
+    text = "\n".join(lines)
+    return text + "\n" if report_text.endswith("\n") else text
+
+
 def _hard_failures(jobs: list[FullCIJobOutcome]) -> set[str]:
     return {job.name for job in jobs if job.state == "failed" and not job.soft_failed}
 
@@ -462,6 +487,7 @@ def _read_outputs(
         raise AnalyzerError("analyzer wrote an empty report")
     if report_text.strip() == "SKIP":
         raise AnalyzerError("analyzer skipped a comparison the adapter deemed ready")
+    report_text = _plain_bullet_names(report_text)
     if len(report_text) > REPORT_CHAR_LIMIT:
         raise AnalyzerError(
             f"report exceeds {REPORT_CHAR_LIMIT} characters: {len(report_text)}"
