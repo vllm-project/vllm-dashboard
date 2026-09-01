@@ -1,12 +1,20 @@
 """Full CI ingest behavior through the scheduled-command runtime seam."""
 
+import io
+import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
+from email.message import Message
 from typing import Any
+
+import pytest
 
 from alerting.commands import ScheduledCommand
 from alerting.full_ci import (
     INITIAL_LOOKBACK,
     BuildkiteFullCISource,
+    BuildkiteRestClient,
     FullCIJobOutcome,
     FullCIReconciliationHandler,
     FullCIRun,
@@ -272,3 +280,48 @@ def test_buildkite_source_maps_only_eligible_full_ci_runs_and_named_jobs() -> No
             ),
         )
     ]
+
+
+def _http_error(url: str, status: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        url, status, "error", Message(), io.BytesIO(b"transient")
+    )
+
+
+def test_buildkite_client_retries_transient_http_errors(monkeypatch: Any) -> None:
+    attempts = 0
+
+    def fake_urlopen(request: Any, timeout: int = 0) -> Any:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise _http_error(request.full_url, 429)
+        return io.BytesIO(b"[]")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    client = BuildkiteRestClient(token="token")
+
+    assert client.list_builds(start_time=None, up_to=START) == []
+    assert attempts == 3
+
+
+def test_buildkite_client_does_not_retry_permanent_http_errors(
+    monkeypatch: Any,
+) -> None:
+    attempts = 0
+
+    def fake_urlopen(request: Any, timeout: int = 0) -> Any:
+        nonlocal attempts
+        attempts += 1
+        raise _http_error(request.full_url, 400)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+
+    client = BuildkiteRestClient(token="token")
+
+    with pytest.raises(RuntimeError, match="HTTP 400"):
+        client.list_builds(start_time=None, up_to=START)
+    assert attempts == 1

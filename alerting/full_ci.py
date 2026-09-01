@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +19,8 @@ from alerting.runtime import HandlerCompletion
 # First-ever reconciliation has no durable run to anchor a fetch window; two
 # days of runs is what an incident responder needs, not the pipeline's history.
 INITIAL_LOOKBACK = timedelta(days=2)
+
+_TRANSIENT_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
 @dataclass(frozen=True)
@@ -118,22 +121,28 @@ class BuildkiteRestClient:
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme != "https" or parsed.netloc != "api.buildkite.com":
             raise RuntimeError("Buildkite pagination returned an untrusted URL")
-        request = urllib.request.Request(
-            url,
-            headers={
-                "Authorization": f"Bearer {self._token}",
-                "Accept": "application/json",
-                "User-Agent": "vllm-ci-alerting/1.0",
-            },
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                return json.load(response)
-        except urllib.error.HTTPError as exc:
-            response_body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"GET {parsed.path} failed with HTTP {exc.code}: {response_body[:1000]}"
-            ) from exc
+        for attempt in range(3):
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "Authorization": f"Bearer {self._token}",
+                    "Accept": "application/json",
+                    "User-Agent": "vllm-ci-alerting/1.0",
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    return json.load(response)
+            except urllib.error.HTTPError as exc:
+                response_body = exc.read().decode("utf-8", errors="replace")
+                # A transient error must not idle a twice-daily timer tick;
+                # the legacy pre-script retried 429s the same way.
+                if exc.code in _TRANSIENT_HTTP_STATUSES and attempt < 2:
+                    time.sleep(10)
+                    continue
+                raise RuntimeError(
+                    f"GET {parsed.path} failed with HTTP {exc.code}: {response_body[:1000]}"
+                ) from exc
 
     def list_builds(
         self, *, start_time: datetime | None, up_to: datetime
