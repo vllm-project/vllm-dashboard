@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { aggregateJobsByGroup, resolveGroupsToJobConditions } from "@/lib/test-groups";
-import { ensureTestAreaMapping } from "@/lib/test-areas";
+import {
+  ensureTestAreaMapping,
+  getTestAreaMappingForCommit,
+} from "@/lib/test-areas";
 import { getCached, setCache } from "@/lib/api-cache";
 
 const MAX_PER_PAGE = 30;
@@ -270,9 +273,25 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const buildsWithGroups = builds.map((b) => {
+    const mappingsByCommit = new Map<
+      string,
+      ReturnType<typeof getTestAreaMappingForCommit>
+    >();
+    for (const build of builds) {
+      const mappingKey = `${build.branch}:${build.commit_sha}`;
+      if (!mappingsByCommit.has(mappingKey)) {
+        mappingsByCommit.set(
+          mappingKey,
+          getTestAreaMappingForCommit(build.commit_sha, build.branch),
+        );
+      }
+    }
+    const buildsWithGroups = await Promise.all(builds.map(async (b) => {
       const buildJobs = jobsByBuild.get(b.id) ?? [];
-      const testGroups = aggregateJobsByGroup(buildJobs);
+      const mapping = await mappingsByCommit.get(
+        `${b.branch}:${b.commit_sha}`,
+      )!;
+      const testGroups = aggregateJobsByGroup(buildJobs, mapping);
       let prNumber = b.pr_number;
       if (!prNumber && b.message) {
         const match = b.message.match(/\(#(\d+)\)/);
@@ -282,7 +301,7 @@ export async function GET(request: NextRequest) {
         ? buildJobs.filter((j) => jobNames.some((n) => j.name === n))
         : undefined;
       return { ...b, pr_number: prNumber, testGroups, matchedJobs };
-    });
+    }));
 
     const counts = countResult[0] ?? { total: "0", passed: "0", failed: "0" };
     const total = parseInt(counts.total, 10);

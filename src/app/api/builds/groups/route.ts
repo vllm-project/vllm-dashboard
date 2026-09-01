@@ -7,7 +7,7 @@ import {
   isFailedJobState,
   type GroupStatus,
 } from "@/lib/test-groups";
-import { ensureTestAreaMapping } from "@/lib/test-areas";
+import { getTestAreaMappingForCommit } from "@/lib/test-areas";
 
 const TTL = 30_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -49,8 +49,6 @@ export async function GET(request: NextRequest) {
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
 
-    await ensureTestAreaMapping();
-
     const idList = buildIds.map((id) => `'${escapeSql(id)}'`).join(",");
     const jobs = await queryDatabricks(`
       SELECT
@@ -58,8 +56,12 @@ export async function GET(request: NextRequest) {
         j.name,
         j.state,
         j.web_url,
-        j.started_at
+        j.started_at,
+        b.commit AS commit_sha,
+        b.branch
       FROM vllm_data_warehouse.buildkite.build_job AS j
+      INNER JOIN vllm_data_warehouse.buildkite.build AS b
+        ON j.build_id = b.id
       WHERE j.build_id IN (${idList})
         AND j._fivetran_deleted = false
         AND j.type = 'script'
@@ -73,10 +75,20 @@ export async function GET(request: NextRequest) {
     const startedJobCountsByBuild = Object.fromEntries(
       buildIds.map((buildId) => [buildId, 0]),
     ) as Record<string, number>;
+    const refsByBuild = new Map<
+      string,
+      { commit: string | null; branch: string | null }
+    >();
     for (const job of jobs) {
       const row = job as Record<string, string | null>;
       const buildId = row.build_id;
       if (!buildId || !row.name || !row.state) continue;
+      if (!refsByBuild.has(buildId)) {
+        refsByBuild.set(buildId, {
+          commit: row.commit_sha,
+          branch: row.branch,
+        });
+      }
       if (row.started_at) {
         startedJobCountsByBuild[buildId] += 1;
       }
@@ -91,8 +103,35 @@ export async function GET(request: NextRequest) {
 
     const groupedByBuild = new Map<string, GroupStatus[]>();
     const jobToGroup = new Map<string, string>();
+    const mappingsByCommit = new Map<
+      string,
+      ReturnType<typeof getTestAreaMappingForCommit>
+    >();
+    for (const ref of refsByBuild.values()) {
+      const mappingKey = `${ref.branch ?? ""}:${ref.commit ?? ""}`;
+      if (!mappingsByCommit.has(mappingKey)) {
+        mappingsByCommit.set(
+          mappingKey,
+          getTestAreaMappingForCommit(ref.commit, ref.branch),
+        );
+      }
+    }
     for (const buildId of buildIds) {
-      const groups = aggregateJobsByGroup(jobsByBuild.get(buildId) ?? []);
+      const ref = refsByBuild.get(buildId);
+      const mappingKey = `${ref?.branch ?? ""}:${ref?.commit ?? ""}`;
+      let mappingPromise = mappingsByCommit.get(mappingKey);
+      if (!mappingPromise) {
+        mappingPromise = getTestAreaMappingForCommit(
+          ref?.commit,
+          ref?.branch,
+        );
+        mappingsByCommit.set(mappingKey, mappingPromise);
+      }
+      const mapping = await mappingPromise;
+      const groups = aggregateJobsByGroup(
+        jobsByBuild.get(buildId) ?? [],
+        mapping,
+      );
       groupedByBuild.set(buildId, groups);
       for (const group of groups) {
         for (const job of group.jobs) {

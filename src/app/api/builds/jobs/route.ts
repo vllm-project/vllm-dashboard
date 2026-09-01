@@ -3,7 +3,7 @@ import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 import { aggregateJobsByGroup, type JobInfo } from "@/lib/test-groups";
-import { ensureTestAreaMapping } from "@/lib/test-areas";
+import { getTestAreaMappingForCommit } from "@/lib/test-areas";
 
 const TTL = 30_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -42,16 +42,18 @@ export async function GET(request: NextRequest) {
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
 
-    await ensureTestAreaMapping();
-
     const idList = buildIds.map((id) => `'${escapeSql(id)}'`).join(",");
     const jobs = await queryDatabricks(`
       SELECT
         j.build_id,
         j.name,
         j.state,
-        j.web_url
+        j.web_url,
+        b.commit AS commit_sha,
+        b.branch
       FROM vllm_data_warehouse.buildkite.build_job AS j
+      INNER JOIN vllm_data_warehouse.buildkite.build AS b
+        ON j.build_id = b.id
       WHERE j.build_id IN (${idList})
         AND j._fivetran_deleted = false
         AND j.type = 'script'
@@ -62,21 +64,59 @@ export async function GET(request: NextRequest) {
       string,
       { name: string; state: string; web_url?: string }[]
     >();
+    const refsByBuild = new Map<
+      string,
+      { commit: string | null; branch: string | null }
+    >();
     for (const job of jobs) {
-      const row = job as Record<string, string>;
+      const row = job as Record<string, string | null>;
+      if (!row.build_id || !row.name || !row.state) continue;
+      if (!refsByBuild.has(row.build_id)) {
+        refsByBuild.set(row.build_id, {
+          commit: row.commit_sha,
+          branch: row.branch,
+        });
+      }
       const buildJobs = rawJobsByBuild.get(row.build_id) ?? [];
       buildJobs.push({
         name: row.name,
         state: row.state,
-        web_url: row.web_url,
+        web_url: row.web_url ?? undefined,
       });
       rawJobsByBuild.set(row.build_id, buildJobs);
     }
 
     const groupSet = new Set(groups);
     const jobsByBuild: Record<string, Record<string, JobInfo[]>> = {};
+    const mappingsByCommit = new Map<
+      string,
+      ReturnType<typeof getTestAreaMappingForCommit>
+    >();
+    for (const ref of refsByBuild.values()) {
+      const mappingKey = `${ref.branch ?? ""}:${ref.commit ?? ""}`;
+      if (!mappingsByCommit.has(mappingKey)) {
+        mappingsByCommit.set(
+          mappingKey,
+          getTestAreaMappingForCommit(ref.commit, ref.branch),
+        );
+      }
+    }
     for (const buildId of buildIds) {
-      const grouped = aggregateJobsByGroup(rawJobsByBuild.get(buildId) ?? []);
+      const ref = refsByBuild.get(buildId);
+      const mappingKey = `${ref?.branch ?? ""}:${ref?.commit ?? ""}`;
+      let mappingPromise = mappingsByCommit.get(mappingKey);
+      if (!mappingPromise) {
+        mappingPromise = getTestAreaMappingForCommit(
+          ref?.commit,
+          ref?.branch,
+        );
+        mappingsByCommit.set(mappingKey, mappingPromise);
+      }
+      const mapping = await mappingPromise;
+      const grouped = aggregateJobsByGroup(
+        rawJobsByBuild.get(buildId) ?? [],
+        mapping,
+      );
       jobsByBuild[buildId] = Object.fromEntries(
         grouped
           .filter((group) => groupSet.has(group.group))

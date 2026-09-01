@@ -18,15 +18,41 @@ export interface TestAreaMapping {
 }
 
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const COMMIT_CACHE_LIMIT = 100;
 
 const GITHUB_RAW_BASE =
-  "https://raw.githubusercontent.com/vllm-project/vllm/main/.buildkite/test_areas";
-const GITHUB_API_URL =
-  "https://api.github.com/repos/vllm-project/vllm/contents/.buildkite/test_areas";
+  "https://raw.githubusercontent.com/vllm-project/vllm";
+const GITHUB_API_BASE =
+  "https://api.github.com/repos/vllm-project/vllm";
+const MAIN_REF = "main";
+const CI_CONFIG_PATTERN = /^\.buildkite\/ci_config(?:_[^/]+)?\.ya?ml$/;
+const YAML_PATTERN = /\.ya?ml$/;
 
-// Pipeline groups that are not defined in .buildkite/test_areas.  Keep these
-// local rather than relying on the remote test-area refresh: that endpoint
-// intentionally only describes the main CUDA test matrix.
+interface GitTreeEntry {
+  path: string;
+  type: string;
+}
+
+interface CiConfig {
+  job_dirs?: unknown;
+}
+
+interface CompareFile {
+  filename: string;
+  status: string;
+}
+
+function githubHeaders(): HeadersInit {
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+  };
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+// Fallback labels for cold starts and GitHub outages. Live discovery replaces
+// these from every job directory named by .buildkite/ci_config*.yaml.
 const PIPELINE_GROUP_DATA: [string, string[]][] = [
   ["Abuild", [
     ":docker: Build image",
@@ -194,7 +220,12 @@ function buildMapping(areas: { group: string; labels: string[] }[]): TestAreaMap
       if (label.includes("%N")) {
         const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const pattern = escaped.replace("%N", "\\d+");
-        patterns.push({ regex: new RegExp(`^${pattern}$`), group: area.group });
+        const regex = new RegExp(`^${pattern}$`);
+        const existing = patterns.findIndex(
+          (candidate) => candidate.regex.source === regex.source,
+        );
+        if (existing >= 0) patterns.splice(existing, 1);
+        patterns.push({ regex, group: area.group });
       } else {
         jobToGroup.set(label, area.group);
       }
@@ -224,38 +255,161 @@ export function buildTestAreaMapping(areas: TestArea[]): TestAreaMapping {
 const STATIC_MAPPING = buildTestAreaMapping([]);
 
 let cachedMapping: TestAreaMapping = STATIC_MAPPING;
+let cachedAreas: TestArea[] = [];
 let cacheExpiry = 0;
 let refreshPromise: Promise<void> | null = null;
+const commitMappings = new Map<
+  string,
+  { mapping: TestAreaMapping; expiresAt: number }
+>();
 
-async function fetchTestAreas(): Promise<TestArea[]> {
-  const listRes = await fetch(GITHUB_API_URL, {
-    headers: { Accept: "application/vnd.github.v3+json" },
-  });
-  if (!listRes.ok) {
-    throw new Error(`GitHub API error: ${listRes.status}`);
+function rawUrl(ref: string, path: string): string {
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  return `${GITHUB_RAW_BASE}/${encodeURIComponent(ref)}/${encodedPath}`;
+}
+
+function parseTestArea(value: unknown): TestArea | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { group?: unknown; steps?: unknown };
+  if (typeof candidate.group !== "string" || !candidate.group.trim()) {
+    return null;
   }
-  const files = (await listRes.json()) as { name: string }[];
-  const yamlFiles = files
-    .filter((f) => f.name.endsWith(".yaml"))
-    .map((f) => f.name);
+  if (!Array.isArray(candidate.steps)) return null;
 
-  const areas: TestArea[] = [];
-  const results = await Promise.allSettled(
-    yamlFiles.map(async (name) => {
-      const res = await fetch(`${GITHUB_RAW_BASE}/${name}`);
-      if (!res.ok) return null;
-      const text = await res.text();
-      return yaml.load(text) as TestArea;
-    })
+  const steps = candidate.steps.filter(
+    (step): step is TestStep =>
+      !!step &&
+      typeof step === "object" &&
+      typeof (step as { label?: unknown }).label === "string",
   );
+  if (steps.length === 0) return null;
+  return { group: candidate.group, steps };
+}
 
-  for (const result of results) {
-    if (result.status === "fulfilled" && result.value?.group && result.value?.steps) {
-      areas.push(result.value);
+async function fetchYaml(ref: string, path: string): Promise<unknown> {
+  const response = await fetch(rawUrl(ref, path));
+  if (!response.ok) {
+    throw new Error(`GitHub raw error for ${path}: ${response.status}`);
+  }
+  return yaml.load(await response.text());
+}
+
+async function fetchAreas(
+  ref: string,
+  paths: string[],
+): Promise<TestArea[]> {
+  const results = await Promise.allSettled(
+    paths.map(async (path) => parseTestArea(await fetchYaml(ref, path))),
+  );
+  const failures = results.filter(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures.map((failure) => failure.reason),
+      `Failed to read ${failures.length} Buildkite YAML file(s) at ${ref}`,
+    );
+  }
+  return results.flatMap((result) =>
+    result.status === "fulfilled" && result.value ? [result.value] : [],
+  );
+}
+
+export function discoverGroupYamlPaths(
+  entries: GitTreeEntry[],
+  configs: CiConfig[],
+): string[] {
+  const jobDirs = new Set<string>();
+  for (const config of configs) {
+    if (!Array.isArray(config.job_dirs)) continue;
+    for (const value of config.job_dirs) {
+      if (typeof value === "string" && value.startsWith(".buildkite/")) {
+        jobDirs.add(value.replace(/\/$/, ""));
+      }
     }
   }
 
-  return areas;
+  return entries
+    .filter(
+      (entry) =>
+        entry.type === "blob" &&
+        YAML_PATTERN.test(entry.path) &&
+        [...jobDirs].some(
+          (directory) =>
+            entry.path === directory || entry.path.startsWith(`${directory}/`),
+        ),
+    )
+    .map((entry) => entry.path)
+    .sort();
+}
+
+async function fetchTestAreas(): Promise<TestArea[]> {
+  const treeResponse = await fetch(
+    `${GITHUB_API_BASE}/git/trees/${MAIN_REF}?recursive=1`,
+    { headers: githubHeaders() },
+  );
+  if (!treeResponse.ok) {
+    throw new Error(`GitHub tree error: ${treeResponse.status}`);
+  }
+  const tree = (await treeResponse.json()) as {
+    tree?: GitTreeEntry[];
+    truncated?: boolean;
+  };
+  if (!tree.tree || tree.truncated) {
+    throw new Error("GitHub returned an incomplete repository tree");
+  }
+
+  const configPaths = tree.tree
+    .filter(
+      (entry) => entry.type === "blob" && CI_CONFIG_PATTERN.test(entry.path),
+    )
+    .map((entry) => entry.path);
+  const configResults = await Promise.allSettled(
+    configPaths.map((path) => fetchYaml(MAIN_REF, path)),
+  );
+  const configFailures = configResults.filter(
+    (result): result is PromiseRejectedResult => result.status === "rejected",
+  );
+  if (configFailures.length > 0) {
+    throw new AggregateError(
+      configFailures.map((failure) => failure.reason),
+      "Failed to read Buildkite CI configuration",
+    );
+  }
+  const configs = configResults.flatMap((result) =>
+    result.status === "fulfilled" &&
+    result.value &&
+    typeof result.value === "object"
+      ? [result.value as CiConfig]
+      : [],
+  );
+  const groupPaths = discoverGroupYamlPaths(tree.tree, configs);
+  if (groupPaths.length === 0) {
+    throw new Error("No configured Buildkite group YAML files found");
+  }
+  return fetchAreas(MAIN_REF, groupPaths);
+}
+
+async function fetchChangedTestAreas(commit: string): Promise<TestArea[]> {
+  const compareResponse = await fetch(
+    `${GITHUB_API_BASE}/compare/${MAIN_REF}...${encodeURIComponent(commit)}`,
+    { headers: githubHeaders() },
+  );
+  if (!compareResponse.ok) {
+    throw new Error(`GitHub compare error: ${compareResponse.status}`);
+  }
+  const comparison = (await compareResponse.json()) as {
+    files?: CompareFile[];
+  };
+  const changedYamlPaths = (comparison.files ?? [])
+    .filter(
+      (file) =>
+        file.status !== "removed" &&
+        file.filename.startsWith(".buildkite/") &&
+        YAML_PATTERN.test(file.filename),
+    )
+    .map((file) => file.filename);
+  return fetchAreas(commit, changedYamlPaths);
 }
 
 function refreshMapping(): Promise<void> {
@@ -264,8 +418,10 @@ function refreshMapping(): Promise<void> {
   refreshPromise = (async () => {
     try {
       const areas = await fetchTestAreas();
+      cachedAreas = areas;
       cachedMapping = buildTestAreaMapping(areas);
       cacheExpiry = Date.now() + CACHE_TTL;
+      commitMappings.clear();
     } catch (error) {
       console.error("Failed to refresh test areas from GitHub:", error);
       // Keep using existing mapping (static or previously fetched)
@@ -292,4 +448,40 @@ export async function ensureTestAreaMapping(): Promise<TestAreaMapping> {
     await refreshMapping();
   }
   return cachedMapping;
+}
+
+export async function getTestAreaMappingForCommit(
+  commit: string | null | undefined,
+  branch: string | null | undefined,
+): Promise<TestAreaMapping> {
+  const mainMapping = await ensureTestAreaMapping();
+  if (
+    !commit ||
+    branch === MAIN_REF ||
+    !/^[0-9a-f]{7,64}$/i.test(commit)
+  ) {
+    return mainMapping;
+  }
+
+  const cached = commitMappings.get(commit);
+  if (cached && cached.expiresAt > Date.now()) return cached.mapping;
+
+  let mapping = mainMapping;
+  let ttl = CACHE_TTL;
+  try {
+    const changedAreas = await fetchChangedTestAreas(commit);
+    if (changedAreas.length > 0) {
+      mapping = buildTestAreaMapping([...cachedAreas, ...changedAreas]);
+    }
+  } catch (error) {
+    console.error(`Failed to refresh test areas for commit ${commit}:`, error);
+    ttl = 5 * 60 * 1000;
+  }
+
+  commitMappings.set(commit, { mapping, expiresAt: Date.now() + ttl });
+  if (commitMappings.size > COMMIT_CACHE_LIMIT) {
+    const oldest = commitMappings.keys().next().value;
+    if (oldest) commitMappings.delete(oldest);
+  }
+  return mapping;
 }

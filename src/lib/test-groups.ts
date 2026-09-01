@@ -103,10 +103,9 @@ export function resolveGroupsToJobConditions(groups: string[]): { exactNames: st
 }
 
 export function aggregateJobsByGroup(
-  jobs: { name: string; state: string; web_url?: string }[]
+  jobs: { name: string; state: string; web_url?: string }[],
+  mapping: TestAreaMapping = getTestAreaMapping(),
 ): GroupStatus[] {
-  const mapping = getTestAreaMapping();
-
   const groupMap = new Map<
     string,
     { passed: number; failed: number; running: number; blocked: number; total: number; jobs: JobInfo[] }
