@@ -12,7 +12,8 @@ import {
   Cell,
   Legend,
   Line,
-  LineChart,
+  Area,
+  ComposedChart,
 } from "recharts";
 
 export interface BuildDuration {
@@ -49,6 +50,10 @@ interface DailyPoint {
   total: number;
   passed: number;
   failed: number;
+  passRate: number;
+  // Band helpers for the P50–P90 range area (base is transparent, band is the fill).
+  bandBase: number;
+  band: number;
 }
 
 function formatDuration(mins: number): string {
@@ -119,6 +124,9 @@ function OverviewTooltip({
         </span>
         <span className="font-medium text-red-600 dark:text-red-400">
           {point.failed} failed
+        </span>
+        <span className="ml-auto font-medium tabular-nums text-zinc-700 dark:text-zinc-300">
+          {point.passRate}%
         </span>
       </div>
     </div>
@@ -216,7 +224,9 @@ interface BuildChartProps {
 }
 
 export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChartProps) {
-  const [mode, setMode] = useState<ChartMode>("runs");
+  const [mode, setMode] = useState<ChartMode>(() =>
+    data.length > 500 ? "overview" : "runs",
+  );
   const rangeLabel =
     startDate && endDate ? `${startDate} — ${endDate}` : "All Time";
 
@@ -256,6 +266,10 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
           .map((build) => parseInt(build.duration_mins, 10) || 0)
           .sort((a, b) => a - b);
         const parsedDate = new Date(`${date}T12:00:00`);
+        const passed = builds.filter((build) => !isFailed(build.state)).length;
+        const failed = builds.filter((build) => isFailed(build.state)).length;
+        const p50 = percentile(durations, 0.5);
+        const p90 = percentile(durations, 0.9);
         return {
           date: parsedDate.toLocaleDateString("en-US", {
             month: "short",
@@ -266,12 +280,15 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
             month: "short",
             day: "numeric",
           }),
-          p50: percentile(durations, 0.5),
-          p90: percentile(durations, 0.9),
+          p50,
+          p90,
           peak: durations[durations.length - 1] ?? 0,
           total: builds.length,
-          passed: builds.filter((build) => !isFailed(build.state)).length,
-          failed: builds.filter((build) => isFailed(build.state)).length,
+          passed,
+          failed,
+          passRate: builds.length > 0 ? Math.round((passed / builds.length) * 100) : 0,
+          bandBase: p50,
+          band: p90 - p50,
         };
       });
   }, [filteredData]);
@@ -352,7 +369,7 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
       <div className="h-[320px] sm:h-[360px]">
         <ResponsiveContainer width="100%" height="100%">
           {mode === "overview" ? (
-            <LineChart
+            <ComposedChart
               data={dailyData}
               margin={{ top: 10, right: 12, bottom: 4, left: 2 }}
             >
@@ -369,12 +386,22 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
                 tick={{ fontSize: 11 }}
               />
               <YAxis
+                yAxisId="duration"
                 tick={{ fontSize: 11 }}
                 tickFormatter={formatDurationRound}
                 stroke="var(--chart-axis)"
                 width={44}
                 ticks={ticks}
                 domain={[0, ticks[ticks.length - 1] || maxDuration]}
+              />
+              <YAxis
+                yAxisId="passRate"
+                orientation="right"
+                domain={[0, 100]}
+                tick={{ fontSize: 11 }}
+                tickFormatter={(v: number) => `${v}%`}
+                stroke="var(--chart-axis)"
+                width={40}
               />
               <Tooltip
                 content={<OverviewTooltip />}
@@ -389,7 +416,30 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
                 iconType="circle"
                 wrapperStyle={{ fontSize: 12, paddingTop: 12 }}
               />
+              {/* Transparent base that stacks under the band so the fill spans P50–P90 */}
+              <Area
+                yAxisId="duration"
+                type="monotone"
+                dataKey="bandBase"
+                stackId="p50p90"
+                stroke="none"
+                fill="none"
+                legendType="none"
+                isAnimationActive={false}
+              />
+              <Area
+                yAxisId="duration"
+                type="monotone"
+                dataKey="band"
+                name="P50–P90 range"
+                stackId="p50p90"
+                stroke="none"
+                fill="#3b82f6"
+                fillOpacity={0.15}
+                isAnimationActive={false}
+              />
               <Line
+                yAxisId="duration"
                 type="monotone"
                 dataKey="p50"
                 name="Typical (P50)"
@@ -397,27 +447,32 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
                 strokeWidth={2.5}
                 dot={false}
                 activeDot={{ r: 4 }}
+                isAnimationActive={false}
               />
               <Line
+                yAxisId="duration"
                 type="monotone"
                 dataKey="p90"
                 name="High (P90)"
                 stroke="#f59e0b"
-                strokeWidth={2.5}
+                strokeWidth={1.5}
                 dot={false}
                 activeDot={{ r: 4 }}
+                isAnimationActive={false}
               />
               <Line
+                yAxisId="passRate"
                 type="monotone"
-                dataKey="peak"
-                name="Peak"
-                stroke="#8b5cf6"
+                dataKey="passRate"
+                name="Pass rate"
+                stroke="#10b981"
                 strokeWidth={2}
-                strokeDasharray="5 4"
+                strokeDasharray="6 4"
                 dot={false}
                 activeDot={{ r: 4 }}
+                isAnimationActive={false}
               />
-            </LineChart>
+            </ComposedChart>
           ) : (
             <BarChart
               data={runData}
