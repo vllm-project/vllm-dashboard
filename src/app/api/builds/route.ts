@@ -4,6 +4,8 @@ import { resolveGroupsToJobConditions } from "@/lib/test-groups";
 import { ensureTestAreaMapping } from "@/lib/test-areas";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
+import { resolveCiDataSource } from "@/lib/ci-data-source";
+import { queryBuildsFromOtel } from "@/lib/otel-ci";
 
 const PAGE_SIZE = 50;
 const TTL = 30_000;
@@ -71,9 +73,51 @@ export async function GET(request: NextRequest) {
     const jobGroups = searchParams.get("jobGroups")?.split(",").filter(Boolean) ?? [];
     const jobNames = searchParams.get("jobNames")?.split(",").filter(Boolean) ?? [];
 
-    const cacheKey = `builds:${pipeline}:${branch}:${startDate}:${endDate}:${page}:${jobGroups.join(",")}:${jobNames.join(",")}`;
+    const cacheKey = `builds:${pipeline}:${branch}:${startDate}:${endDate}:${page}:${jobGroups.join(",")}:${jobNames.join(",")}:${resolveCiDataSource(request)}`;
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
+
+    if (resolveCiDataSource(request) === "otel") {
+      if (jobGroups.length > 0) {
+        await ensureTestAreaMapping();
+      }
+      const { builds, buildDurations, summary, total } = await queryBuildsFromOtel({
+        pipeline,
+        branch,
+        startDate,
+        endDate,
+        page,
+        pageSize: PAGE_SIZE,
+        jobGroups,
+        jobNames,
+      });
+
+      const buildsWithMetadata = builds.map((build) => {
+        const b = build as Record<string, unknown>;
+        let prNumber = b.pr_number as string | null;
+        if (!prNumber && b.message) {
+          const match = (b.message as string).match(/\(#(\d+)\)/);
+          if (match) prNumber = match[1];
+        }
+        return {
+          ...b,
+          pr_number: prNumber,
+          build_number:
+            b.build_number === null || b.build_number === undefined
+              ? null
+              : String(b.build_number),
+        };
+      });
+
+      const result = {
+        builds: buildsWithMetadata,
+        buildDurations,
+        summary,
+        pagination: { page, pageSize: PAGE_SIZE, totalPages: Math.ceil(total / PAGE_SIZE) },
+      };
+      setCache(cacheKey, result, TTL);
+      return cachedJson(result, CDN_CACHE);
+    }
 
     // Build WHERE clauses
     const conditions = ["b._fivetran_deleted = false"];

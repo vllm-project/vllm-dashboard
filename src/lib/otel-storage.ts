@@ -41,6 +41,19 @@ function numberAttribute(
   return null;
 }
 
+function floatAttribute(
+  attributes: Record<string, OtlpAttributeValue>,
+  key: string,
+): number | null {
+  const value = attributes[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 export async function storeOtlpSpans(spans: NormalizedOtlpSpan[]) {
   if (spans.length === 0) return { accepted: 0 };
 
@@ -78,6 +91,17 @@ export async function storeOtlpSpans(spans: NormalizedOtlpSpan[]) {
       job_id: stringAttribute(attributes, "buildkite.job.id"),
       job_label: stringAttribute(attributes, "buildkite.job.label"),
       job_state: stringAttribute(attributes, "buildkite.job.state"),
+      job_type: stringAttribute(attributes, "buildkite.job.type"),
+      job_passed: stringAttribute(attributes, "buildkite.job.passed"),
+      job_soft_failed: stringAttribute(attributes, "buildkite.job.soft_failed"),
+      job_exit_status: numberAttribute(
+        attributes,
+        "buildkite.job.exit_status",
+      ),
+      job_wait_time_ms: floatAttribute(
+        attributes,
+        "buildkite.job.wait_time_ms",
+      ),
       agent_id: stringAttribute(attributes, "buildkite.agent.id"),
       agent_name: stringAttribute(attributes, "buildkite.agent.name"),
       agent_queue:
@@ -127,6 +151,11 @@ export async function storeOtlpSpans(spans: NormalizedOtlpSpan[]) {
           "job_id",
           "job_label",
           "job_state",
+          "job_type",
+          "job_passed",
+          "job_soft_failed",
+          "job_exit_status",
+          "job_wait_time_ms",
           "agent_id",
           "agent_name",
           "agent_queue",
@@ -164,6 +193,11 @@ export async function storeOtlpSpans(spans: NormalizedOtlpSpan[]) {
           job_id = EXCLUDED.job_id,
           job_label = EXCLUDED.job_label,
           job_state = EXCLUDED.job_state,
+          job_type = EXCLUDED.job_type,
+          job_passed = EXCLUDED.job_passed,
+          job_soft_failed = EXCLUDED.job_soft_failed,
+          job_exit_status = EXCLUDED.job_exit_status,
+          job_wait_time_ms = EXCLUDED.job_wait_time_ms,
           agent_id = EXCLUDED.agent_id,
           agent_name = EXCLUDED.agent_name,
           agent_queue = EXCLUDED.agent_queue,

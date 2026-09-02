@@ -46,8 +46,6 @@ function defaultDataUrls(href: string): string[] {
       return [
         "/api/tests?period=1day&sortBy=reliability&order=asc&page=1",
       ];
-    case "/nightly":
-      return ["/api/nightly"];
     case "/queue":
       return [
         "/api/metrics?hours=24&queue=gpu_1_queue",

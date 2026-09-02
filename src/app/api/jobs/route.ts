@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
+import { resolveCiDataSource } from "@/lib/ci-data-source";
+import { queryJobStatsFromOtel } from "@/lib/otel-ci";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -14,9 +16,22 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
 
-    const cacheKey = `jobs:${pipeline}:${branch}:${startDate}:${endDate}`;
+    const cacheKey = `jobs:${pipeline}:${branch}:${startDate}:${endDate}:${resolveCiDataSource(request)}`;
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
+
+    if (resolveCiDataSource(request) === "otel") {
+      const hasDateRange = Boolean(startDate || endDate);
+      const result = await queryJobStatsFromOtel({
+        pipeline,
+        branch,
+        startDate,
+        endDate,
+        hasDateRange,
+      });
+      setCache(cacheKey, result, TTL);
+      return cachedJson(result, CDN_CACHE);
+    }
 
     const conditions = [
       "j._fivetran_deleted = false",

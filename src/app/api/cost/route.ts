@@ -3,10 +3,19 @@ import { queryDatabricks } from "@/lib/databricks";
 import { getQueueCost } from "@/lib/queue-costs";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
+import { resolveCiDataSource } from "@/lib/ci-data-source";
+import { queryCostFromOtel } from "@/lib/otel-ci";
 
 export const maxDuration = 55;
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 120, staleWhileRevalidate: 3_600 };
+
+// Databricks returns numeric columns as strings; Postgres returns numbers.
+function toNumber(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const parsed = parseFloat(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -16,10 +25,22 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
 
-    const cacheKey = `cost:${pipeline}:${branch}:${startDate}:${endDate}`;
+    const cacheKey = `cost:${pipeline}:${branch}:${startDate}:${endDate}:${resolveCiDataSource(request)}`;
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
 
+    let byQueue: Record<string, unknown>[];
+    let dailyCost: Record<string, unknown>[];
+    let byBuildRaw: Record<string, unknown>[];
+    let byJobRaw: Record<string, unknown>[];
+
+    if (resolveCiDataSource(request) === "otel") {
+      const raw = await queryCostFromOtel({ pipeline, branch, startDate, endDate });
+      byQueue = raw.byQueue;
+      dailyCost = raw.dailyCost;
+      byBuildRaw = raw.byBuild;
+      byJobRaw = raw.byJob;
+    } else {
     const conditions = [
       "j._fivetran_deleted = false",
       "j.type = 'script'",
@@ -101,15 +122,16 @@ export async function GET(request: NextRequest) {
       `),
     ]);
 
-    const byQueue = byQueueResult.status === "fulfilled" ? byQueueResult.value : [];
-    const dailyCost = dailyCostResult.status === "fulfilled" ? dailyCostResult.value : [];
-    const byBuildRaw = byBuildResult.status === "fulfilled" ? byBuildResult.value : [];
-    const byJobRaw = byJobResult.status === "fulfilled" ? byJobResult.value : [];
+    byQueue = byQueueResult.status === "fulfilled" ? byQueueResult.value : [];
+    dailyCost = dailyCostResult.status === "fulfilled" ? dailyCostResult.value : [];
+    byBuildRaw = byBuildResult.status === "fulfilled" ? byBuildResult.value : [];
+    byJobRaw = byJobResult.status === "fulfilled" ? byJobResult.value : [];
+    }
 
     const queueWithCost = byQueue.map((row) => {
-      const q = row as Record<string, string>;
-      const pricing = getQueueCost(q.queue);
-      const totalHours = parseFloat(q.total_hours) || 0;
+      const q = row as Record<string, unknown>;
+      const pricing = getQueueCost(q.queue as string);
+      const totalHours = toNumber(q.total_hours);
       return {
         queue: q.queue,
         total_jobs: q.total_jobs,
@@ -120,9 +142,9 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    const dailyCostByQueue = (dailyCost as Record<string, string>[]).map((r) => {
-      const hours = parseFloat(r.total_hours) || 0;
-      const pricing = getQueueCost(r.queue);
+    const dailyCostByQueue = (dailyCost as Record<string, unknown>[]).map((r) => {
+      const hours = toNumber(r.total_hours);
+      const pricing = getQueueCost(r.queue as string);
       return {
         date: r.date,
         queue: r.queue,
@@ -140,9 +162,9 @@ export async function GET(request: NextRequest) {
     );
     const blendedRate = pricedHours > 0 ? pricedCost / pricedHours : 0;
 
-    const byBuild = (byBuildRaw as Record<string, string>[])
+    const byBuild = (byBuildRaw as Record<string, unknown>[])
       .map((r) => {
-        const hours = parseFloat(r.total_hours) || 0;
+        const hours = toNumber(r.total_hours);
         return {
           build_id: r.build_id,
           build_url: r.build_url,
@@ -153,7 +175,7 @@ export async function GET(request: NextRequest) {
           created_at: r.created_at,
           total_hours: Math.round(hours * 100) / 100,
           total_cost: Math.round(hours * blendedRate * 100) / 100,
-          total_jobs: parseInt(r.total_jobs, 10) || 0,
+          total_jobs: toNumber(r.total_jobs),
         };
       })
       .sort((a, b) => b.total_cost - a.total_cost);
@@ -163,15 +185,15 @@ export async function GET(request: NextRequest) {
       job_name: string; total_runs: number; total_hours: number; total_cost: number;
     }>();
     for (const row of byJobRaw) {
-      const r = row as Record<string, string>;
-      const hours = parseFloat(r.total_hours) || 0;
-      const runs = parseInt(r.total_runs, 10) || 0;
-      const pricing = getQueueCost(r.queue);
+      const r = row as Record<string, unknown>;
+      const hours = toNumber(r.total_hours);
+      const runs = toNumber(r.total_runs);
+      const pricing = getQueueCost(r.queue as string);
       const cost = pricing ? hours * pricing.costPerHour : hours * blendedRate;
-      if (!jobAgg.has(r.job_name)) {
-        jobAgg.set(r.job_name, { job_name: r.job_name, total_runs: 0, total_hours: 0, total_cost: 0 });
+      if (!jobAgg.has(r.job_name as string)) {
+        jobAgg.set(r.job_name as string, { job_name: r.job_name as string, total_runs: 0, total_hours: 0, total_cost: 0 });
       }
-      const entry = jobAgg.get(r.job_name)!;
+      const entry = jobAgg.get(r.job_name as string)!;
       entry.total_runs += runs;
       entry.total_hours += hours;
       entry.total_cost += cost;

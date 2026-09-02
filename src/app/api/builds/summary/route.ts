@@ -6,6 +6,8 @@ import {
   getTestAreaMappingForCommit,
 } from "@/lib/test-areas";
 import { getCached, setCache } from "@/lib/api-cache";
+import { resolveCiDataSource } from "@/lib/ci-data-source";
+import { queryBuildJobsFromOtel, queryBuildsFromOtel } from "@/lib/otel-ci";
 
 const MAX_PER_PAGE = 30;
 const DEFAULT_PER_PAGE = 10;
@@ -194,13 +196,102 @@ export async function GET(request: NextRequest) {
     const jobGroups = searchParams.get("jobGroups")?.split(",").filter(Boolean) ?? [];
     const jobNames = searchParams.get("jobNames")?.split(",").filter(Boolean) ?? [];
 
-    const cacheKey = `builds-summary:${pipeline}:${branch}:${startDate}:${endDate}:${state}:${page}:${perPage}:${format}:${includeJobs}:${jobGroups.join(",")}:${jobNames.join(",")}`;
+    const cacheKey = `builds-summary:${pipeline}:${branch}:${startDate}:${endDate}:${state}:${page}:${perPage}:${format}:${includeJobs}:${jobGroups.join(",")}:${jobNames.join(",")}:${resolveCiDataSource(request)}`;
     const cached = getCached<{ text?: string; json?: unknown }>(cacheKey);
     if (cached) {
       if (cached.text) {
         return new NextResponse(cached.text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
       }
       return NextResponse.json(cached.json);
+    }
+
+    if (resolveCiDataSource(request) === "otel") {
+      await ensureTestAreaMapping();
+      const { builds, summary: summaryData, total } = await queryBuildsFromOtel({
+        pipeline,
+        branch,
+        startDate,
+        endDate,
+        page,
+        pageSize: perPage,
+        jobGroups,
+        jobNames,
+        state,
+      });
+
+      const buildIds = builds.map((b) => b.id as string);
+      const jobRows = await queryBuildJobsFromOtel(buildIds);
+      const jobsByBuild = new Map<string, { name: string; state: string }[]>();
+      for (const j of jobRows) {
+        const buildId = j.build_id as string;
+        if (!jobsByBuild.has(buildId)) jobsByBuild.set(buildId, []);
+        jobsByBuild.get(buildId)!.push({ name: j.name as string, state: j.state as string });
+      }
+
+      const buildsWithGroups = builds.map((b) => {
+        const buildJobs = jobsByBuild.get(b.id as string) ?? [];
+        const testGroups = aggregateJobsByGroup(buildJobs);
+        let prNumber = (b.pr_number as string | null) ?? null;
+        const message = (b.message as string | null) ?? "";
+        if (!prNumber && message) {
+          const match = message.match(/\(#(\d+)\)/);
+          if (match) prNumber = match[1];
+        }
+        const matchedJobs = jobNames.length > 0
+          ? buildJobs.filter((j) => jobNames.some((n) => j.name === n))
+          : undefined;
+        return {
+          ...(b as unknown as BuildRow),
+          duration_mins: null,
+          pr_number: prNumber,
+          testGroups,
+          matchedJobs,
+        };
+      });
+
+      const pagination = { page, perPage, totalPages: Math.ceil(total / perPage) };
+
+      if (format === "text") {
+        const text = formatText(buildsWithGroups, summaryData, { pipeline, branch, startDate, endDate }, pagination, includeJobs, jobNames);
+        setCache(cacheKey, { text }, TTL);
+        return new NextResponse(text, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+      }
+
+      const jsonResult = {
+        summary: summaryData,
+        pagination,
+        builds: buildsWithGroups.map((b) => ({
+          number: (b.web_url as string)?.match(/builds\/(\d+)/)?.[1] ?? null,
+          state: b.state,
+          pipeline: b.pipeline,
+          branch: b.branch,
+          commit: (b.commit_sha as string)?.slice(0, 7) ?? null,
+          author: b.author,
+          pr: b.pr_number,
+          message: ((b.message as string) ?? "").split("\n")[0].slice(0, 80),
+          created_at: (b.created_at as string)?.slice(0, 16) ?? null,
+          duration_mins: null,
+          ...(jobNames.length > 0 && b.matchedJobs ? {
+            jobs: b.matchedJobs.map((j) => ({ name: j.name, state: j.state })),
+          } : {
+            groups: b.testGroups.map((g) => ({
+              name: g.group,
+              state: g.state,
+              passed: g.passed,
+              failed: g.failed,
+              total: g.total,
+              ...(g.state === "failed" ? {
+                failed_jobs: g.jobs
+                  .filter((j) => ["failed", "failing", "broken", "timed_out"].includes(j.state))
+                  .map((j) => j.name),
+              } : {}),
+            })),
+          }),
+        })),
+      };
+
+      setCache(cacheKey, { json: jsonResult }, TTL);
+      return NextResponse.json(jsonResult);
     }
 
     const conditions = ["b._fivetran_deleted = false"];

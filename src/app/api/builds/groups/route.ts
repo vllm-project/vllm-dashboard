@@ -8,6 +8,8 @@ import {
   type GroupStatus,
 } from "@/lib/test-groups";
 import { getTestAreaMappingForCommit } from "@/lib/test-areas";
+import { resolveCiDataSource } from "@/lib/ci-data-source";
+import { queryBuildJobsFromOtel } from "@/lib/otel-ci";
 
 const TTL = 30_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -45,28 +47,33 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const cacheKey = `build-groups:${buildIds.join(",")}`;
+    const cacheKey = `build-groups:${buildIds.join(",")}:${resolveCiDataSource(request)}`;
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
 
-    const idList = buildIds.map((id) => `'${escapeSql(id)}'`).join(",");
-    const jobs = await queryDatabricks(`
-      SELECT
-        j.build_id,
-        j.name,
-        j.state,
-        j.web_url,
-        j.started_at,
-        b.commit AS commit_sha,
-        b.branch
-      FROM vllm_data_warehouse.buildkite.build_job AS j
-      INNER JOIN vllm_data_warehouse.buildkite.build AS b
-        ON j.build_id = b.id
-      WHERE j.build_id IN (${idList})
-        AND j._fivetran_deleted = false
-        AND j.type = 'script'
-        AND j.name IS NOT NULL
-    `);
+    let jobs: Record<string, unknown>[];
+    if (resolveCiDataSource(request) === "otel") {
+      jobs = await queryBuildJobsFromOtel(buildIds);
+    } else {
+      const idList = buildIds.map((id) => `'${escapeSql(id)}'`).join(",");
+      jobs = await queryDatabricks(`
+        SELECT
+          j.build_id,
+          j.name,
+          j.state,
+          j.web_url,
+          j.started_at,
+          b.commit AS commit_sha,
+          b.branch
+        FROM vllm_data_warehouse.buildkite.build_job AS j
+        INNER JOIN vllm_data_warehouse.buildkite.build AS b
+          ON j.build_id = b.id
+        WHERE j.build_id IN (${idList})
+          AND j._fivetran_deleted = false
+          AND j.type = 'script'
+          AND j.name IS NOT NULL
+      `);
+    }
 
     const jobsByBuild = new Map<
       string,

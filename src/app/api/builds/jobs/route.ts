@@ -4,6 +4,8 @@ import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 import { aggregateJobsByGroup, type JobInfo } from "@/lib/test-groups";
 import { getTestAreaMappingForCommit } from "@/lib/test-areas";
+import { resolveCiDataSource } from "@/lib/ci-data-source";
+import { queryBuildJobsFromOtel } from "@/lib/otel-ci";
 
 const TTL = 30_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -38,9 +40,57 @@ export async function GET(request: NextRequest) {
       return cachedJson({ jobsByBuild: {} }, CDN_CACHE);
     }
 
-    const cacheKey = `build-jobs:${buildIds.join(",")}:${groups.join(",")}`;
+    const cacheKey = `build-jobs:${buildIds.join(",")}:${groups.join(",")}:${resolveCiDataSource(request)}`;
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
+
+    if (resolveCiDataSource(request) === "otel") {
+      const jobs = await queryBuildJobsFromOtel(buildIds);
+      const rawJobsByBuild = new Map<
+        string,
+        { name: string; state: string; web_url?: string }[]
+      >();
+      const refsByBuild = new Map<
+        string,
+        { commit: string | null; branch: string | null }
+      >();
+      for (const job of jobs) {
+        const buildId = job.build_id as string;
+        if (!refsByBuild.has(buildId)) {
+          refsByBuild.set(buildId, {
+            commit: (job.commit_sha as string) ?? null,
+            branch: (job.branch as string) ?? null,
+          });
+        }
+        const buildJobs = rawJobsByBuild.get(buildId) ?? [];
+        buildJobs.push({
+          name: job.name as string,
+          state: job.state as string,
+          web_url: (job.web_url as string) ?? undefined,
+        });
+        rawJobsByBuild.set(buildId, buildJobs);
+      }
+
+      const groupSet = new Set(groups);
+      const jobsByBuild: Record<string, Record<string, JobInfo[]>> = {};
+      for (const buildId of buildIds) {
+        const ref = refsByBuild.get(buildId);
+        const mapping = await getTestAreaMappingForCommit(ref?.commit, ref?.branch);
+        const grouped = aggregateJobsByGroup(
+          rawJobsByBuild.get(buildId) ?? [],
+          mapping,
+        );
+        jobsByBuild[buildId] = Object.fromEntries(
+          grouped
+            .filter((group) => groupSet.has(group.group))
+            .map((group) => [group.group, group.jobs]),
+        );
+      }
+
+      const result = { jobsByBuild };
+      setCache(cacheKey, result, TTL);
+      return cachedJson(result, CDN_CACHE);
+    }
 
     const idList = buildIds.map((id) => `'${escapeSql(id)}'`).join(",");
     const jobs = await queryDatabricks(`
