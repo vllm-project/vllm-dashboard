@@ -407,6 +407,17 @@ def _build_summary(
             {"name": job.name, "state": job.state, "soft_failed": job.soft_failed}
             for job in jobs
         ],
+        # Deterministic counts for the report's Stats line; the analyzer model
+        # miscounts the jobs array, so it must use these verbatim.
+        "stats": {
+            "passed": sum(1 for job in jobs if job.state == "passed"),
+            "failed": len(_hard_failures(jobs)),
+            "new": len(_hard_failures(jobs) - set(cache.failed_tests)),
+            "recurring": len(_hard_failures(jobs) & set(cache.failed_tests)),
+            "scheduled": sum(1 for job in jobs if job.state == "scheduled"),
+            "has_previous_data": cache.build_number is not None,
+            "total": len(jobs),
+        },
         "skip_report": False,
         "previous_failures": {
             "build_number": cache.build_number,

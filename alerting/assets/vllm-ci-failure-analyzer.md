@@ -57,7 +57,13 @@ Write `.logs/ci_report.txt` as Slack mrkdwn, without posting it. Start with:
 *Stats:* X passed, Y failed (N new, M recurring)
 ```
 
-Count only hard failures in `Y failed`. Add sections for new, recurring, fixed,
+Every number on the Stats line comes from the summary's precomputed `stats`
+object: X = `stats.passed`, Y = `stats.failed` (hard failures only). Never count
+the `jobs` array yourself — it is too long to count reliably. The
+`(N new, M recurring)` breakdown uses `stats.new` and `stats.recurring` and
+appears only when `stats.failed` > 0 and `stats.has_previous_data` is true;
+otherwise show just `Y failed`. If `stats.scheduled` > 0, append
+`, S scheduled` to the Stats line using `stats.scheduled`. Add sections for new, recurring, fixed,
 and soft failures when present. Investigation summaries must be concise. Show
 at most five bullets per section and link to the build for omitted entries.
 Keep the complete report at or below 2,800 characters without breaking Slack

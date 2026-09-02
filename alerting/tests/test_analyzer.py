@@ -550,6 +550,15 @@ def test_materialized_working_files_match_skill_contract(tmp_path: Path) -> None
     assert summary["previous_failures"]["failed_tests"] == ["Job A"]
     names = {job["name"] for job in summary["jobs"]}
     assert "AMD Job" not in names  # NVIDIA-only filter is preserved
+    assert summary["stats"] == {
+        "passed": 18,
+        "failed": 1,
+        "new": 0,
+        "recurring": 1,
+        "scheduled": 0,
+        "has_previous_data": True,
+        "total": 19,
+    }
     full_names = {job["name"] for job in observed["full"]["jobs"]}
     assert "AMD Job" in full_names
     assert observed["cache"]["failed_tests"] == ["Job A"]
