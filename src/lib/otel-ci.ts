@@ -265,7 +265,7 @@ export async function queryBuildJobsFromOtel(buildIds: string[]) {
     WHERE j.span_name = 'buildkite.job'
       AND (j.pipeline_slug, j.build_number) IN (${pairList})
       AND j.job_label IS NOT NULL
-      AND j.job_type = 'script'
+      AND j.span_attributes->>'buildkite.job.type' = 'script'
   `;
 }
 
