@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { JobName } from "@/components/job-name";
+import { JobName, splitJobName } from "@/components/job-name";
 import { SegmentedControl } from "@/components/segmented-control";
 import {
   isAmdJobName,
@@ -90,13 +90,211 @@ function isReasonFilter(value: string): value is ReasonFilter {
   return REASON_FILTERS.some((reason) => reason.value === value);
 }
 
+export type SortKey = "job" | "failures" | "opened" | "lastFailed";
+export type SortDirection = "asc" | "desc";
+export interface AlertSort {
+  key: SortKey;
+  direction: SortDirection;
+}
+
+/**
+ * The sortable columns. Each opens in the direction a responder most often
+ * wants first: names alphabetically, everything else with the biggest or most
+ * recent value on top.
+ */
+const SORT_COLUMNS: readonly {
+  key: SortKey;
+  label: string;
+  defaultDirection: SortDirection;
+}[] = [
+  { key: "job", label: "Job", defaultDirection: "asc" },
+  { key: "failures", label: "Failures", defaultDirection: "desc" },
+  { key: "opened", label: "Opened", defaultDirection: "desc" },
+  { key: "lastFailed", label: "Last failed", defaultDirection: "desc" },
+];
+
+function sortColumn(key: SortKey) {
+  return SORT_COLUMNS.find((column) => column.key === key) ?? SORT_COLUMNS[0];
+}
+
+/**
+ * Buildkite job names lead with vendor shortcodes (":nvidia: (B200) …") that
+ * the list never shows, so sorting must use the text a reader actually sees.
+ */
+function displayJobName(jobName: string): string {
+  return splitJobName(jobName)
+    .flatMap((segment) => (segment.type === "text" ? [segment.text] : []))
+    .join("")
+    .trim();
+}
+
+function compareJobNames(a: MainCiJobAlert, b: MainCiJobAlert): number {
+  return displayJobName(a.jobName).localeCompare(
+    displayJobName(b.jobName),
+    undefined,
+    { sensitivity: "base", numeric: true },
+  );
+}
+
+function compareBy(key: SortKey, a: MainCiJobAlert, b: MainCiJobAlert): number {
+  switch (key) {
+    case "job":
+      return compareJobNames(a, b);
+    case "failures":
+      return a.failureCount - b.failureCount;
+    case "opened":
+      return Date.parse(a.openedAt) - Date.parse(b.openedAt);
+    case "lastFailed":
+      return (
+        Date.parse(a.lastFailure.finishedAt) -
+        Date.parse(b.lastFailure.finishedAt)
+      );
+  }
+}
+
+/**
+ * Orders alerts by one column. A null sort keeps the lifecycle order the list
+ * arrives in: open alerts first, most recent activity first. Ties fall back to
+ * the job name so the order is stable between renders.
+ */
+export function sortMainCiAlerts(
+  alerts: readonly MainCiJobAlert[],
+  sort: AlertSort | null,
+): MainCiJobAlert[] {
+  if (sort === null) return [...alerts];
+  const sign = sort.direction === "asc" ? 1 : -1;
+  return [...alerts].sort(
+    (a, b) => sign * compareBy(sort.key, a, b) || compareJobNames(a, b),
+  );
+}
+
+/** Clicking the active column flips it; clicking another opens it in its default direction. */
+export function nextSort(current: AlertSort | null, key: SortKey): AlertSort {
+  if (current?.key === key) {
+    return { key, direction: current.direction === "asc" ? "desc" : "asc" };
+  }
+  return { key, direction: sortColumn(key).defaultDirection };
+}
+
+function SortHeader({
+  columnKey,
+  sort,
+  align = "left",
+  onSort,
+}: {
+  columnKey: SortKey;
+  sort: AlertSort | null;
+  align?: "left" | "right";
+  onSort: (key: SortKey) => void;
+}) {
+  const column = sortColumn(columnKey);
+  const active = sort?.key === columnKey;
+  const direction = active ? sort.direction : null;
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(columnKey)}
+      aria-label={`Sort by ${column.label.toLowerCase()}${
+        direction ? `, currently ${direction === "asc" ? "ascending" : "descending"}` : ""
+      }`}
+      className={`dashboard-control group/sort inline-flex items-center gap-1 rounded text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
+        align === "right" ? "justify-self-end" : "justify-self-start"
+      } ${
+        active
+          ? "text-zinc-900 dark:text-zinc-100"
+          : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+      }`}
+    >
+      {column.label}
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 16 16"
+        className={`h-3 w-3 transition-transform duration-150 motion-reduce:transition-none ${
+          active ? "" : "opacity-0 group-hover/sort:opacity-60"
+        } ${direction === "asc" ? "rotate-180" : ""}`}
+      >
+        <path
+          d="M4 6l4 4 4-4"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </button>
+  );
+}
+
+/** The same sort as the header row, for screens where the header is hidden. */
+function SortSelect({
+  sort,
+  onChange,
+}: {
+  sort: AlertSort | null;
+  onChange: (sort: AlertSort | null) => void;
+}) {
+  const DIRECTION_LABELS: Record<SortKey, Record<SortDirection, string>> = {
+    job: { asc: "Job A→Z", desc: "Job Z→A" },
+    failures: { desc: "Most failures", asc: "Fewest failures" },
+    opened: { desc: "Newest opened", asc: "Oldest opened" },
+    lastFailed: { desc: "Latest failure", asc: "Earliest failure" },
+  };
+  return (
+    <label className="relative inline-flex items-center sm:hidden">
+      <span className="sr-only">Sort alerts</span>
+      <select
+        value={sort ? `${sort.key}:${sort.direction}` : ""}
+        onChange={(event) => {
+          const [key, direction] = event.target.value.split(":");
+          onChange(
+            SORT_COLUMNS.some((column) => column.key === key) &&
+              (direction === "asc" || direction === "desc")
+              ? { key: key as SortKey, direction }
+              : null,
+          );
+        }}
+        className="dashboard-control h-8 cursor-pointer appearance-none rounded-md border border-zinc-200 bg-white pr-7 pl-2.5 text-xs font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-100 dark:focus:border-zinc-600"
+      >
+        <option value="">Default order</option>
+        {SORT_COLUMNS.map((column) => (
+          <optgroup key={column.key} label={column.label}>
+            {(["desc", "asc"] as const).map((direction) => (
+              <option
+                key={direction}
+                value={`${column.key}:${direction}`}
+              >
+                {DIRECTION_LABELS[column.key][direction]}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 16 16"
+        className="pointer-events-none absolute right-2 h-3.5 w-3.5 text-zinc-400"
+      >
+        <path
+          d="M4 6l4 4 4-4"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </label>
+  );
+}
+
 /**
  * One grid template shared by the header row and every alert row so the
  * columns line up as a table. Narrow screens keep the chevron, name, reason,
  * failure count and action, and drop the two time columns.
  */
 const ROW_GRID =
-  "grid grid-cols-[1rem_minmax(0,1fr)_2.5rem_auto] items-center gap-x-3 sm:grid-cols-[1rem_minmax(0,1fr)_10.5rem_4rem_5.5rem_5.5rem_4.5rem]";
+  "grid grid-cols-[1rem_minmax(0,1fr)_2.5rem_auto] items-center gap-x-3 sm:grid-cols-[1rem_minmax(0,1fr)_10.5rem_4.5rem_6.5rem_6.5rem_4.5rem]";
 
 const LINK_CLASSES = "text-blue-600 hover:underline dark:text-blue-400";
 
@@ -594,6 +792,8 @@ export function MainCIAlerts({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("open");
   const [reasonFilter, setReasonFilter] = useState<ReasonFilter | null>(null);
   const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<AlertSort | null>(null);
+  const toggleSort = (key: SortKey) => setSort(nextSort(sort, key));
   // One clock per render keeps every relative time in the list consistent.
   const now = new Date();
 
@@ -648,7 +848,7 @@ export function MainCIAlerts({
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return inScope.filter((alert) => {
+    const matching = inScope.filter((alert) => {
       if (needle && !alert.jobName.toLowerCase().includes(needle)) return false;
       if (reasonFilter === "unanalyzed") return alert.analysis === null;
       if (reasonFilter !== null) {
@@ -656,7 +856,8 @@ export function MainCIAlerts({
       }
       return true;
     });
-  }, [inScope, reasonFilter, query]);
+    return sortMainCiAlerts(matching, sort);
+  }, [inScope, reasonFilter, query, sort]);
 
   if (alerts.length === 0) {
     return (
@@ -682,6 +883,7 @@ export function MainCIAlerts({
             onChange={setReasonFilter}
           />
         )}
+        <SortSelect sort={sort} onChange={setSort} />
         <label className="relative ml-auto block">
           <svg
             aria-hidden="true"
@@ -719,15 +921,31 @@ export function MainCIAlerts({
       ) : (
         <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
           <div
-            aria-hidden="true"
+            role="group"
+            aria-label="Sort alerts"
             className={`${ROW_GRID} hidden border-b border-zinc-200 border-l-[3px] border-l-transparent bg-zinc-50/80 px-3 py-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase sm:grid dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-400`}
           >
             <span />
-            <span>Job</span>
+            <SortHeader columnKey="job" sort={sort} onSort={toggleSort} />
             <span>Reason</span>
-            <span className="text-right">Failures</span>
-            <span className="text-right">Opened</span>
-            <span className="text-right">Last failed</span>
+            <SortHeader
+              columnKey="failures"
+              sort={sort}
+              align="right"
+              onSort={toggleSort}
+            />
+            <SortHeader
+              columnKey="opened"
+              sort={sort}
+              align="right"
+              onSort={toggleSort}
+            />
+            <SortHeader
+              columnKey="lastFailed"
+              sort={sort}
+              align="right"
+              onSort={toggleSort}
+            />
             <span />
           </div>
           <div className="divide-y divide-zinc-100 dark:divide-zinc-800/70">

@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MainCIAlerts, MainCiAlertRow } from "./main-ci-alerts";
+import {
+  MainCIAlerts,
+  MainCiAlertRow,
+  nextSort,
+  sortMainCiAlerts,
+} from "./main-ci-alerts";
 import type { MainCiJobAlert, MainCiJobAnalysis } from "../lib/alerts-main-ci";
 
 function analysis(overrides: Partial<MainCiJobAnalysis> = {}): MainCiJobAnalysis {
@@ -243,4 +248,94 @@ test("hide options filter matching job names out of the list", () => {
   assert.doesNotMatch(hidden, /AMD: MI300X Test/);
   assert.doesNotMatch(hidden, /Lint \(soft-fail\)/);
   assert.doesNotMatch(hidden, /Optional check/);
+});
+
+test("column sort orders by job, failures, opened, and last failed in either direction", () => {
+  const alerts = [
+    alert({
+      alertId: "1",
+      jobName: "b test",
+      failureCount: 3,
+      openedAt: "2026-08-29T08:00:00.000Z",
+      lastFailure: { ...alert().lastFailure, finishedAt: "2026-08-29T10:00:00.000Z" },
+    }),
+    alert({
+      alertId: "2",
+      jobName: "A test",
+      failureCount: 9,
+      openedAt: "2026-08-28T08:00:00.000Z",
+      lastFailure: { ...alert().lastFailure, finishedAt: "2026-08-29T12:00:00.000Z" },
+    }),
+    alert({
+      alertId: "3",
+      jobName: "c test",
+      failureCount: 1,
+      openedAt: "2026-08-30T08:00:00.000Z",
+      lastFailure: { ...alert().lastFailure, finishedAt: "2026-08-29T09:00:00.000Z" },
+    }),
+  ];
+  const ids = (sorted: typeof alerts) => sorted.map((item) => item.alertId);
+
+  // No sort keeps the incoming lifecycle order.
+  assert.deepEqual(ids(sortMainCiAlerts(alerts, null)), ["1", "2", "3"]);
+  // Names sort case-insensitively.
+  assert.deepEqual(
+    ids(sortMainCiAlerts(alerts, { key: "job", direction: "asc" })),
+    ["2", "1", "3"],
+  );
+  assert.deepEqual(
+    ids(sortMainCiAlerts(alerts, { key: "failures", direction: "desc" })),
+    ["2", "1", "3"],
+  );
+  assert.deepEqual(
+    ids(sortMainCiAlerts(alerts, { key: "opened", direction: "asc" })),
+    ["2", "1", "3"],
+  );
+  assert.deepEqual(
+    ids(sortMainCiAlerts(alerts, { key: "lastFailed", direction: "desc" })),
+    ["2", "1", "3"],
+  );
+  assert.deepEqual(
+    ids(sortMainCiAlerts(alerts, { key: "lastFailed", direction: "asc" })),
+    ["3", "1", "2"],
+  );
+});
+
+test("job sort ignores vendor shortcodes and orders shard numbers naturally", () => {
+  const alerts = [
+    alert({ alertId: "amd", jobName: ":amd: (MI300) Entrypoints 10" }),
+    alert({ alertId: "nv2", jobName: ":nvidia: (B200) LM Eval 2" }),
+    alert({ alertId: "nv10", jobName: ":nvidia: (B200) LM Eval 10" }),
+    alert({ alertId: "cpu", jobName: "CPU Test" }),
+  ];
+  assert.deepEqual(
+    sortMainCiAlerts(alerts, { key: "job", direction: "asc" }).map(
+      (item) => item.alertId,
+    ),
+    ["nv2", "nv10", "amd", "cpu"],
+  );
+});
+
+test("clicking a column opens it in its default direction, then flips it", () => {
+  assert.deepEqual(nextSort(null, "job"), { key: "job", direction: "asc" });
+  assert.deepEqual(nextSort(null, "failures"), { key: "failures", direction: "desc" });
+  assert.deepEqual(
+    nextSort({ key: "failures", direction: "desc" }, "failures"),
+    { key: "failures", direction: "asc" },
+  );
+  // Switching columns resets to that column's default rather than carrying the direction over.
+  assert.deepEqual(
+    nextSort({ key: "failures", direction: "asc" }, "opened"),
+    { key: "opened", direction: "desc" },
+  );
+});
+
+test("header cells are sort buttons", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MainCIAlerts, { alerts: [alert()] }),
+  );
+  assert.match(markup, /aria-label="Sort by job"/);
+  assert.match(markup, /aria-label="Sort by failures"/);
+  assert.match(markup, /aria-label="Sort by opened"/);
+  assert.match(markup, /aria-label="Sort by last failed"/);
 });
