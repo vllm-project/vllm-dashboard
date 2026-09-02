@@ -1,129 +1,121 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb } from "@/lib/db";
+import {
+  GpuReportValidationError,
+  gpuReportAuthResult,
+  gpuReportMaxBytes,
+  parseGpuReportJson,
+} from "@/lib/gpu-report";
+import { storeGpuReport } from "@/lib/gpu-report-storage";
 
-interface GpuReport {
-  hostname: string;
-  gpus: Array<{
-    index: number;
-    name?: string;
-    gpu_util: number;
-    mem_used_mb: number;
-    mem_total_mb: number;
-    temperature_c?: number;
-    power_draw_w?: number;
-    power_limit_w?: number;
-  }>;
+export const runtime = "nodejs";
+
+async function readBodyWithLimit(request: NextRequest, limit: number) {
+  if (!request.body) return new Uint8Array();
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
 }
 
 export async function POST(request: NextRequest) {
-  const secret = process.env.GPU_REPORT_SECRET;
-  if (secret) {
-    const auth = request.headers.get("authorization");
-    if (auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const auth = gpuReportAuthResult(
+    process.env.GPU_REPORT_SECRET,
+    request.headers.get("authorization"),
+  );
+  if (auth === "not-configured") {
+    return NextResponse.json(
+      { error: "GPU report ingestion is not configured" },
+      { status: 503 },
+    );
+  }
+  if (auth === "unauthorized") {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  try {
-    const body: GpuReport = await request.json();
+  const contentType = request.headers.get("content-type")?.split(";", 1)[0];
+  if (contentType?.trim().toLowerCase() !== "application/json") {
+    return NextResponse.json(
+      { error: "Content-Type must be application/json" },
+      { status: 415 },
+    );
+  }
+  const contentEncoding = request.headers.get("content-encoding");
+  if (contentEncoding && contentEncoding.toLowerCase() !== "identity") {
+    return NextResponse.json(
+      { error: "Unsupported Content-Encoding" },
+      { status: 415 },
+    );
+  }
 
-    if (!body.hostname || !Array.isArray(body.gpus) || body.gpus.length === 0) {
+  const limit = gpuReportMaxBytes(process.env.GPU_REPORT_MAX_BYTES);
+  const contentLength = request.headers.get("content-length");
+  if (contentLength !== null) {
+    const declaredLength = Number(contentLength);
+    if (!Number.isSafeInteger(declaredLength) || declaredLength < 0) {
       return NextResponse.json(
-        { error: "Invalid payload: need hostname and gpus array" },
+        { error: "Invalid Content-Length" },
         { status: 400 },
       );
     }
-
-    const db = getDb();
-    const now = new Date();
-    const bucket = new Date(Math.floor(now.getTime() / 300_000) * 300_000);
-    const snapshots = body.gpus.map((gpu) => ({
-      reported_at: now,
-      hostname: body.hostname,
-      gpu_index: gpu.index,
-      gpu_name: gpu.name ?? null,
-      gpu_util: gpu.gpu_util,
-      mem_used_mb: gpu.mem_used_mb,
-      mem_total_mb: gpu.mem_total_mb,
-      temperature_c: gpu.temperature_c ?? null,
-      power_draw_w: gpu.power_draw_w ?? null,
-      power_limit_w: gpu.power_limit_w ?? null,
-    }));
-
-    const rollupsByName = new Map<
-      string,
-      { memPctSum: number; gpuUtilSum: number; count: number }
-    >();
-    for (const gpu of body.gpus) {
-      const name = gpu.name ?? "Unknown";
-      const current = rollupsByName.get(name) ?? {
-        memPctSum: 0,
-        gpuUtilSum: 0,
-        count: 0,
-      };
-      current.memPctSum += gpu.mem_total_mb > 0
-        ? (gpu.mem_used_mb / gpu.mem_total_mb) * 100
-        : 0;
-      current.gpuUtilSum += gpu.gpu_util;
-      current.count += 1;
-      rollupsByName.set(name, current);
+    if (declaredLength > limit) {
+      return NextResponse.json({ error: "Payload too large" }, { status: 413 });
     }
-    const rollups = [...rollupsByName.entries()].map(([gpuName, values]) => ({
-      time_bucket: bucket,
-      hostname: body.hostname,
-      gpu_name: gpuName,
-      mem_pct_sum: values.memPctSum,
-      gpu_util_sum: values.gpuUtilSum,
-      sample_count: values.count,
-    }));
+  }
 
-    await db.begin(async (transaction) => {
-      // postgres.js' TransactionSql type omits call signatures even though the
-      // runtime transaction object is the same callable tagged-template API.
-      const tx = transaction as unknown as typeof db;
-      await tx`
-        INSERT INTO gpu_snapshots ${tx(
-          snapshots,
-          "reported_at",
-          "hostname",
-          "gpu_index",
-          "gpu_name",
-          "gpu_util",
-          "mem_used_mb",
-          "mem_total_mb",
-          "temperature_c",
-          "power_draw_w",
-          "power_limit_w",
-        )}
-      `;
-      await tx`
-        INSERT INTO gpu_history_5m ${tx(
-          rollups,
-          "time_bucket",
-          "hostname",
-          "gpu_name",
-          "mem_pct_sum",
-          "gpu_util_sum",
-          "sample_count",
-        )}
-        ON CONFLICT (time_bucket, hostname, gpu_name) DO UPDATE SET
-          mem_pct_sum = gpu_history_5m.mem_pct_sum + EXCLUDED.mem_pct_sum,
-          gpu_util_sum = gpu_history_5m.gpu_util_sum + EXCLUDED.gpu_util_sum,
-          sample_count = gpu_history_5m.sample_count + EXCLUDED.sample_count
-      `;
-    });
+  let report;
+  try {
+    const payload = await readBodyWithLimit(request, limit);
+    if (payload === null) {
+      return NextResponse.json({ error: "Payload too large" }, { status: 413 });
+    }
+    report = parseGpuReportJson(payload);
+  } catch (error) {
+    if (error instanceof GpuReportValidationError) {
+      return NextResponse.json(
+        { error: "Invalid GPU report", detail: error.message },
+        { status: 400 },
+      );
+    }
+    console.error("Failed to read GPU report:", error);
+    return NextResponse.json(
+      { error: "Invalid GPU report" },
+      { status: 400 },
+    );
+  }
 
+  try {
+    const { reportedAt } = await storeGpuReport(report);
     return NextResponse.json({
       ok: true,
-      hostname: body.hostname,
-      gpus: body.gpus.length,
-      reported_at: now.toISOString(),
+      hostname: report.hostname,
+      gpus: report.gpus.length,
+      host: report.host !== null,
+      reporter_status: report.reporter_status,
+      reported_at: reportedAt.toISOString(),
     });
   } catch (error) {
-    console.error("GPU report failed:", error);
+    console.error("GPU report storage failed:", error);
     return NextResponse.json(
-      { error: "Failed to store GPU report" },
-      { status: 500 },
+      { error: "GPU report storage is temporarily unavailable" },
+      { status: 503, headers: { "Retry-After": "5" } },
     );
   }
 }

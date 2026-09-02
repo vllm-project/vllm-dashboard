@@ -42,6 +42,9 @@ def test_expected_tables_are_created() -> None:
         "alert_summary",
         "gpu_snapshots",
         "gpu_history_5m",
+        "host_snapshots",
+        "host_history_5m",
+        "alert_thresholds",
         "otel_spans",
         "alerting_automation_executions",
         "alerting_notification_outbox",
@@ -202,6 +205,22 @@ def test_gpu_migration_preserves_rollup_backfill() -> None:
     assert "ACCESS EXCLUSIVE" not in sql
     assert "INSERT INTO gpu_history_5m" in sql
     assert "ON CONFLICT (time_bucket, hostname, gpu_name) DO UPDATE" in sql
+
+
+def test_host_ingest_schema_is_normalized_protected_and_seeded() -> None:
+    sql = (MIGRATIONS_DIR / "0018_gpu_host_ingest.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS host_snapshots" in sql
+    assert "CREATE TABLE IF NOT EXISTS host_history_5m" in sql
+    assert "CREATE TABLE IF NOT EXISTS alert_thresholds" in sql
+    assert "CHECK (hostname = lower(hostname))" in sql
+    assert "PRIMARY KEY (time_bucket, hostname)" in sql
+    assert "('unreporting', 10, 'minutes', 2)" in sql
+    assert "('disk_usage', 90, 'percent', 2)" in sql
+    assert "('gpu_temperature', 85, 'celsius', 2)" in sql
+    assert "ON CONFLICT (alert_type) DO NOTHING" in sql
+    for table in ("host_snapshots", "host_history_5m", "alert_thresholds"):
+        assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
 
 
 def test_supabase_api_roles_cannot_access_server_only_tables() -> None:

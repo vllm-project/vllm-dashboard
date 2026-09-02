@@ -12,7 +12,7 @@ Usage:
 
 Environment variables:
   GPU_REPORT_URL    - Dashboard API endpoint (required)
-  GPU_REPORT_SECRET - Bearer token for auth (optional, must match dashboard's GPU_REPORT_SECRET)
+  GPU_REPORT_SECRET - Bearer token for auth (required; must match the dashboard)
   GPU_HOSTNAME      - Override hostname (default: system hostname)
 """
 
