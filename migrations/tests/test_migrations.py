@@ -63,6 +63,8 @@ def test_expected_tables_are_created() -> None:
         "alerting_main_ci_job_states",
         "alerting_main_ci_job_alerts",
         "alerting_main_ci_job_analysis",
+        "alerting_infra_host_states",
+        "alerting_infra_alerts",
     }
 
     for table in expected_tables:
@@ -220,6 +222,22 @@ def test_host_ingest_schema_is_normalized_protected_and_seeded() -> None:
     assert "('gpu_temperature', 85, 'celsius', 2)" in sql
     assert "ON CONFLICT (alert_type) DO NOTHING" in sql
     for table in ("host_snapshots", "host_history_5m", "alert_thresholds"):
+        assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
+
+
+def test_infra_schema_preserves_one_open_episode_per_subject_and_widens_path() -> None:
+    sql = (MIGRATIONS_DIR / "0019_infra_alerts.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS alerting_infra_host_states" in sql
+    assert "CREATE TABLE IF NOT EXISTS alerting_infra_alerts" in sql
+    assert "ON alerting_infra_alerts (alert_type, subject_key)" in sql
+    assert "WHERE status = 'open'" in sql
+    assert "status       text NOT NULL CHECK (status IN ('open', 'resolved'))" in sql
+    assert "'unreporting', 'disk_usage', 'gpu_temperature'" in sql
+    assert "'fast_ci', 'full_ci', 'main_ci', 'infra'" in sql
+    assert "alerting_infra_alerts_alert_id_seq" in sql
+    assert "DROP CONSTRAINT IF EXISTS alerting_notification_outbox_path_check" in sql
+    for table in ("alerting_infra_host_states", "alerting_infra_alerts"):
         assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
 
 
