@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import os
 import subprocess
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -25,7 +26,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from alerting.commands import ScheduledCommand
-from alerting.fast_ci import slack_channel
+from alerting.fast_ci import ALERTS_SLACK_CHANNEL
 from alerting.ports import (
     AlertPath,
     Clock,
@@ -34,6 +35,18 @@ from alerting.ports import (
     NotificationIntent,
 )
 from alerting.runtime import HandlerCompletion
+
+
+def slack_channel() -> str:
+    """The channel infra alert intents post to.
+
+    SLACK_CI_INFRA_ALERT_CHANNEL (set from secrets manager) wins when set;
+    falls back to the shared alerts channel so delivery keeps working before
+    the secret is deployed. Channel naming follows the per-path convention:
+    SLACK_CI_NOTIFICATIONS_CHANNEL (Full CI), SLACK_CI_FAST_FAILURE_ALERT_CHANNEL
+    (Fast CI), SLACK_CI_INFRA_ALERT_CHANNEL (infra/queue alerts).
+    """
+    return os.environ.get("SLACK_CI_INFRA_ALERT_CHANNEL", ALERTS_SLACK_CHANNEL)
 
 # A host absent from every expected source and silent for this long is
 # auto-retired: it stops alerting and stays queryable for the dashboard.

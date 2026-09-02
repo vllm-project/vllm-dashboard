@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from alerting.commands import ScheduledCommand
+from alerting.fast_ci import ALERTS_SLACK_CHANNEL
 from alerting.full_ci import BuildkiteRestClient
 from alerting.infra import (
     RETIREMENT_AGE,
@@ -22,6 +23,7 @@ from alerting.infra import (
     InfraThreshold,
     KubectlNodesSource,
     UnionExpectedHostSource,
+    slack_channel,
 )
 from alerting.memory import (
     FixedClock,
@@ -620,3 +622,13 @@ def test_expected_host_set_is_the_union_of_sources() -> None:
     )
 
     assert source.expected_hosts() == frozenset({"gpu-h100-01", "h200-ci-1"})
+
+
+def test_infra_alerts_post_to_the_infra_channel_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SLACK_CI_INFRA_ALERT_CHANNEL", raising=False)
+    assert slack_channel() == ALERTS_SLACK_CHANNEL
+
+    monkeypatch.setenv("SLACK_CI_INFRA_ALERT_CHANNEL", "C-INFRA-1")
+    assert slack_channel() == "C-INFRA-1"
