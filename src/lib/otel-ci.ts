@@ -188,10 +188,13 @@ export async function queryBuildsFromOtel(
     LIMIT ${f.pageSize} OFFSET ${f.page * f.pageSize}
   `;
 
+  // The OTel build span records the terminal state, so CI builds waiting on a
+  // manual unblock are 'blocked' rather than 'passed'. Databricks reflects the
+  // post-unblock outcome, so count blocked as passed to match it.
   const countPromise = sql<Record<string, unknown>[]>`
     SELECT
       COUNT(*)::int AS total,
-      COUNT(*) FILTER (WHERE build_state = 'passed')::int AS passed,
+      COUNT(*) FILTER (WHERE build_state IN ('passed', 'blocked'))::int AS passed,
       COUNT(*) FILTER (WHERE build_state IN ('failed', 'failing'))::int AS failed
     FROM otel_spans
     WHERE ${where}

@@ -12,6 +12,12 @@ export interface QueueJob {
   scheduledAt: string;
   runnableAt: string | null;
   priority: number;
+  build?: {
+    number: number;
+    url: string;
+    message: string | null;
+    author: string | null;
+  } | null;
 }
 
 interface GraphQLResponse {
@@ -32,6 +38,12 @@ interface GraphQLResponse {
             priority?: { number?: number };
             clusterQueue?: { id?: string } | null;
             agentQueryRules?: string[] | null;
+            build?: {
+              number?: number;
+              url?: string;
+              message?: string | null;
+              author?: { name?: string | null } | null;
+            } | null;
           };
         }>;
       };
@@ -398,6 +410,12 @@ async function graphqlQueueJobs(
                       priority { number }
                       clusterQueue { id }
                       agentQueryRules
+                      build {
+                        number
+                        url
+                        message
+                        author { name }
+                      }
                     }
                   }
                 }
@@ -454,6 +472,15 @@ async function graphqlQueueJobs(
         scheduledAt: node.scheduledAt,
         runnableAt: node.runnableAt ?? null,
         priority: node.priority?.number ?? 0,
+        build:
+          node.build?.number !== undefined && node.build.url
+            ? {
+                number: node.build.number,
+                url: node.build.url,
+                message: node.build.message ?? null,
+                author: node.build.author?.name ?? null,
+              }
+            : null,
       });
     }
 
