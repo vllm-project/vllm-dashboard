@@ -67,6 +67,7 @@ export default function BuildsPage() {
   const [page, setPage] = useState(0);
   const [hideSoftFail, setHideSoftFail] = useState(false);
   const [hideOptional, setHideOptional] = useState(false);
+  const [hideOutliers, setHideOutliers] = useState(false);
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
   const [selectedJobs, setSelectedJobs] = useState<Set<string>>(new Set());
 
@@ -212,7 +213,12 @@ export default function BuildsPage() {
         <StatCard label="Failed" value={summary.failed} color="red" />
       </div>
 
-      <BuildChart data={buildDurations} startDate={startDate} endDate={endDate} />
+      <BuildChart
+        data={buildDurations}
+        startDate={startDate}
+        endDate={endDate}
+        hideOutliers={hideOutliers}
+      />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
         <div className="flex min-w-0 gap-3">
@@ -271,6 +277,15 @@ export default function BuildsPage() {
               className="rounded border-zinc-300"
             />
             Hide optional
+          </label>
+          <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500 sm:min-h-10 dark:text-zinc-400">
+            <input
+              type="checkbox"
+              checked={hideOutliers}
+              onChange={(e) => setHideOutliers(e.target.checked)}
+              className="rounded border-zinc-300"
+            />
+            Hide outliers (≥6h)
           </label>
         </div>
       </div>

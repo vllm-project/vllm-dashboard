@@ -26,6 +26,12 @@ export interface BuildDuration {
 
 type ChartMode = "overview" | "runs";
 
+const OUTLIER_THRESHOLD_MINS = 6 * 60;
+
+function isOutlier(build: BuildDuration): boolean {
+  return (parseInt(build.duration_mins, 10) || 0) >= OUTLIER_THRESHOLD_MINS;
+}
+
 interface RunPoint {
   index: number;
   date: string;
@@ -206,16 +212,22 @@ interface BuildChartProps {
   data: BuildDuration[];
   startDate?: string;
   endDate?: string;
+  hideOutliers?: boolean;
 }
 
-export function BuildChart({ data, startDate, endDate }: BuildChartProps) {
+export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChartProps) {
   const [mode, setMode] = useState<ChartMode>("runs");
   const rangeLabel =
     startDate && endDate ? `${startDate} — ${endDate}` : "All Time";
 
+  const filteredData = useMemo(
+    () => (hideOutliers ? data.filter((build) => !isOutlier(build)) : data),
+    [data, hideOutliers],
+  );
+
   const runData = useMemo<RunPoint[]>(
     () =>
-      data.map((build, index) => {
+      filteredData.map((build, index) => {
         const date = new Date(build.created_at);
         return {
           index,
@@ -228,12 +240,12 @@ export function BuildChart({ data, startDate, endDate }: BuildChartProps) {
           failed: isFailed(build.state),
         };
       }),
-    [data],
+    [filteredData],
   );
 
   const dailyData = useMemo<DailyPoint[]>(() => {
     const byDay = new Map<string, BuildDuration[]>();
-    for (const build of data) {
+    for (const build of filteredData) {
       const key = build.created_at.slice(0, 10);
       byDay.set(key, [...(byDay.get(key) ?? []), build]);
     }
@@ -262,7 +274,7 @@ export function BuildChart({ data, startDate, endDate }: BuildChartProps) {
           failed: builds.filter((build) => isFailed(build.state)).length,
         };
       });
-  }, [data]);
+  }, [filteredData]);
 
   if (data.length === 0) {
     return (
@@ -306,7 +318,10 @@ export function BuildChart({ data, startDate, endDate }: BuildChartProps) {
             Build Duration
           </h3>
           <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-            {rangeLabel} · {data.length} builds
+            {rangeLabel} · {filteredData.length} builds
+            {hideOutliers && filteredData.length !== data.length && (
+              <span> ({data.length - filteredData.length} outliers hidden)</span>
+            )}
           </p>
         </div>
         <div
