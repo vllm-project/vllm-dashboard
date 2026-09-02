@@ -1,5 +1,5 @@
 [Unit]
-Description=Hourly backstop sweep for Main CI retry resolutions missed by the poller
+Description=Hourly full sweep of recent Main CI builds and open alerts
 
 [Timer]
 OnBootSec=3min

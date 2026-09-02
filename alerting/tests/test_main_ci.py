@@ -8,6 +8,7 @@ from alerting.full_ci import BuildkiteRestClient
 from alerting.main_ci import (
     INITIAL_LOOKBACK,
     SAFETY_OVERLAP,
+    SWEEP_LOOKBACK,
     BuildkiteMainCISource,
     MainCIBackstopHandler,
     MainCIJobObservation,
@@ -62,7 +63,7 @@ class RecordingRestClient(BuildkiteRestClient):
         self, query: dict[str, str | int | list[str]]
     ) -> list[dict[str, Any]]:
         self.queries.append(dict(query))
-        if query["state"] == "finished":
+        if query.get("state") == "finished":
             return [{"id": "shared"}, {"id": "finished"}]
         return [{"id": "active"}, {"id": "shared"}]
 
@@ -266,7 +267,10 @@ def test_buildkite_client_unions_active_and_recently_finished_builds() -> None:
     rows = client.list_job_builds(observed_from=observed_from, up_to=START)
 
     assert {row["id"] for row in rows} == {"active", "shared", "finished"}
-    assert client.queries[0]["state"] == [
+    # Buildkite requires array syntax for the multi-state filter; repeated
+    # scalar state= params make the active query return zero builds.
+    assert "state" not in client.queries[0]
+    assert client.queries[0]["state[]"] == [
         "creating",
         "scheduled",
         "running",
@@ -279,6 +283,31 @@ def test_buildkite_client_unions_active_and_recently_finished_builds() -> None:
         assert query["branch"] == "main"
         assert query["include_retried_jobs"] == "true"
         assert "exclude_jobs" not in query
+
+
+class RecordingUrlClient(BuildkiteRestClient):
+    def __init__(self) -> None:
+        super().__init__(token="not-used")
+        self.urls: list[str] = []
+
+    def _get_json(self, url: str) -> Any:
+        self.urls.append(url)
+        return []
+
+
+def test_buildkite_client_serializes_state_filter_as_array_params() -> None:
+    client = RecordingUrlClient()
+
+    client.list_job_builds(observed_from=START - timedelta(minutes=30), up_to=START)
+
+    assert len(client.urls) == 2
+    active_url, finished_url = client.urls
+    # urlencode percent-encodes the brackets; Buildkite decodes them back to
+    # state[]=... before parsing the query.
+    assert "state%5B%5D=creating" in active_url
+    assert "state%5B%5D=running" in active_url
+    assert "state=creating" not in active_url
+    assert "state=finished" in finished_url
 
 
 def buildkite_job(
@@ -480,6 +509,14 @@ class FixtureBuilds:
     def __init__(self, builds: dict[int, dict[str, Any]]) -> None:
         self.builds = builds
         self.calls: list[tuple[int, bool]] = []
+        self.sweep_builds: list[dict[str, Any]] = []
+        self.sweep_calls: list[tuple[datetime, datetime]] = []
+
+    def list_job_builds(
+        self, *, observed_from: datetime, up_to: datetime
+    ) -> list[dict[str, Any]]:
+        self.sweep_calls.append((observed_from, up_to))
+        return self.sweep_builds
 
     def get_build(
         self, build_number: int, *, include_retried_jobs: bool
@@ -598,3 +635,97 @@ def test_backstop_ignores_resolved_alerts() -> None:
     assert alert.status == "resolved"
     assert alert.resolution is not None
     assert alert.resolution.job_id == "retry"
+
+
+def test_sweep_opens_alert_for_failure_the_poller_window_missed() -> None:
+    # The build finished recently, but its job failed five hours earlier —
+    # outside any thirty-minute window the poller would have scanned.
+    source = FixtureSource()
+    builds = FixtureBuilds({})
+    runtime, store, _ = combined_runtime_for(source, builds)
+    builds.sweep_builds = [
+        buildkite_build(
+            400,
+            [
+                buildkite_job(
+                    job_id="slow-failure",
+                    state="failed",
+                    finished_at=START - timedelta(hours=5),
+                )
+            ],
+        )
+    ]
+
+    backstop(runtime, START)
+
+    assert [(alert.status, alert.failure_count) for alert in store.alerts()] == [
+        ("open", 1)
+    ]
+    assert store.alerts()[0].last_failure.job_id == "slow-failure"
+    assert builds.sweep_calls == [(START - SWEEP_LOOKBACK, START)]
+    # Nothing was open when the sweep started, so no targeted re-check ran.
+    assert builds.calls == []
+
+
+def test_sweep_does_not_reopen_when_a_newer_pass_exists() -> None:
+    source = FixtureSource()
+    builds = FixtureBuilds({})
+    runtime, store, _ = combined_runtime_for(source, builds)
+    open_alert(runtime, source)
+    source.observations.append(
+        observation(build_number=300, state="passed", minutes=-170, job_id="retry")
+    )
+    reconcile(runtime, START - timedelta(hours=2, minutes=45))
+    assert [alert.status for alert in store.alerts()] == ["resolved"]
+
+    # The sweep re-feeds the older failure; the order guard must drop it.
+    builds.sweep_builds = [
+        buildkite_build(
+            300,
+            [
+                buildkite_job(
+                    job_id="orig",
+                    state="failed",
+                    finished_at=START - timedelta(hours=3),
+                ),
+                buildkite_job(
+                    job_id="retry",
+                    state="passed",
+                    finished_at=START - timedelta(hours=2, minutes=50),
+                ),
+            ],
+        )
+    ]
+    backstop(runtime, START)
+
+    assert [(alert.status, alert.failure_count) for alert in store.alerts()] == [
+        ("resolved", 1)
+    ]
+    resolution = store.alerts()[0].resolution
+    assert resolution is not None
+    assert resolution.job_id == "retry"
+
+
+def test_sweep_is_idempotent_across_reruns() -> None:
+    source = FixtureSource()
+    builds = FixtureBuilds({})
+    runtime, store, _ = combined_runtime_for(source, builds)
+    build = buildkite_build(
+        400,
+        [
+            buildkite_job(
+                job_id="slow-failure",
+                state="failed",
+                finished_at=START - timedelta(hours=5),
+            )
+        ],
+    )
+    builds.sweep_builds = [build]
+    builds.builds[400] = build
+
+    backstop(runtime, START)
+    backstop(runtime, START + timedelta(hours=1))
+
+    assert [(alert.status, alert.failure_count) for alert in store.alerts()] == [
+        ("open", 1)
+    ]

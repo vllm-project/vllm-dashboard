@@ -51,10 +51,15 @@ repository-level relationship with the dashboard is recorded in
   retried-out executions that lack a step key inherit it from the same-named
   job in the build, and a pass that fell behind the scan window still
   resolves when its build is fetched. An hourly backstop sweep
-  (`main_ci_backstop`) re-checks every open alert against the build where it
-  last failed, so a retry pass missed by the windowed poller resolves within
-  an hour. It writes raw lifecycle and Buildkite evidence only; Sherlock's
-  diagnosis remains in Slack.
+  (`main_ci_backstop`) additionally reconciles every active build and every
+  build finished in the last 48 hours with no per-job window — so a failure
+  the poller missed entirely (a job that failed long before its build
+  finished) still opens an alert within an hour — and re-checks every open
+  alert against the build where it last failed, so a retry pass missed by
+  the windowed poller resolves within an hour. The sweep never advances the
+  poller's scan cursor; the outcome order guard keeps reprocessing
+  idempotent. It writes raw lifecycle and Buildkite evidence only;
+  Sherlock's diagnosis remains in Slack.
 - `analyzer.py` — the Full CI analyzer compatibility adapter. It materializes
   the working files the bundled analyzer instructions expect (summary, full
   build data, previous-failure cache, agent memory hydrated from the latest

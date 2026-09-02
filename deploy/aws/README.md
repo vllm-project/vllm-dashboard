@@ -96,7 +96,9 @@ start the timers again. `Persistent=true` and `OnBootSec` start reconciliation,
 while the Postgres cursors and processed-run history recover missed Fast, Full,
 or Main CI observations. Each path has a separate timer and service — Main CI
 has three: one for lifecycle reconciliation, one for AI analysis, and one
-hourly backstop sweep that resolves retry passes the poller's window missed —
+hourly backstop sweep that reconciles all builds finished in the last 48
+hours plus active builds (catching failures the poller's window missed) and
+re-checks open alerts against their failure builds —
 so a long Full CI execution cannot occupy either frequent poller.
 
 For instance replacement and stack recreation, see

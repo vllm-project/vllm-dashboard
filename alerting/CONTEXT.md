@@ -49,9 +49,12 @@ do not resolve an episode.
 _Avoid_: Full CI Failure Condition, automated diagnosis
 
 **Main CI Backstop Sweep**:
-An hourly re-check of every open Main CI Job Alert against the build where it
-last failed, so a retry pass the observation window moved past still resolves
-the episode within an hour. It never advances the Scan Cursor.
+An hourly reconciliation of every active main build and every build finished
+in the last 48 hours with no per-job observation window — opening episodes
+the poller's window missed entirely — plus a re-check of every open Main CI
+Job Alert against the build where it last failed, so a retry pass the
+observation window moved past still resolves the episode within an hour. It
+never advances the Scan Cursor.
 _Avoid_: Re-poll, full rescan
 
 **Scan Cursor**:

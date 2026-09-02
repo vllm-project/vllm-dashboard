@@ -1,5 +1,5 @@
 [Unit]
-Description=Re-check open Main CI alerts against their failure builds
+Description=Reconcile recent Main CI builds and re-check open alerts
 After=network-online.target
 Wants=network-online.target
 

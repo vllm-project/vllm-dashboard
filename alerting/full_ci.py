@@ -195,7 +195,16 @@ class BuildkiteRestClient:
         active = self._list_build_pages(
             {
                 **common,
-                "state": ["creating", "scheduled", "running", "failing", "canceling"],
+                # Buildkite requires array syntax for multi-value filters;
+                # repeated scalar state= params match nothing useful and the
+                # active-build query silently returns zero builds.
+                "state[]": [
+                    "creating",
+                    "scheduled",
+                    "running",
+                    "failing",
+                    "canceling",
+                ],
             }
         )
         finished = self._list_build_pages(

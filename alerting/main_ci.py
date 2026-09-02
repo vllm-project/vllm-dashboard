@@ -18,6 +18,10 @@ from alerting.runtime import HandlerCompletion
 
 INITIAL_LOOKBACK = timedelta(days=1)
 SAFETY_OVERLAP = timedelta(minutes=30)
+# The hourly backstop reconciles every main build finished in this window
+# (plus active builds), so failures the two-minute poller's per-job window
+# missed entirely still open alerts within an hour.
+SWEEP_LOOKBACK = timedelta(hours=48)
 FAILURE_STATES = frozenset({"failed", "failing", "broken", "timed_out"})
 TRACKED_STATES = FAILURE_STATES | {"passed"}
 
@@ -242,6 +246,10 @@ class MainCIStore(Protocol):
 
 
 class MainCIBackstopBuildPort(Protocol):
+    def list_job_builds(
+        self, *, observed_from: datetime, up_to: datetime
+    ) -> list[dict[str, Any]]: ...
+
     def get_build(
         self, build_number: int, *, include_retried_jobs: bool
     ) -> dict[str, Any]: ...
@@ -252,13 +260,25 @@ class MainCIBackstopStore(MainCIStore, Protocol):
 
 
 class MainCIBackstopHandler:
-    """Hourly sweep that re-checks open alerts against their failure build.
+    """Hourly full sweep of recent main builds plus open-alert builds.
 
-    The windowed poller can permanently miss a retry pass when a worker gap
-    lets the scan window move past the pass's finished_at. This sweep fetches
-    each open alert's last-failure build directly and feeds the newest
-    terminal execution of the alert's job key through the normal
-    reconciliation path, so a missed pass resolves within an hour.
+    Two parts per run:
+
+    1. Wide sweep: every active main build and every main build finished in
+       the last ``SWEEP_LOOKBACK`` hours is reconciled with no per-job
+       finished_at window, so a failure the poller missed entirely (a job
+       that failed long before its build finished, hidden by the per-job
+       scan window) still opens an alert within an hour. The
+       ``(build_number, finished_at, job_id)`` order guard in
+       ``commit_main_ci_scan`` keeps newer data authoritative and makes
+       reprocessing the same builds idempotent.
+    2. Targeted re-check: each open alert's last-failure build is fetched
+       directly, so a retry pass on a build older than the wide window
+       still resolves its alert.
+
+    The sweep never advances the poller's scan cursor: it only re-checks
+    data, and moving the cursor could make the poller skip failures that
+    fell into a gap.
     """
 
     def __init__(
@@ -273,11 +293,19 @@ class MainCIBackstopHandler:
         self._clock = clock
 
     def __call__(self, command: ScheduledCommand) -> HandlerCompletion:
+        sweep_builds = self._builds.list_job_builds(
+            observed_from=command.target_time - SWEEP_LOOKBACK,
+            up_to=command.target_time,
+        )
+        observations = [
+            observation
+            for build in sweep_builds
+            for observation in build_job_observations(build)
+        ]
         refs = self._store.open_main_ci_alert_builds()
         job_keys_by_build: dict[int, set[str]] = {}
         for ref in refs:
             job_keys_by_build.setdefault(ref.build_number, set()).add(ref.job_key)
-        observations: list[MainCIJobObservation] = []
         for build_number in sorted(job_keys_by_build):
             build = self._builds.get_build(
                 build_number, include_retried_jobs=True
@@ -293,7 +321,7 @@ class MainCIBackstopHandler:
                     observations.append(
                         max(executions, key=lambda item: item.order)
                     )
-        # The sweep only re-checks known alerts; it must not advance the
+        # The sweep only re-checks known state; it must not advance the
         # poller's scan cursor, or a poller outage covered by the sweep would
         # skip failures that fell into the gap.
         cursor = self._store.main_ci_scan_cursor()
