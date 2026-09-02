@@ -57,14 +57,12 @@ export async function GET(request: NextRequest) {
       stored++;
     }
 
-    // Cleanup old data (keep 30 days)
+    // Cleanup old queue data (keep 30 days). GPU/host snapshot retention
+    // lives in the dedicated /api/cron/retention task so a queue-poll
+    // failure cannot stop it.
     await db`
       DELETE FROM queue_snapshots
       WHERE polled_at < NOW() - INTERVAL '30 days'
-    `;
-    await db`
-      DELETE FROM gpu_snapshots
-      WHERE reported_at < NOW() - INTERVAL '30 days'
     `;
 
     return NextResponse.json({
