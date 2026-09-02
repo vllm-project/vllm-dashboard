@@ -4,14 +4,16 @@ import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { SearchableSelect } from "@/components/searchable-select";
+import { GpuHostTable } from "@/components/gpu-host-table";
 import type { GpuChartMode } from "@/components/gpu-util-chart";
 import type {
   GpuHistoryResponse,
   GpuLatest,
   GpuLatestResponse,
   GpuOverviewPoint,
+  HostLatest,
 } from "@/lib/gpu-types";
-import { buildHostRows, hostReportStatus } from "@/lib/gpu-host-view";
+import { buildHostRows } from "@/lib/gpu-host-view";
 
 const GpuMemChart = dynamic(
   () => import("@/components/gpu-util-chart").then((module) => module.GpuMemChart),
@@ -57,21 +59,6 @@ function percentile(values: number[], quantile: number): number {
   return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
 }
 
-function formatMemory(mb: number): string {
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  return `${Math.round(mb)} MB`;
-}
-
-function formatTemperature(celsius: number | null): string {
-  return celsius == null ? "—" : `${Math.round(celsius)}°C`;
-}
-
-function formatPower(drawW: number | null, limitW: number | null): string {
-  if (drawW == null) return "—";
-  const draw = `${Math.round(drawW)} W`;
-  return limitW == null ? draw : `${draw} / ${Math.round(limitW)} W`;
-}
-
 function formatCapacityGb(gb: number): string {
   if (gb >= 1024) return `${(gb / 1024).toFixed(1)} TB`;
   return `${Math.round(gb)} GB`;
@@ -105,6 +92,7 @@ function gpuType(name: string | null): string {
 interface GpuDashboardProps {
   initialOverview: GpuOverviewPoint[];
   initialLatest: GpuLatest[];
+  initialHosts: HostLatest[];
   initialLatestCheckedAt: string;
   initialNow: number;
 }
@@ -112,6 +100,7 @@ interface GpuDashboardProps {
 export function GpuDashboard({
   initialOverview,
   initialLatest,
+  initialHosts,
   initialLatestCheckedAt,
   initialNow,
 }: GpuDashboardProps) {
@@ -139,6 +128,7 @@ export function GpuDashboard({
   } = useSWR<GpuLatestResponse>("/api/gpu/latest", fetcher, {
     fallbackData: {
       latest: initialLatest,
+      hosts: initialHosts,
       checked_at: initialLatestCheckedAt,
     },
     // Server-rendered data makes the page useful immediately; this request is
@@ -168,6 +158,7 @@ export function GpuDashboard({
   });
 
   const latest = latestData?.latest ?? initialLatest;
+  const hosts = latestData?.hosts ?? initialHosts;
   const latestCheckedAt = latestData?.checked_at ?? initialLatestCheckedAt;
   const snapshots = needsRawHistory
     ? historyData?.snapshots ?? EMPTY_SNAPSHOTS
@@ -573,160 +564,8 @@ export function GpuDashboard({
         />
       </div>
 
-      {/* Host summary table */}
-      <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none">
-        <div className="flex min-h-14 items-center justify-between gap-4 border-b border-zinc-200 px-5 py-3 dark:border-zinc-800 sm:px-6">
-          <h2 className="text-lg font-semibold tracking-[-0.02em]">Host Summary</h2>
-          <span className="text-sm tabular-nums text-zinc-500 dark:text-zinc-400">
-            {hostRows.length} hosts
-          </span>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[1100px] text-sm">
-            <thead>
-              <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                <th className="px-5 py-3 font-medium sm:px-6">Host</th>
-                <th className="px-5 py-3 font-medium sm:px-6">GPU Type</th>
-                <th className="px-5 py-3 font-medium sm:px-6">Memory</th>
-                <th className="px-5 py-3 font-medium sm:px-6">GPU Utilization</th>
-                <th className="px-5 py-3 font-medium sm:px-6">GPU Temp</th>
-                <th className="px-5 py-3 font-medium sm:px-6">Power</th>
-                <th className="px-5 py-3 font-medium sm:px-6">Per-GPU Memory</th>
-                <th className="px-5 py-3 font-medium sm:px-6">Last Seen</th>
-              </tr>
-            </thead>
-            <tbody>
-              {hostRows.map((h) => {
-                const memPct = h.memTotalMb > 0 ? Math.round((h.memUsedMb / h.memTotalMb) * 100) : 0;
-                const gpuUtil = h.gpuCount > 0 ? Math.round(h.gpuUtil / h.gpuCount) : 0;
-                const ago = now > 0
-                  ? Math.round((now - new Date(h.lastSeen).getTime()) / 60_000)
-                  : 0;
-                const status = now > 0 ? hostReportStatus(ago) : "fresh";
-                const unreporting = status === "unreporting";
-                const stale = status !== "fresh";
-                return (
-                  <tr
-                    key={h.hostname}
-                    className={`border-b border-zinc-100 last:border-0 dark:border-zinc-800/50 ${stale ? "opacity-50" : ""}`}
-                  >
-                    <td className="px-5 py-3.5 font-medium sm:px-6">
-                      {h.hostname}
-                      {unreporting ? (
-                        <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/40 dark:text-red-400">
-                          Unreporting
-                        </span>
-                      ) : status === "stale" ? (
-                        <span className="ml-2 rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400">
-                          Stale
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="px-5 py-3.5 sm:px-6">{h.gpuType}</td>
-                    <td className="px-5 py-3.5 sm:px-6">
-                      <span className={memPct > 90 ? "font-medium text-red-600 dark:text-red-400" : ""}>
-                        {formatMemory(h.memUsedMb)}
-                      </span>
-                      <span className="text-zinc-400"> / {formatMemory(h.memTotalMb)}</span>
-                      <span className="ml-1 text-xs text-zinc-400">({memPct}%)</span>
-                    </td>
-                    <td className="px-5 py-3.5 sm:px-6">
-                      <div className="flex min-w-28 items-center gap-2">
-                        <span className="w-10 tabular-nums">{gpuUtil}%</span>
-                        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
-                          <div
-                            className="h-full rounded-full bg-emerald-500 dark:bg-emerald-400"
-                            style={{ width: `${Math.min(Math.max(gpuUtil, 0), 100)}%` }}
-                          />
-                        </div>
-                      </div>
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-3.5 tabular-nums sm:px-6">
-                      <span
-                        className={
-                          h.maxTemperatureC != null && h.maxTemperatureC >= 85
-                            ? "font-medium text-red-600 dark:text-red-400"
-                            : h.maxTemperatureC != null && h.maxTemperatureC >= 75
-                            ? "font-medium text-yellow-600 dark:text-yellow-400"
-                            : ""
-                        }
-                      >
-                        {formatTemperature(h.maxTemperatureC)}
-                      </span>
-                      {h.maxTemperatureC != null && (
-                        <span className="ml-1 text-xs text-zinc-400">max</span>
-                      )}
-                    </td>
-                    <td className="whitespace-nowrap px-5 py-3.5 tabular-nums text-zinc-500 sm:px-6 dark:text-zinc-400">
-                      {formatPower(h.powerDrawW, h.powerLimitW)}
-                    </td>
-                    <td className="px-5 py-3.5 sm:px-6">
-                      <div className="flex items-end gap-1.5" style={{ height: 40 }}>
-                        {h.gpus.map((gpu) => {
-                          const pct = gpu.memTotalMb > 0 ? Math.round((gpu.memUsedMb / gpu.memTotalMb) * 100) : 0;
-                          const barColor = pct > 90
-                            ? "bg-red-500 dark:bg-red-400"
-                            : pct > 60
-                            ? "bg-blue-500 dark:bg-blue-400"
-                            : "bg-blue-400 dark:bg-blue-500";
-                          return (
-                            <div
-                              key={gpu.index}
-                              className="group relative flex flex-col items-center"
-                            >
-                              <div
-                                className="relative w-3 rounded-sm bg-zinc-100 dark:bg-zinc-800"
-                                style={{ height: 40 }}
-                              >
-                                <div
-                                  className={`absolute bottom-0 w-full rounded-sm ${barColor}`}
-                                  style={{ height: `${Math.max(pct, 2)}%` }}
-                                />
-                              </div>
-                              <div className="pointer-events-none absolute -top-14 left-1/2 z-50 hidden -translate-x-1/2 whitespace-nowrap rounded border border-zinc-200 bg-white px-2 py-1 text-xs shadow-lg group-hover:block dark:border-zinc-700 dark:bg-zinc-900">
-                                <span className="font-medium">GPU {gpu.index}</span>
-                                <span className="ml-1 text-zinc-400">
-                                  {formatMemory(gpu.memUsedMb)} / {formatMemory(gpu.memTotalMb)} ({pct}%)
-                                </span>
-                                <span className="block text-zinc-400">
-                                  GPU utilization: {Math.round(gpu.gpuUtil)}%
-                                </span>
-                                <span className="block text-zinc-400">
-                                  Temp: {formatTemperature(gpu.temperatureC)}
-                                  {" · "}
-                                  Power: {formatPower(gpu.powerDrawW, gpu.powerLimitW)}
-                                </span>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </td>
-                    <td
-                      className={`whitespace-nowrap px-5 py-3.5 sm:px-6 ${
-                        unreporting
-                          ? "text-red-600 dark:text-red-400"
-                          : stale
-                          ? "text-yellow-600 dark:text-yellow-400"
-                          : "text-zinc-500 dark:text-zinc-400"
-                      }`}
-                    >
-                      {stale ? formatAgo(ago) : "just now"}
-                    </td>
-                  </tr>
-                );
-              })}
-              {hostRows.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="px-5 py-12 text-center text-zinc-400">
-                    No GPU data found. Deploy the reporting script to start collecting metrics.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      {/* Host summary table with host-health metrics and drill-down */}
+      <GpuHostTable hostRows={hostRows} hosts={hosts} now={now} />
     </div>
   );
 }
