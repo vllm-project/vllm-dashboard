@@ -34,6 +34,8 @@ from alerting.full_ci import (
     ordered_unique_runs,
 )
 from alerting.infra import (
+    DiskMountObservation,
+    GpuTemperatureObservation,
     HostReport,
     InfraAlertEpisode,
     InfraNotificationFactory,
@@ -1111,6 +1113,66 @@ class PostgresAlertStore:
                 (since,),
             ).fetchall()
         return frozenset(str(row[0]) for row in rows)
+
+    def disk_mounts(self) -> list[DiskMountObservation]:
+        """Every mount from each host's latest host_snapshots disk detail."""
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                WITH latest AS (
+                    SELECT DISTINCT ON (hostname) hostname, disks, reported_at
+                    FROM host_snapshots
+                    ORDER BY hostname, reported_at DESC
+                )
+                SELECT latest.hostname,
+                       mount->>'mount_point',
+                       mount->>'device',
+                       mount->>'fstype',
+                       mount->>'role',
+                       (mount->>'used_bytes')::bigint,
+                       (mount->>'total_bytes')::bigint,
+                       mount->>'error',
+                       latest.reported_at
+                FROM latest,
+                LATERAL jsonb_array_elements(latest.disks) AS mount
+                WHERE latest.disks IS NOT NULL
+                """
+            ).fetchall()
+        return [
+            DiskMountObservation(
+                hostname=str(row[0]),
+                mount_point=str(row[1] or ""),
+                device=str(row[2] or ""),
+                fstype=str(row[3] or ""),
+                role=str(row[4] or ""),
+                used_bytes=int(row[5] or 0),
+                total_bytes=int(row[6] or 0),
+                error=str(row[7]) if row[7] is not None else None,
+                reported_at=row[8],
+            )
+            for row in rows
+        ]
+
+    def gpu_temperatures(self) -> list[GpuTemperatureObservation]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT ON (hostname, gpu_index)
+                       hostname, gpu_index, temperature_c, reported_at
+                FROM gpu_snapshots
+                WHERE temperature_c IS NOT NULL
+                ORDER BY hostname, gpu_index, reported_at DESC
+                """
+            ).fetchall()
+        return [
+            GpuTemperatureObservation(
+                hostname=str(row[0]),
+                gpu_index=int(row[1]),
+                temperature_c=float(row[2]),
+                reported_at=row[3],
+            )
+            for row in rows
+        ]
 
     def infra_state(self) -> InfraStateSnapshot:
         with self._connection_factory() as connection:

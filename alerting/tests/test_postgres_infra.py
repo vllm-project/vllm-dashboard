@@ -65,6 +65,8 @@ class FakePostgresConnection:
             "thresholds": [("unreporting", 10.0, "minutes", 2, True)],
             "reports": [],
             "recent_hosts": [],
+            "mounts": [],
+            "temps": [],
             "infra_states": {},
             "infra_alerts": [],
             "outbox": {},
@@ -110,6 +112,10 @@ class FakePostgresConnection:
             return Result(rows=list(self.state["reports"]))
         if statement.startswith("SELECT DISTINCT hostname FROM gpu_snapshots"):
             return Result(rows=list(self.state["recent_hosts"]))
+        if statement.startswith("WITH latest AS ("):
+            return Result(rows=list(self.state["mounts"]))
+        if statement.startswith("SELECT DISTINCT ON (hostname, gpu_index)"):
+            return Result(rows=list(self.state["temps"]))
         if statement.startswith(
             "SELECT alert_type, subject_key, consecutive_breaches"
         ):
@@ -295,3 +301,30 @@ def test_postgres_scan_resolves_episode_on_first_fresh_report() -> None:
         if delivery_id.endswith(":resolve")
     )
     assert "reporting again" in json.loads(resolve_row[6])["text"]
+
+
+def test_postgres_disk_group_deduplicates_across_hosts_sharing_a_volume() -> None:
+    connection = FakePostgresConnection()
+    connection.state["thresholds"].append(("disk_usage", 90.0, "percent", 2, True))
+    connection.state["mounts"] = [
+        ("h200-ci-1", "/data", "nfs01:/exports/ci", "nfs4", "data", 950, 1000, None, START),
+        ("h200-ci-2", "/data", "nfs01:/exports/ci", "nfs4", "data", 960, 1000, None, START),
+        ("h200-ci-1", "/scratch", "/dev/sdb1", "ext4", "other", 990, 1000, None, START),
+    ]
+    runtime, _ = runtime_for(connection, FixtureHosts(set()))
+
+    scan(runtime, START)
+    assert connection.state["infra_alerts"] == []
+
+    scan(runtime, START + timedelta(minutes=5))
+
+    [alert] = connection.state["infra_alerts"]
+    assert alert["alert_type"] == "disk_usage"
+    assert alert["subject_key"] == "disk:nfs4:nfs01:/exports/ci"
+    assert alert["status"] == "open"
+    assert len(connection.state["outbox"]) == 1
+    [outbox_row] = connection.state["outbox"].values()
+    assert outbox_row[2] == "infra"
+    text = json.loads(outbox_row[6])["text"]
+    assert "h200-ci-1" in text and "h200-ci-2" in text
+    assert "/scratch" not in text

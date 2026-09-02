@@ -5,7 +5,11 @@ reported telemetry. An episode opens only after a breach sustains across the
 configured consecutive scan count and resolves on the first positive
 observation, so every episode produces exactly two Slack messages: open and
 resolve. Unreporting wording always says a host "stopped reporting"; the
-alert never claims a machine is down.
+alert never claims a machine is down. Disk usage is keyed by the shared
+(fstype, device) group — not hostname — so a fleet-wide NFS volume pages
+once no matter how many hosts mount it; mounts with role 'other' or a
+per-mount error never alert. GPU temperature is keyed per host and GPU.
+RAM, load, and network are display-only and never alert.
 """
 
 from __future__ import annotations
@@ -34,6 +38,9 @@ from alerting.runtime import HandlerCompletion
 # A host absent from every expected source and silent for this long is
 # auto-retired: it stops alerting and stays queryable for the dashboard.
 RETIREMENT_AGE = timedelta(days=7)
+# Only these mount roles alert on disk usage; 'other' and errored mounts
+# never do. RAM, load, and network are display-only and never alert.
+DISK_ALERT_ROLES = frozenset({"workspace", "images", "data", "system"})
 
 
 class InfraAlertType(StrEnum):
@@ -58,6 +65,35 @@ class HostReport:
     """The latest successful telemetry receipt for one host."""
 
     hostname: str
+    reported_at: datetime
+
+
+@dataclass(frozen=True)
+class DiskMountObservation:
+    """One mount from a host's latest host_snapshots disk detail."""
+
+    hostname: str
+    mount_point: str
+    device: str
+    fstype: str
+    role: str
+    used_bytes: int
+    total_bytes: int
+    error: str | None
+    reported_at: datetime
+
+    @property
+    def used_percent(self) -> float:
+        return self.used_bytes / self.total_bytes * 100
+
+
+@dataclass(frozen=True)
+class GpuTemperatureObservation:
+    """One GPU's latest temperature reading from gpu_snapshots."""
+
+    hostname: str
+    gpu_index: int
+    temperature_c: float
     reported_at: datetime
 
 
@@ -123,6 +159,14 @@ class InfraSnapshotPort(Protocol):
 
     def recent_gpu_hosts(self, *, since: datetime) -> frozenset[str]:
         """Distinct hostnames with a gpu_snapshots row since `since`."""
+        ...
+
+    def disk_mounts(self) -> list[DiskMountObservation]:
+        """Every mount from each host's latest host_snapshots disk detail."""
+        ...
+
+    def gpu_temperatures(self) -> list[GpuTemperatureObservation]:
+        """The latest temperature reading per (hostname, gpu_index)."""
         ...
 
 
@@ -253,12 +297,179 @@ def _plan_unreporting(
     )
 
 
+def _disk_subject(fstype: str, device: str) -> str:
+    return f"disk:{fstype.lower()}:{device.lower()}"
+
+
+def _plan_disk_usage(
+    *,
+    now: datetime,
+    threshold: InfraThreshold,
+    disk_mounts: list[DiskMountObservation],
+    states: Mapping[tuple[str, str], InfraSubjectState],
+    open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
+) -> InfraScanPlan:
+    """Plan shared-volume episodes, deduplicated by (fstype, device).
+
+    A group breaches while any reported mount is at or above the threshold
+    and resolves only when every mount in the group drops below it, so an
+    NFS share mounted by N hosts pages once. Groups with no current
+    observations (every mounting host is silent) hold their state.
+    """
+    out_states: list[InfraSubjectState] = []
+    opened: list[InfraAlertEpisode] = []
+    resolved: list[InfraAlertEpisode] = []
+    groups: dict[str, list[DiskMountObservation]] = {}
+    for mount in disk_mounts:
+        if (
+            mount.role not in DISK_ALERT_ROLES
+            or mount.error is not None
+            or mount.total_bytes <= 0
+        ):
+            continue
+        subject = _disk_subject(mount.fstype, mount.device)
+        groups.setdefault(subject, []).append(mount)
+    for subject in sorted(groups):
+        members = groups[subject]
+        breaching = [
+            mount
+            for mount in members
+            if mount.used_percent >= threshold.threshold_value
+        ]
+        key = (InfraAlertType.DISK_USAGE.value, subject)
+        state = states.get(
+            key, InfraSubjectState(InfraAlertType.DISK_USAGE.value, subject)
+        )
+        episode = open_episodes.get(key)
+        details = {
+            "device": members[0].device,
+            "fstype": members[0].fstype,
+            "max_used_percent": round(
+                max(mount.used_percent for mount in members), 1
+            ),
+            "threshold_percent": threshold.threshold_value,
+            "mounts": [
+                {
+                    "hostname": mount.hostname,
+                    "mount_point": mount.mount_point,
+                    "used_percent": round(mount.used_percent, 1),
+                }
+                for mount in sorted(
+                    breaching, key=lambda mount: mount.used_percent, reverse=True
+                )
+            ],
+        }
+        if breaching:
+            breaches = state.consecutive_breaches + 1
+            out_states.append(
+                replace(state, consecutive_breaches=breaches, details=details)
+            )
+            if breaches >= threshold.consecutive_scans and episode is None:
+                opened.append(
+                    InfraAlertEpisode(
+                        alert_type=InfraAlertType.DISK_USAGE.value,
+                        subject_key=subject,
+                        opened_at=now,
+                        details={
+                            **details,
+                            "consecutive_scans": threshold.consecutive_scans,
+                        },
+                    )
+                )
+            continue
+        out_states.append(replace(state, consecutive_breaches=0, details=details))
+        if episode is not None:
+            resolved.append(
+                replace(
+                    episode,
+                    resolved_at=now,
+                    details={
+                        **episode.details,
+                        "resolution": "below_threshold",
+                        "max_used_percent": details["max_used_percent"],
+                    },
+                )
+            )
+    return InfraScanPlan(
+        states=tuple(out_states), opened=tuple(opened), resolved=tuple(resolved)
+    )
+
+
+def _plan_gpu_temperature(
+    *,
+    now: datetime,
+    threshold: InfraThreshold,
+    gpu_temperatures: list[GpuTemperatureObservation],
+    states: Mapping[tuple[str, str], InfraSubjectState],
+    open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
+) -> InfraScanPlan:
+    out_states: list[InfraSubjectState] = []
+    opened: list[InfraAlertEpisode] = []
+    resolved: list[InfraAlertEpisode] = []
+    observed = sorted(
+        {(reading.hostname, reading.gpu_index) for reading in gpu_temperatures}
+    )
+    latest = {
+        (reading.hostname, reading.gpu_index): reading for reading in gpu_temperatures
+    }
+    for hostname, gpu_index in observed:
+        reading = latest[(hostname, gpu_index)]
+        subject = f"gpu:{hostname}:{gpu_index}"
+        key = (InfraAlertType.GPU_TEMPERATURE.value, subject)
+        state = states.get(
+            key, InfraSubjectState(InfraAlertType.GPU_TEMPERATURE.value, subject)
+        )
+        episode = open_episodes.get(key)
+        details = {
+            "hostname": hostname,
+            "gpu_index": gpu_index,
+            "temperature_c": reading.temperature_c,
+            "threshold_celsius": threshold.threshold_value,
+        }
+        if reading.temperature_c >= threshold.threshold_value:
+            breaches = state.consecutive_breaches + 1
+            out_states.append(
+                replace(state, consecutive_breaches=breaches, details=details)
+            )
+            if breaches >= threshold.consecutive_scans and episode is None:
+                opened.append(
+                    InfraAlertEpisode(
+                        alert_type=InfraAlertType.GPU_TEMPERATURE.value,
+                        subject_key=subject,
+                        opened_at=now,
+                        details={
+                            **details,
+                            "consecutive_scans": threshold.consecutive_scans,
+                        },
+                    )
+                )
+            continue
+        out_states.append(replace(state, consecutive_breaches=0, details=details))
+        if episode is not None:
+            resolved.append(
+                replace(
+                    episode,
+                    resolved_at=now,
+                    details={
+                        **episode.details,
+                        "resolution": "below_threshold",
+                        "temperature_c": reading.temperature_c,
+                    },
+                )
+            )
+    return InfraScanPlan(
+        states=tuple(out_states), opened=tuple(opened), resolved=tuple(resolved)
+    )
+
+
 def plan_infra_scan(
     *,
     now: datetime,
     thresholds: Mapping[str, InfraThreshold],
     expected_hosts: frozenset[str],
     latest_reports: Mapping[str, datetime],
+    disk_mounts: list[DiskMountObservation],
+    gpu_temperatures: list[GpuTemperatureObservation],
     states: Mapping[tuple[str, str], InfraSubjectState],
     open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
 ) -> InfraScanPlan:
@@ -275,6 +486,28 @@ def plan_infra_scan(
                 threshold=unreporting,
                 expected_hosts=expected_hosts,
                 latest_reports=latest_reports,
+                states=states,
+                open_episodes=open_episodes,
+            )
+        )
+    disk_usage = thresholds.get(InfraAlertType.DISK_USAGE.value)
+    if disk_usage is not None and disk_usage.enabled:
+        plans.append(
+            _plan_disk_usage(
+                now=now,
+                threshold=disk_usage,
+                disk_mounts=disk_mounts,
+                states=states,
+                open_episodes=open_episodes,
+            )
+        )
+    gpu_temperature = thresholds.get(InfraAlertType.GPU_TEMPERATURE.value)
+    if gpu_temperature is not None and gpu_temperature.enabled:
+        plans.append(
+            _plan_gpu_temperature(
+                now=now,
+                threshold=gpu_temperature,
+                gpu_temperatures=gpu_temperatures,
                 states=states,
                 open_episodes=open_episodes,
             )
@@ -298,6 +531,14 @@ def _utc(value: datetime) -> str:
     return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
+def _render_disk_subject(details: Mapping[str, Any], subject_key: str) -> str:
+    device = details.get("device")
+    fstype = details.get("fstype")
+    if device and fstype:
+        return f"{_code(device)} ({_escape(fstype)})"
+    return _code(subject_key)
+
+
 def _render_open(episode: InfraAlertEpisode) -> str:
     if episode.alert_type == InfraAlertType.UNREPORTING:
         hostname = _code(episode.details.get("hostname") or episode.subject_key)
@@ -318,6 +559,37 @@ def _render_open(episode: InfraAlertEpisode) -> str:
                 ),
             ]
         )
+    if episode.alert_type == InfraAlertType.DISK_USAGE:
+        disk = _render_disk_subject(episode.details, episode.subject_key)
+        percent = _escape(episode.details.get("max_used_percent"))
+        threshold = _escape(episode.details.get("threshold_percent"))
+        scans = _escape(episode.details.get("consecutive_scans"))
+        lines = [
+            f":rotating_light: *Infra alert* — disk {disk} at {percent}% used "
+            f"(threshold {threshold}%, {scans} consecutive scans)",
+        ]
+        mounts = episode.details.get("mounts")
+        if isinstance(mounts, list) and mounts:
+            rendered = ", ".join(
+                f"{_code(mount.get('hostname'))}:{_escape(mount.get('mount_point'))} "
+                f"({_escape(mount.get('used_percent'))}%)"
+                for mount in mounts
+                if isinstance(mount, dict)
+            )
+            if rendered:
+                lines.append(f"Breaching mounts: {rendered}")
+        return "\n".join(lines)
+    if episode.alert_type == InfraAlertType.GPU_TEMPERATURE:
+        hostname = _code(episode.details.get("hostname"))
+        gpu_index = _escape(episode.details.get("gpu_index"))
+        temperature = _escape(episode.details.get("temperature_c"))
+        threshold = _escape(episode.details.get("threshold_celsius"))
+        scans = _escape(episode.details.get("consecutive_scans"))
+        return (
+            f":rotating_light: *Infra alert* — GPU {gpu_index} on {hostname} "
+            f"at {temperature}°C (threshold {threshold}°C, "
+            f"{scans} consecutive scans)"
+        )
     raise ValueError(f"no open renderer for alert type: {episode.alert_type}")
 
 
@@ -331,6 +603,23 @@ def _render_resolve(episode: InfraAlertEpisode) -> str:
                 "source; it no longer alerts."
             )
         return f":white_check_mark: *Infra resolved* — host {hostname} is reporting again"
+    if episode.alert_type == InfraAlertType.DISK_USAGE:
+        disk = _render_disk_subject(episode.details, episode.subject_key)
+        threshold = _escape(episode.details.get("threshold_percent"))
+        percent = _escape(episode.details.get("max_used_percent"))
+        return (
+            f":white_check_mark: *Infra resolved* — disk {disk} back below "
+            f"{threshold}% used (now {percent}%)"
+        )
+    if episode.alert_type == InfraAlertType.GPU_TEMPERATURE:
+        hostname = _code(episode.details.get("hostname"))
+        gpu_index = _escape(episode.details.get("gpu_index"))
+        threshold = _escape(episode.details.get("threshold_celsius"))
+        temperature = _escape(episode.details.get("temperature_c"))
+        return (
+            f":white_check_mark: *Infra resolved* — GPU {gpu_index} on "
+            f"{hostname} back below {threshold}°C (now {temperature}°C)"
+        )
     raise ValueError(f"no resolve renderer for alert type: {episode.alert_type}")
 
 
@@ -415,6 +704,8 @@ class InfraScanHandler:
                 report.hostname: report.reported_at
                 for report in self._snapshots.latest_reports()
             },
+            disk_mounts=self._snapshots.disk_mounts(),
+            gpu_temperatures=self._snapshots.gpu_temperatures(),
             states={
                 (state.alert_type, state.subject_key): state
                 for state in snapshot.states

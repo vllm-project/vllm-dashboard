@@ -1,4 +1,4 @@
-"""Infra unreporting-host scans through the scheduled-command seam."""
+"""Infra health scans through the scheduled-command seam."""
 
 from __future__ import annotations
 
@@ -14,10 +14,12 @@ from alerting.full_ci import BuildkiteRestClient
 from alerting.infra import (
     RETIREMENT_AGE,
     BuildkiteGpuQueueAgentsSource,
+    DiskMountObservation,
+    GpuTemperatureObservation,
     HostReport,
+    InfraAlertType,
     InfraScanHandler,
     InfraThreshold,
-    InfraAlertType,
     KubectlNodesSource,
     UnionExpectedHostSource,
 )
@@ -57,6 +59,8 @@ class FixtureSnapshots:
         ]
         self.gpu_reports: dict[str, datetime] = {}
         self.host_reports: dict[str, datetime] = {}
+        self.disks: list[DiskMountObservation] = []
+        self.temps: list[GpuTemperatureObservation] = []
 
     def infra_thresholds(self) -> list[InfraThreshold]:
         return list(self.threshold_rows)
@@ -76,6 +80,54 @@ class FixtureSnapshots:
             for hostname, reported_at in self.gpu_reports.items()
             if reported_at >= since
         )
+
+    def disk_mounts(self) -> list[DiskMountObservation]:
+        return list(self.disks)
+
+    def gpu_temperatures(self) -> list[GpuTemperatureObservation]:
+        return list(self.temps)
+
+
+def threshold(
+    alert_type: InfraAlertType,
+    value: float,
+    unit: str,
+    *,
+    scans: int = 2,
+    enabled: bool = True,
+) -> InfraThreshold:
+    return InfraThreshold(
+        alert_type=alert_type.value,
+        threshold_value=value,
+        threshold_unit=unit,
+        consecutive_scans=scans,
+        enabled=enabled,
+    )
+
+
+def mount(
+    hostname: str,
+    device: str,
+    *,
+    fstype: str = "nfs4",
+    role: str = "data",
+    used_percent: float = 95.0,
+    mount_point: str = "/data",
+    error: str | None = None,
+    reported_at: datetime = START,
+) -> DiskMountObservation:
+    total_bytes = 1000
+    return DiskMountObservation(
+        hostname=hostname,
+        mount_point=mount_point,
+        device=device,
+        fstype=fstype,
+        role=role,
+        used_bytes=int(total_bytes * used_percent / 100),
+        total_bytes=total_bytes,
+        error=error,
+        reported_at=reported_at,
+    )
 
 
 def runtime_for(
@@ -307,6 +359,156 @@ def test_failed_commit_rolls_back_state_episode_and_outbox_before_retry() -> Non
     scan(runtime, START + timedelta(minutes=5))
     assert [episode.status for episode in store.episodes()] == ["open"]
     assert outbox.count() == 1
+
+
+def test_shared_nfs_volume_pages_once_regardless_of_mounting_host_count() -> None:
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(
+        threshold(InfraAlertType.DISK_USAGE, 90, "percent")
+    )
+    snapshots.disks = [
+        mount("h200-ci-1", "nfs01:/exports/ci"),
+        mount("h200-ci-2", "nfs01:/exports/ci"),
+    ]
+    runtime, store, outbox, slack, clock = runtime_for(FixtureHosts(), snapshots)
+
+    scan(runtime, clock.now())
+    assert store.episodes() == []
+
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    runtime.dispatch_due_notifications()
+
+    episodes = store.episodes()
+    assert [(episode.alert_type, episode.status) for episode in episodes] == [
+        ("disk_usage", "open")
+    ]
+    assert episodes[0].subject_key == "disk:nfs4:nfs01:/exports/ci"
+    assert outbox.count() == 1
+    text = slack.deliveries[0].payload["text"]
+    assert "nfs01:/exports/ci" in text
+    assert "h200-ci-1" in text and "h200-ci-2" in text
+
+    # One mounting host dropping below the threshold does not resolve the
+    # shared episode while another host still breaches.
+    snapshots.disks = [
+        mount("h200-ci-1", "nfs01:/exports/ci", used_percent=50.0),
+        mount("h200-ci-2", "nfs01:/exports/ci"),
+    ]
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    runtime.dispatch_due_notifications()
+    assert [episode.status for episode in store.episodes()] == ["open"]
+    assert outbox.count() == 1
+
+    # The episode resolves only when every mount in the group is below.
+    snapshots.disks = [
+        mount("h200-ci-1", "nfs01:/exports/ci", used_percent=50.0),
+        mount("h200-ci-2", "nfs01:/exports/ci", used_percent=40.0),
+    ]
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    runtime.dispatch_due_notifications()
+    assert [episode.status for episode in store.episodes()] == ["resolved"]
+    assert outbox.count() == 2
+    assert "back below" in slack.deliveries[1].payload["text"]
+
+
+def test_other_role_and_errored_mounts_never_alert() -> None:
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(
+        threshold(InfraAlertType.DISK_USAGE, 90, "percent")
+    )
+    snapshots.disks = [
+        mount("h200-ci-1", "/dev/sdb1", fstype="ext4", role="other",
+              used_percent=99.0, mount_point="/scratch"),
+        mount("h200-ci-1", "nfs01:/exports/ci", used_percent=99.0,
+              error="i/o error"),
+    ]
+    runtime, store, outbox, _, clock = runtime_for(FixtureHosts(), snapshots)
+
+    scan(runtime, clock.now())
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+
+    assert store.episodes() == []
+    assert outbox.count() == 0
+
+
+def test_disabled_disk_threshold_suppresses_alerts() -> None:
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(
+        threshold(InfraAlertType.DISK_USAGE, 90, "percent", enabled=False)
+    )
+    snapshots.disks = [mount("h200-ci-1", "nfs01:/exports/ci")]
+    runtime, store, outbox, _, clock = runtime_for(FixtureHosts(), snapshots)
+
+    scan(runtime, clock.now())
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+
+    assert store.episodes() == []
+    assert outbox.count() == 0
+
+    # Re-enabling the row resumes detection with a clean consecutive count.
+    snapshots.threshold_rows[1] = threshold(InfraAlertType.DISK_USAGE, 90, "percent")
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    assert store.episodes() == []
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    assert [episode.status for episode in store.episodes()] == ["open"]
+
+
+def test_gpu_temperature_requires_sustained_breach_across_scans() -> None:
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(
+        threshold(InfraAlertType.GPU_TEMPERATURE, 85, "celsius")
+    )
+    snapshots.temps = [
+        GpuTemperatureObservation(
+            hostname="gpu-h100-01",
+            gpu_index=3,
+            temperature_c=92.0,
+            reported_at=START,
+        )
+    ]
+    runtime, store, outbox, slack, clock = runtime_for(FixtureHosts(), snapshots)
+
+    scan(runtime, clock.now())
+    assert store.episodes() == []
+    assert outbox.count() == 0
+
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    runtime.dispatch_due_notifications()
+
+    [episode] = store.episodes()
+    assert episode.alert_type == "gpu_temperature"
+    assert episode.subject_key == "gpu:gpu-h100-01:3"
+    assert episode.status == "open"
+    text = slack.deliveries[0].payload["text"]
+    assert "GPU 3" in text
+    assert "gpu-h100-01" in text
+    assert "92.0°C" in text
+
+    snapshots.temps = [
+        GpuTemperatureObservation(
+            hostname="gpu-h100-01",
+            gpu_index=3,
+            temperature_c=70.0,
+            reported_at=clock.now(),
+        )
+    ]
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    runtime.dispatch_due_notifications()
+
+    assert [episode.status for episode in store.episodes()] == ["resolved"]
+    assert outbox.count() == 2
+    assert "back below" in slack.deliveries[1].payload["text"]
 
 
 class _FakeCompletedProcess:

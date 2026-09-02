@@ -67,7 +67,11 @@ repository-level relationship with the dashboard is recorded in
   against the latest reported telemetry. An unreporting episode opens only
   after the silence sustains across the configured consecutive scans and
   resolves on the first fresh report; a host absent from every expected
-  source and silent for seven days is auto-retired. Every episode sends
+  source and silent for seven days is auto-retired. Disk-usage episodes are
+  keyed by the shared (fstype, device) group rather than hostname, so an
+  NFS volume mounted by many hosts pages once, and GPU temperature episodes
+  are keyed per host and GPU. RAM, load, and network are display-only and
+  never alert. Every episode sends
   exactly two Slack messages (open and resolve) through the outbox, and the
   wording always says a host stopped reporting, never that it is down.
 - `analyzer.py` — the Full CI analyzer compatibility adapter. It materializes
