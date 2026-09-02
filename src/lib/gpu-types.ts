@@ -14,6 +14,9 @@ export interface GpuLatest {
   gpu_util: number;
   mem_used_mb: number;
   mem_total_mb: number;
+  temperature_c: number | null;
+  power_draw_w: number | null;
+  power_limit_w: number | null;
   reported_at: string;
 }
 
