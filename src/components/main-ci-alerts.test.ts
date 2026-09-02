@@ -82,9 +82,9 @@ test("status filter chips carry per-status counts and default to open", () => {
     }),
   );
 
-  assert.match(markup, />Open 1</);
-  assert.match(markup, />Resolved 1</);
-  assert.match(markup, />All 2</);
+  assert.match(markup, /Open<span[^>]*>1<\/span>/);
+  assert.match(markup, /Resolved<span[^>]*>1<\/span>/);
+  assert.match(markup, /All<span[^>]*>2<\/span>/);
   // The default Open filter hides the resolved row.
   assert.equal(markup.match(/GPU test/g)?.length, 1);
 });
@@ -94,7 +94,8 @@ test("open alert renders first and latest exact failure evidence", () => {
     createElement(MainCIAlerts, { alerts: [alert()] }),
   );
 
-  assert.match(markup, />Open</);
+  // Open is the default state, so the row carries no status mark of its own.
+  assert.doesNotMatch(markup, />Resolved<\/span>/);
   assert.match(markup, /2 failed runs/);
   assert.match(markup, /First failure/);
   assert.match(markup, /Latest failure/);
@@ -113,8 +114,8 @@ test("analyzed alert renders classification and the analysis panel", () => {
   assert.match(markup, /Re-run the job on a fresh agent/);
   assert.match(markup, /PR #123 — Guard against agent loss/);
   assert.match(markup, /moonshotai\/Kimi-K3/);
-  // Classification filters appear once analysis data exists.
-  assert.match(markup, />unanalyzed</);
+  // The reason dropdown appears once analysis data exists.
+  assert.match(markup, /<option value="unanalyzed"/);
 });
 
 test("stale analysis carries a visible warning", () => {
@@ -132,16 +133,16 @@ test("stale analysis carries a visible warning", () => {
   );
 
   assert.match(markup, /Analysis stale — a newer failure was observed/);
-  assert.match(markup, /· stale/);
+  assert.match(markup, />stale</);
 });
 
-test("unanalyzed alert renders a subtle placeholder and no classification chips", () => {
+test("unanalyzed alert renders a subtle placeholder and no reason dropdown", () => {
   const markup = renderToStaticMarkup(
     createElement(MainCIAlerts, { alerts: [alert()] }),
   );
 
   assert.match(markup, /No analysis yet\./);
-  assert.doesNotMatch(markup, />unanalyzed</);
+  assert.doesNotMatch(markup, /<option value="unanalyzed"/);
 });
 
 test("resolved alert renders the exact pass that closed it", () => {
@@ -167,7 +168,7 @@ test("resolved alert renders the exact pass that closed it", () => {
     }),
   );
 
-  assert.match(markup, /Resolved/);
+  assert.match(markup, /Resolved<\/span>/);
   assert.match(markup, /Passed again/);
   assert.match(markup, /https:\/\/buildkite\.com\/vllm\/ci\/builds\/102/);
 });

@@ -58,6 +58,25 @@ export function formatAlertDateTime(iso: string): string {
 }
 
 /**
+ * How long ago a timestamp was, for the scan columns of an alert list where the
+ * question is "is this still happening?" rather than "when exactly?". Anything
+ * older than a month falls back to the absolute form.
+ */
+export function formatRelativeTime(iso: string, now: Date = new Date()): string {
+  const time = new Date(iso).getTime();
+  if (Number.isNaN(time)) return iso;
+  const seconds = Math.round((now.getTime() - time) / 1000);
+  if (seconds < 45) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return formatAlertDateTime(iso);
+}
+
+/**
  * The alerts views keep a bounded history (seven days for Fast CI), and the
  * reader narrows it further to what an incident window actually spans.
  */

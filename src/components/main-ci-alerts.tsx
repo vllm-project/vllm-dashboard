@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { JobName } from "@/components/job-name";
+import { SegmentedControl } from "@/components/segmented-control";
 import {
   isAmdJobName,
   isOptionalJobName,
@@ -7,36 +8,67 @@ import {
   type MainCiAnalysisClassification,
   type MainCiJobAlert,
   type MainCiJobAnalysis,
+  type MainCiOutcomeRef,
 } from "@/lib/alerts-main-ci";
-import { commitUrl, formatAlertDateTime } from "@/lib/alerts-shared";
+import {
+  commitUrl,
+  formatAlertDateTime,
+  formatRelativeTime,
+} from "@/lib/alerts-shared";
 
-const STATUS_CLASSES = {
-  open: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
-  resolved:
-    "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300",
-} as const;
+/**
+ * One failure reason's colour, used consistently for the dot beside the reason
+ * filter, the severity rail on the left edge of a row, and the badge in the row.
+ */
+interface ClassificationStyle {
+  dot: string;
+  rail: string;
+  badge: string;
+}
 
-const CLASSIFICATION_CLASSES: Record<MainCiAnalysisClassification, string> = {
-  infra:
-    "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
-  flaky:
-    "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
-  code: "bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300",
-  test: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
-  unknown: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
+const CLASSIFICATION_STYLES: Record<
+  MainCiAnalysisClassification,
+  ClassificationStyle
+> = {
+  infra: {
+    dot: "bg-amber-500",
+    rail: "border-l-amber-400 dark:border-l-amber-500",
+    badge:
+      "bg-amber-50 text-amber-800 ring-amber-200/80 dark:bg-amber-900/30 dark:text-amber-200 dark:ring-amber-800/60",
+  },
+  flaky: {
+    dot: "bg-violet-500",
+    rail: "border-l-violet-400 dark:border-l-violet-500",
+    badge:
+      "bg-violet-50 text-violet-800 ring-violet-200/80 dark:bg-violet-900/30 dark:text-violet-200 dark:ring-violet-800/60",
+  },
+  code: {
+    dot: "bg-rose-500",
+    rail: "border-l-rose-500 dark:border-l-rose-500",
+    badge:
+      "bg-rose-50 text-rose-800 ring-rose-200/80 dark:bg-rose-900/30 dark:text-rose-200 dark:ring-rose-800/60",
+  },
+  test: {
+    dot: "bg-sky-500",
+    rail: "border-l-sky-400 dark:border-l-sky-500",
+    badge:
+      "bg-sky-50 text-sky-800 ring-sky-200/80 dark:bg-sky-900/30 dark:text-sky-200 dark:ring-sky-800/60",
+  },
+  unknown: {
+    dot: "bg-zinc-400",
+    rail: "border-l-zinc-400 dark:border-l-zinc-500",
+    badge:
+      "bg-zinc-100 text-zinc-700 ring-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:ring-zinc-700",
+  },
 };
 
-const CLASSIFICATION_FILTERS: readonly MainCiAnalysisClassification[] = [
-  "infra",
-  "flaky",
-  "code",
-  "test",
-  "unknown",
-];
+const UNANALYZED_DOT = "bg-zinc-300 dark:bg-zinc-600";
+const UNANALYZED_RAIL = "border-l-zinc-300 dark:border-l-zinc-700";
+const RESOLVED_RAIL = "border-l-emerald-300 dark:border-l-emerald-800";
 
 type StatusFilter = "open" | "resolved" | "all";
 /** A classification, or the pseudo-value for alerts with no analysis yet. */
-type ClassificationFilter = MainCiAnalysisClassification | "unanalyzed";
+type ReasonFilter = MainCiAnalysisClassification | "unanalyzed";
 
 const STATUS_FILTERS: readonly { value: StatusFilter; label: string }[] = [
   { value: "open", label: "Open" },
@@ -44,146 +76,349 @@ const STATUS_FILTERS: readonly { value: StatusFilter; label: string }[] = [
   { value: "all", label: "All" },
 ];
 
-function FilterChip({
-  active,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={`dashboard-control rounded-full border px-3 py-1.5 text-xs font-semibold ${
-        active
-          ? "border-zinc-950 bg-zinc-950 text-zinc-50 dark:border-zinc-50 dark:bg-zinc-50 dark:text-zinc-950"
-          : "border-zinc-300 text-zinc-500 hover:text-zinc-950 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-50"
-      }`}
-    >
-      {label}
-    </button>
-  );
+/** The reasons a responder can narrow the list to, in the order they appear. */
+const REASON_FILTERS: readonly { value: ReasonFilter; label: string }[] = [
+  { value: "infra", label: "Infra" },
+  { value: "flaky", label: "Flaky" },
+  { value: "code", label: "Code" },
+  { value: "test", label: "Test" },
+  { value: "unknown", label: "Unknown" },
+  { value: "unanalyzed", label: "Not analyzed yet" },
+];
+
+function isReasonFilter(value: string): value is ReasonFilter {
+  return REASON_FILTERS.some((reason) => reason.value === value);
 }
 
-function ClassificationBadge({ analysis }: { analysis: MainCiJobAnalysis }) {
+/**
+ * One grid template shared by the header row and every alert row so the
+ * columns line up as a table. Narrow screens keep the chevron, name, reason,
+ * failure count and action, and drop the two time columns.
+ */
+const ROW_GRID =
+  "grid grid-cols-[1rem_minmax(0,1fr)_2.5rem_auto] items-center gap-x-3 sm:grid-cols-[1rem_minmax(0,1fr)_10.5rem_4rem_5.5rem_5.5rem_4.5rem]";
+
+const LINK_CLASSES = "text-blue-600 hover:underline dark:text-blue-400";
+
+function railFor(alert: MainCiJobAlert): string {
+  if (alert.status === "resolved") return RESOLVED_RAIL;
+  if (alert.analysis === null) return UNANALYZED_RAIL;
+  return CLASSIFICATION_STYLES[alert.analysis.classification].rail;
+}
+
+function ReasonSelect({
+  value,
+  counts,
+  onChange,
+}: {
+  value: ReasonFilter | null;
+  counts: Record<ReasonFilter, number>;
+  onChange: (value: ReasonFilter | null) => void;
+}) {
+  const dot =
+    value === null
+      ? null
+      : value === "unanalyzed"
+        ? UNANALYZED_DOT
+        : CLASSIFICATION_STYLES[value].dot;
   return (
-    <span
-      className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${CLASSIFICATION_CLASSES[analysis.classification]}`}
-      title={`${analysis.confidence} confidence`}
-    >
-      {analysis.classification}
-      <span className="font-normal opacity-70">· {analysis.confidence}</span>
-      {analysis.stale && (
-        <span className="font-normal opacity-70">· stale</span>
+    <label className="relative inline-flex items-center">
+      <span className="sr-only">Failure reason</span>
+      {dot && (
+        <span
+          aria-hidden="true"
+          className={`pointer-events-none absolute left-2.5 h-2 w-2 rounded-full ${dot}`}
+        />
       )}
-    </span>
+      <select
+        value={value ?? ""}
+        onChange={(event) =>
+          onChange(
+            isReasonFilter(event.target.value) ? event.target.value : null,
+          )
+        }
+        className={`dashboard-control h-8 cursor-pointer appearance-none rounded-md border bg-white pr-7 text-xs focus:border-zinc-400 dark:bg-zinc-950 dark:focus:border-zinc-600 ${
+          value === null
+            ? "border-zinc-200 pl-2.5 font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-800 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+            : "border-zinc-400 pl-6 font-semibold text-zinc-950 dark:border-zinc-600 dark:text-zinc-50"
+        }`}
+      >
+        <option value="">All reasons</option>
+        {REASON_FILTERS.map((reason) => (
+          <option key={reason.value} value={reason.value}>
+            {reason.label} ({counts[reason.value]})
+          </option>
+        ))}
+      </select>
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 16 16"
+        className="pointer-events-none absolute right-2 h-3.5 w-3.5 text-zinc-400"
+      >
+        <path
+          d="M4 6l4 4 4-4"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </label>
   );
 }
 
-function BuildLink({
+function ReasonBadge({ analysis }: { analysis: MainCiJobAnalysis }) {
+  const style = CLASSIFICATION_STYLES[analysis.classification];
+  return (
+    <>
+      <span
+        className={`inline-flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset ${style.badge}`}
+        title={`${analysis.confidence} confidence`}
+      >
+        <span
+          aria-hidden="true"
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${style.dot}`}
+        />
+        {analysis.classification}
+        <span className="font-normal opacity-70">· {analysis.confidence}</span>
+      </span>
+      {analysis.stale && (
+        <span
+          className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+          title="A newer failure was observed after this analysis"
+        >
+          stale
+        </span>
+      )}
+    </>
+  );
+}
+
+/** Failure counts read on a ramp: one is a blip, several is a pattern. */
+function failureCountClasses(count: number): string {
+  if (count >= 5) return "text-red-600 dark:text-red-400";
+  if (count >= 2) return "text-zinc-900 dark:text-zinc-100";
+  return "text-zinc-500 dark:text-zinc-400";
+}
+
+function SectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <h4 className="text-[11px] font-semibold tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
+      {children}
+    </h4>
+  );
+}
+
+function TimelineItem({
   label,
-  buildNumber,
-  buildUrl,
-  jobUrl,
+  at,
+  tone,
+  outcome,
+  note,
 }: {
   label: string;
-  buildNumber: number;
-  buildUrl: string;
-  jobUrl: string;
+  at: string;
+  tone: "failed" | "passed" | "manual";
+  outcome?: MainCiOutcomeRef;
+  note?: string;
+}) {
+  const dotClasses = {
+    failed: "bg-red-400 dark:bg-red-500",
+    passed: "bg-emerald-500",
+    manual: "bg-zinc-400 dark:bg-zinc-500",
+  }[tone];
+  return (
+    <li className="flex gap-2.5 text-xs">
+      <span
+        aria-hidden="true"
+        className={`mt-1 h-2 w-2 shrink-0 rounded-full ${dotClasses}`}
+      />
+      <div className="min-w-0">
+        <p className="font-medium text-zinc-800 dark:text-zinc-200">
+          {label}
+          <span className="font-normal text-zinc-400 dark:text-zinc-500">
+            {" "}
+            · {formatAlertDateTime(at)}
+          </span>
+        </p>
+        {outcome && (
+          <p className="mt-0.5 flex gap-2.5">
+            <a
+              href={outcome.buildUrl}
+              target="_blank"
+              rel="noreferrer"
+              className={LINK_CLASSES}
+            >
+              build {outcome.buildNumber}
+            </a>
+            <a
+              href={outcome.jobUrl}
+              target="_blank"
+              rel="noreferrer"
+              className={LINK_CLASSES}
+            >
+              job
+            </a>
+          </p>
+        )}
+        {note && (
+          <p className="mt-0.5 text-zinc-500 dark:text-zinc-400">{note}</p>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function Timeline({ alert }: { alert: MainCiJobAlert }) {
+  const manual = alert.resolutionKind === "manual";
+  return (
+    <div>
+      <SectionLabel>Timeline</SectionLabel>
+      <ol className="mt-2.5 space-y-2.5">
+        <TimelineItem
+          label="First failure"
+          at={alert.firstFailure.finishedAt}
+          outcome={alert.firstFailure}
+          tone="failed"
+        />
+        {alert.lastFailure.buildkiteJobId !==
+          alert.firstFailure.buildkiteJobId && (
+          <TimelineItem
+            label="Latest failure"
+            at={alert.lastFailure.finishedAt}
+            outcome={alert.lastFailure}
+            tone="failed"
+          />
+        )}
+        {alert.resolution && !manual && (
+          <TimelineItem
+            label="Passed again"
+            at={alert.resolution.finishedAt}
+            outcome={alert.resolution}
+            tone="passed"
+          />
+        )}
+        {alert.status === "resolved" && manual && (
+          <TimelineItem
+            label="Resolved manually"
+            at={alert.resolvedAt ?? alert.lastFailure.finishedAt}
+            tone="manual"
+            note="Closed by hand; no passing run was observed."
+          />
+        )}
+      </ol>
+      <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+        Last failing commit{" "}
+        <a
+          href={commitUrl(alert.lastFailure.commitSha)}
+          target="_blank"
+          rel="noreferrer"
+          className={`font-mono ${LINK_CLASSES}`}
+        >
+          {alert.lastFailure.commitSha.slice(0, 7)}
+        </a>
+      </p>
+    </div>
+  );
+}
+
+function LinkList({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
 }) {
   return (
-    <span className="flex flex-wrap items-baseline gap-x-1.5">
-      <span className="text-zinc-500 dark:text-zinc-400">{label}</span>
-      <a
-        href={buildUrl}
-        target="_blank"
-        rel="noreferrer"
-        className="text-blue-600 hover:underline dark:text-blue-400"
-      >
-        build {buildNumber}
-      </a>
-      <a
-        href={jobUrl}
-        target="_blank"
-        rel="noreferrer"
-        className="text-blue-600 hover:underline dark:text-blue-400"
-      >
-        job
-      </a>
-    </span>
+    <div className="min-w-0">
+      <dt className="text-[11px] font-semibold tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
+        {label}
+      </dt>
+      <dd className="mt-1">
+        <ul className="space-y-1">{children}</ul>
+      </dd>
+    </div>
   );
 }
 
 function AnalysisPanel({ analysis }: { analysis: MainCiJobAnalysis | null }) {
   if (analysis === null) {
     return (
-      <p className="text-xs text-zinc-400 dark:text-zinc-500">
-        No analysis yet.
-      </p>
+      <div>
+        <SectionLabel>Analysis</SectionLabel>
+        <p className="mt-2 text-sm text-zinc-400 dark:text-zinc-500">
+          No analysis yet.
+        </p>
+      </div>
     );
   }
+  const hasLinks =
+    analysis.evidenceUrls.length > 0 || analysis.suspectedFixPrs.length > 0;
   return (
-    <div className="space-y-2 rounded-lg border border-zinc-100 bg-zinc-50 px-3 py-2 dark:border-zinc-800/60 dark:bg-zinc-900/40">
+    <div className="min-w-0 space-y-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <SectionLabel>Analysis</SectionLabel>
+        <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
+          {analysis.modelVersion} · analyzed{" "}
+          {formatAlertDateTime(analysis.analyzedAt)}
+        </span>
+      </div>
       {analysis.stale && (
-        <p className="text-xs font-medium text-amber-700 dark:text-amber-300">
+        <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-200">
           Analysis stale — a newer failure was observed after this analysis.
         </p>
       )}
-      <p className="text-xs text-zinc-700 dark:text-zinc-300">
+      <p className="text-[13px] leading-relaxed text-zinc-800 dark:text-zinc-200">
         {analysis.summary}
       </p>
-      <p className="text-xs text-zinc-600 dark:text-zinc-400">
-        <span className="font-medium text-zinc-700 dark:text-zinc-300">
-          Recommended:
-        </span>{" "}
-        {analysis.recommendedAction}
-      </p>
-      {analysis.evidenceUrls.length > 0 && (
-        <p className="flex flex-wrap items-baseline gap-x-2 text-xs">
-          <span className="font-medium text-zinc-700 dark:text-zinc-300">
-            Evidence:
-          </span>
-          {analysis.evidenceUrls.map((url) => (
-            <a
-              key={url}
-              href={url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-blue-600 hover:underline dark:text-blue-400"
-            >
-              {url.replace(/^https?:\/\//, "")}
-            </a>
-          ))}
+      <div className="rounded-md border border-zinc-200 bg-white px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-950">
+        <p className="text-[11px] font-semibold tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
+          Recommended action
         </p>
-      )}
-      {analysis.suspectedFixPrs.length > 0 && (
-        <p className="flex flex-wrap items-baseline gap-x-2 text-xs">
-          <span className="font-medium text-zinc-700 dark:text-zinc-300">
-            Suspected fix PRs:
-          </span>
-          {analysis.suspectedFixPrs.map((pr) => (
-            <a
-              key={pr.url}
-              href={pr.url}
-              target="_blank"
-              rel="noreferrer"
-              className="text-blue-600 hover:underline dark:text-blue-400"
-            >
-              {pr.number !== null
-                ? `PR #${pr.number}${pr.title ? ` — ${pr.title}` : ""}`
-                : pr.url}
-            </a>
-          ))}
+        <p className="mt-1 text-[13px] leading-relaxed text-zinc-800 dark:text-zinc-200">
+          {analysis.recommendedAction}
         </p>
+      </div>
+      {hasLinks && (
+        <dl className="grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+          {analysis.evidenceUrls.length > 0 && (
+            <LinkList label="Evidence">
+              {analysis.evidenceUrls.map((url) => (
+                <li key={url}>
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={url}
+                    className={`block truncate ${LINK_CLASSES}`}
+                  >
+                    {url.replace(/^https?:\/\//, "")}
+                  </a>
+                </li>
+              ))}
+            </LinkList>
+          )}
+          {analysis.suspectedFixPrs.length > 0 && (
+            <LinkList label="Suspected fix PRs">
+              {analysis.suspectedFixPrs.map((pr) => (
+                <li key={pr.url}>
+                  <a
+                    href={pr.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={`block truncate ${LINK_CLASSES}`}
+                  >
+                    {pr.number !== null
+                      ? `PR #${pr.number}${pr.title ? ` — ${pr.title}` : ""}`
+                      : pr.url}
+                  </a>
+                </li>
+              ))}
+            </LinkList>
+          )}
+        </dl>
       )}
-      <p className="text-[10px] text-zinc-400 dark:text-zinc-500">
-        {analysis.modelVersion} · analyzed{" "}
-        {formatAlertDateTime(analysis.analyzedAt)}
-      </p>
     </div>
   );
 }
@@ -191,9 +426,11 @@ function AnalysisPanel({ analysis }: { analysis: MainCiJobAnalysis | null }) {
 export function MainCiAlertRow({
   alert,
   onResolve,
+  now = new Date(),
 }: {
   alert: MainCiJobAlert;
   onResolve?: (alertId: string) => Promise<void>;
+  now?: Date;
 }) {
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState(false);
@@ -210,40 +447,99 @@ export function MainCiAlertRow({
     }
   };
 
+  const resolved = alert.status === "resolved";
+  const runsLabel = `${alert.failureCount} failed ${
+    alert.failureCount === 1 ? "run" : "runs"
+  }`;
   return (
-    <details className="group overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 sm:px-5 [&::-webkit-details-marker]:hidden">
-        <span
+    <details className={`group border-l-[3px] ${railFor(alert)}`}>
+      <summary
+        className={`${ROW_GRID} cursor-pointer list-none px-3 py-2.5 hover:bg-zinc-50 dark:hover:bg-zinc-900/60 [&::-webkit-details-marker]:hidden`}
+      >
+        <svg
           aria-hidden="true"
-          className="text-xs text-zinc-400 transition-transform duration-150 group-open:rotate-90 motion-reduce:transition-none"
+          viewBox="0 0 16 16"
+          className="row-span-2 h-3.5 w-3.5 text-zinc-400 transition-transform duration-150 group-open:rotate-90 motion-reduce:transition-none sm:row-span-1"
         >
-          ▸
+          <path
+            d="M6 3l5 5-5 5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span className="col-start-2 row-start-1 flex min-w-0 items-center gap-2">
+          <span
+            className={`min-w-0 truncate text-sm font-medium ${
+              resolved
+                ? "text-zinc-600 dark:text-zinc-400"
+                : "text-zinc-900 dark:text-zinc-100"
+            }`}
+          >
+            <JobName name={alert.jobName} />
+          </span>
+          {resolved && (
+            <span
+              className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"
+              title={
+                alert.resolvedAt
+                  ? `resolved ${formatAlertDateTime(alert.resolvedAt)}`
+                  : undefined
+              }
+            >
+              <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3 w-3">
+                <path
+                  d="M3 8.5l3 3 7-7"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              {alert.resolutionKind === "manual"
+                ? "Resolved manually"
+                : "Resolved"}
+            </span>
+          )}
         </span>
-        <span className="min-w-0 truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-          <JobName name={alert.jobName} />
+        <span className="col-start-2 row-start-2 flex min-w-0 items-center gap-1.5 sm:col-start-3 sm:row-start-1">
+          {alert.analysis ? (
+            <ReasonBadge analysis={alert.analysis} />
+          ) : (
+            <span
+              className="text-xs text-zinc-400 dark:text-zinc-500"
+              title="Not analyzed yet"
+            >
+              —
+            </span>
+          )}
         </span>
         <span
-          className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${STATUS_CLASSES[alert.status]}`}
+          className={`col-start-3 row-start-1 text-right text-xs font-medium tabular-nums sm:col-start-4 ${failureCountClasses(alert.failureCount)}`}
+          title={runsLabel}
+          aria-label={runsLabel}
         >
-          {alert.status === "open"
-            ? "Open"
-            : alert.resolutionKind === "manual"
-              ? "Resolved manually"
-              : "Resolved"}
+          {alert.failureCount}
         </span>
-        {alert.analysis && <ClassificationBadge analysis={alert.analysis} />}
-        <span className="text-xs text-zinc-500 dark:text-zinc-400">
-          {alert.failureCount} failed {alert.failureCount === 1 ? "run" : "runs"}
-        </span>
-        <span className="ml-auto flex shrink-0 items-center gap-x-3 text-xs text-zinc-500 dark:text-zinc-400">
-          <span>opened {formatAlertDateTime(alert.openedAt)}</span>
-          <span>
-            {alert.status === "open" ? "last failed" : "resolved"}{" "}
-            {formatAlertDateTime(
-              alert.resolvedAt ?? alert.lastFailure.finishedAt,
-            )}
-          </span>
-          {alert.status === "open" && onResolve && (
+        <time
+          dateTime={alert.openedAt}
+          title={`opened ${formatAlertDateTime(alert.openedAt)}`}
+          className="hidden text-right text-xs tabular-nums text-zinc-500 sm:block dark:text-zinc-400"
+        >
+          {formatRelativeTime(alert.openedAt, now)}
+        </time>
+        <time
+          dateTime={alert.lastFailure.finishedAt}
+          title={`last failed ${formatAlertDateTime(alert.lastFailure.finishedAt)}`}
+          className="hidden text-right text-xs tabular-nums text-zinc-500 sm:block dark:text-zinc-400"
+        >
+          {formatRelativeTime(alert.lastFailure.finishedAt, now)}
+        </time>
+        <span className="col-start-4 row-start-1 flex justify-end sm:col-start-7">
+          {!resolved && onResolve && (
             <button
               type="button"
               disabled={resolving}
@@ -252,60 +548,33 @@ export function MainCiAlertRow({
                 event.preventDefault();
                 void resolve();
               }}
-              className="dashboard-control rounded-full border border-zinc-300 px-2.5 py-1 text-[10px] font-semibold text-zinc-500 hover:text-zinc-950 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-50"
+              className="dashboard-control h-6 rounded-md border border-zinc-200 px-2 text-[11px] font-medium whitespace-nowrap text-zinc-500 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
             >
               {resolving ? "Resolving…" : "Resolve"}
             </button>
           )}
         </span>
       </summary>
-      <div className="space-y-2 border-t border-zinc-200 px-4 py-3 text-xs sm:px-5 dark:border-zinc-800">
+      <div className="border-t border-zinc-100 bg-zinc-50/70 px-4 py-4 sm:px-5 dark:border-zinc-800/70 dark:bg-zinc-900/30">
         {resolveError && (
-          <p className="text-xs font-medium text-red-600 dark:text-red-400">
+          <p className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700 dark:border-red-900/60 dark:bg-red-900/20 dark:text-red-300">
             Could not resolve this alert. Try again.
           </p>
         )}
-        <div className="space-y-1">
-          <BuildLink
-            label="First failure"
-            buildNumber={alert.firstFailure.buildNumber}
-            buildUrl={alert.firstFailure.buildUrl}
-            jobUrl={alert.firstFailure.jobUrl}
-          />
-          {alert.lastFailure.buildkiteJobId !==
-            alert.firstFailure.buildkiteJobId && (
-            <BuildLink
-              label="Latest failure"
-              buildNumber={alert.lastFailure.buildNumber}
-              buildUrl={alert.lastFailure.buildUrl}
-              jobUrl={alert.lastFailure.jobUrl}
-            />
-          )}
-          {alert.resolution && alert.resolutionKind !== "manual" && (
-            <BuildLink
-              label="Passed again"
-              buildNumber={alert.resolution.buildNumber}
-              buildUrl={alert.resolution.buildUrl}
-              jobUrl={alert.resolution.jobUrl}
-            />
-          )}
-          {alert.status === "resolved" && alert.resolutionKind === "manual" && (
-            <p className="text-zinc-500 dark:text-zinc-400">
-              Resolved manually — no passing run was observed.
-            </p>
-          )}
-          <a
-            href={commitUrl(alert.lastFailure.commitSha)}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-block font-mono text-blue-600 hover:underline dark:text-blue-400"
-          >
-            {alert.lastFailure.commitSha.slice(0, 7)}
-          </a>
+        <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_15rem]">
+          <AnalysisPanel analysis={alert.analysis} />
+          <Timeline alert={alert} />
         </div>
-        <AnalysisPanel analysis={alert.analysis} />
       </div>
     </details>
+  );
+}
+
+function EmptyState({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex h-48 items-center justify-center rounded-lg border border-dashed border-zinc-300 text-sm text-zinc-400 dark:border-zinc-700">
+      {children}
+    </div>
   );
 }
 
@@ -323,118 +592,154 @@ export function MainCIAlerts({
   hideAmd?: boolean;
 }) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("open");
-  const [classificationFilter, setClassificationFilter] =
-    useState<ClassificationFilter | null>(null);
+  const [reasonFilter, setReasonFilter] = useState<ReasonFilter | null>(null);
   const [query, setQuery] = useState("");
+  // One clock per render keeps every relative time in the list consistent.
+  const now = new Date();
 
   const openCount = useMemo(
     () => alerts.filter((alert) => alert.status === "open").length,
     [alerts],
   );
-  const resolvedCount = alerts.length - openCount;
-  const statusCounts: Record<StatusFilter, number> = {
-    open: openCount,
-    resolved: resolvedCount,
-    all: alerts.length,
-  };
+  const statusOptions = STATUS_FILTERS.map((item) => ({
+    ...item,
+    count:
+      item.value === "open"
+        ? openCount
+        : item.value === "resolved"
+          ? alerts.length - openCount
+          : alerts.length,
+  }));
   const hasAnalysis = useMemo(
     () => alerts.some((alert) => alert.analysis !== null),
     [alerts],
   );
 
+  // Status and the job-category hides narrow the list first; the reason
+  // dropdown then reports counts within that narrower list.
+  const inScope = useMemo(
+    () =>
+      alerts.filter((alert) => {
+        if (statusFilter !== "all" && alert.status !== statusFilter) {
+          return false;
+        }
+        if (hideSoftFail && isSoftFailJobName(alert.jobName)) return false;
+        if (hideOptional && isOptionalJobName(alert.jobName)) return false;
+        if (hideAmd && isAmdJobName(alert.jobName)) return false;
+        return true;
+      }),
+    [alerts, statusFilter, hideSoftFail, hideOptional, hideAmd],
+  );
+
+  const reasonCounts = useMemo(() => {
+    const counts: Record<ReasonFilter, number> = {
+      infra: 0,
+      flaky: 0,
+      code: 0,
+      test: 0,
+      unknown: 0,
+      unanalyzed: 0,
+    };
+    for (const alert of inScope) {
+      counts[alert.analysis?.classification ?? "unanalyzed"] += 1;
+    }
+    return counts;
+  }, [inScope]);
+
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return alerts.filter((alert) => {
-      if (statusFilter !== "all" && alert.status !== statusFilter) return false;
-      if (hideSoftFail && isSoftFailJobName(alert.jobName)) return false;
-      if (hideOptional && isOptionalJobName(alert.jobName)) return false;
-      if (hideAmd && isAmdJobName(alert.jobName)) return false;
+    return inScope.filter((alert) => {
       if (needle && !alert.jobName.toLowerCase().includes(needle)) return false;
-      if (classificationFilter === "unanalyzed") return alert.analysis === null;
-      if (classificationFilter !== null) {
-        return alert.analysis?.classification === classificationFilter;
+      if (reasonFilter === "unanalyzed") return alert.analysis === null;
+      if (reasonFilter !== null) {
+        return alert.analysis?.classification === reasonFilter;
       }
       return true;
     });
-  }, [alerts, statusFilter, classificationFilter, query, hideSoftFail, hideOptional, hideAmd]);
+  }, [inScope, reasonFilter, query]);
 
   if (alerts.length === 0) {
     return (
-      <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-zinc-300 text-sm text-zinc-400 dark:border-zinc-700">
+      <EmptyState>
         No Main CI job alerts are active or resolved in this window.
-      </div>
+      </EmptyState>
     );
   }
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <div
-          role="group"
-          aria-label="Alert status"
-          className="flex flex-wrap items-center gap-2"
-        >
-          {STATUS_FILTERS.map((item) => (
-            <FilterChip
-              key={item.value}
-              active={statusFilter === item.value}
-              label={`${item.label} ${statusCounts[item.value]}`}
-              onClick={() => setStatusFilter(item.value)}
-            />
-          ))}
-        </div>
-        <input
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Filter by job name"
-          aria-label="Filter by job name"
-          className="dashboard-control min-w-40 rounded-full border border-zinc-300 bg-transparent px-3 py-1.5 text-xs text-zinc-900 placeholder:text-zinc-400 dark:border-zinc-700 dark:text-zinc-100 dark:placeholder:text-zinc-500"
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <SegmentedControl
+          label="Alert status"
+          value={statusFilter}
+          options={statusOptions}
+          onChange={setStatusFilter}
         />
         {hasAnalysis && (
-          <div
-            role="group"
-            aria-label="Failure classification"
-            className="flex flex-wrap items-center gap-2"
-          >
-            {CLASSIFICATION_FILTERS.map((value) => (
-              <FilterChip
-                key={value}
-                active={classificationFilter === value}
-                label={value}
-                onClick={() =>
-                  setClassificationFilter(
-                    classificationFilter === value ? null : value,
-                  )
-                }
-              />
-            ))}
-            <FilterChip
-              active={classificationFilter === "unanalyzed"}
-              label="unanalyzed"
-              onClick={() =>
-                setClassificationFilter(
-                  classificationFilter === "unanalyzed" ? null : "unanalyzed",
-                )
-              }
-            />
-          </div>
+          <ReasonSelect
+            value={reasonFilter}
+            counts={reasonCounts}
+            onChange={setReasonFilter}
+          />
         )}
+        <label className="relative ml-auto block">
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 16 16"
+            className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400"
+          >
+            <circle
+              cx="7"
+              cy="7"
+              r="4.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            />
+            <path
+              d="M10.5 10.5L14 14"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+          </svg>
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Filter by job name"
+            aria-label="Filter by job name"
+            className="dashboard-control h-8 w-52 rounded-md border border-zinc-200 bg-white pr-2.5 pl-8 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-600"
+          />
+        </label>
       </div>
 
       {visible.length === 0 ? (
-        <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-zinc-300 text-sm text-zinc-400 dark:border-zinc-700">
-          No Main CI job alerts match these filters.
-        </div>
+        <EmptyState>No Main CI job alerts match these filters.</EmptyState>
       ) : (
-        <div className="space-y-3">
-          {visible.map((alert) => (
-            <MainCiAlertRow
-              key={alert.alertId}
-              alert={alert}
-              onResolve={onResolve}
-            />
-          ))}
+        <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+          <div
+            aria-hidden="true"
+            className={`${ROW_GRID} hidden border-b border-zinc-200 border-l-[3px] border-l-transparent bg-zinc-50/80 px-3 py-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase sm:grid dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-400`}
+          >
+            <span />
+            <span>Job</span>
+            <span>Reason</span>
+            <span className="text-right">Failures</span>
+            <span className="text-right">Opened</span>
+            <span className="text-right">Last failed</span>
+            <span />
+          </div>
+          <div className="divide-y divide-zinc-100 dark:divide-zinc-800/70">
+            {visible.map((alert) => (
+              <MainCiAlertRow
+                key={alert.alertId}
+                alert={alert}
+                onResolve={onResolve}
+                now={now}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>

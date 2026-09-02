@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   alertWindowCutoff,
   commitUrl,
+  formatRelativeTime,
   isAlertTimeWindow,
   notificationStateFor,
   pullRequestUrl,
@@ -70,4 +71,15 @@ test("a timestamp at the cutoff is inside, before it is outside", () => {
   assert.equal(withinAlertWindow("2026-08-28T12:00:00.000Z", cutoff), true);
   assert.equal(withinAlertWindow("2026-08-28T10:59:59.999Z", cutoff), false);
   assert.equal(withinAlertWindow("not-a-date", cutoff), false);
+});
+
+test("relative times round to the coarsest unit that still reads at a glance", () => {
+  const now = new Date("2026-09-02T12:00:00.000Z");
+  assert.equal(formatRelativeTime("2026-09-02T11:59:40.000Z", now), "just now");
+  assert.equal(formatRelativeTime("2026-09-02T11:49:00.000Z", now), "11m ago");
+  assert.equal(formatRelativeTime("2026-09-02T09:40:00.000Z", now), "2h ago");
+  assert.equal(formatRelativeTime("2026-08-31T12:00:00.000Z", now), "2d ago");
+  // Beyond a month the relative form stops being useful, so the date returns.
+  assert.match(formatRelativeTime("2026-07-01T12:00:00.000Z", now), /Jul 1/);
+  assert.equal(formatRelativeTime("not-a-date", now), "not-a-date");
 });

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { FastCIAlerts } from "@/components/fast-ci-alerts";
 import { MainCIAlerts } from "@/components/main-ci-alerts";
+import { SegmentedControl } from "@/components/segmented-control";
 import {
   groupFastFailureEvents,
   type FastFailureEvent,
@@ -25,9 +26,24 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
 type AlertTab = "main-ci" | "fast-ci";
 
-const ALERT_TABS: readonly { value: AlertTab; label: string }[] = [
-  { value: "main-ci", label: "Failures" },
-  { value: "fast-ci", label: "Fast failures (<30s)" },
+const ALERT_TABS: readonly {
+  value: AlertTab;
+  label: string;
+  /** What this source means, shown from the info control beside the tabs. */
+  description: string;
+}[] = [
+  {
+    value: "main-ci",
+    label: "Failures",
+    description:
+      "Hard command-job failures on the main branch. A failure stays open across builds until that exact Buildkite step positively passes again; soft failures, missing jobs, and older builds finishing late do not resolve it. Resolving an alert by hand closes it without waiting for a pass.",
+  },
+  {
+    value: "fast-ci",
+    label: "Fast failures (<30s)",
+    description:
+      "Fast CI jobs that finished in a failure state within 30 seconds, over the last 7 days, grouped by the build and commit they came from. These are observations with no resolution lifecycle; each one shows how far its Slack notification got.",
+  },
 ];
 
 function isAlertTab(value: string | null): value is AlertTab {
@@ -67,7 +83,7 @@ function ToggleSwitch({
       role="switch"
       aria-checked={checked}
       onClick={onToggle}
-      className={`dashboard-control inline-flex items-center gap-2 text-xs font-semibold ${
+      className={`dashboard-control inline-flex items-center gap-2 text-xs font-semibold whitespace-nowrap ${
         checked
           ? "text-zinc-950 dark:text-zinc-50"
           : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50"
@@ -104,57 +120,83 @@ interface MainCIAlertsResponse {
   error?: string;
 }
 
+/** The explanation of a view, one click away instead of a paragraph above it. */
+function InfoPopover({ text }: { text: string }) {
+  return (
+    <details className="relative">
+      <summary
+        aria-label="About this view"
+        title="About this view"
+        className="dashboard-control flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-md text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 [&::-webkit-details-marker]:hidden"
+      >
+        <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4">
+          <circle
+            cx="8"
+            cy="8"
+            r="6.25"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          />
+          <path
+            d="M8 7.25v4"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+          <circle cx="8" cy="5" r="0.85" fill="currentColor" />
+        </svg>
+      </summary>
+      <div className="dashboard-popover absolute right-0 z-50 mt-2 w-80 rounded-lg border border-black/10 bg-white p-3 text-xs leading-relaxed text-zinc-600 shadow-[0_16px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-zinc-900 dark:text-zinc-300 dark:shadow-[0_20px_50px_rgba(0,0,0,0.45)]">
+        {text}
+      </div>
+    </details>
+  );
+}
+
 /**
- * One alert source's section: its heading, what the source means, and either
- * its alerts, a loading placeholder, or a failure to load them.
+ * One alert source's body: its alerts, a loading placeholder shaped like the
+ * list it stands in for, or a failure to load them.
  */
 function AlertSection({
   title,
-  description,
   isLoading,
   failed,
   children,
 }: {
   title: string;
-  description: ReactNode;
   isLoading: boolean;
   failed: boolean;
   children: ReactNode;
 }) {
-  return (
-    <section className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          {description}
-        </p>
-      </div>
-
-      {isLoading ? (
-        <div
-          className="space-y-3 motion-reduce:[&_*]:animate-none"
-          aria-label={`Loading ${title} alerts`}
-          aria-busy="true"
-        >
-          {Array.from({ length: 3 }, (_, index) => (
-            <div
-              key={index}
-              className="rounded-xl border border-zinc-200 bg-white px-4 py-4 sm:px-5 dark:border-zinc-800 dark:bg-zinc-950"
-            >
-              <div className="h-4 w-40 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
-              <div className="mt-3 h-3 max-w-xl animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+  if (isLoading) {
+    return (
+      <div
+        className="space-y-3 motion-reduce:[&_*]:animate-none"
+        aria-label={`Loading ${title} alerts`}
+        aria-busy="true"
+      >
+        <div className="h-8 w-56 animate-pulse rounded-lg bg-zinc-200 dark:bg-zinc-800" />
+        <div className="divide-y divide-zinc-100 overflow-hidden rounded-lg border border-zinc-200 bg-white dark:divide-zinc-800/70 dark:border-zinc-800 dark:bg-zinc-950">
+          {Array.from({ length: 5 }, (_, index) => (
+            <div key={index} className="flex items-center gap-3 px-4 py-3">
+              <div className="h-3.5 w-3.5 animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+              <div className="h-3.5 w-64 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
+              <div className="ml-auto h-3 w-24 animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
             </div>
           ))}
         </div>
-      ) : failed ? (
-        <div className="flex h-48 items-center justify-center text-sm text-red-500">
-          Failed to load {title}.
-        </div>
-      ) : (
-        children
-      )}
-    </section>
-  );
+      </div>
+    );
+  }
+  if (failed) {
+    return (
+      <div className="flex h-48 items-center justify-center text-sm text-red-500">
+        Failed to load {title}.
+      </div>
+    );
+  }
+  return <>{children}</>;
 }
 
 function MainCISection({
@@ -194,12 +236,11 @@ function MainCISection({
   return (
     <AlertSection
       title="Failures"
-      description="Hard command-job failures on the main branch. A failure stays open across builds until that exact Buildkite step positively passes again; soft failures, missing jobs, and older builds finishing late do not resolve it. Resolving an alert by hand closes it without waiting for a pass."
       isLoading={isLoading}
       failed={Boolean(error || data?.error)}
     >
       {data?.schemaStatus === "pending" ? (
-        <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-amber-300 px-6 text-center text-sm text-amber-700 dark:border-amber-800 dark:text-amber-300">
+        <div className="flex h-48 items-center justify-center rounded-lg border border-dashed border-amber-300 px-6 text-center text-sm text-amber-700 dark:border-amber-800 dark:text-amber-300">
           Backend rollout pending. Migrations 0014/0016 and the Main CI workers
           must be deployed before this preview can show alerts.
         </div>
@@ -243,7 +284,6 @@ function FastCISection({
   return (
     <AlertSection
       title="Fast failures (<30s)"
-      description={`Fast CI jobs that finished in a failure state within 30 seconds, over the last ${data?.windowDays ?? 7} days, grouped by the build and commit they came from. These are observations with no resolution lifecycle; each one shows how far its Slack notification got.`}
       isLoading={isLoading}
       failed={Boolean(error || data?.error)}
     >
@@ -272,6 +312,7 @@ export default function AlertsContent() {
         ),
     ),
   };
+  const activeTab = ALERT_TABS.find((item) => item.value === tab) ?? ALERT_TABS[0];
 
   const navigate = (
     nextTab: AlertTab,
@@ -310,53 +351,35 @@ export default function AlertsContent() {
   };
 
   return (
-    <div className="space-y-8">
-      <h1 className="text-2xl font-semibold tracking-tight">Alerts</h1>
-
-      <div
-        role="tablist"
-        aria-label="Alert sources"
-        className="flex gap-6 border-b border-zinc-200 dark:border-zinc-800"
-      >
-        {ALERT_TABS.map((item) => {
-          const active = item.value === tab;
-          return (
-            <button
-              key={item.value}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => navigate(item.value, timeWindow, options)}
-              className={`dashboard-control -mb-px inline-flex min-h-11 items-center border-b-2 text-sm font-semibold sm:min-h-10 ${
-                active
-                  ? "border-zinc-950 text-zinc-950 dark:border-zinc-50 dark:text-zinc-50"
-                  : "border-transparent text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50"
-              }`}
-            >
-              {item.label}
-            </button>
-          );
-        })}
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight">Alerts</h1>
+        <div className="flex items-center gap-1.5">
+          <SegmentedControl
+            label="Time window"
+            value={timeWindow}
+            options={ALERT_TIME_WINDOWS}
+            onChange={(next) => navigate(tab, next, options)}
+          />
+          <InfoPopover text={activeTab.description} />
+        </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <div
-          role="group"
-          aria-label="Time window"
-          className="flex flex-wrap items-center gap-2"
-        >
-          {ALERT_TIME_WINDOWS.map((item) => {
-            const active = item.value === timeWindow;
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-zinc-200 dark:border-zinc-800">
+        <div role="tablist" aria-label="Alert sources" className="flex gap-6">
+          {ALERT_TABS.map((item) => {
+            const active = item.value === tab;
             return (
               <button
                 key={item.value}
                 type="button"
-                aria-pressed={active}
-                onClick={() => navigate(tab, item.value, options)}
-                className={`dashboard-control rounded-full border px-3 py-1.5 text-xs font-semibold ${
+                role="tab"
+                aria-selected={active}
+                onClick={() => navigate(item.value, timeWindow, options)}
+                className={`dashboard-control -mb-px inline-flex min-h-11 items-center border-b-2 text-sm font-semibold sm:min-h-10 ${
                   active
-                    ? "border-zinc-950 bg-zinc-950 text-zinc-50 dark:border-zinc-50 dark:bg-zinc-50 dark:text-zinc-950"
-                    : "border-zinc-300 text-zinc-500 hover:text-zinc-950 dark:border-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-50"
+                    ? "border-zinc-950 text-zinc-950 dark:border-zinc-50 dark:text-zinc-50"
+                    : "border-transparent text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50"
                 }`}
               >
                 {item.label}
@@ -364,27 +387,29 @@ export default function AlertsContent() {
             );
           })}
         </div>
-        {tab === "fast-ci" && (
-          <ToggleSwitch
-            checked={options.showSoftFailed}
-            onToggle={() =>
-              navigate(tab, timeWindow, {
-                ...options,
-                showSoftFailed: !options.showSoftFailed,
-              })
-            }
-            label="Show soft failed"
-          />
-        )}
-        {tab === "main-ci" &&
-          HIDE_OPTIONS.map((option) => (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pb-2">
+          {tab === "fast-ci" && (
             <ToggleSwitch
-              key={option.value}
-              checked={options.hide.has(option.value)}
-              onToggle={() => toggleHide(option.value)}
-              label={option.label}
+              checked={options.showSoftFailed}
+              onToggle={() =>
+                navigate(tab, timeWindow, {
+                  ...options,
+                  showSoftFailed: !options.showSoftFailed,
+                })
+              }
+              label="Show soft failed"
             />
-          ))}
+          )}
+          {tab === "main-ci" &&
+            HIDE_OPTIONS.map((option) => (
+              <ToggleSwitch
+                key={option.value}
+                checked={options.hide.has(option.value)}
+                onToggle={() => toggleHide(option.value)}
+                label={option.label}
+              />
+            ))}
+        </div>
       </div>
 
       {tab === "main-ci" ? (
