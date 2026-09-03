@@ -323,6 +323,10 @@ def build_disk_entries(node_name, fs_map, rootfs_capacity):
     disks = []
     for device in sorted(fs_map):
         entry = fs_map[device]
+        # Skip zero-capacity devices (e.g. unbacked /dev/loopN): nothing can
+        # fill them, and the ingestion contract requires total_bytes >= 1.
+        if not entry["total_bytes"]:
+            continue
         disks.append({
             # cAdvisor labels by device, so the true mount point is unknown
             # and mount_point stays null (the server accepts a disk with

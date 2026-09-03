@@ -168,6 +168,18 @@ def test_unknown_pool_root_falls_back_to_system(reporter_k8s):
     assert roles == {"/dev/md127": "system", "/dev/md0": "other"}
 
 
+def test_zero_capacity_devices_are_skipped(reporter_k8s):
+    # Live failure: inf-4x8h100-4's cAdvisor reports an unbacked /dev/loop0
+    # with total_bytes 0, and the ingestion contract requires total >= 1 —
+    # the whole node payload was rejected (HTTP 400) until these are dropped.
+    fs_map = {
+        "/dev/loop0": {"used_bytes": 0, "total_bytes": 0},
+        "/dev/vda1": {"used_bytes": 1, "total_bytes": 243379802112},
+    }
+    disks = reporter_k8s.build_disk_entries("inf-4x8h100-4", fs_map, 243379802112)
+    assert [d["device"] for d in disks] == ["/dev/vda1"]
+
+
 def test_disk_scrape_cadence(reporter_k8s, monkeypatch):
     calls = []
 
