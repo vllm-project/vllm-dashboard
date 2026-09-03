@@ -46,6 +46,7 @@ from alerting.infra import (
 )
 from alerting.main_ci import (
     MainCIJobObservation,
+    MainCILatestBuildRef,
     MainCIOpenAlertRef,
     ordered_unique_observations,
 )
@@ -1058,6 +1059,20 @@ class PostgresAlertStore:
             MainCIOpenAlertRef(job_key=row[0], build_number=int(row[1]))
             for row in rows
         ]
+
+    def latest_finished_main_ci_build(self) -> MainCILatestBuildRef | None:
+        with self._connection_factory() as connection:
+            row = connection.execute(
+                """
+                SELECT latest_build_number
+                FROM alerting_main_ci_job_states
+                ORDER BY latest_build_number DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        return MainCILatestBuildRef(build_number=int(row[0]))
 
     def infra_thresholds(self) -> list[InfraThreshold]:
         with self._connection_factory() as connection:

@@ -45,6 +45,7 @@ from alerting.infra import (
 from alerting.main_ci import (
     MainCIJobAlert,
     MainCIJobObservation,
+    MainCILatestBuildRef,
     MainCIOpenAlertRef,
     ordered_unique_observations,
 )
@@ -540,6 +541,15 @@ class InMemoryMainCIStore:
             MainCIOpenAlertRef(job_key=job_key, build_number=build_number)
             for job_key, build_number in sorted(refs)
         ]
+
+    def latest_finished_main_ci_build(self) -> MainCILatestBuildRef | None:
+        if not self._states:
+            return None
+        return MainCILatestBuildRef(
+            build_number=max(
+                observation.build_number for observation in self._states.values()
+            )
+        )
 
     def state(self, job_key: str) -> MainCIJobObservation | None:
         return self._states.get(job_key)
