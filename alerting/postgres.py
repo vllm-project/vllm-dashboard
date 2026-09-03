@@ -1095,13 +1095,20 @@ class PostgresAlertStore:
         ]
 
     def latest_reports(self) -> list[HostReport]:
-        """Newest gpu or host snapshot receipt per hostname, unbounded."""
+        """Newest gpu or host snapshot receipt per hostname.
+
+        The gpu side is bounded at twice the 7-day retirement age: older
+        last-reports belong to hosts that have already retired, and an
+        unbounded DISTINCT ON over gpu_snapshots (8M+ rows) blows the
+        statement timeout on every scan.
+        """
         with self._connection_factory() as connection:
             rows = connection.execute(
                 """
                 WITH gpu AS (
                     SELECT DISTINCT ON (hostname) hostname, reported_at
                     FROM gpu_snapshots
+                    WHERE reported_at >= now() - interval '14 days'
                     ORDER BY hostname, reported_at DESC
                 ),
                 host AS (
@@ -1175,7 +1182,11 @@ class PostgresAlertStore:
                 SELECT DISTINCT ON (hostname, gpu_index)
                        hostname, gpu_index, temperature_c, reported_at
                 FROM gpu_snapshots
+                -- Stale readings must not sustain temperature breaches (a
+                -- silent host is the unreporting alert's job), and the
+                -- bound keeps the scan off 8M+ rows of history.
                 WHERE temperature_c IS NOT NULL
+                  AND reported_at >= now() - interval '2 days'
                 ORDER BY hostname, gpu_index, reported_at DESC
                 """
             ).fetchall()
