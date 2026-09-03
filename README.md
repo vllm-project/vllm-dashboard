@@ -67,7 +67,8 @@ Open http://localhost:3000.
 | `OTEL_BUILDKITE_OIDC_AUDIENCE`, `OTEL_BUILDKITE_OIDC_ORGANIZATION`, `OTEL_BUILDKITE_OIDC_PIPELINE`, `OTEL_BUILDKITE_OIDC_BRANCH`, `OTEL_BUILDKITE_OIDC_TREATMENT_BRANCH` | Optional restrictions for short-lived Buildkite job tokens; defaults to the production vLLM main pipeline plus API-triggered `khluu/otel` treatment builds |
 | `GPU_REPORT_SECRET` | Required shared Bearer token for GPU and host telemetry ingestion; the endpoint fails closed when unset |
 | `GPU_REPORT_MAX_BYTES` | Optional JSON request limit; defaults to 256 KiB and is capped at 4 MiB |
-| `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` | Slack bot for queue-depth alerts (`chat:write`, `reactions:write`) |
+| `SLACK_BOT_TOKEN` | Slack bot for queue-depth alerts (`chat:write`, `reactions:write`) |
+| `SLACK_CI_NOTIFICATIONS_CHANNEL`, `SLACK_CI_FAST_FAILURE_ALERT_CHANNEL`, `SLACK_CI_INFRA_ALERT_CHANNEL` | Per-path Slack channels for Full CI, Fast CI, and infra/queue alerts; `SLACK_CHANNEL_ID` is the legacy shared fallback when a per-path channel is unset |
 | `CRON_SECRET` | Optional shared secret required by Vercel cron handlers |
 
 The dashboard assumes a warehouse schema with tables under `vllm_data_warehouse.buildkite.*` (builds, jobs, agent query rules) and `vllm_data_warehouse.default.vllm_perf_data_ingest` for benchmarks. Adapt the queries in `src/app/api/**/route.ts` if your schema differs.
