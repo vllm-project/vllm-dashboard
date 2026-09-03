@@ -41,6 +41,7 @@ interface QueueCostRow {
   total_hours: number;
   instance_type: string | null;
   cost_per_hour: number | null;
+  estimated: boolean;
   total_cost: number | null;
 }
 
@@ -82,6 +83,8 @@ interface CostResponse {
   dailyCostByQueue: DailyCostByQueueRow[];
   byBuild: BuildCostRow[];
   byJob: JobCostRow[];
+  pricedHoursShare?: number;
+  estimatedHoursShare?: number;
   error?: string;
 }
 
@@ -254,7 +257,13 @@ export default function CostPage() {
   const totalCost = byQueue.reduce((s, q) => s + (q.total_cost ?? 0), 0);
   const totalHours = byQueue.reduce((s, q) => s + q.total_hours, 0);
   const totalJobs = byQueue.reduce((s, q) => s + parseInt(q.total_jobs, 10), 0);
-  const unknownCostQueues = byQueue.filter((q) => q.total_cost === null).length;
+  const unpricedQueues = byQueue.filter((q) => q.total_cost === null);
+  const pricedHours = byQueue.reduce(
+    (s, q) => s + (q.total_cost !== null && !q.estimated ? q.total_hours : 0), 0
+  );
+  const pricedShare =
+    data?.pricedHoursShare ?? (totalHours > 0 ? pricedHours / totalHours : 0);
+  const estShare = data?.estimatedHoursShare ?? 0;
   const avgDailyCost = dayCount > 0 ? totalCost / dayCount : 0;
 
   // Build pagination
@@ -297,11 +306,40 @@ export default function CostPage() {
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
-        <StatCard className="col-span-2 sm:col-span-1" label="Total Cost" value={`$${totalCost.toFixed(0)}`} detail="Known queues only" />
+        <StatCard
+          className="col-span-2 sm:col-span-1"
+          label="Total Cost"
+          value={`$${totalCost.toFixed(0)}`}
+          detail={
+            `Covers ${Math.round(pricedShare * 100)}% of compute hours` +
+            (estShare > 0 ? ` (+${Math.round(estShare * 100)}% est.)` : "")
+          }
+        />
         <StatCard label="Avg Daily Cost" value={`$${avgDailyCost.toFixed(0)}`} />
         <StatCard label="Compute Hours" value={`${totalHours.toFixed(0)}`} />
         <StatCard label="Total Jobs" value={totalJobs} />
-        <StatCard label="Unpriced Queues" value={unknownCostQueues} detail="No cost data" />
+        {unpricedQueues.length > 0 ? (
+          <details className="rounded-lg border border-zinc-200 bg-white p-4 sm:p-5 dark:border-zinc-800 dark:bg-zinc-950">
+            <summary className="cursor-pointer list-none">
+              <p className="text-xs font-medium text-zinc-500 sm:text-sm dark:text-zinc-400">
+                Unpriced Queues
+              </p>
+              <p className="mt-1 text-2xl font-semibold tracking-tight text-zinc-900 sm:text-3xl dark:text-zinc-100">
+                {unpricedQueues.length}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-zinc-500 sm:text-sm dark:text-zinc-400">
+                No cost data · click to list
+              </p>
+            </summary>
+            <ul className="mt-2 space-y-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+              {unpricedQueues.map((q) => (
+                <li key={q.queue} className="font-mono">{q.queue}</li>
+              ))}
+            </ul>
+          </details>
+        ) : (
+          <StatCard label="Unpriced Queues" value={0} detail="All queues priced" />
+        )}
       </div>
 
       {/* Tab bar */}
@@ -449,12 +487,16 @@ export default function CostPage() {
                       <td className="px-5 py-2.5 font-medium">{q.queue}</td>
                       <td className="px-5 py-2.5 font-mono text-xs text-zinc-500">{q.instance_type ?? "\u2014"}</td>
                       <td className="px-5 py-2.5 text-zinc-600 dark:text-zinc-400">
-                        {q.cost_per_hour != null ? `$${q.cost_per_hour.toFixed(2)}` : "\u2014"}
+                        {q.cost_per_hour != null
+                          ? `$${q.cost_per_hour.toFixed(2)}${q.estimated ? " est." : ""}`
+                          : "\u2014"}
                       </td>
                       <td className="px-5 py-2.5 tabular-nums">{q.total_hours.toFixed(1)}</td>
                       <td className="px-5 py-2.5 font-medium tabular-nums">
                         {q.total_cost != null ? (
-                          <span className="text-purple-600 dark:text-purple-400">${q.total_cost.toFixed(2)}</span>
+                          <span className="text-purple-600 dark:text-purple-400">
+                            ${q.total_cost.toFixed(2)}{q.estimated ? " est." : ""}
+                          </span>
                         ) : (
                           <span className="text-zinc-400">{"\u2014"}</span>
                         )}
