@@ -393,7 +393,7 @@ export function GpuHostTable({
                     aria-expanded={isOpen}
                     className={`cursor-pointer border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-800/50 dark:hover:bg-zinc-900/50 ${stale ? "opacity-50" : ""} ${isOpen ? "bg-zinc-50 dark:bg-zinc-900/50" : ""}`}
                   >
-                    <td className="px-5 py-3.5 font-medium sm:px-6">
+                    <td className="whitespace-nowrap px-5 py-3.5 font-medium sm:px-6">
                       <span className="mr-2 inline-flex">
                         <HealthDot status={status} />
                       </span>
