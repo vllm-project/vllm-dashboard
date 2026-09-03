@@ -31,6 +31,11 @@ A Next.js dashboard for observing vLLM's Buildkite CI: build status, job runtime
   live in the Python [`migrations/`](./migrations) module. Runtime request
   handlers never create or alter tables.
 - Cron schedules live in `vercel.json`.
+- **Alert reference**: end-to-end docs per alert type —
+  [Fast CI](./alerting/docs/fast-ci.md), [Full CI](./alerting/docs/full-ci.md),
+  [Main CI](./alerting/docs/main-ci.md), and [Infra](./alerting/docs/infra.md)
+  (produced by the alerting worker), plus
+  [Queue wait](./docs/alerts/queue-wait.md) (owned by this app).
 
 The Queue page uses Buildkite's cluster-queue counts directly. Because the
 public queue metrics schema stops at p95, p99 is calculated from the current

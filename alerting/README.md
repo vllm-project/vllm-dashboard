@@ -27,6 +27,18 @@ tests. Domain language is recorded in [`CONTEXT.md`](./CONTEXT.md), and the
 repository-level relationship with the dashboard is recorded in
 [`CONTEXT-MAP.md`](../CONTEXT-MAP.md).
 
+## Alert reference
+
+End-to-end docs per alert type produced here:
+
+- [Fast CI failure alerts](./docs/fast-ci.md)
+- [Full CI comparison alerts](./docs/full-ci.md)
+- [Main CI job failure alerts](./docs/main-ci.md)
+- [Infra health alerts](./docs/infra.md)
+
+Queue-wait alerting is owned by the dashboard context:
+[`docs/alerts/queue-wait.md`](../docs/alerts/queue-wait.md).
+
 ## Layout
 
 - `commands.py` — the command model; a command is a reconciliation
