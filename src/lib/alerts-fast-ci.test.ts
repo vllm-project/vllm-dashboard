@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   groupFastFailureEvents,
+  worstNotificationState,
   type FastFailureEvent,
 } from "./alerts-fast-ci";
 
@@ -104,4 +105,93 @@ test("each event carries its own notification state", () => {
     group.events.map((e) => e.notificationState),
     ["dead_letter", "unnotified"],
   );
+});
+
+test("repeated runs of one job collapse into a job group within a build", () => {
+  const [group] = groupFastFailureEvents([
+    event({
+      buildkiteJobId: "job-1",
+      jobName: "Async engine test",
+      finishedAt: "2026-08-27T10:00:00.000Z",
+    }),
+    event({
+      buildkiteJobId: "job-2",
+      jobName: "Async engine test",
+      finishedAt: "2026-08-27T10:06:00.000Z",
+    }),
+    event({
+      buildkiteJobId: "job-3",
+      jobName: "Entrypoints test",
+      finishedAt: "2026-08-27T10:04:00.000Z",
+    }),
+  ]);
+
+  assert.equal(group.jobGroups.length, 2);
+  const [asyncGroup, entrypointsGroup] = group.jobGroups;
+  assert.equal(asyncGroup.jobName, "Async engine test");
+  assert.equal(asyncGroup.count, 2);
+  assert.equal(asyncGroup.firstFinishedAt, "2026-08-27T10:00:00.000Z");
+  assert.equal(asyncGroup.lastFinishedAt, "2026-08-27T10:06:00.000Z");
+  assert.deepEqual(
+    asyncGroup.events.map((e) => e.buildkiteJobId),
+    ["job-2", "job-1"],
+  );
+  assert.equal(entrypointsGroup.count, 1);
+});
+
+test("job groups are ordered by their latest finish", () => {
+  const [group] = groupFastFailureEvents([
+    event({
+      buildkiteJobId: "job-1",
+      jobName: "Async engine test",
+      finishedAt: "2026-08-27T10:00:00.000Z",
+    }),
+    event({
+      buildkiteJobId: "job-2",
+      jobName: "Entrypoints test",
+      finishedAt: "2026-08-27T10:04:00.000Z",
+    }),
+    event({
+      buildkiteJobId: "job-3",
+      jobName: "Async engine test",
+      finishedAt: "2026-08-27T10:02:00.000Z",
+    }),
+  ]);
+
+  assert.deepEqual(
+    group.jobGroups.map((jobGroup) => jobGroup.jobName),
+    ["Entrypoints test", "Async engine test"],
+  );
+});
+
+test("a job group reports the worst Slack state across its attempts", () => {
+  const [group] = groupFastFailureEvents([
+    event({ buildkiteJobId: "job-1", notificationStatuses: ["delivered"] }),
+    event({
+      buildkiteJobId: "job-2",
+      notificationStatuses: ["dead_letter"],
+      finishedAt: "2026-08-27T10:05:00.000Z",
+    }),
+    event({
+      buildkiteJobId: "job-3",
+      notificationStatuses: ["pending"],
+      finishedAt: "2026-08-27T10:04:00.000Z",
+    }),
+  ]);
+
+  assert.equal(group.jobGroups.length, 1);
+  assert.equal(group.jobGroups[0].notificationState, "dead_letter");
+});
+
+test("worstNotificationState ranks undelivered states above delivered", () => {
+  assert.equal(
+    worstNotificationState(["delivered", "retrying"]),
+    "retrying",
+  );
+  assert.equal(
+    worstNotificationState(["delivered", "unnotified"]),
+    "unnotified",
+  );
+  assert.equal(worstNotificationState(["delivered"]), "delivered");
+  assert.equal(worstNotificationState([]), "unnotified");
 });

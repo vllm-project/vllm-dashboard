@@ -93,3 +93,72 @@ test("an empty window with soft failures hidden says they are hidden", () => {
 
   assert.match(markup, /soft failures are hidden/);
 });
+
+const ROW_CLASS = "flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2";
+
+test("repeated runs of one job collapse into a single row with a count badge", () => {
+  const markup = render([
+    event({ buildkiteJobId: "job-1" }),
+    event({
+      buildkiteJobId: "job-2",
+      jobUrl: "https://buildkite.com/vllm/ci/builds/9001#job-2",
+      finishedAt: "2026-08-27T10:05:00.000Z",
+    }),
+  ]);
+
+  assert.match(markup, /×2/);
+  assert.match(markup, /<details/);
+  // Both attempts stay reachable behind the disclosure.
+  assert.match(markup, /#job-1/);
+  assert.match(markup, /#job-2/);
+  assert.equal(markup.split(ROW_CLASS).length - 1, 2);
+});
+
+test("a job that failed once renders as a plain row with no disclosure", () => {
+  const markup = render([event()]);
+
+  assert.doesNotMatch(markup, /<details/);
+  assert.doesNotMatch(markup, /×\d/);
+  assert.equal(markup.split(ROW_CLASS).length - 1, 1);
+});
+
+test("a collapsed row shows the worst Slack state across its attempts", () => {
+  const markup = render([
+    event({ buildkiteJobId: "job-1", notificationStatuses: ["delivered"] }),
+    event({
+      buildkiteJobId: "job-2",
+      notificationStatuses: ["dead_letter"],
+      finishedAt: "2026-08-27T10:05:00.000Z",
+    }),
+  ]);
+
+  assert.match(markup, /Slack dead-lettered/);
+});
+
+test("builds with more than ten job groups collapse the rest behind a toggle", () => {
+  const events = Array.from({ length: 12 }, (_, i) =>
+    event({
+      buildkiteJobId: `job-${i}`,
+      jobName: `Job ${String(i).padStart(2, "0")}`,
+      finishedAt: `2026-08-27T10:${String(i).padStart(2, "0")}:00.000Z`,
+    }),
+  );
+  const markup = render(events);
+
+  assert.match(markup, /Show all 12 jobs/);
+  // Only the ten newest job groups render before the toggle.
+  assert.equal(markup.split(ROW_CLASS).length - 1, 10);
+  assert.match(markup, /Job 11/);
+  assert.doesNotMatch(markup, /Job 00/);
+  assert.doesNotMatch(markup, /Job 01/);
+});
+
+test("builds with ten or fewer job groups render every row", () => {
+  const events = Array.from({ length: 10 }, (_, i) =>
+    event({ buildkiteJobId: `job-${i}`, jobName: `Job ${i}` }),
+  );
+  const markup = render(events);
+
+  assert.doesNotMatch(markup, /Show all/);
+  assert.equal(markup.split(ROW_CLASS).length - 1, 10);
+});
