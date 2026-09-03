@@ -432,7 +432,22 @@ def test_fast_failure_event_has_no_resolution_lifecycle() -> None:
 def test_slack_channel_env_override_wins(monkeypatch: Any) -> None:
     import alerting.fast_ci as fast_ci
 
-    monkeypatch.delenv("SLACK_CHANNEL_ID", raising=False)
+    for var in (
+        "SLACK_CI_FAST_FAILURE_ALERT_CHANNEL",
+        "SLACK_CI_NOTIFICATIONS_CHANNEL",
+        "SLACK_CHANNEL_ID",
+    ):
+        monkeypatch.delenv(var, raising=False)
     assert fast_ci.slack_channel() == fast_ci.ALERTS_SLACK_CHANNEL
+    assert fast_ci.full_ci_slack_channel() == fast_ci.ALERTS_SLACK_CHANNEL
+
+    # Legacy shared env var still applies to both paths.
     monkeypatch.setenv("SLACK_CHANNEL_ID", "C0NEWCHANNEL")
     assert fast_ci.slack_channel() == "C0NEWCHANNEL"
+    assert fast_ci.full_ci_slack_channel() == "C0NEWCHANNEL"
+
+    # Per-path channels win over the legacy fallback and stay independent.
+    monkeypatch.setenv("SLACK_CI_FAST_FAILURE_ALERT_CHANNEL", "C0FASTALERT")
+    monkeypatch.setenv("SLACK_CI_NOTIFICATIONS_CHANNEL", "C0CINOTIF")
+    assert fast_ci.slack_channel() == "C0FASTALERT"
+    assert fast_ci.full_ci_slack_channel() == "C0CINOTIF"

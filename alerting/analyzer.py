@@ -37,7 +37,7 @@ from typing import Any, Protocol, cast
 from zoneinfo import ZoneInfo
 
 from alerting.commands import ScheduledCommand, SCHEMA_VERSION
-from alerting.fast_ci import slack_channel
+from alerting.fast_ci import full_ci_slack_channel
 from alerting.full_ci import FullCIJobOutcome, FullCIRun
 from alerting.ports import (
     AlertPath,
@@ -684,7 +684,7 @@ class FullCIAnalysisHandler:
                     alert_path=AlertPath.FULL_CI,
                     delivery_mode=self._delivery_mode,
                     destination_mode=DestinationMode.BOT_TOKEN,
-                    destination=slack_channel(),
+                    destination=full_ci_slack_channel(),
                     payload={"text": outputs.report_text},
                 ),
                 now=self._clock.now(),
