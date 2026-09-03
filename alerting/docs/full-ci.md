@@ -27,7 +27,11 @@ analysis report.
 
 - `BUILDKITE_TOKEN` (source reads), `GITHUB_TOKEN` (PR attribution),
   `KIMI_API_KEY` plus optional `KIMI_BASE_URL`, `KIMI_MODEL`,
-  `KIMI_TIMEOUT_SECONDS`, `KIMI_REASONING_EFFORT`.
+  `KIMI_TIMEOUT_SECONDS` (whole-analysis budget, default 3600),
+  `KIMI_REQUEST_TIMEOUT_SECONDS` (single completion read timeout, default
+  900), `KIMI_REASONING_EFFORT`. Transient request failures — read timeouts,
+  connection errors, HTTP 429/5xx — are retried up to 3 times with 5s/15s
+  backoff inside the whole-analysis budget before the analysis fails.
 - `ALERTING_CHECKPOINT_BUCKET` — the S3 bucket for immutable analyzer
   checkpoints and the per-path control objects.
 - Slack: `SLACK_BOT_TOKEN`; `SLACK_CHANNEL_ID` overrides the default

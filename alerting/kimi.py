@@ -48,6 +48,10 @@ BASH_OUTPUT_LIMIT = 40_000
 BASH_TIMEOUT_SECONDS = 60
 TASK_RESULT_LIMIT = 50_000
 REQUEST_TIMEOUT_SECONDS = 300.0
+# One slow or dropped completion should cost a retry, not the whole analysis:
+# a Full CI run is dozens of sequential requests and any of them can stall.
+MAX_REQUEST_ATTEMPTS = 3
+_REQUEST_RETRY_BACKOFF_SECONDS = (5.0, 15.0)
 # The inferact endpoint counts unset output budget as zero and rejects the
 # request when the prompt alone approaches the context window.
 MAX_OUTPUT_TOKENS = 16_384
@@ -79,7 +83,13 @@ def _prune_history(messages: list[dict[str, Any]]) -> None:
             total -= len(content) - len(_ELIDED)
             message["content"] = _ELIDED
 
+
 Transport = Callable[[str, dict[str, str], dict[str, Any]], dict[str, Any]]
+
+
+class TransientTransportError(AnalyzerError):
+    """A Kimi request failed in a way that a retry may fix."""
+
 
 _STRING = {"type": "string"}
 _TOOLS: list[dict[str, Any]] = [
@@ -198,10 +208,15 @@ class UrllibTransport:
                 result: Any = json.load(resp)
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            raise AnalyzerError(
-                f"kimi API request failed with HTTP {exc.code}: {body[:1000]}"
-            ) from exc
-        except (OSError, TimeoutError, json.JSONDecodeError) as exc:
+            message = f"kimi API request failed with HTTP {exc.code}: {body[:1000]}"
+            if exc.code == 429 or exc.code >= 500:
+                raise TransientTransportError(message) from exc
+            raise AnalyzerError(message) from exc
+        except (OSError, TimeoutError) as exc:
+            # Read timeouts, resets, and DNS blips: the request may simply be
+            # retried. socket.timeout is an OSError subclass.
+            raise TransientTransportError(f"kimi API request failed: {exc}") from exc
+        except json.JSONDecodeError as exc:
             raise AnalyzerError(f"kimi API request failed: {exc}") from exc
         if not isinstance(result, dict):
             raise AnalyzerError("kimi API returned a malformed response")
@@ -222,6 +237,9 @@ class KimiCodeRunner:
         reasoning_effort: str = "low",
         transport: Transport | None = None,
         clock: Callable[[], float] | None = None,
+        request_timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
+        max_request_attempts: int = MAX_REQUEST_ATTEMPTS,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
@@ -229,8 +247,12 @@ class KimiCodeRunner:
         self._timeout_seconds = timeout_seconds
         self._max_turns = max_turns
         self._reasoning_effort = reasoning_effort
-        self._transport = transport or UrllibTransport()
+        self._transport = transport or UrllibTransport(
+            timeout_seconds=request_timeout_seconds
+        )
         self._clock = clock or time.monotonic
+        self._max_request_attempts = max(1, max_request_attempts)
+        self._sleep = sleep or time.sleep
 
     def run(
         self,
@@ -274,7 +296,7 @@ class KimiCodeRunner:
         for _ in range(self._max_turns):
             if self._clock() >= deadline:
                 raise AnalyzerError("kimi analyzer exceeded its time budget")
-            message = self._complete(messages, tools)
+            message = self._complete(messages, tools, deadline)
             messages.append(message)
             calls = message.get("tool_calls")
             if not calls:
@@ -294,7 +316,10 @@ class KimiCodeRunner:
         raise AnalyzerError(f"kimi analyzer exceeded {self._max_turns} turns")
 
     def _complete(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        deadline: float,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._model,
@@ -306,14 +331,7 @@ class KimiCodeRunner:
             # sequential investigation calls fast enough for the time budget.
             "reasoning_effort": self._reasoning_effort,
         }
-        response = self._transport(
-            f"{self._base_url}/chat/completions",
-            {
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            payload,
-        )
+        response = self._request(payload, deadline)
         try:
             message = cast(list[dict[str, Any]], response["choices"])[0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
@@ -321,6 +339,29 @@ class KimiCodeRunner:
         if not isinstance(message, dict):
             raise AnalyzerError("kimi API returned a malformed response")
         return cast(dict[str, Any], message)
+
+    def _request(self, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
+        """POST one completion, retrying transient failures inside the budget."""
+        url = f"{self._base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        for attempt in range(1, self._max_request_attempts + 1):
+            try:
+                return self._transport(url, headers, payload)
+            except TransientTransportError as exc:
+                if attempt >= self._max_request_attempts:
+                    raise AnalyzerError(f"{exc} (after {attempt} attempts)") from exc
+                backoff = _REQUEST_RETRY_BACKOFF_SECONDS[
+                    min(attempt, len(_REQUEST_RETRY_BACKOFF_SECONDS)) - 1
+                ]
+                if self._clock() + backoff >= deadline:
+                    raise AnalyzerError(
+                        f"{exc} (no time budget left to retry after {attempt} attempts)"
+                    ) from exc
+                self._sleep(backoff)
+        raise AssertionError("unreachable: attempts loop always returns or raises")
 
     def _execute(
         self,
