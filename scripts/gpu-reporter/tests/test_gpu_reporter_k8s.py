@@ -180,6 +180,19 @@ def test_zero_capacity_devices_are_skipped(reporter_k8s):
     assert [d["device"] for d in disks] == ["/dev/vda1"]
 
 
+def test_loop_devices_are_skipped(reporter_k8s):
+    # dgxb200-12/-14 (host-level buildkite-agent, snap packages) report ~30
+    # snap loop mounts via cAdvisor: read-only squashfs, can never fill,
+    # pure drill-down noise.
+    fs_map = {
+        "/dev/loop0": {"used_bytes": 66846720, "total_bytes": 66846720},
+        "/dev/loop17": {"used_bytes": 52428800, "total_bytes": 52428800},
+        "/dev/md0": {"used_bytes": 1, "total_bytes": 1800000000000},
+    }
+    disks = reporter_k8s.build_disk_entries("dgxb200-12", fs_map, 1800000000000)
+    assert [d["device"] for d in disks] == ["/dev/md0"]
+
+
 def test_disk_scrape_cadence(reporter_k8s, monkeypatch):
     calls = []
 
