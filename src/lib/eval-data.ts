@@ -1,4 +1,5 @@
 import { queryDatabricks } from "@/lib/databricks";
+import { commitFromImage } from "@/lib/commit-from-image";
 import {
   imageFromMessage,
   resolveEvalImage,
@@ -31,6 +32,7 @@ export interface EvalRow {
   buildkite_commit: string | null;
   vllm_commit: string | null;
   workload: string | null;
+  duplicateCount: number;
 }
 
 interface RawRow {
@@ -77,6 +79,19 @@ export interface EvalRowsQuery {
 
 function escapeSqlString(value: string): string {
   return value.replace(/'/g, "''");
+}
+
+function buildConditions(model?: string | null): string[] {
+  const conditions = [
+    "(message:results IS NOT NULL OR message:data:results IS NOT NULL)",
+  ];
+  if (model) {
+    const esc = escapeSqlString(model);
+    conditions.push(
+      `(message:config:model_args:model::STRING = '${esc}' OR message:data:config:model_args:model::STRING = '${esc}' OR message:config:model_args::STRING LIKE '%model=${esc}%' OR message:data:config:model_args::STRING LIKE '%model=${esc}%')`
+    );
+  }
+  return conditions;
 }
 
 export function parseEvalMetrics(
@@ -128,21 +143,97 @@ function extractModel(modelArgs: unknown): string | null {
   return null;
 }
 
+// CI often ingests the same lm-eval result more than once (retries, mirror
+// uploads). Runs are duplicates when every identifying field matches and they
+// land within this window of the first occurrence.
+export const DEDUPE_WINDOW_SECONDS = 10 * 60;
+
+// Number of prior runs (same model+task, newest first) that form the rolling
+// baseline a run is compared against.
+export const BASELINE_WINDOW = 5;
+
+// A change is only worth flagging when it exceeds both the statistical noise
+// (2 × stderr) and a floor of one percentage point.
+export const FLAG_FLOOR = 0.01;
+
+function dedupeKey(row: EvalRow): string {
+  const commit =
+    commitFromImage(row.image) ??
+    row.vllm_commit ??
+    row.buildkite_commit ??
+    row.git_hash ??
+    "";
+  const metrics = row.metrics
+    .map((m) => `${m.name},${m.filter}=${m.value}:${m.stderr}`)
+    .sort()
+    .join(";");
+  return [row.model, row.task, commit, row.image ?? "", metrics, row.n_samples].join("|");
+}
+
+// Collapse duplicate ingests: same model, task, commit, image, score, stderr
+// and sample count within DEDUPE_WINDOW_SECONDS keep only the earliest run,
+// which records how many rows were merged into it.
+export function dedupeEvalRows(rows: EvalRow[]): EvalRow[] {
+  const sorted = [...rows].sort((a, b) => a.run_epoch - b.run_epoch);
+  const open = new Map<string, { firstEpoch: number; kept: EvalRow }>();
+  const kept: EvalRow[] = [];
+  for (const row of sorted) {
+    const key = dedupeKey(row);
+    const group = open.get(key);
+    if (group && row.run_epoch - group.firstEpoch <= DEDUPE_WINDOW_SECONDS) {
+      group.kept.duplicateCount += 1;
+      continue;
+    }
+    const copy = { ...row, duplicateCount: 1 };
+    open.set(key, { firstEpoch: row.run_epoch, kept: copy });
+    kept.push(copy);
+  }
+  return kept.sort((a, b) => b.run_epoch - a.run_epoch);
+}
+
+export function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+export interface BaselineComparison {
+  baseline: number;
+  baselineCount: number;
+  delta: number;
+  sigma: number;
+  flagged: boolean;
+}
+
+// Compare a run against the rolling baseline: the median of the last
+// `window` prior runs for the same model+task. `prior` is newest-first.
+// Sigma combines the run's stderr with the median baseline stderr.
+export function compareToRollingBaseline(
+  current: { value: number; stderr: number },
+  prior: { value: number; stderr: number }[],
+  window: number = BASELINE_WINDOW
+): BaselineComparison | null {
+  const sample = prior.slice(0, Math.max(0, window));
+  const baseline = median(sample.map((p) => p.value));
+  if (baseline === null) return null;
+  const baseStderr = median(sample.map((p) => p.stderr)) ?? 0;
+  const delta = current.value - baseline;
+  const combined = Math.sqrt(current.stderr ** 2 + baseStderr ** 2);
+  const sigma = combined > 0 ? Math.abs(delta) / combined : 0;
+  const flagged = Math.abs(delta) > Math.max(2 * current.stderr, FLAG_FLOOR);
+  return { baseline, baselineCount: sample.length, delta, sigma, flagged };
+}
+
 export async function loadEvalRows({
   model,
   task,
   image,
   images,
 }: EvalRowsQuery = {}): Promise<EvalRow[]> {
-  const conditions = [
-    "(message:results IS NOT NULL OR message:data:results IS NOT NULL)",
-  ];
-  if (model) {
-    const esc = escapeSqlString(model);
-    conditions.push(
-      `(message:config:model_args:model::STRING = '${esc}' OR message:data:config:model_args:model::STRING = '${esc}' OR message:config:model_args::STRING LIKE '%model=${esc}%' OR message:data:config:model_args::STRING LIKE '%model=${esc}%')`
-    );
-  }
+  const conditions = buildConditions(model);
 
   const rawRows = await queryDatabricks<RawRow>(`
     SELECT
@@ -200,6 +291,7 @@ export async function loadEvalRows({
         buildkite_commit: raw.buildkite_commit ?? null,
         vllm_commit: raw.vllm_commit ?? null,
         workload,
+        duplicateCount: 1,
       };
 
       out.push(row);
@@ -214,8 +306,39 @@ export async function loadEvalRows({
   );
 
   const imageValues = [...(images ?? []), image ?? ""].filter(Boolean);
-  if (imageValues.length === 0) return out;
+  if (imageValues.length === 0) return dedupeEvalRows(out);
 
   const imageSet = new Set(imageValues);
-  return out.filter((row) => row.image !== null && imageSet.has(row.image));
+  return dedupeEvalRows(
+    out.filter((row) => row.image !== null && imageSet.has(row.image))
+  );
+}
+
+// Distinct task count over the full filtered dataset. The rows query is
+// truncated by Databricks INLINE limits, so client-side counting only sees
+// the first page. Selecting just the results map keeps the payload small
+// enough to count every task server-side. The image filter is resolved in
+// JS and cannot be pushed into SQL, so it is not applied here.
+export async function loadEvalTaskCount({
+  model,
+  task,
+}: Pick<EvalRowsQuery, "model" | "task"> = {}): Promise<number> {
+  const conditions = buildConditions(model);
+  const rows = await queryDatabricks<{ r: string | null }>(`
+    SELECT CAST(COALESCE(message:results, message:data:results) AS STRING) AS r
+    FROM vllm_data_warehouse.default.vllm_eval_data_ingest
+    WHERE ${conditions.join(" AND ")}
+  `);
+  const tasks = new Set<string>();
+  for (const row of rows) {
+    if (!row.r) continue;
+    try {
+      for (const key of Object.keys(JSON.parse(row.r))) {
+        if (!task || key === task) tasks.add(key);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return tasks.size;
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadEvalRows } from "@/lib/eval-data";
+import { loadEvalRows, loadEvalTaskCount } from "@/lib/eval-data";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 
@@ -13,13 +13,14 @@ export async function GET(request: NextRequest) {
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
 
-    const rows = await loadEvalRows({
-      model: sp.get("model"),
-      task: sp.get("task"),
-      image: sp.get("image"),
-    });
+    const model = sp.get("model");
+    const task = sp.get("task");
+    const [rows, taskCount] = await Promise.all([
+      loadEvalRows({ model, task, image: sp.get("image") }),
+      loadEvalTaskCount({ model, task }),
+    ]);
 
-    const result = { rows };
+    const result = { rows, taskCount };
     setCache(cacheKey, result, TTL);
 
     return cachedJson(result, CDN_CACHE);
