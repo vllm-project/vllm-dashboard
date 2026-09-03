@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 import { queryGpuLatest } from "@/lib/gpu-data";
+import { queryHostLatest } from "@/lib/gpu-host-data";
 
 export async function GET() {
   try {
-    const latest = await queryGpuLatest();
+    const [latest, hosts] = await Promise.all([
+      queryGpuLatest(),
+      queryHostLatest(),
+    ]);
     return NextResponse.json(
-      { latest, checked_at: new Date().toISOString() },
+      { latest, hosts, checked_at: new Date().toISOString() },
       {
         headers: {
           "Cache-Control": "public, max-age=0, must-revalidate",

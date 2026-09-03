@@ -1,3 +1,9 @@
+import type {
+  NormalizedDiskMetric,
+  NormalizedNodeConditions,
+  ReporterStatus,
+} from "./gpu-report";
+
 export interface GpuSnapshot {
   time_bucket: string;
   hostname: string;
@@ -20,6 +26,21 @@ export interface GpuLatest {
   reported_at: string;
 }
 
+/** Latest host-level report for one hostname, as stored in host_snapshots. */
+export interface HostLatest {
+  hostname: string;
+  cpu_util: number | null;
+  cpu_count: number | null;
+  ram_used_bytes: number | null;
+  ram_total_bytes: number | null;
+  ram_available_bytes: number | null;
+  disks: NormalizedDiskMetric[] | null;
+  reporter_status: ReporterStatus;
+  last_error: string | null;
+  node_conditions: NormalizedNodeConditions | null;
+  reported_at: string;
+}
+
 export interface GpuHistoryResponse {
   hours: number;
   snapshots: GpuSnapshot[];
@@ -38,6 +59,7 @@ export interface GpuOverviewPoint {
 
 export interface GpuLatestResponse {
   latest: GpuLatest[];
+  hosts: HostLatest[];
   checked_at: string;
   error?: string;
 }

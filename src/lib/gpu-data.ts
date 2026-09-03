@@ -1,5 +1,6 @@
 import { unstable_cache } from "next/cache";
 import { getDb } from "@/lib/db";
+import { queryHostLatest } from "@/lib/gpu-host-data";
 import type {
   GpuHistoryResponse,
   GpuLatest,
@@ -227,11 +228,14 @@ const getCachedInitialHistory = unstable_cache(
 );
 
 const getCachedInitialLatest = unstable_cache(
-  async (): Promise<GpuLatestResponse> => ({
-    latest: await queryGpuLatest(),
-    checked_at: new Date().toISOString(),
-  }),
-  ["gpu-initial-latest-v3"],
+  async (): Promise<GpuLatestResponse> => {
+    const [latest, hosts] = await Promise.all([
+      queryGpuLatest(),
+      queryHostLatest(),
+    ]);
+    return { latest, hosts, checked_at: new Date().toISOString() };
+  },
+  ["gpu-initial-latest-v4"],
   { revalidate: 30, tags: ["gpu-latest"] },
 );
 
@@ -243,6 +247,7 @@ export async function getInitialGpuData() {
   return {
     overview: summarizeGpuHistory(history),
     latest: latestResponse.latest,
+    hosts: latestResponse.hosts,
     latestCheckedAt: latestResponse.checked_at,
     asOf: Date.now(),
   };
