@@ -88,7 +88,7 @@ function EmptyMetric() {
 
 function RamBackedBadge() {
   return (
-    <span className="ml-1 rounded bg-violet-100 px-1 py-0.5 text-[10px] font-medium whitespace-nowrap text-violet-700 dark:bg-violet-900/40 dark:text-violet-400">
+    <span className="shrink-0 rounded bg-violet-100 px-1 py-0.5 text-[10px] font-medium whitespace-nowrap text-violet-700 dark:bg-violet-900/40 dark:text-violet-400">
       RAM-backed
     </span>
   );
@@ -185,10 +185,12 @@ function DiskDetail({ disks }: { disks: NormalizedDiskMetric[] | null }) {
         return (
           <div key={`${mountLabel(disk)}-${index}`}>
             <div className="flex items-center gap-2">
-              <span className="w-28 truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
-                {mountLabel(disk)}
+              <div className="flex w-44 shrink-0 items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+                <span className="truncate font-mono" title={mountLabel(disk)}>
+                  {mountLabel(disk)}
+                </span>
                 {isRamBackedMount(disk) && <RamBackedBadge />}
-              </span>
+              </div>
               {usedPct == null ? (
                 <span className="text-xs text-red-600 dark:text-red-400">
                   {disk.error ?? "no usage reported"}
@@ -205,13 +207,13 @@ function DiskDetail({ disks }: { disks: NormalizedDiskMetric[] | null }) {
                       style={{ width: `${Math.min(usedPct, 100)}%` }}
                     />
                   </div>
-                  <span className="w-28 tabular-nums text-xs text-zinc-500 dark:text-zinc-400">
+                  <span className="w-28 shrink-0 whitespace-nowrap tabular-nums text-xs text-zinc-500 dark:text-zinc-400">
                     {Math.round(usedPct)}% of {formatBytes(disk.total_bytes!)}
                   </span>
                 </>
               )}
             </div>
-            <div className="mt-0.5 pl-0 text-[11px] text-zinc-400">{detail}</div>
+            <div className="mt-0.5 break-all text-[11px] text-zinc-400">{detail}</div>
           </div>
         );
       })}
@@ -229,6 +231,15 @@ function HostDrillDown({ row, host }: { row: HostRow; host: HostLatest | undefin
         <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
           {host ? (
             <>
+              <span className="whitespace-nowrap font-medium tabular-nums text-zinc-700 dark:text-zinc-200">
+                {host.cpu_count != null && `${host.cpu_count} CPUs`}
+                {host.cpu_count != null &&
+                  host.ram_total_bytes != null &&
+                  " · "}
+                {host.ram_used_bytes != null &&
+                  host.ram_total_bytes != null &&
+                  `RAM ${formatBytes(host.ram_used_bytes)} / ${formatBytes(host.ram_total_bytes)}`}
+              </span>
               <span
                 className={`rounded-full px-2 py-0.5 font-medium ${
                   host.reporter_status === "ok"
@@ -246,15 +257,6 @@ function HostDrillDown({ row, host }: { row: HostRow; host: HostLatest | undefin
               {host.node_conditions && (
                 <NodeConditionChips conditions={host.node_conditions} />
               )}
-              <span className="ml-auto tabular-nums text-zinc-500 dark:text-zinc-400">
-                {host.cpu_count != null && `${host.cpu_count} CPUs`}
-                {host.cpu_count != null &&
-                  host.ram_total_bytes != null &&
-                  " · "}
-                {host.ram_used_bytes != null &&
-                  host.ram_total_bytes != null &&
-                  `RAM ${formatBytes(host.ram_used_bytes)} / ${formatBytes(host.ram_total_bytes)}`}
-              </span>
             </>
           ) : (
             <span className="text-zinc-500 dark:text-zinc-400">
@@ -407,7 +409,7 @@ export function GpuHostTable({
                           Stale
                         </span>
                       ) : null}
-                      <span className="ml-2 text-xs text-zinc-400">
+                      <span className="ml-2 inline-block w-4 text-center text-base leading-none text-zinc-500 dark:text-zinc-400">
                         {isOpen ? "▾" : "▸"}
                       </span>
                     </td>
