@@ -4,8 +4,10 @@ import { useState, Fragment } from "react";
 import useSWR from "swr";
 import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
+import { SegmentedControl } from "@/components/segmented-control";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
+import { formatRelativeTime } from "@/lib/alerts-shared";
 import { JobRunsChart, JobRun } from "@/components/job-runs-chart";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -27,6 +29,14 @@ interface FailureRow {
   passes: string;
   failure_rate: string;
   has_soft_fail: string;
+  /** 95% Wilson lower bound of the failure rate, in percent. Databricks source only. */
+  wilsonLowerBound?: number | null;
+  firstFailureAt?: string | null;
+  lastFailureAt?: string | null;
+  lastPassedAt?: string | null;
+  buildkiteUrl?: string | null;
+  /** Per-day pass/fail counts, ascending by date, capped at 30 entries. */
+  dailyHistory?: { date: string; passed: number; failed: number }[];
 }
 
 interface DurationRow {
@@ -59,6 +69,13 @@ function formatDuration(secs: number): string {
   const rm = m % 60;
   return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
 }
+
+const MIN_RUNS_OPTIONS = [
+  { value: "1", label: "1" },
+  { value: "5", label: "5" },
+  { value: "10", label: "10" },
+  { value: "20", label: "20" },
+];
 
 function FailureBar({ rate }: { rate: number }) {
   return (
@@ -129,10 +146,11 @@ function JobAnalysisTab({
   const [analysisTab, setAnalysisTab] = useState<"failures" | "duration">("failures");
   const [hideSoftFail, setHideSoftFail] = useState(false);
   const [hideOptional, setHideOptional] = useState(false);
+  const [minRuns, setMinRuns] = useState("5");
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(0);
   const pageSize = 20;
-  const [failureSort, setFailureSort] = useState<{ col: string; asc: boolean }>({ col: "failure_rate", asc: false });
+  const [failureSort, setFailureSort] = useState<{ col: string; asc: boolean }>({ col: "wilsonLowerBound", asc: false });
   const [durationSort, setDurationSort] = useState<{ col: string; asc: boolean }>({ col: "p50_duration", asc: false });
   const [expandedJob, setExpandedJob] = useState<string | null>(null);
 
@@ -170,6 +188,7 @@ function JobAnalysisTab({
     .filter((row) => {
       if (hideSoftFail && (isSoftFailJob(row.name) || row.has_soft_fail === "1")) return false;
       if (hideOptional && isOptionalJob(row.name)) return false;
+      if (parseInt(row.total_runs, 10) < parseInt(minRuns, 10)) return false;
       if (searchQuery && !row.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
       return true;
     })
@@ -314,6 +333,15 @@ function JobAnalysisTab({
             onChange={(e) => { setSearchQuery(e.target.value); setPage(0); }}
             className="h-11 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:ring-1 focus:ring-zinc-400 sm:h-10 sm:w-48 sm:flex-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500 dark:focus:ring-zinc-500"
           />
+          <div className="flex min-h-11 items-center gap-2 sm:min-h-10">
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">Min runs</span>
+            <SegmentedControl
+              label="Minimum runs"
+              value={minRuns}
+              options={MIN_RUNS_OPTIONS}
+              onChange={(v) => { setMinRuns(v); setPage(0); }}
+            />
+          </div>
           <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500 sm:min-h-10 dark:text-zinc-400">
             <input
               type="checkbox"
@@ -346,6 +374,10 @@ function JobAnalysisTab({
                   <th className="cursor-pointer select-none px-5 py-2.5 font-medium hover:text-zinc-900 dark:hover:text-zinc-100" onClick={() => toggleFailureSort("failure_rate")}>
                     Failure Rate<SortArrow active={failureSort.col === "failure_rate"} asc={failureSort.asc} />
                   </th>
+                  <th className="cursor-pointer select-none px-5 py-2.5 font-medium hover:text-zinc-900 dark:hover:text-zinc-100" onClick={() => toggleFailureSort("wilsonLowerBound")}>
+                    Confidence<SortArrow active={failureSort.col === "wilsonLowerBound"} asc={failureSort.asc} />
+                  </th>
+                  <th className="px-5 py-2.5 font-medium">Failing since</th>
                   <th className="cursor-pointer select-none px-5 py-2.5 font-medium hover:text-zinc-900 dark:hover:text-zinc-100" onClick={() => toggleFailureSort("failures")}>
                     Failures<SortArrow active={failureSort.col === "failures"} asc={failureSort.asc} />
                   </th>
@@ -365,12 +397,40 @@ function JobAnalysisTab({
                       onClick={() => toggleExpanded(row.name)}
                     >
                       <td className="px-5 py-2.5 text-zinc-400">{page * pageSize + i + 1}</td>
-                      <td className="px-5 py-2.5 font-medium">
-                        {row.name}
+                      <td
+                        className="px-5 py-2.5 font-medium"
+                        data-daily-history={JSON.stringify(row.dailyHistory ?? [])}
+                      >
+                        {row.buildkiteUrl ? (
+                          <a
+                            href={row.buildkiteUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1 text-blue-600 hover:underline dark:text-blue-400"
+                          >
+                            {row.name}
+                            <span aria-hidden="true">↗</span>
+                          </a>
+                        ) : (
+                          row.name
+                        )}
                         <JobBadges name={row.name} hasSoftFail={row.has_soft_fail === "1"} />
                       </td>
                       <td className="px-5 py-2.5">
                         <FailureBar rate={parseFloat(row.failure_rate)} />
+                      </td>
+                      <td
+                        className="whitespace-nowrap px-5 py-2.5 text-zinc-500"
+                        title="95% Wilson lower bound of the failure rate"
+                      >
+                        {row.wilsonLowerBound != null ? `≥${row.wilsonLowerBound}%` : "—"}
+                      </td>
+                      <td
+                        className="whitespace-nowrap px-5 py-2.5 text-zinc-500"
+                        title={row.firstFailureAt ?? undefined}
+                      >
+                        {row.firstFailureAt ? formatRelativeTime(row.firstFailureAt) : "—"}
                       </td>
                       <td className="px-5 py-2.5 text-red-600 dark:text-red-400">
                         {row.failures}
@@ -381,13 +441,13 @@ function JobAnalysisTab({
                       <td className="px-5 py-2.5 text-zinc-500">{row.total_runs}</td>
                     </tr>
                     {expandedJob === row.name && (
-                      <ExpandedJobRow jobName={row.name} colSpan={6} />
+                      <ExpandedJobRow jobName={row.name} colSpan={8} />
                     )}
                   </Fragment>
                 ))}
                 {pagedFailures.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-5 py-8 text-center text-zinc-400">
+                    <td colSpan={8} className="px-5 py-8 text-center text-zinc-400">
                       No job failures in this period
                     </td>
                   </tr>
