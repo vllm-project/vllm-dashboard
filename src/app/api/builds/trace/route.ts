@@ -35,10 +35,20 @@ type TraceRow = {
   command_label: string | null;
   test_nodeid: string | null;
   test_outcome: string | null;
+  docker_stage: string | null;
+  docker_step_index: number | null;
+  docker_step_label: string | null;
   received_at: Date;
 };
 
-type LaneKind = "job" | "step" | "command" | "test";
+type LaneKind =
+  | "job"
+  | "step"
+  | "command"
+  | "test"
+  | "docker-stage"
+  | "docker-instruction"
+  | "docker-internal";
 
 type Lane = {
   id: string;
@@ -63,6 +73,7 @@ type Lane = {
 
 type DetailCountRow = {
   parent_span_id: string;
+  ci_kind: string;
   child_count: number;
 };
 
@@ -138,14 +149,28 @@ function jobLane(row: TraceRow, id = row.span_id): Lane {
   };
 }
 
-function detailKind(row: TraceRow): "command" | "test" | null {
-  if (row.ci_kind === "command") return "command";
-  if (row.ci_kind === "test") return "test";
+type DetailKind = Exclude<LaneKind, "job" | "step">;
+
+function detailKind(row: TraceRow): DetailKind | null {
+  if (
+    row.ci_kind === "command" ||
+    row.ci_kind === "test" ||
+    row.ci_kind === "docker-stage" ||
+    row.ci_kind === "docker-instruction" ||
+    row.ci_kind === "docker-internal"
+  ) {
+    return row.ci_kind;
+  }
   return null;
 }
 
-function detailLabel(row: TraceRow, kind: "command" | "test"): string {
+function detailLabel(row: TraceRow, kind: DetailKind): string {
   if (kind === "test") return row.test_nodeid ?? row.span_name;
+  if (kind === "docker-stage") return row.docker_stage ?? row.span_name;
+  if (kind === "docker-instruction" || kind === "docker-internal") {
+    const prefix = row.docker_step_index ? `${row.docker_step_index}. ` : "";
+    return `${prefix}${row.docker_step_label ?? row.span_name}`;
+  }
   const prefix = row.command_index ? `${row.command_index}. ` : "";
   return `${prefix}${row.command_label ?? row.span_name}`;
 }
@@ -214,6 +239,13 @@ export async function GET(request: NextRequest) {
         NULLIF(span_attributes->>'ci.command.label', '') AS command_label,
         NULLIF(span_attributes->>'test.nodeid', '') AS test_nodeid,
         NULLIF(span_attributes->>'test.outcome', '') AS test_outcome,
+        NULLIF(span_attributes->>'docker.stage', '') AS docker_stage,
+        CASE
+          WHEN span_attributes->>'docker.step.index' ~ '^\d+$'
+          THEN (span_attributes->>'docker.step.index')::integer
+          ELSE NULL
+        END AS docker_step_index,
+        NULLIF(span_attributes->>'docker.step.label', '') AS docker_step_label,
         received_at
       FROM otel_spans
       WHERE organization_slug = ${organization}
@@ -224,7 +256,9 @@ export async function GET(request: NextRequest) {
             ${requestedJobId}::text IS NULL
             AND (
               span_name IN ('buildkite.build', 'buildkite.job', 'buildkite.step')
-              OR span_attributes->>'ci.span.kind' = 'command'
+              OR span_attributes->>'ci.span.kind' IN (
+                'command', 'docker-stage', 'docker-internal'
+              )
             )
           )
           OR (
@@ -256,19 +290,25 @@ export async function GET(request: NextRequest) {
     const detailCounts = await db<DetailCountRow[]>`
       SELECT
         parent_span_id,
+        span_attributes->>'ci.span.kind' AS ci_kind,
         COUNT(*)::integer AS child_count
       FROM otel_spans
       WHERE organization_slug = ${organization}
         AND pipeline_slug = ${pipeline}
         AND build_number = ${buildNumber}::bigint
-        AND span_attributes->>'ci.span.kind' = 'test'
+        AND span_attributes->>'ci.span.kind' IN ('test', 'docker-instruction')
         AND parent_span_id IS NOT NULL
         AND (${requestedJobId}::text IS NULL OR job_id = ${requestedJobId})
-      GROUP BY parent_span_id
+      GROUP BY parent_span_id, span_attributes->>'ci.span.kind'
     `;
-    const childCountByParent = new Map(
-      detailCounts.map((row) => [row.parent_span_id, Number(row.child_count)]),
-    );
+    const childCountByParent = new Map<string, number>();
+    for (const row of detailCounts) {
+      childCountByParent.set(
+        row.parent_span_id,
+        (childCountByParent.get(row.parent_span_id) ?? 0) +
+          Number(row.child_count),
+      );
+    }
 
     const childJobParents = new Set(
       rows
@@ -283,6 +323,7 @@ export async function GET(request: NextRequest) {
           !childJobParents.has(row.span_id)),
     );
     const details = rows.filter((row) => detailKind(row) !== null);
+    const detailSpanIds = new Set(details.map((row) => row.span_id));
 
     const baseJobLanes = controlRows.map((row) => jobLane(row));
     const jobLaneByJobId = new Map(
@@ -318,12 +359,12 @@ export async function GET(request: NextRequest) {
 
     const jobLanes = markCompletionFrontier(baseJobLanes);
     const detailLanes = details.map((row): Lane => {
-      const kind = detailKind(row) as "command" | "test";
+      const kind = detailKind(row) as DetailKind;
       const jobParent = row.job_id
         ? (jobLaneByJobId.get(row.job_id)?.id ?? null)
         : null;
       const parentId =
-        kind === "test" && row.parent_span_id
+        row.parent_span_id && detailSpanIds.has(row.parent_span_id)
           ? row.parent_span_id
           : jobParent;
       return {
@@ -344,7 +385,7 @@ export async function GET(request: NextRequest) {
         outcome: kind === "test" ? row.test_outcome : null,
         url: null,
         critical: false,
-        childCount: kind === "command"
+        childCount: kind === "command" || kind === "docker-stage"
           ? (childCountByParent.get(row.span_id) ?? 0)
           : 0,
       };
@@ -386,9 +427,19 @@ export async function GET(request: NextRequest) {
     const commandCount = detailLanes.filter(
       (lane) => lane.kind === "command",
     ).length;
-    const testCount = jobId === null
-      ? [...childCountByParent.values()].reduce((sum, count) => sum + count, 0)
-      : detailLanes.filter((lane) => lane.kind === "test").length;
+    const testCount = detailCounts
+      .filter((row) => row.ci_kind === "test")
+      .reduce((sum, row) => sum + Number(row.child_count), 0);
+    const dockerStageCount = detailLanes.filter(
+      (lane) => lane.kind === "docker-stage",
+    ).length;
+    const dockerChildCount = detailCounts
+      .filter((row) => row.ci_kind === "docker-instruction")
+      .reduce((sum, row) => sum + Number(row.child_count), 0);
+    const dockerInstructionCount =
+      dockerChildCount +
+      detailLanes.filter((lane) => lane.kind === "docker-internal").length;
+    const nestedDetailCount = testCount + dockerChildCount;
 
     return NextResponse.json(
       {
@@ -401,10 +452,13 @@ export async function GET(request: NextRequest) {
           observedStart: new Date(observedStart).toISOString(),
           observedEnd: new Date(observedEnd).toISOString(),
           observedDurationMs: Math.max(0, observedEnd - observedStart),
-          spanCount: jobId === null ? rows.length + testCount : rows.length,
+          spanCount:
+            jobId === null ? rows.length + nestedDetailCount : rows.length,
           laneCount: jobLanes.length,
           commandCount,
           testCount,
+          dockerStageCount,
+          dockerInstructionCount,
           traceCount: new Set(rows.map((row) => row.trace_id)).size,
           queueCount: new Set(
             jobLanes.map((lane) => lane.queue).filter(Boolean),
