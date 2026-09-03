@@ -1,0 +1,84 @@
+# RBAC for the GPU reporter's control-plane scraper (gpu-reporter-k8s.py).
+# Apply once per cluster, then mint a kubeconfig for the ServiceAccount and
+# install it as /etc/gpu-reporter/gpu-reporter-k8s.kubeconfig on the control
+# plane node that runs gpu-reporter-k8s.timer. The scraper must NOT run with
+# the cluster admin kubeconfig.
+#
+# Mint the kubeconfig (k8s >= 1.24: tokens are created via the Secret below):
+#   kubectl apply -f gpu-reporter-k8s-rbac.yaml
+#   TOKEN=$(kubectl -n gpu-operator get secret gpu-reporter-token \
+#     -o jsonpath='{.data.token}' | base64 -d)
+#   kubectl config set-cluster <cluster> --server=https://<api-server>:6443 \
+#     --certificate-authority=/etc/kubernetes/pki/ca.crt --embed-certs=true
+#   kubectl config set-credentials gpu-reporter --token="$TOKEN"
+#   kubectl config set-context gpu-reporter --cluster=<cluster> --user=gpu-reporter
+#   kubectl config use-context gpu-reporter
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-reporter
+  namespace: gpu-operator
+---
+# Long-lived token for the ServiceAccount (no auto-generated tokens in >= 1.24).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gpu-reporter-token
+  namespace: gpu-operator
+  annotations:
+    kubernetes.io/service-account.name: gpu-reporter
+type: kubernetes.io/service-account-token
+---
+# List DCGM exporter pods in this namespace (pod IP -> node mapping).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-reporter
+  namespace: gpu-operator
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+# Read node inventories and kubelet endpoints:
+#   nodes         - enumerate nodes (expected-host set, exporter-pod mapping)
+#   nodes/stats   - kubelet stats/summary (CPU/RAM, root filesystem)
+#   nodes/proxy   - kubelet cAdvisor metrics (per-device filesystem usage)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpu-reporter
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["nodes/stats", "nodes/proxy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-reporter
+  namespace: gpu-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gpu-reporter
+subjects:
+  - kind: ServiceAccount
+    name: gpu-reporter
+    namespace: gpu-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-reporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gpu-reporter
+subjects:
+  - kind: ServiceAccount
+    name: gpu-reporter
+    namespace: gpu-operator
