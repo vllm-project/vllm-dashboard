@@ -50,6 +50,127 @@ export function getTestGroup(jobName: string, mapping: TestAreaMapping): string 
   return null;
 }
 
+// --- Parametrized test grouping and search (Tests page) ---
+//
+// Buildkite Test Engine reports each pytest parameter set as its own test
+// ("test_foo[a]" / "test_foo[b]"), which buries the signal under near-duplicate
+// rows. These helpers collapse variants that share file + scope + function
+// name (with the trailing "[...]" removed) and power the server-side search.
+
+export interface ParametrizedTestRecord {
+  id: string;
+  name: string;
+  scope?: string | null;
+  file_name?: string | null;
+  location?: string | null;
+  labels?: string[];
+  reliability: number | null;
+  duration_sum?: number;
+  executions_count: number;
+  executions_count_by_result?: Record<string, number>;
+}
+
+export interface TestGroupRow<T extends ParametrizedTestRecord> {
+  key: string;
+  scope: string | null;
+  name: string;
+  file: string | null;
+  tests: T[];
+  parametrized: boolean;
+  reliability: number | null;
+  durationAvg: number | null;
+  executionsCount: number;
+  failedCount: number;
+  labels: string[];
+}
+
+export function stripParametrizedSuffix(name: string): string {
+  return name.replace(/\s*\[[^\]]*\]\s*$/, "");
+}
+
+function testFile(test: ParametrizedTestRecord): string | null {
+  return test.file_name ?? test.location ?? null;
+}
+
+function parametrizedGroupKey(test: ParametrizedTestRecord): string {
+  return [
+    testFile(test) ?? "",
+    test.scope ?? "",
+    stripParametrizedSuffix(test.name),
+  ].join("\n");
+}
+
+export function groupParametrizedTests<T extends ParametrizedTestRecord>(
+  tests: T[],
+): TestGroupRow<T>[] {
+  const byKey = new Map<string, T[]>();
+  for (const test of tests) {
+    const key = parametrizedGroupKey(test);
+    const bucket = byKey.get(key);
+    if (bucket) bucket.push(test);
+    else byKey.set(key, [test]);
+  }
+
+  return [...byKey.entries()].map(([key, variants]) => {
+    const first = variants[0];
+    const name = stripParametrizedSuffix(first.name);
+
+    let reliability: number | null = null;
+    for (const variant of variants) {
+      if (variant.reliability == null) continue;
+      reliability =
+        reliability == null
+          ? variant.reliability
+          : Math.min(reliability, variant.reliability);
+    }
+
+    const executionsCount = variants.reduce(
+      (sum, variant) => sum + (variant.executions_count || 0),
+      0,
+    );
+    const failedCount = variants.reduce(
+      (sum, variant) =>
+        sum + (variant.executions_count_by_result?.failed ?? 0),
+      0,
+    );
+    const hasDurationSum = variants.every(
+      (variant) => typeof variant.duration_sum === "number",
+    );
+    const durationSum = variants.reduce(
+      (sum, variant) => sum + (variant.duration_sum ?? 0),
+      0,
+    );
+
+    return {
+      key,
+      scope: first.scope ?? null,
+      name,
+      file: testFile(first),
+      tests: variants,
+      parametrized: variants.length > 1 && name !== first.name,
+      reliability,
+      durationAvg:
+        hasDurationSum && executionsCount > 0
+          ? durationSum / executionsCount
+          : null,
+      executionsCount,
+      failedCount,
+      labels: [...new Set(variants.flatMap((variant) => variant.labels ?? []))],
+    };
+  });
+}
+
+export function matchesTestQuery(
+  test: ParametrizedTestRecord,
+  query: string,
+): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return [test.scope, test.name, test.location, test.file_name, ...(test.labels ?? [])]
+    .filter((value): value is string => typeof value === "string")
+    .some((value) => value.toLowerCase().includes(needle));
+}
+
 export interface JobInfo {
   name: string;
   state: string;
