@@ -142,16 +142,26 @@ def test_infra_runtime_requires_both_kubeconfigs_and_buildkite_token(
     assert captured["delivery_mode"] is DeliveryMode.SHADOW
 
 
-def test_infra_runtime_fails_closed_without_kubeconfigs(
+def test_infra_runtime_skips_kubectl_sources_without_kubeconfigs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_build(**kwargs: object) -> RecordingRuntime:
+        captured.update(kwargs)
+        return RecordingRuntime()
+
     monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/alerting")
     monkeypatch.setenv("BUILDKITE_TOKEN", "bk-token")
     monkeypatch.delenv("GPU_REPORTER_KUBECONFIG_H100", raising=False)
     monkeypatch.delenv("GPU_REPORTER_KUBECONFIG_DGX", raising=False)
+    monkeypatch.setattr(worker, "build_infra_runtime", fake_build)
 
-    with pytest.raises(RuntimeError, match="GPU_REPORTER_KUBECONFIG_H100"):
-        worker._runtime("infra", worker.SystemClock(), DeliveryMode.SHADOW)
+    worker._runtime("infra", worker.SystemClock(), DeliveryMode.SHADOW)
+
+    # No kubectl sources: the worker's egress SG cannot reach the cluster
+    # API servers, so kubeconfigs are optional and unset means "skip".
+    assert captured["kubeconfigs"] == []
 
 
 def _set_analysis_environment(monkeypatch: pytest.MonkeyPatch) -> None:

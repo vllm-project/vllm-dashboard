@@ -45,10 +45,16 @@ episode.
   `unreporting` 10 minutes / 2 scans, `disk_usage` 90% / 2 scans,
   `gpu_temperature` 85°C / 2 scans.
 - The expected-host set is the union of: Kubernetes node names from both
-  clusters (`GPU_REPORTER_KUBECONFIG_H100`, `GPU_REPORTER_KUBECONFIG_DGX`),
-  Buildkite agents in the `gpu` queue (`BUILDKITE_TOKEN`, hostname
-  lowercased), and hostnames seen in `gpu_snapshots` within the last 7
-  days. All hostnames are lowercased.
+  clusters (`GPU_REPORTER_KUBECONFIG_H100`, `GPU_REPORTER_KUBECONFIG_DGX` —
+  **optional**; unset means the kubectl source is skipped, set-but-failing
+  fails the scan closed), Buildkite agents in the `gpu` queue
+  (`BUILDKITE_TOKEN`, hostname lowercased), and hostnames seen in
+  `gpu_snapshots` within the last 7 days. All hostnames are lowercased.
+  Note: the stock alerting worker's security group allows egress only on
+  443/5432/6543, so cluster API servers (6443) are unreachable from it and
+  the kubectl sources are normally skipped — coverage is preserved because
+  the control-plane scrapers report every cluster node (a dead scraper
+  silences, and therefore alerts, its whole cluster).
 - Slack: `SLACK_BOT_TOKEN`; channel `SLACK_CI_INFRA_ALERT_CHANNEL` (falls
   back to the shared alerts channel `C0ABTNM9L5U` until the secret exists).
 - Control plane: S3 `control/infra.mode` (`shadow` default / `live` /

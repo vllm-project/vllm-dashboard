@@ -108,13 +108,25 @@ def _runtime(
             clock=clock,
         )
     if consumer == "infra":
+        # kubectl node-list sources are optional: the worker's security group
+        # allows only 443/5432/6543 egress, so cluster API servers (6443) may
+        # be unreachable. Unset = skip the source; set-but-failing still
+        # fails the scan closed so misconfiguration is loud. Coverage without
+        # kubectl is preserved transitively: the control-plane scrapers report
+        # every cluster node, and a dead scraper silences (and alerts) all of
+        # them.
+        kubeconfigs = [
+            path
+            for name in (
+                "GPU_REPORTER_KUBECONFIG_H100",
+                "GPU_REPORTER_KUBECONFIG_DGX",
+            )
+            if (path := os.environ.get(name))
+        ]
         return build_infra_runtime(
             database_url=database_url,
             buildkite_token=_required_environment("BUILDKITE_TOKEN"),
-            kubeconfigs=[
-                _required_environment("GPU_REPORTER_KUBECONFIG_H100"),
-                _required_environment("GPU_REPORTER_KUBECONFIG_DGX"),
-            ],
+            kubeconfigs=kubeconfigs,
             slack=_slack(),
             clock=clock,
             delivery_mode=delivery_mode,
