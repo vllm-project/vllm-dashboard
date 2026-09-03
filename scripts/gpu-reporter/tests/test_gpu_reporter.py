@@ -92,6 +92,7 @@ def test_rpc_pipefs_and_zero_capacity_mounts_are_skipped(reporter, monkeypatch):
     # Defense in depth: even a mount that slips the fstype filter is dropped
     # when its capacity stats to zero.
     monkeypatch.setattr(reporter, "PROC_MOUNTS", "/dev/null")
+    monkeypatch.setattr(reporter, "PROC_MEMINFO", "/dev/null")
     monkeypatch.setattr(reporter, "parse_meminfo",
                         lambda text: {"total": 16, "available": 8})
     monkeypatch.setattr(reporter, "cpu_util_percent", lambda: 1.0)
