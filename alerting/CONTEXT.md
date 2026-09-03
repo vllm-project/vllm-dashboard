@@ -65,3 +65,21 @@ _Avoid_: Last event time, checkpoint
 **Notification Intent**:
 A durable request to deliver one rendered alert message to a destination.
 _Avoid_: Slack message, notification attempt
+
+**Expected Host Set**:
+The union of Kubernetes node names from each GPU cluster, GPU-queue Buildkite
+agent hostnames lowercased, and hostnames seen recently in gpu_snapshots. It
+authoritatively defines which hosts must report telemetry.
+_Avoid_: Inventory, fleet registry
+
+**Infra Alert Episode**:
+One breach episode for an infra subject (an unreporting host, a shared disk
+group, or one GPU). It opens only after the breach sustains across the
+configured consecutive scans and resolves on the first positive observation,
+so every episode produces exactly two Notification Intents.
+_Avoid_: Machine-down alarm, flapping page
+
+**Retired Host**:
+A host absent from every expected source and silent for seven days. It stops
+alerting and keeps a queryable retirement timestamp for the dashboard.
+_Avoid_: Deleted host, decommission record

@@ -13,8 +13,9 @@ The package uses vertical domain slices rather than layer-only folders:
 
 - `commands.py` defines the scheduled-command value object shared by all
   slices.
-- `fast_ci.py`, `full_ci.py`, and `main_ci.py` keep each signal's domain records,
-  reconciliation behavior, source port, and source adapter together.
+- `fast_ci.py`, `full_ci.py`, `main_ci.py`, and `infra.py` keep each signal's
+  domain records, reconciliation behavior, source port, and source adapter
+  together.
 - `runtime.py` exposes the small application interface:
   `process_command` and `dispatch_due_notifications`.
 - `ports.py` defines infrastructure seams used by the runtime.
@@ -25,6 +26,18 @@ This keeps behavior local while allowing external systems to be replaced in
 tests. Domain language is recorded in [`CONTEXT.md`](./CONTEXT.md), and the
 repository-level relationship with the dashboard is recorded in
 [`CONTEXT-MAP.md`](../CONTEXT-MAP.md).
+
+## Alert reference
+
+End-to-end docs per alert type produced here:
+
+- [Fast CI failure alerts](./docs/fast-ci.md)
+- [Full CI comparison alerts](./docs/full-ci.md)
+- [Main CI job failure alerts](./docs/main-ci.md)
+- [Infra health alerts](./docs/infra.md)
+
+Queue-wait alerting is owned by the dashboard context:
+[`docs/alerts/queue-wait.md`](../docs/alerts/queue-wait.md).
 
 ## Layout
 
@@ -60,6 +73,19 @@ repository-level relationship with the dashboard is recorded in
   poller's scan cursor; the outcome order guard keeps reprocessing
   idempotent. It writes raw lifecycle and Buildkite evidence only;
   Sherlock's diagnosis remains in Slack.
+- `infra.py` — the five-minute infra health scan. It reconciles the
+  expected-host set (Kubernetes node names from each cluster, GPU-queue
+  Buildkite agent hostnames, and hostnames seen recently in gpu_snapshots)
+  against the latest reported telemetry. An unreporting episode opens only
+  after the silence sustains across the configured consecutive scans and
+  resolves on the first fresh report; a host absent from every expected
+  source and silent for seven days is auto-retired. Disk-usage episodes are
+  keyed by the shared (fstype, device) group rather than hostname, so an
+  NFS volume mounted by many hosts pages once, and GPU temperature episodes
+  are keyed per host and GPU. RAM, load, and network are display-only and
+  never alert. Every episode sends
+  exactly two Slack messages (open and resolve) through the outbox, and the
+  wording always says a host stopped reporting, never that it is down.
 - `analyzer.py` — the Full CI analyzer compatibility adapter. It materializes
   the working files the bundled analyzer instructions expect (summary, full
   build data, previous-failure cache, agent memory hydrated from the latest
@@ -150,7 +176,8 @@ enabling the new path, and preserves Postgres and S3 baselines on rollback.
   `MainCIAnalysisHandler` registers as `main_ci_analyze`. Workers expose them
   as the `fast-ci`, `full-ci`, `full-ci-analyze`, `main-ci`,
   `main-ci-backstop`, and
-  `main-ci-analyze` consumers so the
+  `main-ci-analyze` consumers, and `InfraScanHandler` registers as
+  `infra_scan` on the `infra` consumer, so the
   long-running LLM analysis never blocks ingest. The Main CI analysis consumer
   writes only the `alerting_main_ci_job_analysis` sidecar table; the
   deterministic alert lifecycle stays owned by `main_ci_reconcile`.
@@ -170,6 +197,6 @@ enabling the new path, and preserves Postgres and S3 baselines on rollback.
 cd alerting
 uv sync --extra dev
 uv run pytest
-uv run mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py kimi.py main_ci.py main_ci_analysis.py memory.py migration.py ports.py postgres.py retention.py runtime.py slack.py worker.py tests
+uv run mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py infra.py kimi.py main_ci.py main_ci_analysis.py memory.py migration.py ports.py postgres.py retention.py runtime.py slack.py worker.py tests
 uv run ruff check .
 ```

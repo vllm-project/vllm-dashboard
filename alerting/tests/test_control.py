@@ -46,6 +46,7 @@ def test_reconcile_controls_defaults_missing_path_to_shadow_and_disables_one_pat
             AlertPath.FAST_CI: None,
             AlertPath.FULL_CI: ControlMode.DISABLED,
             AlertPath.MAIN_CI: ControlMode.DISABLED,
+            AlertPath.INFRA: ControlMode.DISABLED,
         }
     )
     units = RecordingUnits()
@@ -62,18 +63,23 @@ def test_reconcile_controls_defaults_missing_path_to_shadow_and_disables_one_pat
     assert (tmp_path / "main-ci.mode").read_text() == (
         "ALERTING_DELIVERY_MODE=shadow\n"
     )
+    assert (tmp_path / "infra.mode").read_text() == (
+        "ALERTING_DELIVERY_MODE=shadow\n"
+    )
     assert units.enabled == ["alerting-fast-ci.timer"]
     assert units.disabled == [
         "alerting-full-ci.timer",
         "alerting-main-ci.timer",
         "alerting-main-ci-analysis.timer",
         "alerting-main-ci-backstop.timer",
+        "alerting-infra.timer",
     ]
     assert units.stopped == [
         "alerting-full-ci.service",
         "alerting-main-ci.service",
         "alerting-main-ci-analysis.service",
         "alerting-main-ci-backstop.service",
+        "alerting-infra.service",
     ]
 
 
@@ -83,6 +89,7 @@ def test_live_control_enables_only_selected_path(tmp_path: Path) -> None:
             AlertPath.FAST_CI: ControlMode.DISABLED,
             AlertPath.FULL_CI: ControlMode.LIVE,
             AlertPath.MAIN_CI: ControlMode.DISABLED,
+            AlertPath.INFRA: ControlMode.DISABLED,
         }
     )
     units = RecordingUnits()
@@ -99,6 +106,7 @@ def test_main_ci_live_control_enables_its_independent_timers(tmp_path: Path) -> 
             AlertPath.FAST_CI: ControlMode.DISABLED,
             AlertPath.FULL_CI: ControlMode.DISABLED,
             AlertPath.MAIN_CI: ControlMode.LIVE,
+            AlertPath.INFRA: ControlMode.DISABLED,
         }
     )
     units = RecordingUnits()
@@ -113,3 +121,38 @@ def test_main_ci_live_control_enables_its_independent_timers(tmp_path: Path) -> 
         "alerting-main-ci-analysis.timer",
         "alerting-main-ci-backstop.timer",
     ]
+
+
+def test_infra_live_control_enables_its_timer_and_mode(tmp_path: Path) -> None:
+    controls = MemoryAlertControl(
+        {
+            AlertPath.FAST_CI: ControlMode.DISABLED,
+            AlertPath.FULL_CI: ControlMode.DISABLED,
+            AlertPath.MAIN_CI: ControlMode.DISABLED,
+            AlertPath.INFRA: ControlMode.LIVE,
+        }
+    )
+    units = RecordingUnits()
+
+    reconcile_controls(controls=controls, units=units, mode_dir=tmp_path)
+
+    assert (tmp_path / "infra.mode").read_text() == "ALERTING_DELIVERY_MODE=live\n"
+    assert units.enabled == ["alerting-infra.timer"]
+
+
+def test_missing_infra_control_defaults_to_shadow(tmp_path: Path) -> None:
+    controls = MemoryAlertControl(
+        {
+            AlertPath.FAST_CI: ControlMode.DISABLED,
+            AlertPath.FULL_CI: ControlMode.DISABLED,
+            AlertPath.MAIN_CI: ControlMode.DISABLED,
+            AlertPath.INFRA: None,
+        }
+    )
+    units = RecordingUnits()
+
+    reconcile_controls(controls=controls, units=units, mode_dir=tmp_path)
+
+    assert controls.writes == [(AlertPath.INFRA, ControlMode.SHADOW)]
+    assert (tmp_path / "infra.mode").read_text() == "ALERTING_DELIVERY_MODE=shadow\n"
+    assert units.enabled == ["alerting-infra.timer"]

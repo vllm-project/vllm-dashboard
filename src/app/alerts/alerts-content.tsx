@@ -4,12 +4,18 @@ import { useMemo, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { FastCIAlerts } from "@/components/fast-ci-alerts";
+import { InfraAlerts } from "@/components/infra-alerts";
 import { MainCIAlerts } from "@/components/main-ci-alerts";
 import { SegmentedControl } from "@/components/segmented-control";
 import {
   groupFastFailureEvents,
   type FastFailureEvent,
 } from "@/lib/alerts-fast-ci";
+import {
+  viewInfraAlerts,
+  type InfraAlertEpisode,
+  type InfraRetiredHost,
+} from "@/lib/alerts-infra";
 import {
   viewMainCiJobAlerts,
   type MainCiJobAlert,
@@ -24,7 +30,7 @@ import {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
-type AlertTab = "main-ci" | "fast-ci";
+type AlertTab = "main-ci" | "fast-ci" | "infra";
 
 const ALERT_TABS: readonly {
   value: AlertTab;
@@ -43,6 +49,12 @@ const ALERT_TABS: readonly {
     label: "Fast failures (<30s)",
     description:
       "Fast CI jobs that finished in a failure state within 30 seconds, over the last 7 days, grouped by the build and commit they came from. These are observations with no resolution lifecycle; each one shows how far its Slack notification got.",
+  },
+  {
+    value: "infra",
+    label: "Infra",
+    description:
+      "Infra health episodes: hosts that stopped reporting, shared disks over their usage threshold, and GPUs over their temperature threshold. An episode opens only after a breach sustains across consecutive five-minute scans and resolves on the first healthy observation; a host absent for seven days is auto-retired and stops alerting. This view is read-only — there is nothing to resolve by hand.",
   },
 ];
 
@@ -116,6 +128,13 @@ interface FastCIAlertsResponse {
 
 interface MainCIAlertsResponse {
   alerts?: MainCiJobAlert[];
+  schemaStatus?: "ready" | "pending";
+  error?: string;
+}
+
+interface InfraAlertsResponse {
+  episodes?: InfraAlertEpisode[];
+  retiredHosts?: InfraRetiredHost[];
   schemaStatus?: "ready" | "pending";
   error?: string;
 }
@@ -292,6 +311,41 @@ function FastCISection({
   );
 }
 
+function InfraSection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
+  const { data, isLoading, error } = useSWR<InfraAlertsResponse>(
+    "/api/alerts/infra",
+    fetcher,
+    { refreshInterval: 5 * 60 * 1000 },
+  );
+
+  const view = useMemo(
+    () =>
+      viewInfraAlerts(
+        data?.episodes ?? [],
+        data?.retiredHosts ?? [],
+        alertWindowCutoff(timeWindow),
+      ),
+    [data, timeWindow],
+  );
+
+  return (
+    <AlertSection
+      title="Infra"
+      isLoading={isLoading}
+      failed={Boolean(error || data?.error)}
+    >
+      {data?.schemaStatus === "pending" ? (
+        <div className="flex h-48 items-center justify-center rounded-lg border border-dashed border-amber-300 px-6 text-center text-sm text-amber-700 dark:border-amber-800 dark:text-amber-300">
+          Backend rollout pending. Migration 0019 and the infra alerting worker
+          must be deployed before this preview can show alerts.
+        </div>
+      ) : (
+        <InfraAlerts view={view} />
+      )}
+    </AlertSection>
+  );
+}
+
 export default function AlertsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -414,6 +468,8 @@ export default function AlertsContent() {
 
       {tab === "main-ci" ? (
         <MainCISection timeWindow={timeWindow} options={options} />
+      ) : tab === "infra" ? (
+        <InfraSection timeWindow={timeWindow} />
       ) : (
         <FastCISection
           timeWindow={timeWindow}
