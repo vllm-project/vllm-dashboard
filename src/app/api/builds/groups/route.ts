@@ -9,6 +9,7 @@ import {
 } from "@/lib/test-groups";
 import { getTestAreaMappingForCommit } from "@/lib/test-areas";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
+import { getBuildJobRosterRows } from "@/lib/buildkite-build-jobs";
 import { queryBuildJobsFromOtel } from "@/lib/otel-ci";
 
 const TTL = 30_000;
@@ -53,7 +54,15 @@ export async function GET(request: NextRequest) {
 
     let jobs: Record<string, unknown>[];
     if (resolveCiDataSource(request) === "otel") {
-      jobs = await queryBuildJobsFromOtel(buildIds);
+      // OTel spans only cover jobs that ran; the gated jobs behind the manual
+      // unblock step never execute and produce no spans. The REST roster has
+      // the complete job list, so the group columns match the warehouse. Fall
+      // back to OTel spans if the roster comes back empty (e.g. API token
+      // misconfigured) so the table never loses every column.
+      jobs = await getBuildJobRosterRows(buildIds);
+      if (jobs.length === 0) {
+        jobs = await queryBuildJobsFromOtel(buildIds);
+      }
     } else {
       const idList = buildIds.map((id) => `'${escapeSql(id)}'`).join(",");
       jobs = await queryDatabricks(`

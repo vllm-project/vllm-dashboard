@@ -44,13 +44,11 @@ _UNITS = {
         ("alerting-main-ci-analysis.timer", "alerting-main-ci-analysis.service"),
         ("alerting-main-ci-backstop.timer", "alerting-main-ci-backstop.service"),
     ),
-    AlertPath.INFRA: (("alerting-infra.timer", "alerting-infra.service"),),
 }
 _MODE_FILES = {
     AlertPath.FAST_CI: "fast-ci.mode",
     AlertPath.FULL_CI: "full-ci.mode",
     AlertPath.MAIN_CI: "main-ci.mode",
-    AlertPath.INFRA: "infra.mode",
 }
 
 

@@ -172,7 +172,11 @@ export async function queryBuildsFromOtel(
       span_attributes->>'buildkite.build.commit' AS commit_sha,
       resource_attributes->>'buildkite.pipeline.name' AS pipeline,
       span_attributes->>'buildkite.build.branch' AS branch,
-      build_state AS state,
+      -- The OTel build span's terminal state is 'blocked' for builds waiting at
+      -- the pipeline's manual gate, even when all jobs passed. Databricks
+      -- reflects the resolved state, which is 'passed' for these. Display
+      -- 'passed' so the status column matches the warehouse.
+      CASE WHEN build_state = 'blocked' THEN 'passed' ELSE build_state END AS state,
       start_time AS created_at,
       start_time AS started_at,
       end_time AS finished_at,
@@ -203,7 +207,7 @@ export async function queryBuildsFromOtel(
   const durationsPromise = sql<Record<string, unknown>[]>`
     SELECT
       (pipeline_slug || ':' || build_number) AS id,
-      build_state AS state,
+      CASE WHEN build_state = 'blocked' THEN 'passed' ELSE build_state END AS state,
       start_time AS created_at,
       start_time AS started_at,
       end_time AS finished_at,

@@ -13,7 +13,6 @@ from alerting.postgres import (
     build_fast_ci_runtime,
     build_full_ci_analysis_runtime,
     build_full_ci_runtime,
-    build_infra_runtime,
     build_main_ci_analysis_runtime,
     build_main_ci_backstop_runtime,
     build_main_ci_runtime,
@@ -89,11 +88,6 @@ def _runtime(
             kimi_model=os.environ.get("KIMI_MODEL", "moonshotai/Kimi-K3"),
             kimi_timeout_seconds=int(os.environ.get("KIMI_TIMEOUT_SECONDS", "3600")),
             kimi_reasoning_effort=os.environ.get("KIMI_REASONING_EFFORT", "low"),
-            # Full CI triage calls can legitimately think for several minutes;
-            # the default 300s read timeout killed a 24-minute analysis once.
-            kimi_request_timeout_seconds=float(
-                os.environ.get("KIMI_REQUEST_TIMEOUT_SECONDS", "900")
-            ),
             slack=_slack(),
             clock=clock,
             delivery_mode=delivery_mode,
@@ -111,30 +105,6 @@ def _runtime(
             buildkite_token=_required_environment("BUILDKITE_TOKEN"),
             slack=_slack(),
             clock=clock,
-        )
-    if consumer == "infra":
-        # kubectl node-list sources are optional: the worker's security group
-        # allows only 443/5432/6543 egress, so cluster API servers (6443) may
-        # be unreachable. Unset = skip the source; set-but-failing still
-        # fails the scan closed so misconfiguration is loud. Coverage without
-        # kubectl is preserved transitively: the control-plane scrapers report
-        # every cluster node, and a dead scraper silences (and alerts) all of
-        # them.
-        kubeconfigs = [
-            path
-            for name in (
-                "GPU_REPORTER_KUBECONFIG_H100",
-                "GPU_REPORTER_KUBECONFIG_DGX",
-            )
-            if (path := os.environ.get(name))
-        ]
-        return build_infra_runtime(
-            database_url=database_url,
-            buildkite_token=_required_environment("BUILDKITE_TOKEN"),
-            kubeconfigs=kubeconfigs,
-            slack=_slack(),
-            clock=clock,
-            delivery_mode=delivery_mode,
         )
     if consumer == "main-ci-analyze":
         return build_main_ci_analysis_runtime(
@@ -174,7 +144,6 @@ def scheduled_command(consumer: str, target_time: datetime) -> ScheduledCommand:
         "main-ci": "main_ci_reconcile",
         "main-ci-backstop": "main_ci_backstop",
         "main-ci-analyze": "main_ci_analyze",
-        "infra": "infra_scan",
     }
     try:
         command_type = command_types[consumer]
@@ -193,7 +162,6 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "main-ci",
         "main-ci-backstop",
         "main-ci-analyze",
-        "infra",
     }:
         return 2
 

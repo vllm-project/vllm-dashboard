@@ -74,14 +74,12 @@ def observation(
     state: str,
     minutes: int,
     job_id: str | None = None,
-    job_key: str = "step:gpu-test|name:GPU correctness",
-    job_name: str = "GPU correctness",
 ) -> MainCIJobObservation:
     actual_job_id = job_id or f"job-{build_number}-{state}"
     return MainCIJobObservation(
-        job_key=job_key,
+        job_key="step:gpu-test|name:GPU correctness",
         job_id=actual_job_id,
-        job_name=job_name,
+        job_name="GPU correctness",
         job_url=f"https://buildkite.com/vllm/ci/builds/{build_number}#{actual_job_id}",
         state=state,
         finished_at=START + timedelta(minutes=minutes),
@@ -731,146 +729,3 @@ def test_sweep_is_idempotent_across_reruns() -> None:
     assert [(alert.status, alert.failure_count) for alert in store.alerts()] == [
         ("open", 1)
     ]
-
-
-def test_backstop_resolves_alert_via_latest_build_recheck() -> None:
-    # The job failed on build 300, a fix merged, and the job passed on
-    # newer main builds — but those passes finished outside the sweep
-    # window, so the poller and the wide sweep never saw them. The
-    # backstop's targeted re-check of the latest main build resolves it.
-    source = FixtureSource()
-    builds = FixtureBuilds({})
-    runtime, store, _ = combined_runtime_for(source, builds)
-    open_alert(runtime, source)
-    # Record a newer build in the job-state table without resolving: the
-    # job did not run on build 305, so no observation exists for it there.
-    source.observations.append(
-        observation(
-            build_number=305,
-            state="passed",
-            minutes=-100,
-            job_id="unrelated-pass",
-            job_key="step:other|name:Other job",
-            job_name="Other job",
-        )
-    )
-    reconcile(runtime, START - timedelta(hours=1, minutes=30))
-    assert [alert.status for alert in store.alerts()] == ["open"]
-
-    builds.builds[300] = buildkite_build(
-        300,
-        [
-            buildkite_job(
-                job_id="orig", state="failed", finished_at=START - timedelta(hours=3)
-            )
-        ],
-    )
-    builds.builds[305] = buildkite_build(
-        305,
-        [
-            buildkite_job(
-                job_id="fixed",
-                state="passed",
-                finished_at=START - timedelta(hours=1, minutes=40),
-            )
-        ],
-    )
-    backstop(runtime, START + timedelta(hours=2))
-
-    alert = store.alerts()[0]
-    assert alert.status == "resolved"
-    assert alert.resolution is not None
-    assert alert.resolution.job_id == "fixed"
-    assert sorted(builds.calls) == [(300, True), (305, True)]
-
-
-def test_backstop_keeps_alert_open_when_job_absent_from_latest_build() -> None:
-    # The job no longer runs on main (removed/renamed): no newer pass can
-    # exist, so the alert must stay open rather than silently resolving.
-    source = FixtureSource()
-    builds = FixtureBuilds({})
-    runtime, store, _ = combined_runtime_for(source, builds)
-    open_alert(runtime, source)
-    source.observations.append(
-        observation(
-            build_number=305,
-            state="passed",
-            minutes=-100,
-            job_id="unrelated-pass",
-            job_key="step:other|name:Other job",
-            job_name="Other job",
-        )
-    )
-    reconcile(runtime, START - timedelta(hours=1, minutes=30))
-    assert [alert.status for alert in store.alerts()] == ["open"]
-
-    builds.builds[300] = buildkite_build(
-        300,
-        [
-            buildkite_job(
-                job_id="orig", state="failed", finished_at=START - timedelta(hours=3)
-            )
-        ],
-    )
-    builds.builds[305] = buildkite_build(
-        305,
-        [
-            buildkite_job(
-                job_id="other-job",
-                name="Other job",
-                step_key="other",
-                state="passed",
-                finished_at=START - timedelta(hours=1, minutes=40),
-            )
-        ],
-    )
-    backstop(runtime, START + timedelta(hours=2))
-
-    assert [(alert.status, alert.failure_count) for alert in store.alerts()] == [
-        ("open", 1)
-    ]
-
-
-def test_backstop_latest_build_failure_does_not_resolve_alert() -> None:
-    # The job still fails on the newest main build: the alert stays open
-    # and picks up the newer failure.
-    source = FixtureSource()
-    builds = FixtureBuilds({})
-    runtime, store, _ = combined_runtime_for(source, builds)
-    open_alert(runtime, source)
-    source.observations.append(
-        observation(
-            build_number=305,
-            state="passed",
-            minutes=-100,
-            job_id="unrelated-pass",
-            job_key="step:other|name:Other job",
-            job_name="Other job",
-        )
-    )
-    reconcile(runtime, START - timedelta(hours=1, minutes=30))
-
-    builds.builds[300] = buildkite_build(
-        300,
-        [
-            buildkite_job(
-                job_id="orig", state="failed", finished_at=START - timedelta(hours=3)
-            )
-        ],
-    )
-    builds.builds[305] = buildkite_build(
-        305,
-        [
-            buildkite_job(
-                job_id="still-broken",
-                state="failed",
-                finished_at=START - timedelta(hours=1, minutes=40),
-            )
-        ],
-    )
-    backstop(runtime, START + timedelta(hours=2))
-
-    assert [(alert.status, alert.failure_count) for alert in store.alerts()] == [
-        ("open", 2)
-    ]
-    assert store.alerts()[0].last_failure.job_id == "still-broken"

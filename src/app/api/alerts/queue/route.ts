@@ -108,15 +108,9 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  if (
-    !process.env.SLACK_BOT_TOKEN ||
-    (!process.env.SLACK_CI_INFRA_ALERT_CHANNEL && !process.env.SLACK_CHANNEL_ID)
-  ) {
+  if (!process.env.SLACK_BOT_TOKEN || !process.env.SLACK_CHANNEL_ID) {
     return NextResponse.json(
-      {
-        error:
-          "SLACK_BOT_TOKEN and SLACK_CI_INFRA_ALERT_CHANNEL (or legacy SLACK_CHANNEL_ID) not configured",
-      },
+      { error: "SLACK_BOT_TOKEN and SLACK_CHANNEL_ID not configured" },
       { status: 500 },
     );
   }

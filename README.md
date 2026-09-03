@@ -31,11 +31,6 @@ A Next.js dashboard for observing vLLM's Buildkite CI: build status, job runtime
   live in the Python [`migrations/`](./migrations) module. Runtime request
   handlers never create or alter tables.
 - Cron schedules live in `vercel.json`.
-- **Alert reference**: end-to-end docs per alert type —
-  [Fast CI](./alerting/docs/fast-ci.md), [Full CI](./alerting/docs/full-ci.md),
-  [Main CI](./alerting/docs/main-ci.md), and [Infra](./alerting/docs/infra.md)
-  (produced by the alerting worker), plus
-  [Queue wait](./docs/alerts/queue-wait.md) (owned by this app).
 
 The Queue page uses Buildkite's cluster-queue counts directly. Because the
 public queue metrics schema stops at p95, p99 is calculated from the current
@@ -70,74 +65,13 @@ Open http://localhost:3000.
 | `OTEL_MAX_REQUEST_BYTES` | Optional OTLP request limit; defaults to 4 MiB |
 | `OTEL_ENDPOINT` | Buildkite notification-service base URL; defaults operationally to `https://ci.vllm.ai/api/otel` |
 | `OTEL_BUILDKITE_OIDC_AUDIENCE`, `OTEL_BUILDKITE_OIDC_ORGANIZATION`, `OTEL_BUILDKITE_OIDC_PIPELINE`, `OTEL_BUILDKITE_OIDC_BRANCH`, `OTEL_BUILDKITE_OIDC_TREATMENT_BRANCH` | Optional restrictions for short-lived Buildkite job tokens; defaults to the production vLLM main pipeline plus API-triggered `khluu/otel` treatment builds |
-| `GPU_REPORT_SECRET` | Required shared Bearer token for GPU and host telemetry ingestion; the endpoint fails closed when unset |
-| `GPU_REPORT_MAX_BYTES` | Optional JSON request limit; defaults to 256 KiB and is capped at 4 MiB |
-| `SLACK_BOT_TOKEN` | Slack bot for queue-depth alerts (`chat:write`, `reactions:write`) |
-| `SLACK_CI_NOTIFICATIONS_CHANNEL`, `SLACK_CI_FAST_FAILURE_ALERT_CHANNEL`, `SLACK_CI_INFRA_ALERT_CHANNEL` | Per-path Slack channels for Full CI, Fast CI, and infra/queue alerts; `SLACK_CHANNEL_ID` is the legacy shared fallback when a per-path channel is unset |
+| `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` | Slack bot for queue-depth alerts (`chat:write`, `reactions:write`) |
 | `CRON_SECRET` | Optional shared secret required by Vercel cron handlers |
 
 The dashboard assumes a warehouse schema with tables under `vllm_data_warehouse.buildkite.*` (builds, jobs, agent query rules) and `vllm_data_warehouse.default.vllm_perf_data_ingest` for benchmarks. Adapt the queries in `src/app/api/**/route.ts` if your schema differs.
 
 GPU telemetry is written to raw `gpu_snapshots` rows and an incremental
 `gpu_history_5m` rollup used by the 24-hour through 30-day dashboard views.
-The same endpoint accepts optional host metrics, reporter health, and Kubernetes
-node conditions; legacy GPU-only payloads remain valid. Host observations are
-stored in `host_snapshots` and the incremental `host_history_5m` rollup.
-
-The authenticated `POST /api/gpu/report` JSON contract is:
-
-```json
-{
-  "hostname": "dgxb200-09",
-  "gpus": [
-    {
-      "index": 0,
-      "name": "NVIDIA B200",
-      "gpu_util": 42,
-      "mem_used_mb": 1024,
-      "mem_total_mb": 183359,
-      "temperature_c": 61,
-      "power_draw_w": 410,
-      "power_limit_w": 1000
-    }
-  ],
-  "host": {
-    "cpu_util": 12.5,
-    "cpu_count": 160,
-    "ram_used_bytes": 1000000000,
-    "ram_total_bytes": 4000000000,
-    "ram_available_bytes": 2800000000,
-    "disks": [
-      {
-        "mount_point": "/raid0",
-        "device": "/dev/md0",
-        "fstype": "ext4",
-        "role": "workspace",
-        "used_bytes": 900000000,
-        "total_bytes": 1000000000
-      }
-    ]
-  },
-  "reporter_status": "ok",
-  "last_error": null,
-  "node_conditions": {
-    "ready": true,
-    "disk_pressure": false,
-    "memory_pressure": false,
-    "pid_pressure": false,
-    "unschedulable": false
-  }
-}
-```
-
-`host`, `reporter_status`, `last_error`, and `node_conditions` are optional, so
-the existing `{ "hostname", "gpus" }` payload remains valid. Status defaults to
-`ok`. A `degraded` report requires `last_error` and may send an empty `gpus`
-array (for example when `nvidia-smi` fails). A disk needs a mount point or device
-and either the used/total byte pair or an `error`; valid roles are `workspace`,
-`images`, `data`, `system`, and `other`. Hostnames are trimmed and lowercased on
-ingestion.
-
 Run the migration plan and explicit apply command documented in
 [`migrations/`](./migrations) before deploying a version that reads new schema.
 The migration is idempotent and backfills existing GPU snapshots into the

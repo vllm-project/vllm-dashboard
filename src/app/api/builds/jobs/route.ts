@@ -5,6 +5,7 @@ import { cachedJson } from "@/lib/api-response";
 import { aggregateJobsByGroup, type JobInfo } from "@/lib/test-groups";
 import { getTestAreaMappingForCommit } from "@/lib/test-areas";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
+import { getBuildJobRosterRows } from "@/lib/buildkite-build-jobs";
 import { queryBuildJobsFromOtel } from "@/lib/otel-ci";
 
 const TTL = 30_000;
@@ -45,7 +46,13 @@ export async function GET(request: NextRequest) {
     if (cached) return cachedJson(cached, CDN_CACHE);
 
     if (resolveCiDataSource(request) === "otel") {
-      const jobs = await queryBuildJobsFromOtel(buildIds);
+      // OTel spans only cover jobs that ran; use the REST roster for the full
+      // job list including gated jobs that never executed. Fall back to OTel
+      // spans if the roster is empty (e.g. API token misconfigured).
+      let jobs = await getBuildJobRosterRows(buildIds);
+      if (jobs.length === 0) {
+        jobs = await queryBuildJobsFromOtel(buildIds);
+      }
       const rawJobsByBuild = new Map<
         string,
         { name: string; state: string; web_url?: string }[]

@@ -33,20 +33,8 @@ from alerting.full_ci import (
     FullCIRun,
     ordered_unique_runs,
 )
-from alerting.infra import (
-    DiskMountObservation,
-    GpuTemperatureObservation,
-    HostReport,
-    InfraAlertEpisode,
-    InfraNotificationFactory,
-    InfraScanPlan,
-    InfraStateSnapshot,
-    InfraSubjectState,
-    InfraThreshold,
-)
 from alerting.main_ci import (
     MainCIJobObservation,
-    MainCILatestBuildRef,
     MainCIOpenAlertRef,
     ordered_unique_observations,
 )
@@ -1060,277 +1048,6 @@ class PostgresAlertStore:
             for row in rows
         ]
 
-    def latest_finished_main_ci_build(self) -> MainCILatestBuildRef | None:
-        with self._connection_factory() as connection:
-            row = connection.execute(
-                """
-                SELECT latest_build_number
-                FROM alerting_main_ci_job_states
-                ORDER BY latest_build_number DESC
-                LIMIT 1
-                """
-            ).fetchone()
-        if row is None:
-            return None
-        return MainCILatestBuildRef(build_number=int(row[0]))
-
-    def infra_thresholds(self) -> list[InfraThreshold]:
-        with self._connection_factory() as connection:
-            rows = connection.execute(
-                """
-                SELECT alert_type, threshold_value, threshold_unit,
-                       consecutive_scans, enabled
-                FROM alert_thresholds
-                """
-            ).fetchall()
-        return [
-            InfraThreshold(
-                alert_type=str(row[0]),
-                threshold_value=float(row[1]),
-                threshold_unit=str(row[2]),
-                consecutive_scans=int(row[3]),
-                enabled=bool(row[4]),
-            )
-            for row in rows
-        ]
-
-    def latest_reports(self) -> list[HostReport]:
-        """Newest gpu or host snapshot receipt per hostname, unbounded."""
-        with self._connection_factory() as connection:
-            rows = connection.execute(
-                """
-                WITH gpu AS (
-                    SELECT DISTINCT ON (hostname) hostname, reported_at
-                    FROM gpu_snapshots
-                    ORDER BY hostname, reported_at DESC
-                ),
-                host AS (
-                    SELECT DISTINCT ON (hostname) hostname, reported_at
-                    FROM host_snapshots
-                    ORDER BY hostname, reported_at DESC
-                )
-                SELECT COALESCE(gpu.hostname, host.hostname),
-                       GREATEST(gpu.reported_at, host.reported_at)
-                FROM gpu
-                FULL OUTER JOIN host ON host.hostname = gpu.hostname
-                """
-            ).fetchall()
-        return [HostReport(hostname=row[0], reported_at=row[1]) for row in rows]
-
-    def recent_gpu_hosts(self, *, since: datetime) -> frozenset[str]:
-        with self._connection_factory() as connection:
-            rows = connection.execute(
-                """
-                SELECT DISTINCT hostname
-                FROM gpu_snapshots
-                WHERE reported_at >= %s
-                """,
-                (since,),
-            ).fetchall()
-        return frozenset(str(row[0]) for row in rows)
-
-    def disk_mounts(self) -> list[DiskMountObservation]:
-        """Every mount from each host's latest host_snapshots disk detail."""
-        with self._connection_factory() as connection:
-            rows = connection.execute(
-                """
-                WITH latest AS (
-                    SELECT DISTINCT ON (hostname) hostname, disks, reported_at
-                    FROM host_snapshots
-                    ORDER BY hostname, reported_at DESC
-                )
-                SELECT latest.hostname,
-                       mount->>'mount_point',
-                       mount->>'device',
-                       mount->>'fstype',
-                       mount->>'role',
-                       (mount->>'used_bytes')::bigint,
-                       (mount->>'total_bytes')::bigint,
-                       mount->>'error',
-                       latest.reported_at
-                FROM latest,
-                LATERAL jsonb_array_elements(latest.disks) AS mount
-                WHERE latest.disks IS NOT NULL
-                """
-            ).fetchall()
-        return [
-            DiskMountObservation(
-                hostname=str(row[0]),
-                mount_point=str(row[1] or ""),
-                device=str(row[2] or ""),
-                fstype=str(row[3] or ""),
-                role=str(row[4] or ""),
-                used_bytes=int(row[5] or 0),
-                total_bytes=int(row[6] or 0),
-                error=str(row[7]) if row[7] is not None else None,
-                reported_at=row[8],
-            )
-            for row in rows
-        ]
-
-    def gpu_temperatures(self) -> list[GpuTemperatureObservation]:
-        with self._connection_factory() as connection:
-            rows = connection.execute(
-                """
-                SELECT DISTINCT ON (hostname, gpu_index)
-                       hostname, gpu_index, temperature_c, reported_at
-                FROM gpu_snapshots
-                WHERE temperature_c IS NOT NULL
-                ORDER BY hostname, gpu_index, reported_at DESC
-                """
-            ).fetchall()
-        return [
-            GpuTemperatureObservation(
-                hostname=str(row[0]),
-                gpu_index=int(row[1]),
-                temperature_c=float(row[2]),
-                reported_at=row[3],
-            )
-            for row in rows
-        ]
-
-    def infra_state(self) -> InfraStateSnapshot:
-        with self._connection_factory() as connection:
-            state_rows = connection.execute(
-                """
-                SELECT alert_type, subject_key, consecutive_breaches,
-                       last_reported_at, retired_at, details
-                FROM alerting_infra_host_states
-                """
-            ).fetchall()
-            episode_rows = connection.execute(
-                """
-                SELECT alert_id, alert_type, subject_key, opened_at, details
-                FROM alerting_infra_alerts
-                WHERE status = 'open'
-                """
-            ).fetchall()
-        return InfraStateSnapshot(
-            states=tuple(
-                InfraSubjectState(
-                    alert_type=row[0],
-                    subject_key=row[1],
-                    consecutive_breaches=int(row[2]),
-                    last_reported_at=row[3],
-                    retired_at=row[4],
-                    details=dict(row[5]),
-                )
-                for row in state_rows
-            ),
-            open_episodes=tuple(
-                InfraAlertEpisode(
-                    alert_id=int(row[0]),
-                    alert_type=row[1],
-                    subject_key=row[2],
-                    opened_at=row[3],
-                    details=dict(row[4]),
-                )
-                for row in episode_rows
-            ),
-        )
-
-    def commit_infra_scan(
-        self,
-        *,
-        command: ScheduledCommand,
-        plan: InfraScanPlan,
-        now: datetime,
-        notification_factory: InfraNotificationFactory,
-    ) -> None:
-        with self._connection_factory() as connection:
-            with connection.transaction():
-                connection.execute(
-                    """
-                    SELECT pg_advisory_xact_lock(
-                        hashtext('alerting_infra_scan')
-                    )
-                    """
-                )
-                for state in plan.states:
-                    connection.execute(
-                        """
-                        INSERT INTO alerting_infra_host_states (
-                            alert_type, subject_key, consecutive_breaches,
-                            last_reported_at, retired_at, details, updated_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
-                        ON CONFLICT (alert_type, subject_key) DO UPDATE
-                        SET consecutive_breaches = EXCLUDED.consecutive_breaches,
-                            last_reported_at = EXCLUDED.last_reported_at,
-                            retired_at = EXCLUDED.retired_at,
-                            details = EXCLUDED.details,
-                            updated_at = EXCLUDED.updated_at
-                        """,
-                        (
-                            state.alert_type,
-                            state.subject_key,
-                            state.consecutive_breaches,
-                            state.last_reported_at,
-                            state.retired_at,
-                            json.dumps(state.details),
-                            now,
-                        ),
-                    )
-                opened: list[InfraAlertEpisode] = []
-                for episode in plan.opened:
-                    inserted = connection.execute(
-                        """
-                        INSERT INTO alerting_infra_alerts (
-                            alert_type, subject_key, status, opened_at,
-                            details, created_at, updated_at
-                        ) VALUES (%s, %s, 'open', %s, %s::jsonb, %s, %s)
-                        ON CONFLICT (alert_type, subject_key)
-                        WHERE status = 'open' DO NOTHING
-                        """,
-                        (
-                            episode.alert_type,
-                            episode.subject_key,
-                            episode.opened_at,
-                            json.dumps(episode.details),
-                            now,
-                            now,
-                        ),
-                    )
-                    if inserted.rowcount == 1:
-                        opened.append(episode)
-                resolved: list[InfraAlertEpisode] = []
-                for episode in plan.resolved:
-                    updated = connection.execute(
-                        """
-                        UPDATE alerting_infra_alerts
-                        SET status = 'resolved', resolved_at = %s,
-                            details = %s::jsonb, updated_at = %s
-                        WHERE alert_type = %s AND subject_key = %s
-                          AND status = 'open'
-                        """,
-                        (
-                            episode.resolved_at,
-                            json.dumps(episode.details),
-                            now,
-                            episode.alert_type,
-                            episode.subject_key,
-                        ),
-                    )
-                    if updated.rowcount == 1:
-                        resolved.append(episode)
-                applied = InfraScanPlan(
-                    states=plan.states,
-                    opened=tuple(opened),
-                    resolved=tuple(resolved),
-                )
-                for message in notification_factory(applied):
-                    self._enqueue(connection, message, next_attempt_at=now)
-                completed = connection.execute(
-                    """
-                    UPDATE alerting_automation_executions
-                    SET status = 'completed', completed_at = %s,
-                        lease_expires_at = NULL, last_error = NULL
-                    WHERE idempotency_key = %s AND status = 'running'
-                    """,
-                    (now, command.idempotency_key),
-                )
-                if completed.rowcount != 1:
-                    raise RuntimeError("Infra execution was not running at commit")
-
     def pending_main_ci_analyses(self, *, limit: int) -> list[MainCIAnalysisTarget]:
         with self._connection_factory() as connection:
             rows = connection.execute(
@@ -1914,52 +1631,6 @@ def build_main_ci_backstop_runtime(
     )
 
 
-def build_infra_runtime(
-    *,
-    database_url: str,
-    buildkite_token: str,
-    kubeconfigs: list[str],
-    slack: SlackPort,
-    clock: Clock,
-    delivery_mode: DeliveryMode = DeliveryMode.LIVE,
-    buildkite_queue: str = "gpu",
-) -> AlertingRuntime:
-    """Wire the infra health scan: kubectl nodes + GPU-queue agents + Postgres."""
-    from alerting.full_ci import BuildkiteRestClient
-    from alerting.infra import (
-        BuildkiteGpuQueueAgentsSource,
-        InfraScanHandler,
-        KubectlNodesSource,
-        UnionExpectedHostSource,
-    )
-
-    store = PostgresAlertStore.from_database_url(database_url)
-    hosts = UnionExpectedHostSource(
-        [
-            *(KubectlNodesSource(kubeconfig=path) for path in kubeconfigs),
-            BuildkiteGpuQueueAgentsSource(
-                buildkite=BuildkiteRestClient(token=buildkite_token),
-                queue=buildkite_queue,
-            ),
-        ]
-    )
-    handler = InfraScanHandler(
-        hosts=hosts,
-        snapshots=store,
-        store=store,
-        clock=clock,
-        delivery_mode=delivery_mode,
-    )
-    return AlertingRuntime(
-        executions=store,
-        outbox=store,
-        slack=slack,
-        clock=clock,
-        handlers={"infra_scan": handler},
-        alert_path=AlertPath.INFRA,
-    )
-
-
 def build_main_ci_analysis_runtime(
     *,
     database_url: str,
@@ -2026,7 +1697,6 @@ def build_full_ci_analysis_runtime(
     kimi_model: str = "moonshotai/Kimi-K3",
     kimi_timeout_seconds: int = 3600,
     kimi_reasoning_effort: str = "low",
-    kimi_request_timeout_seconds: float = 900.0,
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
 ) -> AlertingRuntime:
     """Wire the production analyzer compatibility adapter into the runtime."""
@@ -2050,7 +1720,6 @@ def build_full_ci_analysis_runtime(
             model=kimi_model,
             timeout_seconds=kimi_timeout_seconds,
             reasoning_effort=kimi_reasoning_effort,
-            request_timeout_seconds=kimi_request_timeout_seconds,
         ),
         checkpoints=S3CheckpointStore(bucket=checkpoint_bucket),
         github=GitHubRestClient(token=github_token),

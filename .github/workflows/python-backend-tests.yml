@@ -7,7 +7,6 @@ on:
       - "alerting/**"
       - "deploy/aws/**"
       - "migrations/**"
-      - "scripts/gpu-reporter/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -46,12 +45,9 @@ jobs:
         working-directory: migrations
         run: python -m pytest
 
-      - name: Run GPU reporter tests
-        run: python -m pytest scripts/gpu-reporter/tests
-
       - name: Type check
         working-directory: alerting
-        run: python -m mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py infra.py kimi.py main_ci.py main_ci_analysis.py memory.py migration.py ports.py postgres.py retention.py runtime.py slack.py worker.py tests
+        run: python -m mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py kimi.py main_ci.py main_ci_analysis.py memory.py migration.py ports.py postgres.py retention.py runtime.py slack.py worker.py tests
 
       - name: Type check migrations
         working-directory: migrations
