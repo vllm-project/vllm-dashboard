@@ -66,8 +66,8 @@ SKIP_FSTYPES = frozenset({
     "autofs", "binfmt_misc", "bpf", "cgroup", "cgroup2", "configfs",
     "debugfs", "devpts", "devtmpfs", "efivarfs", "fuse.gvfsd-fuse",
     "fuse.portal", "fusectl", "hugetlbfs", "mqueue", "nsfs", "overlay",
-    "proc", "pstore", "ramfs", "securityfs", "selinuxfs", "squashfs",
-    "sysfs", "tracefs",
+    "proc", "pstore", "ramfs", "rpc_pipefs", "securityfs", "selinuxfs",
+    "squashfs", "sysfs", "tracefs",
 })
 
 
@@ -213,13 +213,19 @@ def collect_host_metrics():
 
     disks = []
     for m in mounts:
-        disks.append({
+        entry = {
             "mount_point": m["mount"],
             "device": m["device"],
             "fstype": m["fstype"],
             "role": classify_mount(m["mount"]),
             **stat_mount(m["mount"]),
-        })
+        }
+        # Skip zero-capacity mounts (kernel pseudo-filesystems that slip the
+        # fstype filter): nothing can fill them, and the ingestion contract
+        # requires total_bytes >= 1, so one would fail the whole report.
+        if entry["error"] is None and not entry["total_bytes"]:
+            continue
+        disks.append(entry)
 
     return {
         "cpu_util": cpu_util_percent(),

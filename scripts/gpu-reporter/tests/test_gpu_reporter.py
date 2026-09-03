@@ -81,6 +81,34 @@ def test_parse_proc_mounts_filters_kernel_filesystems(reporter):
     assert kept["/mnt/vllm-ci"]["fstype"] == "nfs4"
 
 
+def test_rpc_pipefs_and_zero_capacity_mounts_are_skipped(reporter, monkeypatch):
+    # Live failure: h200-ci-1's /run/rpc_pipefs stats to total_bytes 0, and
+    # the ingestion contract requires total >= 1 — the whole report was
+    # rejected (HTTP 400) until these mounts are dropped.
+    mounts = "sunrpc /run/rpc_pipefs rpc_pipefs rw,relatime 0 0\n" \
+             "/dev/md0 / ext4 rw,relatime 0 0\n"
+    assert [m["mount"] for m in reporter.parse_proc_mounts(mounts)] == ["/"]
+
+    # Defense in depth: even a mount that slips the fstype filter is dropped
+    # when its capacity stats to zero.
+    monkeypatch.setattr(reporter, "PROC_MOUNTS", "/dev/null")
+    monkeypatch.setattr(reporter, "parse_meminfo",
+                        lambda text: {"total": 16, "available": 8})
+    monkeypatch.setattr(reporter, "cpu_util_percent", lambda: 1.0)
+    monkeypatch.setattr(reporter, "parse_proc_mounts",
+                        lambda text: [{"device": "x", "mount": "/zero",
+                                       "fstype": "ext4"},
+                                      {"device": "y", "mount": "/real",
+                                       "fstype": "ext4"}])
+    def fake_stat(mount, timeout=5):
+        if mount == "/zero":
+            return {"used_bytes": 0, "total_bytes": 0, "error": None}
+        return {"used_bytes": 1, "total_bytes": 10, "error": None}
+    monkeypatch.setattr(reporter, "stat_mount", fake_stat)
+    host = reporter.collect_host_metrics()
+    assert [d["mount_point"] for d in host["disks"]] == ["/real"]
+
+
 def test_h200_mount_role_map(reporter):
     assert reporter.classify_mount("/") == "system"
     assert reporter.classify_mount("/dev/shm") == "workspace"
