@@ -35,7 +35,12 @@ class UnitControl(Protocol):
 
 _UNITS = {
     AlertPath.FAST_CI: (("alerting-fast-ci.timer", "alerting-fast-ci.service"),),
-    AlertPath.FULL_CI: (("alerting-full-ci.timer", "alerting-full-ci.service"),),
+    AlertPath.FULL_CI: (
+        ("alerting-full-ci.timer", "alerting-full-ci.service"),
+        # The hourly retry sidecar follows the Full CI control: disabling the
+        # path also stops retries of failed or pending analyses.
+        ("alerting-full-ci-retry.timer", "alerting-full-ci-retry.service"),
+    ),
     # The analysis sidecar follows the Main CI control: disabling the path
     # stops both its lifecycle reconciliation and its AI analysis. The hourly
     # backstop sweep follows the same control.

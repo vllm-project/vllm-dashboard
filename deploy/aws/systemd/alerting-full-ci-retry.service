@@ -1,0 +1,25 @@
+[Unit]
+Description=Retry pending Full CI analyses between scheduled ticks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=alerting
+Group=alerting
+# Skip while the scheduled twice-daily run is active: its analyze phase
+# already drains pending comparisons, and concurrent runs duplicate LLM work.
+ExecStartPre=/bin/bash -c '! systemctl is-active --quiet alerting-full-ci.service'
+ExecStart=/opt/alerting/bin/run-worker full-ci-analyze
+StandardOutput=null
+StandardError=null
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+TimeoutStartSec=infinity

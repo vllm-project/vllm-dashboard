@@ -69,6 +69,7 @@ def test_reconcile_controls_defaults_missing_path_to_shadow_and_disables_one_pat
     assert units.enabled == ["alerting-fast-ci.timer"]
     assert units.disabled == [
         "alerting-full-ci.timer",
+        "alerting-full-ci-retry.timer",
         "alerting-main-ci.timer",
         "alerting-main-ci-analysis.timer",
         "alerting-main-ci-backstop.timer",
@@ -76,6 +77,7 @@ def test_reconcile_controls_defaults_missing_path_to_shadow_and_disables_one_pat
     ]
     assert units.stopped == [
         "alerting-full-ci.service",
+        "alerting-full-ci-retry.service",
         "alerting-main-ci.service",
         "alerting-main-ci-analysis.service",
         "alerting-main-ci-backstop.service",
@@ -97,7 +99,10 @@ def test_live_control_enables_only_selected_path(tmp_path: Path) -> None:
     reconcile_controls(controls=controls, units=units, mode_dir=tmp_path)
 
     assert (tmp_path / "full-ci.mode").read_text() == ("ALERTING_DELIVERY_MODE=live\n")
-    assert units.enabled == ["alerting-full-ci.timer"]
+    assert units.enabled == [
+        "alerting-full-ci.timer",
+        "alerting-full-ci-retry.timer",
+    ]
 
 
 def test_main_ci_live_control_enables_its_independent_timers(tmp_path: Path) -> None:

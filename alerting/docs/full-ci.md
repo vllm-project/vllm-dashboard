@@ -22,6 +22,10 @@ analysis report.
 - Deployment: `deploy/aws/systemd/alerting-full-ci.timer` fires at 05:00
   and 19:00 `America/Los_Angeles`; `alerting-full-ci.service` runs
   `run-worker full-ci` and then `run-worker full-ci-analyze` in one tick.
+  `alerting-full-ci-retry.timer` additionally fires the analyzer hourly
+  (`*:43` UTC) so a failed or still-pending analysis is retried within an
+  hour instead of waiting for the next twice-daily tick; it skips while the
+  scheduled run is active.
 
 ## Configuration
 

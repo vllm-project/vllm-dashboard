@@ -58,6 +58,26 @@ def test_fast_ci_timer_uses_pacific_wall_clock_every_fifteen_minutes() -> None:
     assert "Persistent=true" in timer
 
 
+def test_full_ci_retry_timer_retries_analyses_hourly_without_overlapping() -> None:
+    timer = read("systemd/alerting-full-ci-retry.timer")
+    service = read("systemd/alerting-full-ci-retry.service")
+
+    assert "OnCalendar=*-*-* *:43:00 UTC" in timer
+    assert "OnBootSec=" in timer
+    assert "Persistent=true" in timer
+    assert "Unit=alerting-full-ci-retry.service" in timer
+    # Analyze-only: reconciliation stays on the twice-daily Pacific schedule.
+    assert "run-worker full-ci-analyze" in service
+    assert "run-worker full-ci\n" not in service
+    # Skip while the scheduled run is active so retries never duplicate an
+    # in-progress analysis.
+    assert "systemctl is-active --quiet alerting-full-ci.service" in service
+    assert "StandardOutput=null" in service
+    assert "StandardError=null" in service
+    for sensitive_name in ("DATABASE_URL", "TOKEN", "PASSWORD"):
+        assert sensitive_name not in service + timer
+
+
 def test_main_ci_timer_polls_every_two_minutes_and_recovers_after_downtime() -> None:
     timer = read("systemd/alerting-main-ci.timer")
 
