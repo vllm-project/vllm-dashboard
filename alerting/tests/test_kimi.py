@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from alerting.analyzer import AnalyzerError
-from alerting.kimi import KimiCodeRunner
+from alerting.kimi import KimiCodeRunner, UrllibTransport
 
 
 def tool_call(
@@ -51,6 +52,24 @@ class ScriptedTransport:
     ) -> dict[str, Any]:
         self.payloads.append({**payload, "messages": list(payload["messages"])})
         return self._responses.pop(0)
+
+
+class RecordingUrllibTransport(UrllibTransport):
+    def __init__(self, response: dict[str, Any]) -> None:
+        super().__init__()
+        self.response = response
+        self.timeout_seconds: float | None = None
+
+    def __call__(
+        self,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        self.timeout_seconds = timeout_seconds
+        return self.response
 
 
 def tool_messages(transport: ScriptedTransport) -> list[str]:
@@ -209,3 +228,46 @@ def test_requests_default_to_low_reasoning_effort(tmp_path: Path) -> None:
     KimiCodeRunner(api_key="key", transport=transport).run(tmp_path)
 
     assert transport.payloads[0]["reasoning_effort"] == "low"
+
+
+def test_model_request_timeout_is_clamped_to_remaining_analysis_budget(
+    tmp_path: Path,
+) -> None:
+    ticks = iter((100.0, 100.0, 104.0))
+    transport = RecordingUrllibTransport(final())
+    runner = KimiCodeRunner(
+        api_key="key",
+        transport=transport,
+        timeout_seconds=10,
+        clock=lambda: next(ticks),
+    )
+
+    runner.run(tmp_path)
+
+    assert transport.timeout_seconds == 6.0
+
+
+def test_curl_timeout_is_clamped_to_remaining_analysis_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed_timeouts: list[float] = []
+
+    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        observed_timeouts.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(args[0], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ticks = iter((100.0, 100.0, 100.0, 106.0, 106.0, 106.0))
+    transport = ScriptedTransport(
+        [tool_call("Bash", {"command": "curl https://example.test"}), final()]
+    )
+    runner = KimiCodeRunner(
+        api_key="key",
+        transport=transport,
+        timeout_seconds=10,
+        clock=lambda: next(ticks),
+    )
+
+    runner.run(tmp_path)
+
+    assert observed_timeouts == [4.0]

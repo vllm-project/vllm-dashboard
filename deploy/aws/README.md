@@ -34,11 +34,12 @@ Two stack parameters tune the Kimi analyzers and are written to
 
 - `KimiReasoningEffort` (default `high`) sets `KIMI_REASONING_EFFORT`, the
   shared effort used by the Full CI analyzer.
-- `KimiMainCIReasoningEffort` (default `max`) sets
+- `KimiMainCIReasoningEffort` (default `high`) sets
   `KIMI_MAIN_CI_REASONING_EFFORT`, used only by the Main CI failure analyzer.
   It is intentionally independent — Main CI does not fall back to
-  `KIMI_REASONING_EFFORT` — so it can run hotter than Full CI, together with
-  its longer default timeout (`KIMI_MAIN_CI_TIMEOUT_SECONDS`, 1200s).
+  `KIMI_REASONING_EFFORT`. Each Main CI analysis has a ten-minute default
+  budget (`KIMI_MAIN_CI_TIMEOUT_SECONDS`, 600s), including any model and curl
+  calls made by the Kimi runner.
 
 ## Deploy
 

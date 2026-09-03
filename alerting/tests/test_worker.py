@@ -141,7 +141,7 @@ def _capture_full_ci_analysis_kwargs(
     return captured
 
 
-def test_main_ci_analysis_defaults_to_max_effort_and_longer_timeout(
+def test_main_ci_analysis_defaults_to_high_effort_and_ten_minute_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_analysis_environment(monkeypatch)
@@ -157,8 +157,8 @@ def test_main_ci_analysis_defaults_to_max_effort_and_longer_timeout(
 
     worker._runtime("main-ci-analyze", worker.SystemClock(), DeliveryMode.SHADOW)
 
-    assert captured["kimi_reasoning_effort"] == "max"
-    assert captured["kimi_timeout_seconds"] == 1200
+    assert captured["kimi_reasoning_effort"] == "high"
+    assert captured["kimi_timeout_seconds"] == 600
 
 
 def test_main_ci_analysis_honors_dedicated_env_overrides(

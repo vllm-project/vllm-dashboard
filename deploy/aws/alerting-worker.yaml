@@ -36,8 +36,8 @@ Parameters:
     Type: String
     Description: >-
       Thinking effort for the Main CI failure analyzer; independent of
-      KimiReasoningEffort so Main CI can run hotter than Full CI
-    Default: max
+      KimiReasoningEffort
+    Default: high
     AllowedValues:
       - low
       - high

@@ -185,8 +185,16 @@ class UrllibTransport:
         self._timeout_seconds = timeout_seconds
 
     def __call__(
-        self, url: str, headers: dict[str, str], payload: dict[str, Any]
+        self,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
+        timeout = self._timeout_seconds
+        if timeout_seconds is not None:
+            timeout = min(timeout, timeout_seconds)
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -194,7 +202,7 @@ class UrllibTransport:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout_seconds) as resp:
+            with urllib.request.urlopen(request, timeout=timeout) as resp:
                 result: Any = json.load(resp)
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -274,7 +282,7 @@ class KimiCodeRunner:
         for _ in range(self._max_turns):
             if self._clock() >= deadline:
                 raise AnalyzerError("kimi analyzer exceeded its time budget")
-            message = self._complete(messages, tools)
+            message = self._complete(messages, tools, deadline)
             messages.append(message)
             calls = message.get("tool_calls")
             if not calls:
@@ -294,7 +302,10 @@ class KimiCodeRunner:
         raise AnalyzerError(f"kimi analyzer exceeded {self._max_turns} turns")
 
     def _complete(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        deadline: float,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._model,
@@ -306,14 +317,23 @@ class KimiCodeRunner:
             # sequential investigation calls fast enough for the time budget.
             "reasoning_effort": self._reasoning_effort,
         }
-        response = self._transport(
-            f"{self._base_url}/chat/completions",
-            {
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            payload,
-        )
+        url = f"{self._base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        remaining = deadline - self._clock()
+        if remaining <= 0:
+            raise AnalyzerError("kimi analyzer exceeded its time budget")
+        if isinstance(self._transport, UrllibTransport):
+            response = self._transport(
+                url,
+                headers,
+                payload,
+                timeout_seconds=remaining,
+            )
+        else:
+            response = self._transport(url, headers, payload)
         try:
             message = cast(list[dict[str, Any]], response["choices"])[0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
@@ -368,7 +388,14 @@ class KimiCodeRunner:
                     str(argument_map.get("path") or ""),
                 )
             if name == "Bash":
-                return _tool_bash(workdir, str(argument_map.get("command") or ""))
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    raise AnalyzerError("kimi analyzer exceeded its time budget")
+                return _tool_bash(
+                    workdir,
+                    str(argument_map.get("command") or ""),
+                    timeout_seconds=remaining,
+                )
             if name == "Task":
                 if not allow_task:
                     return "error: nested Task calls are not allowed"
@@ -485,7 +512,12 @@ def _tool_grep(workdir: Path, pattern: str, path: str) -> str:
     return "\n".join(results) if results else "no matches"
 
 
-def _tool_bash(workdir: Path, command: str) -> str:
+def _tool_bash(
+    workdir: Path,
+    command: str,
+    *,
+    timeout_seconds: float = BASH_TIMEOUT_SECONDS,
+) -> str:
     try:
         tokens = shlex.split(command)
     except ValueError as exc:
@@ -498,7 +530,7 @@ def _tool_bash(workdir: Path, command: str) -> str:
             cwd=workdir,
             capture_output=True,
             text=True,
-            timeout=BASH_TIMEOUT_SECONDS,
+            timeout=min(BASH_TIMEOUT_SECONDS, timeout_seconds),
             check=False,
         )
     except subprocess.TimeoutExpired:

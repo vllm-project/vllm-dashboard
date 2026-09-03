@@ -10,7 +10,7 @@ checkpoint_bucket=$1
 worker_secret_arn=$2
 github_secret_arn=$3
 kimi_reasoning_effort=${4:-high}
-kimi_main_ci_reasoning_effort=${5:-max}
+kimi_main_ci_reasoning_effort=${5:-high}
 source_root=$(cd "$(dirname "$0")/../.." && pwd)
 
 if ! id alerting >/dev/null 2>&1; then

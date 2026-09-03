@@ -172,6 +172,9 @@ def test_main_ci_kimi_effort_is_an_independent_deploy_knob() -> None:
     assert "Ref: KimiMainCIReasoningEffort" in template
     assert "KIMI_MAIN_CI_REASONING_EFFORT" in installer
     assert installer.count("KIMI_MAIN_CI_REASONING_EFFORT") == 2
+    assert "kimi_main_ci_reasoning_effort=${5:-high}" in installer
+    main_ci_parameter = template.split("KimiMainCIReasoningEffort:", 1)[1]
+    assert "Default: high" in main_ci_parameter.split("Resources:", 1)[0]
 
 
 def test_s3_control_reconciles_each_path_without_cloudwatch_or_sqs() -> None:

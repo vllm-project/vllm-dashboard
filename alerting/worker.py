@@ -117,15 +117,15 @@ def _runtime(
             ),
             kimi_model=os.environ.get("KIMI_MODEL", "moonshotai/Kimi-K3"),
             # Main CI analysis is intentionally independent of the shared
-            # KIMI_REASONING_EFFORT / KIMI_TIMEOUT_SECONDS so it can run
-            # hotter (max reasoning, longer budget) than the Full CI analyzer.
-            # The 10-minute timer cadence and 30-minute execution lease still
-            # fence the larger timeout.
+            # KIMI_REASONING_EFFORT / KIMI_TIMEOUT_SECONDS so its latency and
+            # reasoning budget stay independently bounded.
+            # The per-job budget matches the ten-minute timer cadence; the
+            # 30-minute execution lease still fences retries.
             kimi_timeout_seconds=int(
-                os.environ.get("KIMI_MAIN_CI_TIMEOUT_SECONDS", "1200")
+                os.environ.get("KIMI_MAIN_CI_TIMEOUT_SECONDS", "600")
             ),
             kimi_reasoning_effort=os.environ.get(
-                "KIMI_MAIN_CI_REASONING_EFFORT", "max"
+                "KIMI_MAIN_CI_REASONING_EFFORT", "high"
             ),
             slack=_slack(),
             clock=clock,
