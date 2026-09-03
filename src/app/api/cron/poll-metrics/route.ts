@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { fetchBuildkiteQueueSnapshots } from "@/lib/buildkite-queue-metrics";
+import { fetchConnectedAgents } from "@/lib/buildkite-queue-jobs";
 
 export const maxDuration = 55;
 
@@ -25,11 +26,14 @@ export async function GET(request: NextRequest) {
     const db = getDb();
 
     const now = new Date();
-    const snapshots = await fetchBuildkiteQueueSnapshots(
-      token,
-      process.env.BUILDKITE_ORGANIZATION || "vllm",
-      now,
-    );
+    const [snapshots, agents] = await Promise.all([
+      fetchBuildkiteQueueSnapshots(
+        token,
+        process.env.BUILDKITE_ORGANIZATION || "vllm",
+        now,
+      ),
+      fetchConnectedAgents(),
+    ]);
 
     let stored = 0;
     for (const snapshot of snapshots) {
@@ -57,9 +61,39 @@ export async function GET(request: NextRequest) {
       stored++;
     }
 
+    const agentRows = agents.map((agent) => ({
+      polled_at: now,
+      agent_name: agent.agentName,
+      hostname: agent.hostname,
+      queues: agent.queues,
+      job_id: agent.job?.id ?? null,
+      job_label: agent.job?.label ?? null,
+      build_number: agent.job?.buildNumber ?? null,
+      job_url: agent.job?.url ?? null,
+    }));
+    if (agentRows.length > 0) {
+      await db`
+        INSERT INTO buildkite_agent_snapshots ${db(
+          agentRows,
+          "polled_at",
+          "agent_name",
+          "hostname",
+          "queues",
+          "job_id",
+          "job_label",
+          "build_number",
+          "job_url",
+        )}
+      `;
+    }
+
     // Cleanup old data (keep 30 days)
     await db`
       DELETE FROM queue_snapshots
+      WHERE polled_at < NOW() - INTERVAL '30 days'
+    `;
+    await db`
+      DELETE FROM buildkite_agent_snapshots
       WHERE polled_at < NOW() - INTERVAL '30 days'
     `;
     await db`
@@ -70,6 +104,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       ok: true,
       queues: stored,
+      agents: agentRows.length,
       waitTimeQueues: snapshots.filter((snapshot) => snapshot.sampleSize > 0).length,
       polled_at: now.toISOString(),
     });

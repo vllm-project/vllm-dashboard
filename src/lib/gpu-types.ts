@@ -23,6 +23,27 @@ export interface GpuHistoryResponse {
   error?: string;
 }
 
+export interface GpuAgentJob {
+  id: string;
+  label: string | null;
+  buildNumber: number | null;
+  url: string | null;
+}
+
+export interface GpuHostAgent {
+  hostname: string;
+  agentName: string | null;
+  queues: string[];
+  currentJob: GpuAgentJob | null;
+  polledAt: string | null;
+}
+
+export interface GpuHostAgentsResponse {
+  hosts: GpuHostAgent[];
+  checked_at: string;
+  error?: string;
+}
+
 export interface GpuOverviewPoint {
   time: number;
   memoryP50: number;

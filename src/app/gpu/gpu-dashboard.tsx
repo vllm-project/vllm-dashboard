@@ -7,6 +7,7 @@ import { SearchableSelect } from "@/components/searchable-select";
 import type { GpuChartMode } from "@/components/gpu-util-chart";
 import type {
   GpuHistoryResponse,
+  GpuHostAgentsResponse,
   GpuLatest,
   GpuLatestResponse,
   GpuOverviewPoint,
@@ -135,6 +136,20 @@ export function GpuDashboard({
     revalidateOnMount: true,
     refreshInterval: 30_000,
   });
+
+  const { data: agentsData } = useSWR<GpuHostAgentsResponse>(
+    "/api/gpu/agents",
+    fetcher,
+    { refreshInterval: 60_000 },
+  );
+
+  const agentByHostname = useMemo(() => {
+    const map = new Map<string, GpuHostAgentsResponse["hosts"][number]>();
+    for (const host of agentsData?.hosts ?? []) {
+      map.set(host.hostname, host);
+    }
+    return map;
+  }, [agentsData]);
 
   const needsRawHistory =
     hours !== 24 ||
@@ -324,6 +339,8 @@ export function GpuDashboard({
       memUsedMb: number;
       memTotalMb: number;
       lastSeen: string;
+      queue: string | null;
+      currentJob: GpuHostAgentsResponse["hosts"][number]["currentJob"];
       gpus: Array<{
         index: number;
         gpuUtil: number;
@@ -340,6 +357,7 @@ export function GpuDashboard({
         memTotalMb: g.mem_total_mb,
       };
       if (!existing) {
+        const agent = agentByHostname.get(g.hostname);
         map.set(g.hostname, {
           hostname: g.hostname,
           gpuType: gpuType(g.gpu_name),
@@ -348,6 +366,8 @@ export function GpuDashboard({
           memUsedMb: g.mem_used_mb,
           memTotalMb: g.mem_total_mb,
           lastSeen: g.reported_at,
+          queue: agent?.queues[0] ?? null,
+          currentJob: agent?.currentJob ?? null,
           gpus: [gpu],
         });
       } else {
@@ -363,7 +383,7 @@ export function GpuDashboard({
       row.gpus.sort((a, b) => a.index - b.index);
     }
     return [...map.values()].sort((a, b) => a.hostname.localeCompare(b.hostname));
-  }, [filtered]);
+  }, [filtered, agentByHostname]);
 
   function formatXTick(t: number): string {
     const d = new Date(t);
@@ -650,6 +670,28 @@ export function GpuDashboard({
                         <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/40 dark:text-red-400">
                           Offline
                         </span>
+                      )}
+                      {(h.queue || h.currentJob) && (
+                        <div className="mt-0.5 text-xs font-normal text-zinc-500 dark:text-zinc-400">
+                          {h.queue}
+                          {h.queue && h.currentJob ? " · " : ""}
+                          {h.currentJob &&
+                            (h.currentJob.url ? (
+                              <a
+                                href={h.currentJob.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="hover:underline"
+                              >
+                                {h.currentJob.label ??
+                                  (h.currentJob.buildNumber != null
+                                    ? `#${h.currentJob.buildNumber}`
+                                    : "running job")}
+                              </a>
+                            ) : (
+                              (h.currentJob.label ?? "running job")
+                            ))}
+                        </div>
                       )}
                     </td>
                     <td className="px-5 py-3.5 sm:px-6">{h.gpuType}</td>

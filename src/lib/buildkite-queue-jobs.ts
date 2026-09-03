@@ -1,5 +1,10 @@
 import { unstable_cache } from "next/cache";
-import { queueKeyFromAgentQueryRules } from "@/lib/buildkite-agent-query";
+import {
+  queueKeyFromAgentQueryRules,
+  queueTagsFromMetaData,
+  type AgentJobInfo,
+  type BuildkiteAgentInfo,
+} from "@/lib/buildkite-agent-query";
 
 const GRAPHQL_ENDPOINT = "https://graphql.buildkite.com/v1";
 const REST_ENDPOINT = "https://api.buildkite.com/v2";
@@ -503,6 +508,135 @@ export async function getQueueJobs(queue: string): Promise<QueueJobsResult> {
   queueRule(queue);
   const clusterQueue = await getClusterQueue(queue);
   return { jobs: await graphqlQueueJobs(queue, clusterQueue) };
+}
+
+interface AgentsGraphQLResponse {
+  data?: {
+    organization?: {
+      agents: {
+        pageInfo: {
+          hasNextPage: boolean;
+          endCursor: string | null;
+        };
+        edges: Array<{
+          node: {
+            name?: string;
+            hostname?: string | null;
+            metaData?: string[] | null;
+            job?: {
+              id?: string;
+              label?: string | null;
+              url?: string | null;
+              build?: { number?: number; url?: string } | null;
+            } | null;
+          };
+        }>;
+      };
+    } | null;
+  };
+  errors?: Array<{ message: string }>;
+}
+
+// Every currently connected agent with the queue tags it advertises and the
+// job it is running, if any. The poll-metrics cron persists one snapshot per
+// agent so GPU hosts can be joined to their queue and current job.
+export async function fetchConnectedAgents(): Promise<BuildkiteAgentInfo[]> {
+  const token = getToken();
+  const agents: BuildkiteAgentInfo[] = [];
+  let after: string | null = null;
+
+  do {
+    const response = await fetch(GRAPHQL_ENDPOINT, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: `
+          query ConnectedAgents($organization: ID!, $first: Int!, $after: String) {
+            organization(slug: $organization) {
+              agents(first: $first, after: $after) {
+                pageInfo {
+                  hasNextPage
+                  endCursor
+                }
+                edges {
+                  node {
+                    name
+                    hostname
+                    metaData
+                    job {
+                      ... on JobTypeCommand {
+                        id
+                        label
+                        url
+                        build {
+                          number
+                          url
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: {
+          organization: organization(),
+          first: JOBS_PAGE_SIZE,
+          after,
+        },
+      }),
+      cache: "no-store",
+    });
+
+    let result: AgentsGraphQLResponse;
+    try {
+      result = (await response.json()) as AgentsGraphQLResponse;
+    } catch {
+      throw new BuildkiteQueueError(
+        "Buildkite returned an invalid agents response.",
+        502,
+        "BUILDKITE_INVALID_RESPONSE",
+      );
+    }
+
+    if (!response.ok || result.errors?.length) throw requestError(response, result.errors);
+
+    const connection = result.data?.organization?.agents;
+    if (!connection) {
+      throw new BuildkiteQueueError(
+        "Buildkite did not return agents for the configured organization.",
+        502,
+        "BUILDKITE_INVALID_RESPONSE",
+      );
+    }
+
+    for (const { node } of connection.edges) {
+      if (!node.name) continue;
+      const job: AgentJobInfo | null = node.job?.id
+        ? {
+            id: node.job.id,
+            label: node.job.label ?? null,
+            buildNumber: node.job.build?.number ?? null,
+            url: node.job.url ?? node.job.build?.url ?? null,
+          }
+        : null;
+      agents.push({
+        agentName: node.name,
+        hostname: node.hostname ?? null,
+        queues: queueTagsFromMetaData(node.metaData),
+        job,
+      });
+    }
+
+    after = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+  } while (after);
+
+  return agents;
 }
 
 export async function reprioritizeQueueJob(queue: string, jobUuid: string): Promise<{ priority: number }> {

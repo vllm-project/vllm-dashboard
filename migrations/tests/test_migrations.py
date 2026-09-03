@@ -38,6 +38,7 @@ def test_expected_tables_are_created() -> None:
     sql = "\n".join(p.read_text() for p in migration_files(MIGRATIONS_DIR))
     expected_tables = {
         "queue_snapshots",
+        "buildkite_agent_snapshots",
         "alert_threads",
         "alert_summary",
         "gpu_snapshots",

@@ -1,7 +1,9 @@
 import { unstable_cache } from "next/cache";
 import { getDb } from "@/lib/db";
+import { joinGpuHostsToAgents } from "@/lib/buildkite-agent-query";
 import type {
   GpuHistoryResponse,
+  GpuHostAgent,
   GpuLatest,
   GpuLatestResponse,
   GpuOverviewPoint,
@@ -206,6 +208,68 @@ export async function queryGpuLatest(): Promise<GpuLatest[]> {
   `;
 
   return normalizeLatest(rows as unknown as DbRow[]);
+}
+
+// Joins each GPU host to the connected Buildkite agent running on it, matched
+// by normalized hostname (see normalizeHostname). Hosts with no matching
+// agent — reporters without an agent, or agents whose Buildkite hostname does
+// not line up with the reported GPU hostname — come back with null agent
+// fields so the mismatch is visible instead of silently dropped.
+export async function queryGpuHostAgents(): Promise<GpuHostAgent[]> {
+  const db = getDb();
+  const [hostRows, agentRows] = await Promise.all([
+    db`
+      SELECT DISTINCT hostname
+      FROM gpu_snapshots
+      WHERE reported_at > NOW() - INTERVAL '1 hour' * ${LATEST_LOOKBACK_HOURS}
+      ORDER BY hostname
+    `,
+    db`
+      SELECT DISTINCT ON (agent_name)
+        agent_name, hostname, queues,
+        job_id, job_label, build_number, job_url, polled_at
+      FROM buildkite_agent_snapshots
+      WHERE polled_at > NOW() - INTERVAL '1 hour'
+      ORDER BY agent_name, polled_at DESC
+    `,
+  ]);
+
+  const agents = (agentRows as unknown as DbRow[]).map((row) => ({
+    agentName: String(row.agent_name),
+    hostname: row.hostname == null ? null : String(row.hostname),
+    queues: Array.isArray(row.queues) ? (row.queues as unknown[]).map(String) : [],
+    job:
+      row.job_id == null
+        ? null
+        : {
+            id: String(row.job_id),
+            label: row.job_label == null ? null : String(row.job_label),
+            buildNumber: row.build_number == null ? null : Number(row.build_number),
+            url: row.job_url == null ? null : String(row.job_url),
+          },
+  }));
+  const polledAtByAgent = new Map(
+    (agentRows as unknown as DbRow[]).map((row) => [
+      String(row.agent_name),
+      isoString(row.polled_at),
+    ]),
+  );
+
+  const hostnames = (hostRows as unknown as DbRow[]).map((row) =>
+    String(row.hostname),
+  );
+  const joined = joinGpuHostsToAgents(hostnames, agents);
+
+  return hostnames.map((hostname) => {
+    const agent = joined.get(hostname) ?? null;
+    return {
+      hostname,
+      agentName: agent?.agentName ?? null,
+      queues: agent?.queues ?? [],
+      currentJob: agent?.job ?? null,
+      polledAt: agent ? (polledAtByAgent.get(agent.agentName) ?? null) : null,
+    };
+  });
 }
 
 const getCachedInitialHistory = unstable_cache(
