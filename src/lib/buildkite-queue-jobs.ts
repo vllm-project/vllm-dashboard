@@ -42,7 +42,7 @@ interface GraphQLResponse {
               number?: number;
               url?: string;
               message?: string | null;
-              author?: { name?: string | null } | null;
+              createdBy?: { name?: string | null } | null;
             } | null;
           };
         }>;
@@ -414,7 +414,11 @@ async function graphqlQueueJobs(
                         number
                         url
                         message
-                        author { name }
+                        createdBy {
+                          ... on User {
+                            name
+                          }
+                        }
                       }
                     }
                   }
@@ -478,7 +482,7 @@ async function graphqlQueueJobs(
                 number: node.build.number,
                 url: node.build.url,
                 message: node.build.message ?? null,
-                author: node.build.author?.name ?? null,
+                author: node.build.createdBy?.name ?? null,
               }
             : null,
       });
