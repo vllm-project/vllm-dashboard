@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import useSWR from "swr";
+import { JobName, jobNameText } from "@/components/job-name";
 
 export interface QueueJob {
   uuid: string;
@@ -71,7 +72,7 @@ export function QueueWaitingJobs({
       return;
     }
 
-    const name = job.label || "this job";
+    const name = job.label ? jobNameText(job.label) : "this job";
     if (!window.confirm(`Move ${name} to the front of ${queue}? Its priority will be calculated from the current queue.`)) {
       return;
     }
@@ -93,7 +94,7 @@ export function QueueWaitingJobs({
         throw new Error(body.error ?? "This job could not be promoted.");
       }
 
-      setNotice(`${job.label || "Job"} moved to the front at priority ${body.priority}.`);
+      setNotice(`${job.label ? jobNameText(job.label) : "Job"} moved to the front at priority ${body.priority}.`);
       await mutate();
     } catch (promotionError) {
       setNotice(promotionError instanceof Error ? promotionError.message : "This job could not be promoted.");
@@ -244,9 +245,9 @@ export function QueueWaitingJobs({
                         target="_blank"
                         rel="noopener noreferrer"
                         className="block truncate font-medium text-blue-700 hover:underline dark:text-blue-400"
-                        title={job.label || job.uuid}
+                        title={job.label ? jobNameText(job.label) : job.uuid}
                       >
-                        {job.label || "Unnamed command job"}
+                        {job.label ? <JobName name={job.label} /> : "Unnamed command job"}
                       </a>
                       <span className="mt-0.5 block font-mono text-[11px] text-zinc-400 dark:text-zinc-500">
                         {job.uuid}

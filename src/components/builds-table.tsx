@@ -3,6 +3,7 @@
 import { Fragment, useState, useCallback, useMemo, type MouseEvent, type ReactNode } from "react";
 import useSWR from "swr";
 import { BuildWaterfall } from "@/components/build-waterfall";
+import { JobName, jobNameText } from "@/components/job-name";
 import type { GroupStatus } from "@/lib/test-groups";
 import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
 
@@ -650,7 +651,7 @@ export function BuildsTable({
                               {failedJobLinks.length > 0 && (
                                 <ul className="mt-1 text-red-600 dark:text-red-400">
                                   {failedJobLinks.slice(0, 5).map((job) => (
-                                    <li key={job.name}>✕ {job.name}</li>
+                                    <li key={job.name}>✕ <JobName name={job.name} /></li>
                                   ))}
                                   {failedJobLinks.length > 5 && (
                                     <li className="text-zinc-500 dark:text-zinc-400">
@@ -697,10 +698,10 @@ export function BuildsTable({
                       <DotWithTooltip
                         key={key}
                         color={dotColor(job.state)}
-                        ariaLabel={`${job.name}: ${job.state}`}
+                        ariaLabel={`${jobNameText(job.name)}: ${job.state}`}
                         tooltip={
                           <>
-                            <p className="font-medium">{job.name}</p>
+                            <p className="font-medium"><JobName name={job.name} /></p>
                             <p className="text-zinc-500 dark:text-zinc-400">{col.group}</p>
                             <p className={`capitalize ${stateTextColor(job.state)}`}>
                               {job.state.replace(/_/g, " ")}

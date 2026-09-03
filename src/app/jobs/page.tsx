@@ -6,6 +6,7 @@ import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
+import { JobName, jobNameText } from "@/components/job-name";
 import { JobRunsChart, JobRun } from "@/components/job-runs-chart";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -170,7 +171,7 @@ function JobAnalysisTab({
     .filter((row) => {
       if (hideSoftFail && (isSoftFailJob(row.name) || row.has_soft_fail === "1")) return false;
       if (hideOptional && isOptionalJob(row.name)) return false;
-      if (searchQuery && !row.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      if (searchQuery && !jobNameText(row.name).toLowerCase().includes(searchQuery.toLowerCase())) return false;
       return true;
     })
     .sort((a, b) => {
@@ -182,7 +183,7 @@ function JobAnalysisTab({
   const filteredDuration = durationStats
     .filter((row) => {
       if (hideOptional && isOptionalJob(row.name)) return false;
-      if (searchQuery && !row.name.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      if (searchQuery && !jobNameText(row.name).toLowerCase().includes(searchQuery.toLowerCase())) return false;
       return true;
     })
     .sort((a, b) => {
@@ -269,13 +270,13 @@ function JobAnalysisTab({
         <StatCard
           label="Highest Failure Rate"
           value={worstJob ? `${worstJob.failure_rate}%` : "—"}
-          detail={worstJob?.name}
+          detail={worstJob ? jobNameText(worstJob.name) : undefined}
           color="red"
         />
         <StatCard
           label="Slowest Job (p50)"
           value={slowestJob ? formatDuration(parseInt(slowestJob.p50_duration, 10)) : "—"}
-          detail={slowestJob?.name}
+          detail={slowestJob ? jobNameText(slowestJob.name) : undefined}
         />
         <StatCard
           label="Total Jobs Tracked"
@@ -366,7 +367,7 @@ function JobAnalysisTab({
                     >
                       <td className="px-5 py-2.5 text-zinc-400">{page * pageSize + i + 1}</td>
                       <td className="px-5 py-2.5 font-medium">
-                        {row.name}
+                        <JobName name={row.name} />
                         <JobBadges name={row.name} hasSoftFail={row.has_soft_fail === "1"} />
                       </td>
                       <td className="px-5 py-2.5">
@@ -432,7 +433,7 @@ function JobAnalysisTab({
                     >
                       <td className="px-5 py-2.5 text-zinc-400">{page * pageSize + i + 1}</td>
                       <td className="px-5 py-2.5 font-medium">
-                        {row.name}
+                        <JobName name={row.name} />
                         <JobBadges name={row.name} hasSoftFail={false} />
                       </td>
                       <td className="px-5 py-2.5">
