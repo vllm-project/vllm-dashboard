@@ -113,7 +113,6 @@ class BuildkiteRestClient:
     """Read-only Buildkite REST client for Full CI build and job pages."""
 
     _BUILDS_URL = "https://api.buildkite.com/v2/organizations/vllm/pipelines/ci/builds"
-    _AGENTS_URL = "https://api.buildkite.com/v2/organizations/vllm/agents"
 
     def __init__(self, *, token: str) -> None:
         self._token = token
@@ -249,23 +248,6 @@ class BuildkiteRestClient:
         if not isinstance(payload, dict):
             raise RuntimeError("Buildkite build response was not an object")
         return cast(dict[str, Any], payload)
-
-    def list_agents(self, *, queue: str) -> list[dict[str, Any]]:
-        """Agents in one cluster queue, paginating the agents endpoint."""
-        agents: list[dict[str, Any]] = []
-        page = 1
-        while True:
-            query = urllib.parse.urlencode(
-                {"queue": queue, "per_page": 100, "page": page}
-            )
-            payload = self._get_json(f"{self._AGENTS_URL}?{query}")
-            if not isinstance(payload, list):
-                raise RuntimeError("Buildkite agents response was not a list")
-            rows = cast(list[dict[str, Any]], payload)
-            agents.extend(rows)
-            if len(rows) < 100:
-                return agents
-            page += 1
 
 
 class BuildkiteFullCISource:

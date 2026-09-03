@@ -30,8 +30,7 @@ episode.
 
 - `alerting/infra.py` — the slice: records, the pure `plan_infra_scan`
   planner, renderers, `InfraScanHandler`, and the production sources
-  (`KubectlNodesSource`, `BuildkiteGpuQueueAgentsSource`,
-  `UnionExpectedHostSource`).
+  (`KubectlNodesSource`, `UnionExpectedHostSource`).
 - Ports/adapters: `InfraSnapshotPort` + `InfraStore` implemented by
   `alerting/postgres.py` (`PostgresAlertStore`), with in-memory doubles in
   `alerting/memory.py`.
@@ -47,14 +46,16 @@ episode.
 - The expected-host set is the union of: Kubernetes node names from both
   clusters (`GPU_REPORTER_KUBECONFIG_H100`, `GPU_REPORTER_KUBECONFIG_DGX` —
   **optional**; unset means the kubectl source is skipped, set-but-failing
-  fails the scan closed), Buildkite agents in the `gpu` queue
-  (`BUILDKITE_TOKEN`, hostname lowercased), and hostnames seen in
-  `gpu_snapshots` within the last 7 days. All hostnames are lowercased.
-  Note: the stock alerting worker's security group allows egress only on
-  443/5432/6543, so cluster API servers (6443) are unreachable from it and
-  the kubectl sources are normally skipped — coverage is preserved because
-  the control-plane scrapers report every cluster node (a dead scraper
-  silences, and therefore alerts, its whole cluster).
+  fails the scan closed) and hostnames seen in `gpu_snapshots` within the
+  last 7 days. All hostnames are lowercased. The Buildkite `gpu`-queue
+  agents roster was dropped: the fleet's queue is ephemeral pods and
+  autoscaled CI instances that never run reporters, so it only produced
+  never-reported noise. Note: the stock alerting worker's security group
+  allows egress only on 443/5432/6543, so cluster API servers (6443) are
+  unreachable from it and the kubectl sources are normally skipped —
+  coverage is preserved because the control-plane scrapers report every
+  cluster node (a dead scraper silences, and therefore alerts, its whole
+  cluster).
 - Slack: `SLACK_BOT_TOKEN`; channel `SLACK_CI_INFRA_ALERT_CHANNEL` (falls
   back to the shared alerts channel `C0ABTNM9L5U` until the secret exists).
 - Control plane: S3 `control/infra.mode` (`shadow` default / `live` /

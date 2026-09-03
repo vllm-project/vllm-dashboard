@@ -11,10 +11,8 @@ import pytest
 
 from alerting.commands import ScheduledCommand
 from alerting.fast_ci import ALERTS_SLACK_CHANNEL
-from alerting.full_ci import BuildkiteRestClient
 from alerting.infra import (
     RETIREMENT_AGE,
-    BuildkiteGpuQueueAgentsSource,
     DiskMountObservation,
     GpuTemperatureObservation,
     HostReport,
@@ -569,51 +567,6 @@ def test_kubectl_source_fails_closed_on_kubectl_error(
     source = KubectlNodesSource(kubeconfig="/run/alerting/h100.conf")
     with pytest.raises(RuntimeError, match="kubectl get nodes failed"):
         source.expected_hosts()
-
-
-class _FixtureAgentClient:
-    def __init__(self, agents: list[dict[str, Any]]) -> None:
-        self.agents = agents
-        self.queues: list[str] = []
-
-    def list_agents(self, *, queue: str) -> list[dict[str, Any]]:
-        self.queues.append(queue)
-        return self.agents
-
-
-def test_buildkite_agents_source_lowercases_gpu_queue_hostnames() -> None:
-    client = _FixtureAgentClient(
-        [
-            {"hostname": "H200-CI-1"},
-            {"hostname": "h200-ci-2"},
-            {"hostname": "  "},
-            {"name": "no-hostname"},
-        ]
-    )
-
-    source = BuildkiteGpuQueueAgentsSource(buildkite=client)
-    assert source.expected_hosts() == frozenset({"h200-ci-1", "h200-ci-2"})
-    assert client.queues == ["gpu"]
-
-
-class _RecordingAgentsClient(BuildkiteRestClient):
-    def __init__(self) -> None:
-        super().__init__(token="not-used")
-        self.urls: list[str] = []
-
-    def _get_json(self, url: str) -> Any:
-        self.urls.append(url)
-        return []
-
-
-def test_buildkite_rest_client_queries_the_agents_endpoint_with_queue() -> None:
-    client = _RecordingAgentsClient()
-
-    assert client.list_agents(queue="gpu") == []
-    assert client.urls == [
-        "https://api.buildkite.com/v2/organizations/vllm/agents"
-        "?queue=gpu&per_page=100&page=1"
-    ]
 
 
 def test_expected_host_set_is_the_union_of_sources() -> None:

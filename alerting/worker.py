@@ -130,7 +130,6 @@ def _runtime(
         ]
         return build_infra_runtime(
             database_url=database_url,
-            buildkite_token=_required_environment("BUILDKITE_TOKEN"),
             kubeconfigs=kubeconfigs,
             slack=_slack(),
             clock=clock,

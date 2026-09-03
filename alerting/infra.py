@@ -700,6 +700,10 @@ class InfraScanHandler:
 
     def __call__(self, command: ScheduledCommand) -> HandlerCompletion:
         now = command.target_time
+        # The roster is reporter-derived: hosts seen in the retirement window
+        # are the fleet that can silently die. External inventories (Buildkite
+        # gpu-queue agents) proved to be ephemeral pods and autoscaled CI
+        # instances that never run reporters — pure never-reported noise.
         expected = frozenset(
             hostname.lower()
             for hostname in self._hosts.expected_hosts()
@@ -797,28 +801,4 @@ class KubectlNodesSource:
             and isinstance(item.get("metadata"), dict)
             for name in [str(item["metadata"].get("name") or "").strip().lower()]
             if name
-        )
-
-
-class BuildkiteAgentPort(Protocol):
-    def list_agents(self, *, queue: str) -> list[dict[str, Any]]: ...
-
-
-class BuildkiteGpuQueueAgentsSource:
-    """GPU-queue Buildkite agents, keyed by their lowercased hostname.
-
-    These cover the bare-metal hosts that run reporters without being
-    Kubernetes nodes.
-    """
-
-    def __init__(self, *, buildkite: BuildkiteAgentPort, queue: str = "gpu") -> None:
-        self._buildkite = buildkite
-        self._queue = queue
-
-    def expected_hosts(self) -> frozenset[str]:
-        return frozenset(
-            hostname
-            for agent in self._buildkite.list_agents(queue=self._queue)
-            for hostname in [str(agent.get("hostname") or "").strip().lower()]
-            if hostname
         )

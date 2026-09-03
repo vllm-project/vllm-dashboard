@@ -1928,17 +1928,19 @@ def build_main_ci_backstop_runtime(
 def build_infra_runtime(
     *,
     database_url: str,
-    buildkite_token: str,
     kubeconfigs: list[str],
     slack: SlackPort,
     clock: Clock,
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
-    buildkite_queue: str = "gpu",
 ) -> AlertingRuntime:
-    """Wire the infra health scan: kubectl nodes + GPU-queue agents + Postgres."""
-    from alerting.full_ci import BuildkiteRestClient
+    """Wire the infra health scan: optional kubectl nodes + Postgres.
+
+    The expected-hosts roster is reporter-derived (see InfraScanHandler):
+    the Buildkite gpu-queue agents list was dropped because the fleet's
+    queue is ephemeral pods and autoscaled CI instances that never run
+    reporters, so it only produced never-reported noise.
+    """
     from alerting.infra import (
-        BuildkiteGpuQueueAgentsSource,
         InfraScanHandler,
         KubectlNodesSource,
         UnionExpectedHostSource,
@@ -1946,13 +1948,7 @@ def build_infra_runtime(
 
     store = PostgresAlertStore.from_database_url(database_url)
     hosts = UnionExpectedHostSource(
-        [
-            *(KubectlNodesSource(kubeconfig=path) for path in kubeconfigs),
-            BuildkiteGpuQueueAgentsSource(
-                buildkite=BuildkiteRestClient(token=buildkite_token),
-                queue=buildkite_queue,
-            ),
-        ]
+        [*(KubectlNodesSource(kubeconfig=path) for path in kubeconfigs)]
     )
     handler = InfraScanHandler(
         hosts=hosts,

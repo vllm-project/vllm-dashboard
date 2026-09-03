@@ -117,7 +117,7 @@ def test_infra_timer_uses_its_scan_command(
     assert [command.command_type for command in runtime.commands] == ["infra_scan"]
 
 
-def test_infra_runtime_requires_both_kubeconfigs_and_buildkite_token(
+def test_infra_runtime_passes_kubeconfigs_and_delivery_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -127,7 +127,6 @@ def test_infra_runtime_requires_both_kubeconfigs_and_buildkite_token(
         return RecordingRuntime()
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/alerting")
-    monkeypatch.setenv("BUILDKITE_TOKEN", "bk-token")
     monkeypatch.setenv("GPU_REPORTER_KUBECONFIG_H100", "/run/alerting/h100.conf")
     monkeypatch.setenv("GPU_REPORTER_KUBECONFIG_DGX", "/run/alerting/dgx.conf")
     monkeypatch.setattr(worker, "build_infra_runtime", fake_build)
@@ -138,7 +137,6 @@ def test_infra_runtime_requires_both_kubeconfigs_and_buildkite_token(
         "/run/alerting/h100.conf",
         "/run/alerting/dgx.conf",
     ]
-    assert captured["buildkite_token"] == "bk-token"
     assert captured["delivery_mode"] is DeliveryMode.SHADOW
 
 
@@ -152,7 +150,6 @@ def test_infra_runtime_skips_kubectl_sources_without_kubeconfigs(
         return RecordingRuntime()
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/alerting")
-    monkeypatch.setenv("BUILDKITE_TOKEN", "bk-token")
     monkeypatch.delenv("GPU_REPORTER_KUBECONFIG_H100", raising=False)
     monkeypatch.delenv("GPU_REPORTER_KUBECONFIG_DGX", raising=False)
     monkeypatch.setattr(worker, "build_infra_runtime", fake_build)
