@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from alerting.analyzer import AnalyzerError
-from alerting.kimi import KimiCodeRunner, UrllibTransport
+from alerting.kimi import KimiCodeRunner, TransientTransportError, UrllibTransport
 
 
 def tool_call(
@@ -230,6 +230,92 @@ def test_requests_default_to_low_reasoning_effort(tmp_path: Path) -> None:
     assert transport.payloads[0]["reasoning_effort"] == "low"
 
 
+class FlakyTransport:
+    """Scripted transport whose entries may be exceptions to raise."""
+
+    def __init__(self, script: list[dict[str, Any] | Exception]) -> None:
+        self._script = list(script)
+        self.calls = 0
+
+    def __call__(
+        self, url: str, headers: dict[str, str], payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        self.calls += 1
+        item = self._script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def test_transient_request_failures_are_retried_with_backoff(
+    tmp_path: Path,
+) -> None:
+    transport = FlakyTransport(
+        [
+            TransientTransportError("kimi API request failed: timed out"),
+            TransientTransportError("kimi API request failed: timed out"),
+            final(),
+        ]
+    )
+    sleeps: list[float] = []
+
+    KimiCodeRunner(api_key="key", transport=transport, sleep=sleeps.append).run(
+        tmp_path
+    )
+
+    assert transport.calls == 3
+    assert sleeps == [5.0, 15.0]
+
+
+def test_transient_failures_give_up_after_max_attempts(tmp_path: Path) -> None:
+    transport = FlakyTransport(
+        [TransientTransportError("kimi API request failed: timed out")] * 3
+    )
+    sleeps: list[float] = []
+    runner = KimiCodeRunner(api_key="key", transport=transport, sleep=sleeps.append)
+
+    with pytest.raises(AnalyzerError, match=r"timed out \(after 3 attempts\)"):
+        runner.run(tmp_path)
+
+    assert transport.calls == 3
+    assert sleeps == [5.0, 15.0]
+
+
+def test_permanent_request_failures_are_not_retried(tmp_path: Path) -> None:
+    transport = FlakyTransport(
+        [AnalyzerError("kimi API request failed with HTTP 400: bad request")]
+    )
+    sleeps: list[float] = []
+    runner = KimiCodeRunner(api_key="key", transport=transport, sleep=sleeps.append)
+
+    with pytest.raises(AnalyzerError, match="HTTP 400"):
+        runner.run(tmp_path)
+
+    assert transport.calls == 1
+    assert sleeps == []
+
+
+def test_retry_does_not_outlive_the_analysis_budget(tmp_path: Path) -> None:
+    transport = FlakyTransport(
+        [TransientTransportError("kimi API request failed: timed out"), final()]
+    )
+    sleeps: list[float] = []
+    ticks = iter([0.0, 7.0, 7.0, 7.0])
+    runner = KimiCodeRunner(
+        api_key="key",
+        transport=transport,
+        sleep=sleeps.append,
+        timeout_seconds=10,
+        clock=lambda: next(ticks),
+    )
+
+    with pytest.raises(AnalyzerError, match="no time budget left to retry"):
+        runner.run(tmp_path)
+
+    assert transport.calls == 1
+    assert sleeps == []
+
+
 def test_model_request_timeout_is_clamped_to_remaining_analysis_budget(
     tmp_path: Path,
 ) -> None:
@@ -271,3 +357,56 @@ def test_curl_timeout_is_clamped_to_remaining_analysis_budget(
     runner.run(tmp_path)
 
     assert observed_timeouts == [4.0]
+
+
+def test_urllib_transport_classifies_failures() -> None:
+    import io
+    import urllib.error
+    import urllib.request
+    from email.message import Message
+
+    from alerting.kimi import UrllibTransport
+
+    transport = UrllibTransport(timeout_seconds=1.0)
+
+    def failing(error: Exception) -> Any:
+        def opener(request: Any, timeout: float) -> Any:
+            raise error
+
+        return opener
+
+    def call(monkey: Any) -> None:
+        urllib.request.urlopen = monkey
+        transport("https://example.invalid/v1/chat/completions", {}, {})
+
+    original = urllib.request.urlopen
+    try:
+        with pytest.raises(TransientTransportError, match="timed out"):
+            call(failing(TimeoutError("The read operation timed out")))
+        with pytest.raises(TransientTransportError, match="HTTP 503"):
+            call(
+                failing(
+                    urllib.error.HTTPError(
+                        "u",
+                        503,
+                        "unavailable",
+                        Message(),
+                        io.BytesIO(b"busy"),
+                    )
+                )
+            )
+        with pytest.raises(AnalyzerError, match="HTTP 400") as info:
+            call(
+                failing(
+                    urllib.error.HTTPError(
+                        "u",
+                        400,
+                        "bad",
+                        Message(),
+                        io.BytesIO(b"bad"),
+                    )
+                )
+            )
+        assert not isinstance(info.value, TransientTransportError)
+    finally:
+        urllib.request.urlopen = original

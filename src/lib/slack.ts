@@ -6,9 +6,15 @@ interface SlackPostResult {
 
 function getConfig() {
   const token = process.env.SLACK_BOT_TOKEN;
-  const channel = process.env.SLACK_CHANNEL_ID;
+  // Per-path channel convention (values live in secrets manager):
+  // SLACK_CI_INFRA_ALERT_CHANNEL covers infrastructure/queue alerts;
+  // SLACK_CHANNEL_ID is the legacy shared fallback.
+  const channel =
+    process.env.SLACK_CI_INFRA_ALERT_CHANNEL ?? process.env.SLACK_CHANNEL_ID;
   if (!token || !channel) {
-    throw new Error("SLACK_BOT_TOKEN and SLACK_CHANNEL_ID must be set");
+    throw new Error(
+      "SLACK_BOT_TOKEN and SLACK_CI_INFRA_ALERT_CHANNEL (or legacy SLACK_CHANNEL_ID) must be set",
+    );
   }
   return { token, channel };
 }

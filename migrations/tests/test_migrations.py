@@ -42,6 +42,9 @@ def test_expected_tables_are_created() -> None:
         "alert_summary",
         "gpu_snapshots",
         "gpu_history_5m",
+        "host_snapshots",
+        "host_history_5m",
+        "alert_thresholds",
         "otel_spans",
         "alerting_automation_executions",
         "alerting_notification_outbox",
@@ -60,6 +63,8 @@ def test_expected_tables_are_created() -> None:
         "alerting_main_ci_job_states",
         "alerting_main_ci_job_alerts",
         "alerting_main_ci_job_analysis",
+        "alerting_infra_host_states",
+        "alerting_infra_alerts",
     }
 
     for table in expected_tables:
@@ -202,6 +207,38 @@ def test_gpu_migration_preserves_rollup_backfill() -> None:
     assert "ACCESS EXCLUSIVE" not in sql
     assert "INSERT INTO gpu_history_5m" in sql
     assert "ON CONFLICT (time_bucket, hostname, gpu_name) DO UPDATE" in sql
+
+
+def test_host_ingest_schema_is_normalized_protected_and_seeded() -> None:
+    sql = (MIGRATIONS_DIR / "0018_gpu_host_ingest.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS host_snapshots" in sql
+    assert "CREATE TABLE IF NOT EXISTS host_history_5m" in sql
+    assert "CREATE TABLE IF NOT EXISTS alert_thresholds" in sql
+    assert "CHECK (hostname = lower(hostname))" in sql
+    assert "PRIMARY KEY (time_bucket, hostname)" in sql
+    assert "('unreporting', 10, 'minutes', 2)" in sql
+    assert "('disk_usage', 90, 'percent', 2)" in sql
+    assert "('gpu_temperature', 85, 'celsius', 2)" in sql
+    assert "ON CONFLICT (alert_type) DO NOTHING" in sql
+    for table in ("host_snapshots", "host_history_5m", "alert_thresholds"):
+        assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
+
+
+def test_infra_schema_preserves_one_open_episode_per_subject_and_widens_path() -> None:
+    sql = (MIGRATIONS_DIR / "0019_infra_alerts.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS alerting_infra_host_states" in sql
+    assert "CREATE TABLE IF NOT EXISTS alerting_infra_alerts" in sql
+    assert "ON alerting_infra_alerts (alert_type, subject_key)" in sql
+    assert "WHERE status = 'open'" in sql
+    assert "status       text NOT NULL CHECK (status IN ('open', 'resolved'))" in sql
+    assert "'unreporting', 'disk_usage', 'gpu_temperature'" in sql
+    assert "'fast_ci', 'full_ci', 'main_ci', 'infra'" in sql
+    assert "alerting_infra_alerts_alert_id_seq" in sql
+    assert "DROP CONSTRAINT IF EXISTS alerting_notification_outbox_path_check" in sql
+    for table in ("alerting_infra_host_states", "alerting_infra_alerts"):
+        assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
 
 
 def test_supabase_api_roles_cannot_access_server_only_tables() -> None:

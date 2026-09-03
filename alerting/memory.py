@@ -35,9 +35,17 @@ from alerting.full_ci import (
     FullCIRun,
     ordered_unique_runs,
 )
+from alerting.infra import (
+    InfraAlertEpisode,
+    InfraNotificationFactory,
+    InfraScanPlan,
+    InfraStateSnapshot,
+    InfraSubjectState,
+)
 from alerting.main_ci import (
     MainCIJobAlert,
     MainCIJobObservation,
+    MainCILatestBuildRef,
     MainCIOpenAlertRef,
     ordered_unique_observations,
 )
@@ -534,8 +542,117 @@ class InMemoryMainCIStore:
             for job_key, build_number in sorted(refs)
         ]
 
+    def latest_finished_main_ci_build(self) -> MainCILatestBuildRef | None:
+        if not self._states:
+            return None
+        return MainCILatestBuildRef(
+            build_number=max(
+                observation.build_number for observation in self._states.values()
+            )
+        )
+
     def state(self, job_key: str) -> MainCIJobObservation | None:
         return self._states.get(job_key)
+
+
+class InMemoryInfraStore:
+    """Atomic in-memory model of infra subject state and alert episodes."""
+
+    def __init__(
+        self,
+        *,
+        executions: InMemoryAutomationExecutionStore,
+        outbox: InMemoryOutboxStore,
+    ) -> None:
+        self._executions = executions
+        self._outbox = outbox
+        self._states: dict[tuple[str, str], InfraSubjectState] = {}
+        self._episodes: list[InfraAlertEpisode] = []
+        self._active: dict[tuple[str, str], int] = {}
+        self._fail_commit = False
+
+    def infra_state(self) -> InfraStateSnapshot:
+        return InfraStateSnapshot(
+            states=tuple(self._states.values()),
+            open_episodes=tuple(
+                self._episodes[index] for index in self._active.values()
+            ),
+        )
+
+    def commit_infra_scan(
+        self,
+        *,
+        command: ScheduledCommand,
+        plan: InfraScanPlan,
+        now: datetime,
+        notification_factory: InfraNotificationFactory,
+    ) -> None:
+        execution_snapshot = self._executions._snapshot()
+        outbox_snapshot = self._outbox._snapshot()
+        states_snapshot = dict(self._states)
+        episodes_snapshot = list(self._episodes)
+        active_snapshot = dict(self._active)
+        try:
+            for state in plan.states:
+                self._states[(state.alert_type, state.subject_key)] = state
+            applied = InfraScanPlan(
+                states=plan.states,
+                opened=tuple(
+                    episode
+                    for episode in plan.opened
+                    if self._open_episode(episode)
+                ),
+                resolved=tuple(
+                    episode
+                    for episode in plan.resolved
+                    if self._resolve_episode(episode)
+                ),
+            )
+            for message in notification_factory(applied):
+                self._outbox.enqueue(message, now=now)
+            if self._fail_commit:
+                self._fail_commit = False
+                raise RuntimeError("Infra transaction failed")
+            self._executions.complete(command.idempotency_key, now=now)
+        except Exception:
+            self._executions._restore(execution_snapshot)
+            self._outbox._restore(outbox_snapshot)
+            self._states = states_snapshot
+            self._episodes = episodes_snapshot
+            self._active = active_snapshot
+            raise
+
+    def _open_episode(self, episode: InfraAlertEpisode) -> bool:
+        key = (episode.alert_type, episode.subject_key)
+        if key in self._active:
+            return False
+        self._episodes.append(replace(episode, alert_id=len(self._episodes) + 1))
+        self._active[key] = len(self._episodes) - 1
+        return True
+
+    def _resolve_episode(self, episode: InfraAlertEpisode) -> bool:
+        index = self._active.pop((episode.alert_type, episode.subject_key), None)
+        if index is None:
+            return False
+        current = self._episodes[index]
+        self._episodes[index] = replace(
+            current, resolved_at=episode.resolved_at, details=episode.details
+        )
+        return True
+
+    def episodes(self) -> list[InfraAlertEpisode]:
+        return list(self._episodes)
+
+    def open_episodes(self) -> list[InfraAlertEpisode]:
+        return [self._episodes[index] for index in self._active.values()]
+
+    def subject_state(
+        self, alert_type: str, subject_key: str
+    ) -> InfraSubjectState | None:
+        return self._states.get((alert_type, subject_key))
+
+    def fail_next_commit(self) -> None:
+        self._fail_commit = True
 
 
 class InMemoryMainCIAnalysisStore:
