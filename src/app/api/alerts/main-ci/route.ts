@@ -44,7 +44,11 @@ export async function GET() {
       LIMIT ${MAX_ALERTS}
     `;
     return NextResponse.json(
-      { alerts: rows.map(toMainCiJobAlert), schemaStatus: "ready" },
+      {
+        alerts: rows.map(toMainCiJobAlert),
+        schemaStatus: "ready",
+        resolutionEnabled: Boolean(process.env.ALERT_OPERATOR_TOKEN),
+      },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {

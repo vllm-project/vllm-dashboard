@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { FastCIAlerts } from "@/components/fast-ci-alerts";
@@ -117,6 +117,7 @@ interface FastCIAlertsResponse {
 interface MainCIAlertsResponse {
   alerts?: MainCiJobAlert[];
   schemaStatus?: "ready" | "pending";
+  resolutionEnabled?: boolean;
   error?: string;
 }
 
@@ -199,6 +200,45 @@ function AlertSection({
   return <>{children}</>;
 }
 
+/**
+ * The operator token for manual alert resolution lives only in this tab's
+ * sessionStorage — never in the URL — and is sent as a Bearer header. It is
+ * exposed through useSyncExternalStore so the server render always shows the
+ * locked state and the stored token is picked up on the client.
+ */
+const ALERT_OPERATOR_TOKEN_KEY = "alert-operator-token";
+
+let cachedOperatorToken: string | null = null;
+const operatorTokenListeners = new Set<() => void>();
+
+function readOperatorToken(): string {
+  if (cachedOperatorToken === null) {
+    cachedOperatorToken = sessionStorage.getItem(ALERT_OPERATOR_TOKEN_KEY) ?? "";
+  }
+  return cachedOperatorToken;
+}
+
+function subscribeOperatorToken(onChange: () => void): () => void {
+  operatorTokenListeners.add(onChange);
+  return () => {
+    operatorTokenListeners.delete(onChange);
+  };
+}
+
+function saveOperatorToken(value: string) {
+  cachedOperatorToken = value;
+  if (value) {
+    sessionStorage.setItem(ALERT_OPERATOR_TOKEN_KEY, value);
+  } else {
+    sessionStorage.removeItem(ALERT_OPERATOR_TOKEN_KEY);
+  }
+  for (const listener of operatorTokenListeners) listener();
+}
+
+function useAlertOperatorToken(): string {
+  return useSyncExternalStore(subscribeOperatorToken, readOperatorToken, () => "");
+}
+
 function MainCISection({
   timeWindow,
   options,
@@ -211,6 +251,8 @@ function MainCISection({
     fetcher,
     { refreshInterval: 5 * 60 * 1000 },
   );
+  const operatorToken = useAlertOperatorToken();
+  const [showAccess, setShowAccess] = useState(false);
 
   const alerts = useMemo(
     () =>
@@ -224,10 +266,15 @@ function MainCISection({
   const resolveAlert = async (alertId: string) => {
     const response = await fetch("/api/alerts/main-ci/resolve", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${operatorToken}`,
+      },
       body: JSON.stringify({ alertId: Number(alertId) }),
     });
     if (!response.ok) {
+      // A rejected token is dropped so the Resolve buttons lock again.
+      if (response.status === 401) saveOperatorToken("");
       throw new Error(`Resolve failed with ${response.status}`);
     }
     await mutate();
@@ -245,13 +292,41 @@ function MainCISection({
           must be deployed before this preview can show alerts.
         </div>
       ) : (
-        <MainCIAlerts
-          alerts={alerts}
-          onResolve={resolveAlert}
-          hideSoftFail={options.hide.has("softfail")}
-          hideOptional={options.hide.has("optional")}
-          hideAmd={options.hide.has("amd")}
-        />
+        <div className="space-y-3">
+          {data?.resolutionEnabled && (
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowAccess((open) => !open)}
+                aria-expanded={showAccess}
+                className="dashboard-control text-xs font-medium text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100"
+              >
+                {operatorToken
+                  ? "Operator access enabled for this tab"
+                  : "Unlock resolve actions"}
+              </button>
+              {showAccess && (
+                <label className="mt-2 flex max-w-md flex-col gap-1.5 text-xs text-zinc-500 dark:text-zinc-400 sm:flex-row sm:items-center">
+                  <span className="shrink-0">Operator token</span>
+                  <input
+                    type="password"
+                    value={operatorToken}
+                    onChange={(event) => saveOperatorToken(event.target.value)}
+                    autoComplete="off"
+                    className="min-h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm text-zinc-900 shadow-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                  />
+                </label>
+              )}
+            </div>
+          )}
+          <MainCIAlerts
+            alerts={alerts}
+            onResolve={operatorToken ? resolveAlert : undefined}
+            hideSoftFail={options.hide.has("softfail")}
+            hideOptional={options.hide.has("optional")}
+            hideAmd={options.hide.has("amd")}
+          />
+        </div>
       )}
     </AlertSection>
   );
