@@ -56,6 +56,9 @@ PACIFIC = ZoneInfo("America/Los_Angeles")
 NON_NVIDIA_JOB = re.compile(
     r"AMD|MI300|Neuron|HPU|Intel|Ascend|NPU|IBM|Torch Nightly", re.IGNORECASE
 )
+# Preserved from the legacy Slack step. MI355 job names carry the ``:amd:``
+# prefix, while older MI300 names are not required to do so.
+AMD_JOB = re.compile(r"AMD|MI300", re.IGNORECASE)
 
 MEMORY_DIR = Path(".claude/agent-memory/vllm-ci-failure-analyzer")
 REPORT_FILE = Path(".logs/ci_report.txt")
@@ -244,11 +247,11 @@ class AnalyzerStore(Protocol):
         self,
         *,
         analysis: CompletedAnalysis,
-        notification: NotificationIntent,
+        notifications: tuple[NotificationIntent, ...],
         now: datetime,
     ) -> None:
         """Atomically persist the analysis, its conditions, the checkpoint
-        reference, and the notification intent. Already-persisted analyses are
+        reference, and its notification intents. Already-persisted analyses are
         a no-op so retried commands cannot duplicate them."""
         ...
 
@@ -344,6 +347,43 @@ def _plain_bullet_names(report_text: str) -> str:
 
 def _hard_failures(jobs: list[FullCIJobOutcome]) -> set[str]:
     return {job.name for job in jobs if job.state == "failed" and not job.soft_failed}
+
+
+def _amd_failure_payload(
+    build: Mapping[str, Any], jobs: list[FullCIJobOutcome]
+) -> dict[str, Any] | None:
+    """Render the separate AMD failure message preserved from production."""
+    amd_jobs = [job for job in jobs if AMD_JOB.search(job.name) is not None]
+    failed = [job for job in amd_jobs if job.state == "failed"]
+    if not failed:
+        return None
+
+    failure_lines = "\n".join(f"• ✗ {job.name}" for job in failed)
+    passed = len(amd_jobs) - len(failed)
+    body = (
+        f"{failure_lines}\n\n"
+        f"*{passed} passed, {len(failed)} failed* — "
+        f"<{build['web_url']}|View build>"
+    )
+    return {
+        "blocks": [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": (
+                        "🔴 vLLM Full CI — AMD Failures "
+                        f"(Build #{build['number']})"
+                    ),
+                    "emoji": True,
+                },
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": body},
+            },
+        ]
+    }
 
 
 def _complete_enough(jobs: list[FullCIJobOutcome]) -> bool:
@@ -602,7 +642,7 @@ class FullCIAnalysisHandler:
         raw_jobs = build.get("jobs")
         if not isinstance(raw_jobs, list):
             raise AnalyzerError("Buildkite build JSON has no jobs list")
-        jobs = [
+        all_jobs = [
             FullCIJobOutcome(
                 name=str(job["name"]),
                 state=str(job.get("state") or ""),
@@ -610,8 +650,8 @@ class FullCIAnalysisHandler:
             )
             for job in cast(list[dict[str, Any]], raw_jobs)
             if job.get("name") is not None
-            and NON_NVIDIA_JOB.search(str(job["name"])) is None
         ]
+        jobs = [job for job in all_jobs if NON_NVIDIA_JOB.search(job.name) is None]
         if not _complete_enough(jobs):
             return False  # newer comparisons cannot overtake this baseline
 
@@ -667,6 +707,30 @@ class FullCIAnalysisHandler:
             )
             conditions = self._classify(context, jobs, cache, outputs)
             checkpoint = self._checkpoints.upload(_read_memory(workdir))
+            notifications = [
+                NotificationIntent(
+                    delivery_id=f"full-ci:{context.current.build_id}",
+                    alert_ref=f"full-ci-comparison:{context.current.build_id}",
+                    alert_path=AlertPath.FULL_CI,
+                    delivery_mode=self._delivery_mode,
+                    destination_mode=DestinationMode.BOT_TOKEN,
+                    destination=full_ci_slack_channel(),
+                    payload={"text": outputs.report_text},
+                )
+            ]
+            amd_payload = _amd_failure_payload(build, all_jobs)
+            if amd_payload is not None:
+                notifications.append(
+                    NotificationIntent(
+                        delivery_id=f"full-ci-amd:{context.current.build_id}",
+                        alert_ref=f"full-ci-comparison:{context.current.build_id}",
+                        alert_path=AlertPath.FULL_CI,
+                        delivery_mode=self._delivery_mode,
+                        destination_mode=DestinationMode.BOT_TOKEN,
+                        destination=full_ci_slack_channel(),
+                        payload=amd_payload,
+                    )
+                )
             self._store.commit_analysis(
                 analysis=CompletedAnalysis(
                     current_build_id=context.current.build_id,
@@ -678,15 +742,7 @@ class FullCIAnalysisHandler:
                     checkpoint=checkpoint,
                     commit_pull_request=commit_pull_request,
                 ),
-                notification=NotificationIntent(
-                    delivery_id=f"full-ci:{context.current.build_id}",
-                    alert_ref=f"full-ci-comparison:{context.current.build_id}",
-                    alert_path=AlertPath.FULL_CI,
-                    delivery_mode=self._delivery_mode,
-                    destination_mode=DestinationMode.BOT_TOKEN,
-                    destination=full_ci_slack_channel(),
-                    payload={"text": outputs.report_text},
-                ),
+                notifications=tuple(notifications),
                 now=self._clock.now(),
             )
         return True

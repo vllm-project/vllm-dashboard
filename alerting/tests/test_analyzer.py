@@ -316,14 +316,16 @@ class Harness:
                 conditions=conditions,
                 checkpoint=checkpoint,
             ),
-            notification=NotificationIntent(
-                delivery_id=delivery_id,
-                alert_ref=f"full-ci-comparison:{run.build_id}",
-                alert_path=AlertPath.FULL_CI,
-                delivery_mode=DeliveryMode.LIVE,
-                destination_mode=DestinationMode.WEBHOOK,
-                destination="vllm-ci",
-                payload={"text": "seeded report"},
+            notifications=(
+                NotificationIntent(
+                    delivery_id=delivery_id,
+                    alert_ref=f"full-ci-comparison:{run.build_id}",
+                    alert_path=AlertPath.FULL_CI,
+                    delivery_mode=DeliveryMode.LIVE,
+                    destination_mode=DestinationMode.WEBHOOK,
+                    destination="vllm-ci",
+                    payload={"text": "seeded report"},
+                ),
             ),
             now=self.clock.now(),
         )
@@ -440,6 +442,86 @@ def test_analysis_persists_conditions_report_checkpoint_and_notification() -> No
     assert notification.destination_mode is DestinationMode.BOT_TOKEN
     assert notification.destination == "C0ABTNM9L5U"
     assert "Job B" in notification.payload["text"]
+
+
+def test_analysis_enqueues_separate_amd_failure_notification() -> None:
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs(
+                    [
+                        (":amd: (MI355) LM Eval Spec Decode", "failed", False),
+                        (":amd: (MI300) V1 Sample + Logits", "failed", False),
+                        (":amd: (MI300) Passing Job", "passed", False),
+                    ]
+                ),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+
+    result = harness.analyze()
+
+    assert result.status is ProcessStatus.COMPLETED
+    notification = harness.outbox.get_outbox(f"full-ci-amd:{run2.build_id}")
+    assert notification is not None
+    assert notification.alert_ref == f"full-ci-comparison:{run2.build_id}"
+    assert notification.alert_path is AlertPath.FULL_CI
+    assert notification.destination_mode is DestinationMode.BOT_TOKEN
+    assert notification.destination == "C0ABTNM9L5U"
+    assert notification.payload == {
+        "blocks": [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": "🔴 vLLM Full CI — AMD Failures (Build #2)",
+                    "emoji": True,
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "• ✗ :amd: (MI355) LM Eval Spec Decode\n"
+                        "• ✗ :amd: (MI300) V1 Sample + Logits\n\n"
+                        "*1 passed, 2 failed* — "
+                        "<https://buildkite.com/vllm/ci/builds/2|View build>"
+                    ),
+                },
+            },
+        ]
+    }
+
+
+def test_analysis_does_not_enqueue_amd_notification_without_amd_failures() -> None:
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs(
+                    [
+                        (":amd: (MI355) Passing Job", "passed", False),
+                        ("NVIDIA Job", "failed", False),
+                    ]
+                ),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+
+    result = harness.analyze()
+
+    assert result.status is ProcessStatus.COMPLETED
+    assert harness.outbox.get_outbox(f"full-ci-amd:{run2.build_id}") is None
 
 
 def test_wrapped_bullet_job_names_are_posted_plain_and_attributed() -> None:

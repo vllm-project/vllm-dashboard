@@ -808,7 +808,7 @@ class InMemoryAnalyzerStore:
         self,
         *,
         analysis: CompletedAnalysis,
-        notification: NotificationIntent,
+        notifications: tuple[NotificationIntent, ...],
         now: datetime,
     ) -> None:
         analyses_snapshot = dict(self._analyses)
@@ -827,7 +827,8 @@ class InMemoryAnalyzerStore:
                 analyzed_at=now,
             )
             self._checkpoints[analysis.current_build_id] = analysis.checkpoint
-            self._outbox.enqueue(notification, now=now)
+            for notification in notifications:
+                self._outbox.enqueue(notification, now=now)
             if self._fail_commit:
                 self._fail_commit = False
                 raise RuntimeError("Full CI analysis transaction failed")

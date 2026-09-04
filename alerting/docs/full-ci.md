@@ -8,9 +8,10 @@ compares to its chronological predecessor. The ingest slice
 (`alerting/full_ci.py`) records every run, its job outcomes, and the
 comparison link. The analysis sidecar (`alerting/analyzer.py`) then runs a
 Kimi-driven agent over each pending comparison to classify every failing
-job (new / recurring / fixed; cause: infrastructure, flaky test, test,
-code, unknown), attribute culprit and fixing PRs, and post the rendered
-analysis report.
+NVIDIA-scope job (new / recurring / fixed; cause: infrastructure, flaky test,
+test, code, unknown), attribute culprit and fixing PRs, and post the rendered
+analysis report. AMD jobs remain outside that classification and are summarized
+in a separate failure-only Slack message.
 
 ## Where the code lives
 
@@ -45,12 +46,15 @@ analysis report.
 
 ## What it posts to Slack
 
-One message per analyzed comparison: the analyzer's report text, delivered
-through the outbox with delivery ID `full-ci:<build_id>` (idempotent per
-build). The reconciler itself posts nothing. Each analysis commits its
-report, classifications, checkpoint reference, and the notification intent
-in one Postgres transaction; a failure leaves the comparison pending for
-the next tick.
+The analyzer's NVIDIA-focused report is delivered through the outbox with
+delivery ID `full-ci:<build_id>` (idempotent per build). When the same build
+contains at least one failed AMD job, a second message lists only the failed
+AMD jobs and ends with the AMD passed/failed counts plus a Buildkite link. Its
+delivery ID is `full-ci-amd:<build_id>`, so it can retry independently without
+duplicating the main report. Both notification intents are committed in the
+same Postgres transaction as the report, classifications, and checkpoint
+reference. The reconciler itself posts nothing; a failure leaves the
+comparison pending for the next tick.
 
 ## Dashboard history
 

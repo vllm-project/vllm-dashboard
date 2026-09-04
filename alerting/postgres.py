@@ -1652,7 +1652,7 @@ class PostgresAlertStore:
         self,
         *,
         analysis: CompletedAnalysis,
-        notification: NotificationIntent,
+        notifications: tuple[NotificationIntent, ...],
         now: datetime,
     ) -> None:
         with self._connection_factory() as connection:
@@ -1736,7 +1736,8 @@ class PostgresAlertStore:
                         now,
                     ),
                 )
-                self._enqueue(connection, notification, next_attempt_at=now)
+                for notification in notifications:
+                    self._enqueue(connection, notification, next_attempt_at=now)
 
 
 def _cache_payload(cache: FailureCache) -> dict[str, Any]:

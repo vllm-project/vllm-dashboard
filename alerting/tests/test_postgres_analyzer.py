@@ -353,6 +353,7 @@ class FakeGitHub:
 def make_harness(
     connection: FakePostgresConnection,
     pull: PullRequestRef | None = None,
+    jobs: list[dict[str, Any]] | None = None,
 ) -> tuple[AlertingRuntime, FakeCheckpoints]:
     checkpoints = FakeCheckpoints()
     checkpoints.add("s3://test-checkpoints/seed.tar.gz", {"MEMORY.md": b"# seed\n"})
@@ -371,7 +372,9 @@ def make_harness(
         "scheduled_at": RUN2_AT.isoformat(),
         "started_at": RUN2_AT.isoformat(),
         "finished_at": (RUN2_AT + timedelta(hours=2)).isoformat(),
-        "jobs": [
+        "jobs": jobs
+        if jobs is not None
+        else [
             {"name": "Job A", "state": "failed", "soft_failed": False},
             {"name": "Job B", "state": "passed", "soft_failed": False},
         ],
@@ -434,6 +437,29 @@ def test_commit_analysis_persists_everything_in_one_transaction() -> None:
         ProcessStatus.SKIPPED_ALREADY_COMPLETED
     )
     assert list(connection.state["analyses"]) == ["build-101"]
+
+
+def test_commit_analysis_persists_main_and_amd_notifications() -> None:
+    connection = FakePostgresConnection()
+    runtime, _ = make_harness(
+        connection,
+        jobs=[
+            {"name": "Job A", "state": "passed", "soft_failed": False},
+            {
+                "name": ":amd: (MI355) LM Eval Spec Decode",
+                "state": "failed",
+                "soft_failed": False,
+            },
+        ],
+    )
+
+    result = runtime.process_command(analyze_command())
+
+    assert result.status is ProcessStatus.COMPLETED
+    assert set(connection.state["outbox"]) == {
+        "full-ci:build-101",
+        "full-ci-amd:build-101",
+    }
 
 
 def test_failed_commit_rolls_back_analysis_conditions_and_checkpoint() -> None:
