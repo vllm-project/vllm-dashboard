@@ -193,7 +193,7 @@ def test_episode_opens_on_second_consecutive_silent_scan_not_the_first() -> None
     assert "down" not in text.lower()
 
 
-def test_first_fresh_report_resolves_episode_with_exactly_two_messages() -> None:
+def test_first_fresh_report_resolves_episode_by_editing_the_open_message() -> None:
     hosts = FixtureHosts({"gpu-h100-01"})
     snapshots = FixtureSnapshots()
     runtime, store, outbox, slack, clock = runtime_for(hosts, snapshots)
@@ -211,9 +211,13 @@ def test_first_fresh_report_resolves_episode_with_exactly_two_messages() -> None
 
     assert [episode.status for episode in store.episodes()] == ["resolved"]
     assert outbox.count() == 2
-    assert len(slack.deliveries) == 2
+    # The resolve edits the bot's open alert in place instead of posting again.
+    assert len(slack.deliveries) == 1
     assert "stopped reporting" in slack.deliveries[0].payload["text"]
-    assert "reporting again" in slack.deliveries[1].payload["text"]
+    assert len(slack.updates) == 1
+    update_text = slack.updates[0]["payload"]["text"]
+    assert "stopped reporting" in update_text
+    assert "reporting again" in update_text
 
 
 def test_reopened_episode_after_resolution_sends_a_new_pair() -> None:
@@ -238,8 +242,9 @@ def test_reopened_episode_after_resolution_sends_a_new_pair() -> None:
     runtime.dispatch_due_notifications()
 
     assert [episode.status for episode in store.episodes()] == ["resolved", "open"]
-    assert len(slack.deliveries) == 3
-    assert "stopped reporting" in slack.deliveries[2].payload["text"]
+    # The first resolve edited open #1 in place, so the reopen is delivery #2.
+    assert len(slack.deliveries) == 2
+    assert "stopped reporting" in slack.deliveries[1].payload["text"]
 
 
 def test_absent_and_silent_host_is_auto_retired_after_seven_days() -> None:
@@ -277,8 +282,9 @@ def test_absent_and_silent_host_is_auto_retired_after_seven_days() -> None:
 
     assert [episode.status for episode in store.episodes()] == ["resolved"]
     assert outbox.count() == 2
-    assert len(slack.deliveries) == 2
-    assert "auto-retired" in slack.deliveries[1].payload["text"]
+    assert len(slack.deliveries) == 1
+    assert len(slack.updates) == 1
+    assert "auto-retired" in slack.updates[0]["payload"]["text"]
 
     # Retired hosts stop alerting even while they stay absent and silent.
     scan(runtime, retire_scan + timedelta(minutes=5))
@@ -411,7 +417,7 @@ def test_shared_nfs_volume_pages_once_regardless_of_mounting_host_count() -> Non
     runtime.dispatch_due_notifications()
     assert [episode.status for episode in store.episodes()] == ["resolved"]
     assert outbox.count() == 2
-    assert "back below" in slack.deliveries[1].payload["text"]
+    assert "back below" in slack.updates[0]["payload"]["text"]
 
 
 def test_other_role_and_errored_mounts_never_alert() -> None:
@@ -508,7 +514,7 @@ def test_gpu_temperature_requires_sustained_breach_across_scans() -> None:
 
     assert [episode.status for episode in store.episodes()] == ["resolved"]
     assert outbox.count() == 2
-    assert "back below" in slack.deliveries[1].payload["text"]
+    assert "back below" in slack.updates[0]["payload"]["text"]
 
 
 class _FakeCompletedProcess:

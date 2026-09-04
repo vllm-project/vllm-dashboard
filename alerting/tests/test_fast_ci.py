@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from alerting.commands import ScheduledCommand
 from alerting.fast_ci import (
@@ -49,6 +49,11 @@ class RecordingDatabricks:
 
 class UnavailableSlackPort:
     def deliver(self, _record: NotificationIntentRecord) -> str | None:
+        raise RuntimeError("slack unavailable")
+
+    def update_message(
+        self, *, channel: str, ts: str, payload: Mapping[str, Any]
+    ) -> None:
         raise RuntimeError("slack unavailable")
 
 

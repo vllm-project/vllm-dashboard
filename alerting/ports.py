@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from alerting.commands import ScheduledCommand
 
@@ -191,3 +191,9 @@ class SlackPort(Protocol):
     """Delivers one outbox record; returns the Slack message timestamp if any."""
 
     def deliver(self, record: NotificationIntentRecord) -> str | None: ...
+
+    def update_message(
+        self, *, channel: str, ts: str, payload: Mapping[str, Any]
+    ) -> None:
+        """Edit a previously posted message in place (chat.update)."""
+        ...

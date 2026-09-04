@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 from dataclasses import replace
 from datetime import datetime, timedelta
+from typing import Any, Mapping
 
 from alerting.analyzer import (
     CheckpointRef,
@@ -852,6 +853,7 @@ class RecordingSlackPort:
     def __init__(self, ts: str = "0.0") -> None:
         self.ts = ts
         self.deliveries: list[NotificationIntentRecord] = []
+        self.updates: list[dict[str, Any]] = []
         self._failures: dict[str, list[Exception]] = {}
 
     def fail_next(self, delivery_id: str, error: Exception) -> None:
@@ -863,3 +865,10 @@ class RecordingSlackPort:
             raise queued.pop(0)
         self.deliveries.append(record)
         return self.ts
+
+    def update_message(
+        self, *, channel: str, ts: str, payload: Mapping[str, Any]
+    ) -> None:
+        self.updates.append(
+            {"channel": channel, "ts": ts, "payload": dict(payload)}
+        )

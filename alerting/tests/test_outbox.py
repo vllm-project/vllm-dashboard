@@ -5,6 +5,7 @@ not retry internals.
 """
 
 from datetime import datetime, timezone
+from typing import Any, Mapping
 
 import pytest
 
@@ -40,6 +41,9 @@ class AcceptThenCrashSlackPort:
 
     def deliver(self, record: NotificationIntentRecord) -> str | None:
         self.accepted_delivery_ids.append(record.delivery_id)
+        raise SimulatedWorkerCrash
+
+    def update_message(self, **_kwargs: object) -> None:
         raise SimulatedWorkerCrash
 
 
@@ -374,3 +378,108 @@ def test_replacement_worker_recovers_expired_lease_with_stable_delivery_id() -> 
     assert [item.delivery_id for item in replacement_slack.deliveries] == [
         record.delivery_id
     ]
+
+
+class _RejectingUpdateSlackPort(RecordingSlackPort):
+    def update_message(
+        self, *, channel: str, ts: str, payload: Mapping[str, Any]
+    ) -> None:
+        raise SlackPermanentError("message_not_found")
+
+
+def _infra_pair(outbox: InMemoryOutboxStore, clock: FixedClock) -> None:
+    outbox.enqueue(
+        make_message(
+            "infra:unreporting:abc123:100:open",
+            alert_path=AlertPath.INFRA,
+        ),
+        now=clock.now(),
+    )
+
+
+def test_resolve_record_updates_the_paired_open_message_in_place() -> None:
+    outbox = InMemoryOutboxStore()
+    slack = RecordingSlackPort(ts="1724900000.001")
+    clock = FixedClock(START)
+    runtime = make_runtime(outbox, slack, clock)
+    _infra_pair(outbox, clock)
+    assert runtime.dispatch_due_notifications().delivered == 1
+
+    outbox.enqueue(
+        make_message(
+            "infra:unreporting:abc123:100:resolve",
+            alert_path=AlertPath.INFRA,
+        ),
+        now=clock.now(),
+    )
+    # Resolve payload carries the resolution banner text.
+    record = outbox.get_outbox("infra:unreporting:abc123:100:resolve")
+    assert record is not None
+    record.payload["text"] = "host is reporting again"
+
+    assert runtime.dispatch_due_notifications().delivered == 1
+
+    # No new message: the bot edited its own open alert instead.
+    assert [r.delivery_id for r in slack.deliveries] == [
+        "infra:unreporting:abc123:100:open"
+    ]
+    assert slack.updates == [
+        {
+            "channel": "C0ANHBE642Y",
+            "ts": "1724900000.001",
+            "payload": {
+                "text": "8 jobs failed within 30s\n\nhost is reporting again"
+            },
+        }
+    ]
+    resolved = outbox.get_outbox("infra:unreporting:abc123:100:resolve")
+    assert resolved is not None
+    assert resolved.status is OutboxStatus.DELIVERED
+    assert resolved.slack_ts == "1724900000.001"
+
+
+def test_resolve_without_delivered_open_posts_a_new_message() -> None:
+    outbox = InMemoryOutboxStore()
+    slack = RecordingSlackPort(ts="1724900000.009")
+    clock = FixedClock(START)
+    runtime = make_runtime(outbox, slack, clock)
+    outbox.enqueue(
+        make_message(
+            "infra:unreporting:abc123:100:resolve",
+            alert_path=AlertPath.INFRA,
+        ),
+        now=clock.now(),
+    )
+
+    assert runtime.dispatch_due_notifications().delivered == 1
+
+    assert slack.updates == []
+    assert [r.delivery_id for r in slack.deliveries] == [
+        "infra:unreporting:abc123:100:resolve"
+    ]
+
+
+def test_resolve_falls_back_to_post_when_the_open_message_is_gone() -> None:
+    outbox = InMemoryOutboxStore()
+    slack = _RejectingUpdateSlackPort(ts="1724900000.001")
+    clock = FixedClock(START)
+    runtime = make_runtime(outbox, slack, clock)
+    _infra_pair(outbox, clock)
+    assert runtime.dispatch_due_notifications().delivered == 1
+
+    outbox.enqueue(
+        make_message(
+            "infra:unreporting:abc123:100:resolve",
+            alert_path=AlertPath.INFRA,
+        ),
+        now=clock.now(),
+    )
+    assert runtime.dispatch_due_notifications().delivered == 1
+
+    assert [r.delivery_id for r in slack.deliveries] == [
+        "infra:unreporting:abc123:100:open",
+        "infra:unreporting:abc123:100:resolve",
+    ]
+    resolved = outbox.get_outbox("infra:unreporting:abc123:100:resolve")
+    assert resolved is not None
+    assert resolved.status is OutboxStatus.DELIVERED

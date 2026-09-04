@@ -183,3 +183,39 @@ def test_invalid_slack_payload_is_permanent(
 
     with pytest.raises(SlackPermanentError, match=expected_error):
         slack.deliver(make_record(mode=mode, destination=destination))
+
+
+def test_update_message_posts_to_chat_update_with_channel_and_ts() -> None:
+    http = StubHttpTransport(
+        HttpResponse(status=200, headers={}, body=b'{"ok":true}')
+    )
+    slack = SlackDeliveryPort(bot_token="xoxb-secret", webhook_urls={}, http=http)
+
+    slack.update_message(
+        channel="C0ANHBE642Y",
+        ts="1724900000.001",
+        payload={"text": "alert\n\nresolved"},
+    )
+
+    url, headers, payload = http.requests[0]
+    assert url == "https://slack.com/api/chat.update"
+    assert headers["Authorization"] == "Bearer xoxb-secret"
+    assert payload == {
+        "channel": "C0ANHBE642Y",
+        "ts": "1724900000.001",
+        "text": "alert\n\nresolved",
+    }
+
+
+def test_update_message_rejection_is_permanent() -> None:
+    http = StubHttpTransport(
+        HttpResponse(
+            status=200, headers={}, body=b'{"ok":false,"error":"message_not_found"}'
+        )
+    )
+    slack = SlackDeliveryPort(bot_token="xoxb-secret", webhook_urls={}, http=http)
+
+    with pytest.raises(SlackPermanentError, match="message_not_found"):
+        slack.update_message(
+            channel="C0ANHBE642Y", ts="1724900000.001", payload={"text": "x"}
+        )
