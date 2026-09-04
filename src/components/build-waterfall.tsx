@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import useSWR from "swr";
+import { JobName, jobNameText } from "@/components/job-name";
 
 type LaneKind = "job" | "step" | "command" | "test";
 
@@ -462,7 +463,7 @@ export function BuildWaterfall({
                 detailErrors.has(lane.jobId),
               );
               const depth = laneDepth(lane);
-              const detail = `${lane.label} · ${formatTime(lane.startTime)}–${formatTime(lane.endTime)} · ${formatDuration(lane.durationMs)}${lane.outcome ? ` · ${lane.outcome}` : ""}`;
+              const detail = `${jobNameText(lane.label)} · ${formatTime(lane.startTime)}–${formatTime(lane.endTime)} · ${formatDuration(lane.durationMs)}${lane.outcome ? ` · ${lane.outcome}` : ""}`;
               const rowTone = depth === 0 ? "" : depth === 1 ? "bg-cyan-50/35 dark:bg-cyan-950/10" : "bg-emerald-50/30 dark:bg-emerald-950/10";
 
               return (
@@ -471,12 +472,12 @@ export function BuildWaterfall({
                     {depth > 0 && <span aria-hidden="true" className={`absolute inset-y-0 w-px ${depth === 1 ? "left-2 bg-cyan-200 dark:bg-cyan-900" : "left-6 bg-emerald-200 dark:bg-emerald-900"}`} />}
                     <div className="flex items-center gap-1.5">
                       {isExpandable ? (
-                        <button type="button" onClick={() => toggleExpanded(lane)} aria-expanded={expanded.has(lane.id)} aria-label={`${expanded.has(lane.id) ? "Collapse" : "Expand"} ${lane.label}`} className="dashboard-control flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-500 hover:bg-zinc-200/70 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100">
+                        <button type="button" onClick={() => toggleExpanded(lane)} aria-expanded={expanded.has(lane.id)} aria-label={`${expanded.has(lane.id) ? "Collapse" : "Expand"} ${jobNameText(lane.label)}`} className="dashboard-control flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-500 hover:bg-zinc-200/70 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100">
                           <span aria-hidden="true" className={`transition-transform ${expanded.has(lane.id) ? "rotate-90" : ""}`}>›</span>
                         </button>
                       ) : <span className="w-6 shrink-0" />}
                       {lane.critical && <span aria-label="Inferred build-limiting job" className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
-                      <span className={`truncate text-xs text-zinc-800 dark:text-zinc-200 ${depth === 0 ? "font-medium" : "font-mono text-[11px]"}`} title={lane.label}>{lane.label}</span>
+                      <span className={`truncate text-xs text-zinc-800 dark:text-zinc-200 ${depth === 0 ? "font-medium" : "font-mono text-[11px]"}`} title={jobNameText(lane.label)}><JobName name={lane.label} /></span>
                       {isExpandable && <span className="shrink-0 rounded bg-zinc-200/70 px-1.5 py-0.5 font-mono text-[9px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">{displayedChildCount}</span>}
                       {isLoadingDetails && <span className="shrink-0 text-[9px] text-cyan-600 dark:text-cyan-400">loading tests…</span>}
                       {hasDetailError && <span className="shrink-0 text-[9px] text-red-600 dark:text-red-400">test trace load failed; select again to retry</span>}

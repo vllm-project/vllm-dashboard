@@ -36,7 +36,7 @@ export async function GET(request: Request) {
 
     // Per-model datapoint counts, so the UI can sort models by how much data
     // they have (and show the count). Other dims come from a DISTINCT scan.
-    const [modelRows, dimRows] = await Promise.all([
+    const [modelRows, dimRows, imageDateRows] = await Promise.all([
       queryDatabricks<{ model: string; n: number }>(`
         SELECT message:model::STRING AS model, COUNT(*) AS n
         FROM vllm_data_warehouse.default.vllm_perf_data_ingest
@@ -59,6 +59,15 @@ export async function GET(request: Request) {
         FROM vllm_data_warehouse.default.vllm_perf_data_ingest
         WHERE ${where}
       `),
+      // Last run date per image, so the UI can order images newest first.
+      queryDatabricks<{ image: string; last_date: string }>(`
+        SELECT
+          message:image::STRING AS image,
+          MAX(message:date::STRING) AS last_date
+        FROM vllm_data_warehouse.default.vllm_perf_data_ingest
+        WHERE ${where}
+        GROUP BY message:image::STRING
+      `),
     ]);
 
     const modelCounts: Record<string, number> = {};
@@ -74,8 +83,12 @@ export async function GET(request: Request) {
     const concs = [...new Set(dimRows.map((r) => r.conc).filter(Boolean))].sort((a, b) => +a - +b);
     const precisions = [...new Set(dimRows.map((r) => r.precision).filter(Boolean))].sort();
     const images = [...new Set(dimRows.map((r) => r.image).filter(Boolean))].sort();
+    const imageDates: Record<string, string> = {};
+    for (const r of imageDateRows) {
+      if (r.image && r.last_date) imageDates[r.image] = r.last_date;
+    }
 
-    const result = { models, modelCounts, devices, tps, concs, precisions, images };
+    const result = { models, modelCounts, devices, tps, concs, precisions, images, imageDates };
     setCache(cacheKey, result, TTL);
 
     return cachedJson(result, CDN_CACHE);

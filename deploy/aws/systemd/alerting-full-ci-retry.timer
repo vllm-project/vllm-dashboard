@@ -1,0 +1,13 @@
+[Unit]
+Description=Retry pending Full CI analyses hourly between scheduled ticks
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*-*-* *:43:00 UTC
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+Unit=alerting-full-ci-retry.service
+
+[Install]
+WantedBy=timers.target

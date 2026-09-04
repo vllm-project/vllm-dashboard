@@ -56,6 +56,18 @@ export function splitJobName(name: string): JobNameSegment[] {
   return segments;
 }
 
+/**
+ * Plain-text form of a job name with all emoji shortcodes removed, for
+ * contexts that cannot render icons: title attributes, stat card details,
+ * search and sort keys.
+ */
+export function jobNameText(name: string): string {
+  return splitJobName(name)
+    .flatMap((segment) => (segment.type === "text" ? [segment.text] : []))
+    .join("")
+    .trim();
+}
+
 export function JobName({ name }: { name: string }) {
   const nodes: ReactNode[] = splitJobName(name).map((segment, index) =>
     segment.type === "text" ? (

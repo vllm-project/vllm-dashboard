@@ -66,6 +66,13 @@ class MainCIOpenAlertRef:
 
 
 @dataclass(frozen=True)
+class MainCILatestBuildRef:
+    """The newest finished main build the sweep can resolve alerts against."""
+
+    build_number: int
+
+
+@dataclass(frozen=True)
 class MainCIJobAlert:
     """One open-or-resolved failure episode for a logical main CI job."""
 
@@ -258,6 +265,8 @@ class MainCIBackstopBuildPort(Protocol):
 class MainCIBackstopStore(MainCIStore, Protocol):
     def open_main_ci_alert_builds(self) -> list[MainCIOpenAlertRef]: ...
 
+    def latest_finished_main_ci_build(self) -> MainCILatestBuildRef | None: ...
+
 
 class MainCIBackstopHandler:
     """Hourly full sweep of recent main builds plus open-alert builds.
@@ -274,7 +283,11 @@ class MainCIBackstopHandler:
        reprocessing the same builds idempotent.
     2. Targeted re-check: each open alert's last-failure build is fetched
        directly, so a retry pass on a build older than the wide window
-       still resolves its alert.
+       still resolves its alert. The newest finished main build is fetched
+       too: a fix merged after the failure makes the job pass there, and
+       that newer pass resolves the alert even when the job's pass fell
+       outside the sweep window (or the job no longer runs at all, in
+       which case nothing changes and the alert stays open).
 
     The sweep never advances the poller's scan cursor: it only re-checks
     data, and moving the cursor could make the poller skip failures that
@@ -306,6 +319,12 @@ class MainCIBackstopHandler:
         job_keys_by_build: dict[int, set[str]] = {}
         for ref in refs:
             job_keys_by_build.setdefault(ref.build_number, set()).add(ref.job_key)
+        latest = self._store.latest_finished_main_ci_build()
+        if latest is not None:
+            for ref in refs:
+                job_keys_by_build.setdefault(latest.build_number, set()).add(
+                    ref.job_key
+                )
         for build_number in sorted(job_keys_by_build):
             build = self._builds.get_build(
                 build_number, include_retried_jobs=True

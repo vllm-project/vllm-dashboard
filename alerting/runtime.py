@@ -16,6 +16,9 @@ from alerting.ports import (
     ClaimOutcome,
     Clock,
     AutomationExecutionStore,
+    DestinationMode,
+    NotificationIntentRecord,
+    OutboxStatus,
     OutboxStore,
     SlackPermanentError,
     SlackPort,
@@ -132,6 +135,49 @@ class AlertingRuntime:
             self._executions.complete(key, now=self._clock.now())
         return ProcessResult(key, ProcessStatus.COMPLETED)
 
+    def _deliver_or_update(self, record: NotificationIntentRecord) -> str | None:
+        """A resolve record edits its paired open message in place when possible.
+
+        Infra notifications pair as `<base>:open` / `<base>:resolve`; when the
+        open record was delivered via bot token we chat.update that message to
+        a ✅-prefixed, line-by-line struck-through copy of the original alert
+        instead of posting a second message. Falls back to a fresh post when
+        the original is gone (deleted message, shadow-era open, webhook
+        destination).
+        """
+        if (
+            record.delivery_id.endswith(":resolve")
+            and record.destination_mode is DestinationMode.BOT_TOKEN
+        ):
+            open_record = self._outbox.get_outbox(
+                record.delivery_id[: -len(":resolve")] + ":open"
+            )
+            if (
+                open_record is not None
+                and open_record.status is OutboxStatus.DELIVERED
+                and open_record.slack_ts
+            ):
+                original = str(open_record.payload.get("text") or "")
+                # Slack mrkdwn strikethrough does not span line breaks, so
+                # strike each line individually. Slack appends its own
+                # "(edited)" marker to updated messages; don't add another.
+                struck = "\n".join(
+                    f"~{line}~" if line.strip() else line
+                    for line in original.split("\n")
+                )
+                try:
+                    self._slack.update_message(
+                        channel=open_record.destination,
+                        ts=open_record.slack_ts,
+                        payload={"text": f":white_check_mark: {struck}"},
+                    )
+                except SlackPermanentError:
+                    # Original message deleted or channel gone: fresh post.
+                    pass
+                else:
+                    return open_record.slack_ts
+        return self._slack.deliver(record)
+
     def dispatch_due_notifications(self, *, limit: int = 50) -> DispatchResult:
         now = self._clock.now()
         if self._stale_notifications is not None:
@@ -145,7 +191,7 @@ class AlertingRuntime:
         delivered = retried = dead_lettered = 0
         for record in records:
             try:
-                slack_ts = self._slack.deliver(record)
+                slack_ts = self._deliver_or_update(record)
             except SlackPermanentError as exc:
                 self._outbox.mark_dead_letter(
                     record.delivery_id, error=str(exc), now=self._clock.now()

@@ -15,6 +15,7 @@ import {
 import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
 import { DateRangePicker } from "@/components/date-range-picker";
+import { JobName, jobNameText } from "@/components/job-name";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -640,8 +641,8 @@ export default function CostPage() {
                   return (
                     <tr key={j.job_name} className="border-b border-zinc-100 last:border-0 dark:border-zinc-800/50">
                       <td className="px-5 py-2.5 text-zinc-400">{i + 1}</td>
-                      <td className="max-w-[24rem] truncate px-5 py-2.5 font-medium" title={j.job_name}>
-                        {j.job_name}
+                      <td className="max-w-[24rem] truncate px-5 py-2.5 font-medium" title={jobNameText(j.job_name)}>
+                        <JobName name={j.job_name} />
                       </td>
                       <td className="px-5 py-2.5 text-right tabular-nums text-zinc-500">
                         {j.total_runs.toLocaleString()}

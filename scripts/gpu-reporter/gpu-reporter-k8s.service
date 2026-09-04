@@ -1,0 +1,16 @@
+[Unit]
+Description=Report GPU utilization to vLLM Dashboard (K8s DCGM)
+
+[Service]
+Type=oneshot
+# Copy gpu-reporter-k8s.env to /etc/gpu-reporter/gpu-reporter-k8s.env and fill in
+# the real values. The secret must never be committed or written into this unit.
+EnvironmentFile=/etc/gpu-reporter/gpu-reporter-k8s.env
+# Kubeconfig for the gpu-reporter ServiceAccount (see gpu-reporter-k8s-rbac.yaml).
+# Do NOT use /etc/kubernetes/admin.conf.
+Environment=KUBECONFIG=/etc/gpu-reporter/gpu-reporter-k8s.kubeconfig
+ExecStart=/usr/bin/python3 /opt/gpu-reporter/gpu-reporter-k8s.py
+TimeoutSec=120
+
+[Install]
+WantedBy=multi-user.target

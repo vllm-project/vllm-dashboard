@@ -5,7 +5,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { SearchableSelect } from "@/components/searchable-select";
 import { DateRangePicker } from "@/components/date-range-picker";
-import { commitFromImage } from "@/lib/commit-from-image";
+import {
+  commitFromImage,
+  describeImage,
+  resolveComparePresets,
+  sortImagesByKind,
+} from "@/lib/commit-from-image";
 
 type Area = "perf" | "eval";
 type DeltaStatus = "regression" | "improvement" | "unchanged" | "noisy";
@@ -15,12 +20,14 @@ interface PerfFilters {
   models: string[];
   devices: string[];
   images: string[];
+  imageDates?: Record<string, string>;
 }
 
 interface EvalFilters {
   models: string[];
   tasks: string[];
   images: string[];
+  imageDates?: Record<string, string>;
 }
 
 interface DeltaItem {
@@ -1312,10 +1319,46 @@ export default function ComparePage() {
     fetcher
   );
 
+  const imageDates = useMemo(() => {
+    const merged: Record<string, string> = {};
+    for (const source of [perfFilters?.imageDates, evalFilters?.imageDates]) {
+      for (const [image, date] of Object.entries(source ?? {})) {
+        if (!merged[image] || Date.parse(date) > Date.parse(merged[image])) {
+          merged[image] = date;
+        }
+      }
+    }
+    return merged;
+  }, [perfFilters?.imageDates, evalFilters?.imageDates]);
+
   const imageOptions = useMemo(
-    () => uniqueSorted([...(perfFilters?.images ?? []), ...(evalFilters?.images ?? [])]),
-    [perfFilters?.images, evalFilters?.images]
+    () =>
+      sortImagesByKind(
+        [
+          ...new Set(
+            [...(perfFilters?.images ?? []), ...(evalFilters?.images ?? [])].filter(
+              Boolean
+            )
+          ),
+        ],
+        imageDates
+      ),
+    [perfFilters?.images, evalFilters?.images, imageDates]
   );
+
+  const presets = useMemo(
+    () => resolveComparePresets(imageOptions, imageDates),
+    [imageOptions, imageDates]
+  );
+
+  const applyPreset = (presetBaseline: string, presetCandidate: string) => {
+    setBaseline(presetBaseline);
+    setCandidate(presetCandidate);
+    updateCompareUrl({
+      baseline: presetBaseline,
+      candidate: presetCandidate,
+    });
+  };
 
   useEffect(() => {
     if (imageOptions.length === 0) return;
@@ -1442,6 +1485,32 @@ export default function ComparePage() {
       </div>
 
       <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-950">
+        {presets.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-zinc-200 px-4 py-3 sm:px-5 dark:border-zinc-800">
+            <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">
+              Presets
+            </span>
+            {presets.map((preset) => {
+              const active =
+                baseline === preset.baseline && candidate === preset.candidate;
+              return (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => applyPreset(preset.baseline, preset.candidate)}
+                  title={`${preset.baseline} → ${preset.candidate}`}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] transition ${
+                    active
+                      ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                      : "border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100"
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
         <div className="grid gap-3 px-4 py-4 sm:px-5 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:items-end">
           <div className="order-1 min-w-0">
             <SearchableSelect
@@ -1451,6 +1520,14 @@ export default function ComparePage() {
               options={imageOptions}
               allLabel="Select baseline"
             />
+            {baseline && (
+              <div
+                className="mt-1 truncate font-mono text-[11px] text-zinc-400"
+                title={baseline}
+              >
+                {describeImage(baseline, imageDates)}
+              </div>
+            )}
           </div>
           <div className="order-2 min-w-0 md:order-3">
             <SearchableSelect
@@ -1460,6 +1537,14 @@ export default function ComparePage() {
               options={imageOptions}
               allLabel="Select candidate"
             />
+            {candidate && (
+              <div
+                className="mt-1 truncate font-mono text-[11px] text-zinc-400"
+                title={candidate}
+              >
+                {describeImage(candidate, imageDates)}
+              </div>
+            )}
           </div>
           <button
             type="button"

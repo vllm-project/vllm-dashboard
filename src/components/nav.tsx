@@ -47,10 +47,9 @@ function defaultDataUrls(href: string): string[] {
         "/api/tests?period=1day&sortBy=reliability&order=asc&page=1",
       ];
     case "/queue":
-      return [
-        "/api/metrics?hours=24&queue=gpu_1_queue",
-        "/api/metrics/waiting-builds?queue=gpu_1_queue",
-      ];
+      // No queue is hard-coded: the page reads this summary first and then
+      // selects the busiest queue itself.
+      return ["/api/metrics?hours=1&v=3"];
     case "/cost":
       return [
         `/api/cost?pipeline=CI&startDate=${startDate}&endDate=${endDate}`,

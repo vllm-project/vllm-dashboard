@@ -1,7 +1,9 @@
 "use client";
 
-import { Fragment, useDeferredValue, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
+
+import { groupParametrizedTests, type TestGroupRow } from "@/lib/test-groups";
 
 type Period = "1hour" | "4hours" | "1day" | "7days" | "14days" | "28days";
 type TestState = "all" | "enabled" | "muted" | "skipped";
@@ -27,7 +29,13 @@ interface TestRecord {
 
 interface TestsResponse {
   tests: TestRecord[];
-  pagination: { page: number; pageSize: number; hasNext: boolean };
+  pagination: {
+    page: number;
+    pageSize: number;
+    hasNext: boolean;
+    totalMatches?: number;
+    truncated?: boolean;
+  };
   suite: { name: string; slug: string; organization: string };
   error?: string;
 }
@@ -192,6 +200,275 @@ function HistoryPanel({ test }: { test: TestRecord }) {
   );
 }
 
+function LabelChip({ label }: { label: string }) {
+  return (
+    <span className={`rounded px-1.5 py-0.5 font-sans text-[10px] font-medium ${label === "flaky" ? "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"}`}>{label}</span>
+  );
+}
+
+function MobileTestCard({
+  test,
+  isOpen,
+  onToggle,
+}: {
+  test: TestRecord;
+  isOpen: boolean;
+  onToggle: () => void;
+}) {
+  const failed = test.executions_count_by_result?.failed ?? 0;
+  return (
+    <div className={isOpen ? "bg-blue-50/40 dark:bg-blue-500/[0.04]" : ""}>
+      <button
+        type="button"
+        aria-expanded={isOpen}
+        onClick={onToggle}
+        className="group w-full px-4 py-4 text-left"
+      >
+        <span className="flex min-w-0 items-start gap-2.5">
+          <span className="mt-0.5 shrink-0 text-zinc-400 group-hover:text-zinc-700 dark:group-hover:text-zinc-200">
+            <Chevron open={isOpen} />
+          </span>
+          <span className="min-w-0">
+            <span className="line-clamp-2 break-words text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+              {test.scope ? `${test.scope} · ` : ""}{test.name}
+            </span>
+            <span className="mt-1 block truncate font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+              {test.location || test.file_name || "Location not reported"}
+            </span>
+            {test.labels.length > 0 && (
+              <span className="mt-2 flex flex-wrap gap-1">
+                {test.labels.map((label) => (
+                  <LabelChip key={label} label={label} />
+                ))}
+              </span>
+            )}
+          </span>
+        </span>
+        <span className="mt-4 grid grid-cols-3 gap-3 pl-6.5">
+          <span>
+            <span className="block font-mono text-[9px] uppercase tracking-[0.08em] text-zinc-400">Reliability</span>
+            <span className="mt-1 flex items-center gap-2 text-sm font-semibold tabular-nums">
+              <span className={`h-4 w-1 rounded-full ${reliabilityTone(test.reliability)}`} />
+              {formatReliability(test.reliability)}
+            </span>
+          </span>
+          <span>
+            <span className="block font-mono text-[9px] uppercase tracking-[0.08em] text-zinc-400">Executions</span>
+            <span className="mt-1 block text-sm font-medium tabular-nums">
+              {test.executions_count.toLocaleString()}
+              {failed > 0 && <span className="ml-1 text-[10px] text-rose-600 dark:text-rose-400">· {failed} failed</span>}
+            </span>
+          </span>
+          <span>
+            <span className="block font-mono text-[9px] uppercase tracking-[0.08em] text-zinc-400">Average</span>
+            <span className="mt-1 block text-sm font-medium tabular-nums">{formatDuration(test.duration_avg)}</span>
+          </span>
+        </span>
+      </button>
+      {isOpen && <HistoryPanel test={test} />}
+    </div>
+  );
+}
+
+function MobileGroupCard({
+  group,
+  isOpen,
+  onToggle,
+  expandedTest,
+  onToggleTest,
+}: {
+  group: TestGroupRow<TestRecord>;
+  isOpen: boolean;
+  onToggle: () => void;
+  expandedTest: string | null;
+  onToggleTest: (id: string | null) => void;
+}) {
+  return (
+    <div className={isOpen ? "bg-blue-50/40 dark:bg-blue-500/[0.04]" : ""}>
+      <button
+        type="button"
+        aria-expanded={isOpen}
+        onClick={onToggle}
+        className="group w-full px-4 py-4 text-left"
+      >
+        <span className="flex min-w-0 items-start gap-2.5">
+          <span className="mt-0.5 shrink-0 text-zinc-400 group-hover:text-zinc-700 dark:group-hover:text-zinc-200">
+            <Chevron open={isOpen} />
+          </span>
+          <span className="min-w-0">
+            <span className="line-clamp-2 break-words text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+              {group.scope ? `${group.scope} · ` : ""}{group.name}
+            </span>
+            <span className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
+              <span className="truncate font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+                {group.file || "Location not reported"}
+              </span>
+              <LabelChip label={`${group.tests.length} variants`} />
+            </span>
+            {group.labels.length > 0 && (
+              <span className="mt-2 flex flex-wrap gap-1">
+                {group.labels.map((label) => (
+                  <LabelChip key={label} label={label} />
+                ))}
+              </span>
+            )}
+          </span>
+        </span>
+        <span className="mt-4 grid grid-cols-3 gap-3 pl-6.5">
+          <span>
+            <span className="block font-mono text-[9px] uppercase tracking-[0.08em] text-zinc-400">Worst reliability</span>
+            <span className="mt-1 flex items-center gap-2 text-sm font-semibold tabular-nums">
+              <span className={`h-4 w-1 rounded-full ${reliabilityTone(group.reliability)}`} />
+              {formatReliability(group.reliability)}
+            </span>
+          </span>
+          <span>
+            <span className="block font-mono text-[9px] uppercase tracking-[0.08em] text-zinc-400">Executions</span>
+            <span className="mt-1 block text-sm font-medium tabular-nums">
+              {group.executionsCount.toLocaleString()}
+              {group.failedCount > 0 && <span className="ml-1 text-[10px] text-rose-600 dark:text-rose-400">· {group.failedCount} failed</span>}
+            </span>
+          </span>
+          <span>
+            <span className="block font-mono text-[9px] uppercase tracking-[0.08em] text-zinc-400">Average</span>
+            <span className="mt-1 block text-sm font-medium tabular-nums">{formatDuration(group.durationAvg)}</span>
+          </span>
+        </span>
+      </button>
+      {isOpen && (
+        <div className="divide-y divide-zinc-200 border-t border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+          {group.tests.map((test) => (
+            <MobileTestCard
+              key={test.id}
+              test={test}
+              isOpen={expandedTest === test.id}
+              onToggle={() => onToggleTest(expandedTest === test.id ? null : test.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DesktopTestRows({
+  test,
+  isOpen,
+  onToggle,
+}: {
+  test: TestRecord;
+  isOpen: boolean;
+  onToggle: () => void;
+}) {
+  const failed = test.executions_count_by_result?.failed ?? 0;
+  return (
+    <>
+      <tr className={isOpen ? "bg-blue-50/40 dark:bg-blue-500/[0.04]" : "hover:bg-zinc-50/70 dark:hover:bg-zinc-900/40"}>
+        <td className="px-5 py-4 sm:px-7">
+          <button
+            type="button"
+            aria-expanded={isOpen}
+            onClick={onToggle}
+            className="group flex min-h-10 w-full min-w-0 items-start gap-3 rounded text-left"
+          >
+            <span className="mt-1 text-zinc-400 group-hover:text-zinc-700 dark:group-hover:text-zinc-200"><Chevron open={isOpen} /></span>
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                {test.scope ? `${test.scope} · ` : ""}{test.name}
+              </span>
+              <span className="mt-1 flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                <span className="truncate font-mono">{test.location || test.file_name || "Location not reported"}</span>
+                {test.labels.map((label) => (
+                  <LabelChip key={label} label={label} />
+                ))}
+              </span>
+            </span>
+          </button>
+        </td>
+        <td className="px-4 py-4 text-sm tabular-nums">
+          <span className="font-medium">{test.executions_count.toLocaleString()}</span>
+          {failed > 0 && <span className="ml-2 text-xs text-rose-600 dark:text-rose-400">· {failed} failed</span>}
+        </td>
+        <td className="px-4 py-4">
+          <div className="flex items-center gap-3">
+            <span className={`h-8 w-1 rounded-full ${reliabilityTone(test.reliability)}`} />
+            <span className="text-sm font-semibold tabular-nums">{formatReliability(test.reliability)}</span>
+          </div>
+        </td>
+        <td className="px-5 py-4 text-right text-sm font-medium tabular-nums sm:px-7">{formatDuration(test.duration_avg)}</td>
+      </tr>
+      {isOpen && (
+        <tr className="bg-zinc-50/80 dark:bg-zinc-900/50">
+          <td colSpan={4}><HistoryPanel test={test} /></td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function DesktopGroupRows({
+  group,
+  isOpen,
+  onToggle,
+  expandedTest,
+  onToggleTest,
+}: {
+  group: TestGroupRow<TestRecord>;
+  isOpen: boolean;
+  onToggle: () => void;
+  expandedTest: string | null;
+  onToggleTest: (id: string | null) => void;
+}) {
+  return (
+    <>
+      <tr className={isOpen ? "bg-blue-50/40 dark:bg-blue-500/[0.04]" : "hover:bg-zinc-50/70 dark:hover:bg-zinc-900/40"}>
+        <td className="px-5 py-4 sm:px-7">
+          <button
+            type="button"
+            aria-expanded={isOpen}
+            onClick={onToggle}
+            className="group flex min-h-10 w-full min-w-0 items-start gap-3 rounded text-left"
+          >
+            <span className="mt-1 text-zinc-400 group-hover:text-zinc-700 dark:group-hover:text-zinc-200"><Chevron open={isOpen} /></span>
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                {group.scope ? `${group.scope} · ` : ""}{group.name}
+              </span>
+              <span className="mt-1 flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                <span className="truncate font-mono">{group.file || "Location not reported"}</span>
+                <LabelChip label={`${group.tests.length} variants`} />
+                {group.labels.map((label) => (
+                  <LabelChip key={label} label={label} />
+                ))}
+              </span>
+            </span>
+          </button>
+        </td>
+        <td className="px-4 py-4 text-sm tabular-nums">
+          <span className="font-medium">{group.executionsCount.toLocaleString()}</span>
+          {group.failedCount > 0 && <span className="ml-2 text-xs text-rose-600 dark:text-rose-400">· {group.failedCount} failed</span>}
+        </td>
+        <td className="px-4 py-4">
+          <div className="flex items-center gap-3">
+            <span className={`h-8 w-1 rounded-full ${reliabilityTone(group.reliability)}`} />
+            <span className="text-sm font-semibold tabular-nums">{formatReliability(group.reliability)}</span>
+          </div>
+        </td>
+        <td className="px-5 py-4 text-right text-sm font-medium tabular-nums sm:px-7">{formatDuration(group.durationAvg)}</td>
+      </tr>
+      {isOpen &&
+        group.tests.map((test) => (
+          <DesktopTestRows
+            key={test.id}
+            test={test}
+            isOpen={expandedTest === test.id}
+            onToggle={() => onToggleTest(expandedTest === test.id ? null : test.id)}
+          />
+        ))}
+    </>
+  );
+}
+
 function LoadingRows() {
   return (
     <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
@@ -217,8 +494,27 @@ export default function TestsPage() {
   const [order, setOrder] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const deferredQuery = useDeferredValue(query.trim().toLowerCase());
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [grouped, setGrouped] = useState(true);
+  const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
+  const [expandedTest, setExpandedTest] = useState<string | null>(null);
+
+  // Debounce the search box before hitting the server-side search.
+  // A new search starts back on page one with everything collapsed.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setDebouncedQuery(query.trim());
+      setPage(1);
+      setExpandedGroup(null);
+      setExpandedTest(null);
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [query]);
+
+  function collapseAll() {
+    setExpandedGroup(null);
+    setExpandedTest(null);
+  }
 
   const params = new URLSearchParams({
     period,
@@ -228,6 +524,7 @@ export default function TestsPage() {
   });
   if (state !== "all") params.set("state", state);
   if (label !== "all") params.set("label", label);
+  if (debouncedQuery) params.set("q", debouncedQuery);
 
   const { data, error, isLoading, isValidating } = useSWR<TestsResponse>(
     `/api/tests?${params.toString()}`,
@@ -235,19 +532,13 @@ export default function TestsPage() {
     { refreshInterval: 5 * 60 * 1000, keepPreviousData: true },
   );
 
-  const visibleTests = useMemo(() => {
-    if (!deferredQuery) return data?.tests ?? [];
-    return (data?.tests ?? []).filter((test) =>
-      [test.scope, test.name, test.location, ...test.labels]
-        .filter(Boolean)
-        .some((value) => value!.toLowerCase().includes(deferredQuery)),
-    );
-  }, [data?.tests, deferredQuery]);
+  const tests = useMemo(() => data?.tests ?? [], [data?.tests]);
+  const groups = useMemo(() => groupParametrizedTests(tests), [tests]);
 
   function changePeriod(next: Period) {
     setPeriod(next);
     setPage(1);
-    setExpanded(null);
+    collapseAll();
   }
 
   function changeSort(next: SortBy) {
@@ -258,7 +549,7 @@ export default function TestsPage() {
       setOrder(next === "reliability" ? "asc" : "desc");
     }
     setPage(1);
-    setExpanded(null);
+    collapseAll();
   }
 
   const errorMessage = error instanceof Error ? error.message : null;
@@ -307,7 +598,7 @@ export default function TestsPage() {
               onChange={(event) => {
                 setState(event.target.value as TestState);
                 setPage(1);
-                setExpanded(null);
+                collapseAll();
               }}
               className="dashboard-control min-h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
             >
@@ -323,16 +614,28 @@ export default function TestsPage() {
               onChange={(event) => {
                 setLabel(event.target.value as TestLabel);
                 setPage(1);
-                setExpanded(null);
+                collapseAll();
               }}
               className="dashboard-control min-h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
             >
               <option value="all">All tests</option>
               <option value="flaky">Flaky only</option>
             </select>
+            <button
+              type="button"
+              aria-pressed={grouped}
+              title="Collapse parametrized variants (test_foo[...]) into one row per test"
+              onClick={() => {
+                setGrouped((value) => !value);
+                collapseAll();
+              }}
+              className="dashboard-control min-h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+            >
+              {grouped ? "Grouped" : "Ungrouped"}
+            </button>
           </div>
           <label className="relative block w-full sm:w-72">
-            <span className="sr-only">Search tests on this page</span>
+            <span className="sr-only">Search tests</span>
             <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-zinc-400">
               <SearchIcon />
             </span>
@@ -340,7 +643,7 @@ export default function TestsPage() {
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search this page"
+              placeholder="Search tests"
               className="dashboard-control min-h-10 w-full rounded-md border border-zinc-200 bg-white py-2 pl-9 pr-3 text-sm shadow-sm placeholder:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-900"
             />
           </label>
@@ -359,62 +662,34 @@ export default function TestsPage() {
         ) : (
           <>
             <div className="divide-y divide-zinc-200 md:hidden dark:divide-zinc-800">
-              {visibleTests.map((test) => {
-                const isOpen = expanded === test.id;
-                const failed = test.executions_count_by_result?.failed ?? 0;
-                return (
-                  <div key={test.id} className={isOpen ? "bg-blue-50/40 dark:bg-blue-500/[0.04]" : ""}>
-                    <button
-                      type="button"
-                      aria-expanded={isOpen}
-                      onClick={() => setExpanded(isOpen ? null : test.id)}
-                      className="group w-full px-4 py-4 text-left"
-                    >
-                      <span className="flex min-w-0 items-start gap-2.5">
-                        <span className="mt-0.5 shrink-0 text-zinc-400 group-hover:text-zinc-700 dark:group-hover:text-zinc-200">
-                          <Chevron open={isOpen} />
-                        </span>
-                        <span className="min-w-0">
-                          <span className="line-clamp-2 break-words text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                            {test.scope ? `${test.scope} · ` : ""}{test.name}
-                          </span>
-                          <span className="mt-1 block truncate font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
-                            {test.location || test.file_name || "Location not reported"}
-                          </span>
-                          {test.labels.length > 0 && (
-                            <span className="mt-2 flex flex-wrap gap-1">
-                              {test.labels.map((label) => (
-                                <span key={label} className={`rounded px-1.5 py-0.5 font-sans text-[10px] font-medium ${label === "flaky" ? "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"}`}>{label}</span>
-                              ))}
-                            </span>
-                          )}
-                        </span>
-                      </span>
-                      <span className="mt-4 grid grid-cols-3 gap-3 pl-6.5">
-                        <span>
-                          <span className="block font-mono text-[9px] uppercase tracking-[0.08em] text-zinc-400">Reliability</span>
-                          <span className="mt-1 flex items-center gap-2 text-sm font-semibold tabular-nums">
-                            <span className={`h-4 w-1 rounded-full ${reliabilityTone(test.reliability)}`} />
-                            {formatReliability(test.reliability)}
-                          </span>
-                        </span>
-                        <span>
-                          <span className="block font-mono text-[9px] uppercase tracking-[0.08em] text-zinc-400">Executions</span>
-                          <span className="mt-1 block text-sm font-medium tabular-nums">
-                            {test.executions_count.toLocaleString()}
-                            {failed > 0 && <span className="ml-1 text-[10px] text-rose-600 dark:text-rose-400">· {failed} failed</span>}
-                          </span>
-                        </span>
-                        <span>
-                          <span className="block font-mono text-[9px] uppercase tracking-[0.08em] text-zinc-400">Average</span>
-                          <span className="mt-1 block text-sm font-medium tabular-nums">{formatDuration(test.duration_avg)}</span>
-                        </span>
-                      </span>
-                    </button>
-                    {isOpen && <HistoryPanel test={test} />}
-                  </div>
-                );
-              })}
+              {grouped
+                ? groups.map((group) =>
+                    group.parametrized ? (
+                      <MobileGroupCard
+                        key={group.key}
+                        group={group}
+                        isOpen={expandedGroup === group.key}
+                        onToggle={() => setExpandedGroup(expandedGroup === group.key ? null : group.key)}
+                        expandedTest={expandedTest}
+                        onToggleTest={setExpandedTest}
+                      />
+                    ) : (
+                      <MobileTestCard
+                        key={group.tests[0].id}
+                        test={group.tests[0]}
+                        isOpen={expandedTest === group.tests[0].id}
+                        onToggle={() => setExpandedTest(expandedTest === group.tests[0].id ? null : group.tests[0].id)}
+                      />
+                    ),
+                  )
+                : tests.map((test) => (
+                    <MobileTestCard
+                      key={test.id}
+                      test={test}
+                      isOpen={expandedTest === test.id}
+                      onToggle={() => setExpandedTest(expandedTest === test.id ? null : test.id)}
+                    />
+                  ))}
             </div>
 
             <div className="hidden overflow-x-auto md:block">
@@ -438,63 +713,44 @@ export default function TestsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                  {visibleTests.map((test) => {
-                    const isOpen = expanded === test.id;
-                    const failed = test.executions_count_by_result?.failed ?? 0;
-                    return (
-                      <Fragment key={test.id}>
-                        <tr className={isOpen ? "bg-blue-50/40 dark:bg-blue-500/[0.04]" : "hover:bg-zinc-50/70 dark:hover:bg-zinc-900/40"}>
-                          <td className="px-5 py-4 sm:px-7">
-                            <button
-                              type="button"
-                              aria-expanded={isOpen}
-                              onClick={() => setExpanded(isOpen ? null : test.id)}
-                              className="group flex min-h-10 w-full min-w-0 items-start gap-3 rounded text-left"
-                            >
-                              <span className="mt-1 text-zinc-400 group-hover:text-zinc-700 dark:group-hover:text-zinc-200"><Chevron open={isOpen} /></span>
-                              <span className="min-w-0">
-                                <span className="block truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                                  {test.scope ? `${test.scope} · ` : ""}{test.name}
-                                </span>
-                                <span className="mt-1 flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
-                                  <span className="truncate font-mono">{test.location || test.file_name || "Location not reported"}</span>
-                                  {test.labels.map((label) => (
-                                    <span key={label} className={`shrink-0 rounded px-1.5 py-0.5 font-sans text-[10px] font-medium ${label === "flaky" ? "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300" : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"}`}>{label}</span>
-                                  ))}
-                                </span>
-                              </span>
-                            </button>
-                          </td>
-                          <td className="px-4 py-4 text-sm tabular-nums">
-                            <span className="font-medium">{test.executions_count.toLocaleString()}</span>
-                            {failed > 0 && <span className="ml-2 text-xs text-rose-600 dark:text-rose-400">· {failed} failed</span>}
-                          </td>
-                          <td className="px-4 py-4">
-                            <div className="flex items-center gap-3">
-                              <span className={`h-8 w-1 rounded-full ${reliabilityTone(test.reliability)}`} />
-                              <span className="text-sm font-semibold tabular-nums">{formatReliability(test.reliability)}</span>
-                            </div>
-                          </td>
-                          <td className="px-5 py-4 text-right text-sm font-medium tabular-nums sm:px-7">{formatDuration(test.duration_avg)}</td>
-                        </tr>
-                        {isOpen && (
-                          <tr className="bg-zinc-50/80 dark:bg-zinc-900/50">
-                            <td colSpan={4}><HistoryPanel test={test} /></td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    );
-                  })}
+                  {grouped
+                    ? groups.map((group) =>
+                        group.parametrized ? (
+                          <DesktopGroupRows
+                            key={group.key}
+                            group={group}
+                            isOpen={expandedGroup === group.key}
+                            onToggle={() => setExpandedGroup(expandedGroup === group.key ? null : group.key)}
+                            expandedTest={expandedTest}
+                            onToggleTest={setExpandedTest}
+                          />
+                        ) : (
+                          <DesktopTestRows
+                            key={group.tests[0].id}
+                            test={group.tests[0]}
+                            isOpen={expandedTest === group.tests[0].id}
+                            onToggle={() => setExpandedTest(expandedTest === group.tests[0].id ? null : group.tests[0].id)}
+                          />
+                        ),
+                      )
+                    : tests.map((test) => (
+                        <DesktopTestRows
+                          key={test.id}
+                          test={test}
+                          isOpen={expandedTest === test.id}
+                          onToggle={() => setExpandedTest(expandedTest === test.id ? null : test.id)}
+                        />
+                      ))}
                 </tbody>
               </table>
             </div>
 
-            {visibleTests.length === 0 && (
+            {tests.length === 0 && (
               <div className="flex min-h-56 items-center justify-center px-6 py-12 text-center">
                 <div>
                   <h2 className="text-sm font-semibold">No tests match this view</h2>
                   <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-                    {query ? "Clear the page search or change the filters." : "Try a longer history window or another filter."}
+                    {debouncedQuery ? "Clear the search or change the filters." : "Try a longer history window or another filter."}
                   </p>
                 </div>
               </div>
@@ -503,14 +759,19 @@ export default function TestsPage() {
             <footer className="flex flex-col gap-3 border-t border-zinc-200 px-5 py-4 text-sm dark:border-zinc-800 sm:flex-row sm:items-center sm:justify-between sm:px-7">
               <p className="text-zinc-500 dark:text-zinc-400">
                 {data?.tests.length ? `Tests ${firstItem.toLocaleString()}–${lastItem.toLocaleString()}` : "No tests"}
-                {query && ` · ${visibleTests.length} match${visibleTests.length === 1 ? "" : "es"} on this page`}
+                {debouncedQuery && data?.pagination.totalMatches != null &&
+                  ` · ${data.pagination.totalMatches.toLocaleString()} match${data.pagination.totalMatches === 1 ? "" : "es"}`}
+                {debouncedQuery && data?.pagination.truncated &&
+                  " · search covers the first 1,000 tests in this view"}
+                {grouped && data?.pagination.hasNext &&
+                  " · parametrized groups may continue on the next page"}
                 {isValidating && <span className="ml-2 text-blue-600 dark:text-blue-400">Refreshing…</span>}
               </p>
               <div className="flex gap-2">
                 <button
                   type="button"
                   disabled={page === 1}
-                  onClick={() => { setPage((value) => Math.max(1, value - 1)); setExpanded(null); }}
+                  onClick={() => { setPage((value) => Math.max(1, value - 1)); collapseAll(); }}
                   className="dashboard-control min-h-10 rounded-md border border-zinc-200 bg-white px-3 font-medium shadow-sm hover:border-zinc-300 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600"
                 >
                   Previous
@@ -518,7 +779,7 @@ export default function TestsPage() {
                 <button
                   type="button"
                   disabled={!data?.pagination.hasNext}
-                  onClick={() => { setPage((value) => value + 1); setExpanded(null); }}
+                  onClick={() => { setPage((value) => value + 1); collapseAll(); }}
                   className="dashboard-control min-h-10 rounded-md border border-zinc-200 bg-white px-3 font-medium shadow-sm hover:border-zinc-300 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600"
                 >
                   Next

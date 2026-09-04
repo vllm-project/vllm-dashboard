@@ -16,6 +16,7 @@ from alerting.ports import (
 )
 
 CHAT_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
+CHAT_UPDATE_URL = "https://slack.com/api/chat.update"
 _TRANSIENT_API_ERRORS = {
     "fatal_error",
     "internal_error",
@@ -144,6 +145,37 @@ class SlackDeliveryPort:
             raise SlackPermanentError(f"Slack rejected message: {error}")
         slack_ts = result.get("ts")
         return slack_ts if isinstance(slack_ts, str) else None
+
+    def update_message(
+        self, *, channel: str, ts: str, payload: Mapping[str, Any]
+    ) -> None:
+        """Edit a message the bot posted earlier (chat.update)."""
+        if not self._bot_token:
+            raise SlackPermanentError("Slack bot token is not configured")
+
+        response = self._http.post(
+            CHAT_UPDATE_URL,
+            headers={
+                "Authorization": f"Bearer {self._bot_token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            payload={"channel": channel, "ts": ts, **payload},
+        )
+        _raise_for_http_failure(response)
+        try:
+            result = json.loads(response.body)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise SlackTransientError("Slack returned an invalid response") from exc
+        if not isinstance(result, dict):
+            raise SlackTransientError("Slack returned an invalid response")
+        if result.get("ok") is not True:
+            error = str(result.get("error", "unknown_error"))
+            if error in _TRANSIENT_API_ERRORS:
+                raise SlackTransientError(
+                    f"Slack could not update message: {error}",
+                    retry_after=_retry_after(response.headers),
+                )
+            raise SlackPermanentError(f"Slack rejected update: {error}")
 
 
 def _raise_for_http_failure(response: HttpResponse) -> None:

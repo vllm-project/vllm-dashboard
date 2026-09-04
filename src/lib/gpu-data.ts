@@ -1,6 +1,7 @@
 import { unstable_cache } from "next/cache";
 import { getDb } from "@/lib/db";
 import { joinGpuHostsToAgents } from "@/lib/buildkite-agent-query";
+import { queryHostLatest } from "@/lib/gpu-host-data";
 import type {
   GpuHistoryResponse,
   GpuHostAgent,
@@ -44,6 +45,12 @@ function normalizeSnapshots(rows: DbRow[]): GpuSnapshot[] {
   }));
 }
 
+function nullableNumber(value: DbValue): number | null {
+  if (value == null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function normalizeLatest(rows: DbRow[]): GpuLatest[] {
   return rows.map((row) => ({
     hostname: String(row.hostname),
@@ -52,6 +59,9 @@ function normalizeLatest(rows: DbRow[]): GpuLatest[] {
     gpu_util: Number(row.gpu_util),
     mem_used_mb: Number(row.mem_used_mb),
     mem_total_mb: Number(row.mem_total_mb),
+    temperature_c: nullableNumber(row.temperature_c),
+    power_draw_w: nullableNumber(row.power_draw_w),
+    power_limit_w: nullableNumber(row.power_limit_w),
     reported_at: isoString(row.reported_at),
   }));
 }
@@ -195,10 +205,13 @@ export async function queryGpuLatest(): Promise<GpuLatest[]> {
       ) next_key
     )
     SELECT l.hostname, l.gpu_index, l.gpu_name, l.gpu_util,
-           l.mem_used_mb, l.mem_total_mb, l.reported_at
+           l.mem_used_mb, l.mem_total_mb,
+           l.temperature_c, l.power_draw_w, l.power_limit_w,
+           l.reported_at
     FROM gpu_keys k
     CROSS JOIN LATERAL (
-      SELECT hostname, gpu_index, gpu_name, gpu_util, mem_used_mb, mem_total_mb, reported_at
+      SELECT hostname, gpu_index, gpu_name, gpu_util, mem_used_mb, mem_total_mb,
+             temperature_c, power_draw_w, power_limit_w, reported_at
       FROM gpu_snapshots s
       WHERE s.hostname = k.hostname AND s.gpu_index = k.gpu_index
       ORDER BY s.reported_at DESC
@@ -279,11 +292,14 @@ const getCachedInitialHistory = unstable_cache(
 );
 
 const getCachedInitialLatest = unstable_cache(
-  async (): Promise<GpuLatestResponse> => ({
-    latest: await queryGpuLatest(),
-    checked_at: new Date().toISOString(),
-  }),
-  ["gpu-initial-latest-v3"],
+  async (): Promise<GpuLatestResponse> => {
+    const [latest, hosts] = await Promise.all([
+      queryGpuLatest(),
+      queryHostLatest(),
+    ]);
+    return { latest, hosts, checked_at: new Date().toISOString() };
+  },
+  ["gpu-initial-latest-v4"],
   { revalidate: 30, tags: ["gpu-latest"] },
 );
 
@@ -295,6 +311,7 @@ export async function getInitialGpuData() {
   return {
     overview: summarizeGpuHistory(history),
     latest: latestResponse.latest,
+    hosts: latestResponse.hosts,
     latestCheckedAt: latestResponse.checked_at,
     asOf: Date.now(),
   };

@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { JobName, splitJobName } from "@/components/job-name";
+import { JobName, jobNameText } from "@/components/job-name";
 import { SegmentedControl } from "@/components/segmented-control";
 import {
   isAmdJobName,
@@ -117,20 +117,9 @@ function sortColumn(key: SortKey) {
   return SORT_COLUMNS.find((column) => column.key === key) ?? SORT_COLUMNS[0];
 }
 
-/**
- * Buildkite job names lead with vendor shortcodes (":nvidia: (B200) …") that
- * the list never shows, so sorting must use the text a reader actually sees.
- */
-function displayJobName(jobName: string): string {
-  return splitJobName(jobName)
-    .flatMap((segment) => (segment.type === "text" ? [segment.text] : []))
-    .join("")
-    .trim();
-}
-
 function compareJobNames(a: MainCiJobAlert, b: MainCiJobAlert): number {
-  return displayJobName(a.jobName).localeCompare(
-    displayJobName(b.jobName),
+  return jobNameText(a.jobName).localeCompare(
+    jobNameText(b.jobName),
     undefined,
     { sensitivity: "base", numeric: true },
   );

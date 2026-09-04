@@ -31,15 +31,30 @@ INITIAL_LOOKBACK = timedelta(minutes=30)
 SAFETY_OVERLAP = timedelta(minutes=15)
 MAX_DURATION_SECONDS = 30
 SLACK_BATCH_SIZE = 8
-# Both alert paths deliver through the Slack bot token. The channel comes from
-# SLACK_CHANNEL_ID so a channel move is a secret edit, not a code change.
+# Both alert paths deliver through the Slack bot token. Channels follow the
+# per-path convention (values live in secrets manager):
+# SLACK_CI_NOTIFICATIONS_CHANNEL (Full CI), SLACK_CI_FAST_FAILURE_ALERT_CHANNEL
+# (Fast CI), SLACK_CI_INFRA_ALERT_CHANNEL (infra/queue alerts).
+# SLACK_CHANNEL_ID is the legacy shared fallback so a channel move stays a
+# secret edit, not a code change.
 ALERTS_SLACK_CHANNEL = "C0ABTNM9L5U"
 STALE_NOTIFICATION_AGE = timedelta(minutes=30)
 
 
+def _channel(primary_env: str) -> str:
+    return os.environ.get(
+        primary_env, os.environ.get("SLACK_CHANNEL_ID", ALERTS_SLACK_CHANNEL)
+    )
+
+
 def slack_channel() -> str:
-    """The channel alert intents post to; SLACK_CHANNEL_ID wins when set."""
-    return os.environ.get("SLACK_CHANNEL_ID", ALERTS_SLACK_CHANNEL)
+    """The channel Fast CI alert intents post to."""
+    return _channel("SLACK_CI_FAST_FAILURE_ALERT_CHANNEL")
+
+
+def full_ci_slack_channel() -> str:
+    """The channel Full CI report intents post to."""
+    return _channel("SLACK_CI_NOTIFICATIONS_CHANNEL")
 
 
 class FastFailureState(StrEnum):

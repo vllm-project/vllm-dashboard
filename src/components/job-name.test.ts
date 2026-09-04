@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { splitJobName } from "./job-name";
+import { jobNameText, splitJobName } from "./job-name";
 
 test("a known vendor shortcode becomes an icon segment", () => {
   const segments = splitJobName(":nvidia: (H200) Language Models Shard 3");
@@ -33,4 +33,23 @@ test("an unknown shortcode is stripped, not shown literally", () => {
 
 test("a name without shortcodes passes through unchanged", () => {
   assert.deepEqual(splitJobName("lint"), [{ type: "text", text: "lint" }]);
+});
+
+test("jobNameText strips a leading shortcode and its following space", () => {
+  assert.equal(
+    jobNameText(":nvidia: (H200) Language Models Shard 3"),
+    "(H200) Language Models Shard 3",
+  );
+});
+
+test("jobNameText strips shortcodes in the middle without joining words", () => {
+  assert.equal(jobNameText("unit test :amd: shard 1"), "unit test shard 1");
+});
+
+test("jobNameText strips unknown shortcodes too", () => {
+  assert.equal(jobNameText(":tensorrt: engine build"), "engine build");
+});
+
+test("jobNameText leaves shortcode-free names unchanged", () => {
+  assert.equal(jobNameText("lint"), "lint");
 });

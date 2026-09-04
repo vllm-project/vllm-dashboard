@@ -6,6 +6,7 @@ import { cachedJson } from "@/lib/api-response";
 
 interface RawRow {
   m: string;
+  d: number | null;
 }
 
 interface LmEvalCore {
@@ -63,7 +64,8 @@ export async function GET(request: Request) {
     }
 
     const rawRows = await queryDatabricks<RawRow>(`
-      SELECT CAST(message AS STRING) AS m
+      SELECT CAST(message AS STRING) AS m,
+        COALESCE(message:date::DOUBLE, message:data:date::DOUBLE) AS d
       FROM vllm_data_warehouse.default.vllm_eval_data_ingest
       WHERE ${conditions.join(" AND ")}
     `);
@@ -73,6 +75,7 @@ export async function GET(request: Request) {
     const filters = new Set<string>();
     const metrics = new Set<string>();
     const images = new Set<string>();
+    const imageEpochs = new Map<string, number>();
     const imageLookups: Promise<void>[] = [];
 
     for (const r of rawRows) {
@@ -88,9 +91,14 @@ export async function GET(request: Request) {
       if (modelName) models.add(modelName);
       for (const taskName of Object.keys(core.results)) {
         tasks.add(taskName);
+        const epoch = Number(r.d);
         imageLookups.push(
           resolveEvalImage(raw, core, taskName).then((image) => {
-            if (image) images.add(image);
+            if (!image) return;
+            images.add(image);
+            if (Number.isFinite(epoch) && epoch > (imageEpochs.get(image) ?? 0)) {
+              imageEpochs.set(image, epoch);
+            }
           })
         );
         for (const key of Object.keys(core.results[taskName])) {
@@ -106,10 +114,16 @@ export async function GET(request: Request) {
 
     await Promise.all(imageLookups);
 
+    const imageDates: Record<string, string> = {};
+    for (const [image, epoch] of imageEpochs) {
+      imageDates[image] = new Date(epoch * 1000).toISOString();
+    }
+
     const result = {
       models: [...models].sort(),
       tasks: [...tasks].sort(),
       images: [...images].sort(),
+      imageDates,
       filters: [...filters].sort(),
       metrics: [...metrics].sort(),
     };

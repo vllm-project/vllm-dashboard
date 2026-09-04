@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test \"src/**/*.test.ts\"",
     "lint": "eslint",
     "migrate": "uv run --project migrations vllm-dashboard-migrate",
     "configure:buildkite-otel": "node scripts/configure-buildkite-otel.mjs"
