@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
-import { getQueueCost } from "@/lib/queue-costs";
+import { computePricingCoverage, getQueueCost } from "@/lib/queue-costs";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
@@ -138,6 +138,7 @@ export async function GET(request: NextRequest) {
         total_hours: totalHours,
         instance_type: pricing?.instanceType ?? null,
         cost_per_hour: pricing?.costPerHour ?? null,
+        estimated: pricing?.estimated ?? false,
         total_cost: pricing ? Math.round(totalHours * pricing.costPerHour * 100) / 100 : null,
       };
     });
@@ -207,11 +208,17 @@ export async function GET(request: NextRequest) {
       }))
       .sort((a, b) => b.total_cost - a.total_cost);
 
+    const coverage = computePricingCoverage(
+      queueWithCost.map((q) => ({ queue: q.queue as string, total_hours: q.total_hours })),
+    );
+
     const result = {
       byQueue: queueWithCost,
       dailyCostByQueue,
       byBuild,
       byJob,
+      pricedHoursShare: coverage.pricedHoursShare,
+      estimatedHoursShare: coverage.estimatedHoursShare,
     };
     setCache(cacheKey, result, TTL);
 
