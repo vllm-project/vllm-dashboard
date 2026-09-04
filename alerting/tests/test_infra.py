@@ -218,7 +218,7 @@ def test_first_fresh_report_resolves_episode_by_editing_the_open_message() -> No
     update_text = slack.updates[0]["payload"]["text"]
     assert update_text.startswith(":white_check_mark: ~")
     assert "stopped reporting" in update_text
-    assert update_text.endswith("~ (edited)")
+    assert update_text.endswith("~") and "(edited)" not in update_text
 
 
 def test_reopened_episode_after_resolution_sends_a_new_pair() -> None:
@@ -285,7 +285,7 @@ def test_absent_and_silent_host_is_auto_retired_after_seven_days() -> None:
     assert outbox.count() == 2
     assert len(slack.deliveries) == 1
     assert len(slack.updates) == 1
-    assert slack.updates[0]["payload"]["text"].endswith("~ (edited)")
+    assert slack.updates[0]["payload"]["text"].endswith("~")
 
     # Retired hosts stop alerting even while they stay absent and silent.
     scan(runtime, retire_scan + timedelta(minutes=5))
@@ -418,7 +418,7 @@ def test_shared_nfs_volume_pages_once_regardless_of_mounting_host_count() -> Non
     runtime.dispatch_due_notifications()
     assert [episode.status for episode in store.episodes()] == ["resolved"]
     assert outbox.count() == 2
-    assert slack.updates[0]["payload"]["text"].endswith("~ (edited)")
+    assert slack.updates[0]["payload"]["text"].endswith("~")
 
 
 def test_other_role_and_errored_mounts_never_alert() -> None:
@@ -515,7 +515,7 @@ def test_gpu_temperature_requires_sustained_breach_across_scans() -> None:
 
     assert [episode.status for episode in store.episodes()] == ["resolved"]
     assert outbox.count() == 2
-    assert slack.updates[0]["payload"]["text"].endswith("~ (edited)")
+    assert slack.updates[0]["payload"]["text"].endswith("~")
 
 
 class _FakeCompletedProcess:

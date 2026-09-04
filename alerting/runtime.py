@@ -140,9 +140,10 @@ class AlertingRuntime:
 
         Infra notifications pair as `<base>:open` / `<base>:resolve`; when the
         open record was delivered via bot token we chat.update that message to
-        a ✅-prefixed, struck-through copy of the original alert instead of
-        posting a second message. Falls back to a fresh post when the original
-        is gone (deleted message, shadow-era open, webhook destination).
+        a ✅-prefixed, line-by-line struck-through copy of the original alert
+        instead of posting a second message. Falls back to a fresh post when
+        the original is gone (deleted message, shadow-era open, webhook
+        destination).
         """
         if (
             record.delivery_id.endswith(":resolve")
@@ -157,13 +158,18 @@ class AlertingRuntime:
                 and open_record.slack_ts
             ):
                 original = str(open_record.payload.get("text") or "")
+                # Slack mrkdwn strikethrough does not span line breaks, so
+                # strike each line individually. Slack appends its own
+                # "(edited)" marker to updated messages; don't add another.
+                struck = "\n".join(
+                    f"~{line}~" if line.strip() else line
+                    for line in original.split("\n")
+                )
                 try:
                     self._slack.update_message(
                         channel=open_record.destination,
                         ts=open_record.slack_ts,
-                        payload={
-                            "text": f":white_check_mark: ~{original}~ (edited)"
-                        },
+                        payload={"text": f":white_check_mark: {struck}"},
                     )
                 except SlackPermanentError:
                     # Original message deleted or channel gone: fresh post.

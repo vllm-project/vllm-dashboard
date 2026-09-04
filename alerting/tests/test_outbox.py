@@ -403,6 +403,11 @@ def test_resolve_record_updates_the_paired_open_message_in_place() -> None:
     clock = FixedClock(START)
     runtime = make_runtime(outbox, slack, clock)
     _infra_pair(outbox, clock)
+    # The open alert spans multiple lines; Slack strikethrough must wrap
+    # each line individually to render.
+    open_record = outbox.get_outbox("infra:unreporting:abc123:100:open")
+    assert open_record is not None
+    open_record.payload["text"] = "Infra alert — host stopped reporting\nNo report for over 10 minutes"
     assert runtime.dispatch_due_notifications().delivered == 1
 
     outbox.enqueue(
@@ -416,6 +421,7 @@ def test_resolve_record_updates_the_paired_open_message_in_place() -> None:
     assert runtime.dispatch_due_notifications().delivered == 1
 
     # No new message: the bot struck through its own open alert instead.
+    # Slack appends its own "(edited)" marker; the payload must not add one.
     assert [r.delivery_id for r in slack.deliveries] == [
         "infra:unreporting:abc123:100:open"
     ]
@@ -424,7 +430,7 @@ def test_resolve_record_updates_the_paired_open_message_in_place() -> None:
             "channel": "C0ANHBE642Y",
             "ts": "1724900000.001",
             "payload": {
-                "text": ":white_check_mark: ~8 jobs failed within 30s~ (edited)"
+                "text": ":white_check_mark: ~Infra alert — host stopped reporting~\n~No report for over 10 minutes~"
             },
         }
     ]

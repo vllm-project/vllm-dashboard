@@ -25,8 +25,8 @@ RAM, load, and network are display-only and never alert. Every episode
 opens only after the breach sustains across `consecutive_scans` and
 resolves on the first healthy observation. One Slack message per episode:
 the resolve edits the bot's own open alert in place (chat.update) into a
-✅-prefixed, struck-through copy ending in `(edited)`; if the original
-message is gone it posts fresh.
+✅-prefixed copy with each line struck through (Slack adds its own
+`(edited)` marker); if the original message is gone it posts fresh.
 
 ## Where the code lives
 
