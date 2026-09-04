@@ -7,15 +7,32 @@ import type {
   NormalizedNodeConditions,
 } from "@/lib/gpu-report";
 import {
+  DESCENDING_FIRST_SORT_KEYS,
   hostReportStatus,
   indexHostsByName,
+  isContainerPlumbingMount,
   isRamBackedMount,
+  sortHostRows,
   worstAlertableDisk,
   type HostReportStatus,
   type HostRow,
+  type HostSortKey,
+  type SortDirection,
 } from "@/lib/gpu-host-view";
 
 const COLUMN_COUNT = 9;
+
+const SORTABLE_COLUMNS: { key: HostSortKey; label: string }[] = [
+  { key: "host", label: "Host" },
+  { key: "gpuType", label: "GPU Type" },
+  { key: "gpuUtil", label: "GPU Utilization" },
+  { key: "gpuTemp", label: "GPU Temp" },
+  { key: "gpuMemory", label: "Per-GPU Memory" },
+  { key: "cpu", label: "CPU" },
+  { key: "ram", label: "RAM" },
+  { key: "disk", label: "Disk (worst)" },
+  { key: "lastSeen", label: "Last Seen" },
+];
 
 function formatMemory(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
@@ -165,14 +182,16 @@ function NodeConditionChips({
 }
 
 function DiskDetail({ disks }: { disks: NormalizedDiskMetric[] | null }) {
-  if (!disks || disks.length === 0) {
+  const visible = disks?.filter((disk) => !isContainerPlumbingMount(disk)) ?? [];
+  const hiddenCount = (disks?.length ?? 0) - visible.length;
+  if (visible.length === 0) {
     return (
       <p className="mt-1 text-xs text-zinc-400">No disk metrics reported.</p>
     );
   }
   return (
     <div className="mt-1 space-y-1.5">
-      {disks.map((disk, index) => {
+      {visible.map((disk, index) => {
         const usedPct =
           disk.used_bytes != null &&
           disk.total_bytes != null &&
@@ -217,6 +236,11 @@ function DiskDetail({ disks }: { disks: NormalizedDiskMetric[] | null }) {
           </div>
         );
       })}
+      {hiddenCount > 0 && (
+        <p className="text-xs text-zinc-400">
+          {hiddenCount} container/pod {hiddenCount === 1 ? "mount" : "mounts"} hidden
+        </p>
+      )}
     </div>
   );
 }
@@ -340,7 +364,23 @@ export function GpuHostTable({
   defaultExpanded = null,
 }: GpuHostTableProps) {
   const [expanded, setExpanded] = useState<string | null>(defaultExpanded);
+  const [sort, setSort] = useState<{ key: HostSortKey; direction: SortDirection }>({
+    key: "host",
+    direction: "asc",
+  });
   const hostsByName = useMemo(() => indexHostsByName(hosts), [hosts]);
+  const sortedRows = useMemo(
+    () => sortHostRows(hostRows, hostsByName, sort.key, sort.direction),
+    [hostRows, hostsByName, sort],
+  );
+
+  function toggleSort(key: HostSortKey) {
+    setSort((current) =>
+      current.key === key
+        ? { key, direction: current.direction === "asc" ? "desc" : "asc" }
+        : { key, direction: DESCENDING_FIRST_SORT_KEYS.has(key) ? "desc" : "asc" },
+    );
+  }
 
   return (
     <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none">
@@ -354,19 +394,41 @@ export function GpuHostTable({
         <table className="w-full min-w-[1200px] text-sm">
           <thead>
             <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-              <th className="px-5 py-3 font-medium sm:px-6">Host</th>
-              <th className="px-5 py-3 font-medium sm:px-6">GPU Type</th>
-              <th className="px-5 py-3 font-medium sm:px-6">GPU Utilization</th>
-              <th className="px-5 py-3 font-medium sm:px-6">GPU Temp</th>
-              <th className="px-5 py-3 font-medium sm:px-6">Per-GPU Memory</th>
-              <th className="px-5 py-3 font-medium sm:px-6">CPU</th>
-              <th className="px-5 py-3 font-medium sm:px-6">RAM</th>
-              <th className="px-5 py-3 font-medium sm:px-6">Disk (worst)</th>
-              <th className="px-5 py-3 font-medium sm:px-6">Last Seen</th>
+              {SORTABLE_COLUMNS.map((column) => {
+                const active = sort.key === column.key;
+                return (
+                  <th
+                    key={column.key}
+                    aria-sort={
+                      active
+                        ? sort.direction === "asc"
+                          ? "ascending"
+                          : "descending"
+                        : "none"
+                    }
+                    className="px-5 py-3 font-medium sm:px-6"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleSort(column.key)}
+                      className="dashboard-control -mx-2 -my-1 inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+                      title={`Sort by ${column.label}`}
+                    >
+                      {column.label}
+                      <span
+                        aria-hidden="true"
+                        className={`text-xs ${active ? "text-zinc-900 dark:text-zinc-100" : "text-zinc-400 dark:text-zinc-500"}`}
+                      >
+                        {active ? (sort.direction === "asc" ? "▲" : "▼") : "⇅"}
+                      </span>
+                    </button>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
-            {hostRows.map((h) => {
+            {sortedRows.map((h) => {
               const host = hostsByName.get(h.hostname);
               const agent = agents?.get(h.hostname);
               const gpuUtil =

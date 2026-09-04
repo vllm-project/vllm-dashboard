@@ -7,7 +7,9 @@ import {
   diskUsedPct,
   hostReportStatus,
   indexHostsByName,
+  isContainerPlumbingMount,
   isRamBackedMount,
+  sortHostRows,
   worstAlertableDisk,
 } from "./gpu-host-view";
 import type { GpuLatest, HostLatest } from "./gpu-types";
@@ -168,6 +170,33 @@ test("isRamBackedMount flags tmpfs and ramfs only", () => {
   assert.equal(isRamBackedMount(disk({ fstype: "overlay" })), false);
 });
 
+test("isContainerPlumbingMount hides pod plumbing but keeps real mounts", () => {
+  // Overlay snapshots duplicate the underlying disk.
+  assert.equal(
+    isContainerPlumbingMount(disk({ device: "overlay_0-569", mount_point: null })),
+    true,
+  );
+  // Per-container shm and kubelet service-account volumes multiply per pod.
+  assert.equal(
+    isContainerPlumbingMount(
+      disk({ mount_point: "/run/containerd/io.containerd.grpc.v1.cri/sandboxes/abc/shm" }),
+    ),
+    true,
+  );
+  assert.equal(
+    isContainerPlumbingMount(
+      disk({ mount_point: "/var/lib/kubelet/pods/0102f2e2/volumes/kubernetes.io~projected/kube-api-access-gjhj7" }),
+    ),
+    true,
+  );
+  assert.equal(isContainerPlumbingMount(disk({ mount_point: "/run/lock" })), true);
+  // Real host mounts stay visible.
+  assert.equal(isContainerPlumbingMount(disk({ mount_point: "/" })), false);
+  assert.equal(isContainerPlumbingMount(disk({ mount_point: "/data" })), false);
+  assert.equal(isContainerPlumbingMount(disk({ mount_point: "/dev/shm" })), false);
+  assert.equal(isContainerPlumbingMount(disk({ mount_point: "/run" })), false);
+});
+
 function hostLatest(overrides: Partial<HostLatest> = {}): HostLatest {
   return {
     hostname: "h200-ci-1",
@@ -194,4 +223,72 @@ test("indexHostsByName keeps one row per host, the newest one", () => {
   assert.equal(map.size, 2);
   assert.equal(map.get("h200-ci-1")?.cpu_util, 55);
   assert.equal(map.get("h200-ci-2")?.cpu_util, 42);
+});
+
+function sortableFixture(): { rows: ReturnType<typeof buildHostRows>; hosts: Map<string, HostLatest> } {
+  const rows = buildHostRows(
+    [
+      gpu({ hostname: "h200-ci-1", gpu_util: 20, temperature_c: 61, mem_used_mb: 1000 }),
+      gpu({ hostname: "h200-ci-2", gpu_util: 90, temperature_c: null, mem_used_mb: 2000 }),
+      gpu({ hostname: "dgxb200-01", gpu_util: 50, temperature_c: 75, mem_used_mb: 500 }),
+    ],
+    gpuType,
+  );
+  const hosts = indexHostsByName([
+    hostLatest({ hostname: "h200-ci-1", cpu_util: 42 }),
+    hostLatest({
+      hostname: "h200-ci-2",
+      cpu_util: 10,
+      disks: [disk({ mount_point: "/data", role: "data", used_bytes: 90, total_bytes: 100 })],
+    }),
+  ]);
+  return { rows, hosts };
+}
+
+test("sortHostRows orders by average GPU utilization in both directions", () => {
+  const { rows, hosts } = sortableFixture();
+  assert.deepEqual(
+    sortHostRows(rows, hosts, "gpuUtil", "desc").map((r) => r.hostname),
+    ["h200-ci-2", "dgxb200-01", "h200-ci-1"],
+  );
+  assert.deepEqual(
+    sortHostRows(rows, hosts, "gpuUtil", "asc").map((r) => r.hostname),
+    ["h200-ci-1", "dgxb200-01", "h200-ci-2"],
+  );
+});
+
+test("sortHostRows keeps rows with no value last in both directions", () => {
+  const { rows, hosts } = sortableFixture();
+  assert.deepEqual(
+    sortHostRows(rows, hosts, "gpuTemp", "desc").map((r) => r.hostname),
+    ["dgxb200-01", "h200-ci-1", "h200-ci-2"],
+  );
+  assert.deepEqual(
+    sortHostRows(rows, hosts, "gpuTemp", "asc").map((r) => r.hostname),
+    ["h200-ci-1", "dgxb200-01", "h200-ci-2"],
+  );
+});
+
+test("sortHostRows reads host-level metrics from the joined host row", () => {
+  const { rows, hosts } = sortableFixture();
+  // dgxb200-01 has no host row at all, so it sorts last on cpu; on disk both
+  // h200-ci-1 (no disks reported) and dgxb200-01 are null and tie-break by name.
+  assert.deepEqual(
+    sortHostRows(rows, hosts, "cpu", "desc").map((r) => r.hostname),
+    ["h200-ci-1", "h200-ci-2", "dgxb200-01"],
+  );
+  assert.deepEqual(
+    sortHostRows(rows, hosts, "disk", "desc").map((r) => r.hostname),
+    ["h200-ci-2", "dgxb200-01", "h200-ci-1"],
+  );
+});
+
+test("sortHostRows sorts hostnames alphabetically and never mutates the input", () => {
+  const { rows, hosts } = sortableFixture();
+  const before = rows.map((r) => r.hostname);
+  assert.deepEqual(
+    sortHostRows(rows, hosts, "host", "desc").map((r) => r.hostname),
+    ["h200-ci-2", "h200-ci-1", "dgxb200-01"],
+  );
+  assert.deepEqual(rows.map((r) => r.hostname), before);
 });

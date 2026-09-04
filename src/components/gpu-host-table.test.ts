@@ -289,3 +289,39 @@ test("an empty roster keeps the deployment hint", () => {
 
   assert.match(markup, /No GPU data found/);
 });
+
+test("the drill-down hides container plumbing mounts and says how many", () => {
+  const markup = render(
+    [hostRow()],
+    [
+      hostLatest({
+        disks: [
+          disk({ mount_point: "/" }),
+          disk({ mount_point: "/data", device: "/dev/md127", role: "data" }),
+          disk({ device: "overlay_0-569", mount_point: null, role: "other" }),
+          disk({
+            mount_point:
+              "/run/containerd/io.containerd.grpc.v1.cri/sandboxes/abc123/shm",
+            device: "shm",
+            fstype: "tmpfs",
+            role: "other",
+          }),
+          disk({
+            mount_point:
+              "/var/lib/kubelet/pods/0102f2e2/volumes/kubernetes.io~projected/kube-api-access-gjhj7",
+            device: "tmpfs",
+            fstype: "tmpfs",
+            role: "other",
+          }),
+        ],
+      }),
+    ],
+    "h200-ci-1",
+  );
+
+  assert.match(markup, /\/data/);
+  assert.doesNotMatch(markup, /overlay_0-569/);
+  assert.doesNotMatch(markup, /sandboxes/);
+  assert.doesNotMatch(markup, /kube-api-access/);
+  assert.match(markup, /3 container\/pod mounts hidden/);
+});

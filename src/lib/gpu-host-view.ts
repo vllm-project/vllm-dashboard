@@ -107,7 +107,8 @@ export function buildHostRows(
 /**
  * Disk roles that can fill up a job and therefore drive alerting and the
  * summary Disk cell. "other" mounts (cgroup, tmpfs snapshots, container
- * plumbing) are shown in the drill-down but never drive the cell.
+ * plumbing) never drive the cell, and the container-plumbing ones are hidden
+ * from the drill-down entirely — see isContainerPlumbingMount.
  */
 export const ALERTABLE_DISK_ROLES: readonly DiskRole[] = [
   "workspace",
@@ -115,6 +116,21 @@ export const ALERTABLE_DISK_ROLES: readonly DiskRole[] = [
   "data",
   "system",
 ];
+
+/**
+ * Mounts that are container or pod plumbing rather than real host storage:
+ * overlay snapshots of the root filesystem, per-container shm mounts, kubelet
+ * projected service-account volumes. They duplicate a real mount (an overlay
+ * shows the same usage as the underlying disk) or can never fill up, and a
+ * busy node accumulates dozens of them, so the drill-down filters them out.
+ */
+export function isContainerPlumbingMount(
+  disk: Pick<NormalizedDiskMetric, "mount_point" | "device">,
+): boolean {
+  if (disk.device?.startsWith("overlay")) return true;
+  const mount = disk.mount_point ?? "";
+  return /^\/(run\/.+|var\/lib\/kubelet|sys\/fs\/cgroup)(\/|$)/.test(mount);
+}
 
 /** RAM-backed filesystems consume memory, not disk; the UI labels them. */
 export function isRamBackedMount(disk: Pick<NormalizedDiskMetric, "fstype">): boolean {
@@ -168,4 +184,86 @@ export function indexHostsByName(hosts: HostLatest[]): Map<string, HostLatest> {
     }
   }
   return map;
+}
+
+export type HostSortKey =
+  | "host"
+  | "gpuType"
+  | "gpuUtil"
+  | "gpuTemp"
+  | "gpuMemory"
+  | "cpu"
+  | "ram"
+  | "disk"
+  | "lastSeen";
+
+export type SortDirection = "asc" | "desc";
+
+/** Sort keys whose useful first click is highest-first; the rest sort A→Z. */
+export const DESCENDING_FIRST_SORT_KEYS: ReadonlySet<HostSortKey> = new Set([
+  "gpuUtil",
+  "gpuTemp",
+  "gpuMemory",
+  "cpu",
+  "ram",
+  "disk",
+  "lastSeen",
+]);
+
+function hostSortValue(
+  row: HostRow,
+  host: HostLatest | undefined,
+  key: HostSortKey,
+): string | number | null {
+  switch (key) {
+    case "host":
+      return row.hostname;
+    case "gpuType":
+      return row.gpuType;
+    case "gpuUtil":
+      return row.gpuCount > 0 ? row.gpuUtil / row.gpuCount : null;
+    case "gpuTemp":
+      return row.maxTemperatureC;
+    case "gpuMemory":
+      return row.memTotalMb > 0 ? (row.memUsedMb / row.memTotalMb) * 100 : null;
+    case "cpu":
+      return host?.cpu_util ?? null;
+    case "ram":
+      return host?.ram_used_bytes != null &&
+        host.ram_total_bytes != null &&
+        host.ram_total_bytes > 0
+        ? (host.ram_used_bytes / host.ram_total_bytes) * 100
+        : null;
+    case "disk":
+      return worstAlertableDisk(host?.disks ?? null)?.usedPct ?? null;
+    case "lastSeen":
+      return Date.parse(row.lastSeen);
+  }
+}
+
+/**
+ * Returns a new array of rows sorted by the given column. Rows with no value
+ * for the column (unreported CPU/RAM/disk, no temperature) always sort last,
+ * regardless of direction, so missing data never masquerades as "best".
+ */
+export function sortHostRows(
+  rows: HostRow[],
+  hostsByName: Map<string, HostLatest>,
+  key: HostSortKey,
+  direction: SortDirection,
+): HostRow[] {
+  const sign = direction === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const aValue = hostSortValue(a, hostsByName.get(a.hostname), key);
+    const bValue = hostSortValue(b, hostsByName.get(b.hostname), key);
+    if (aValue == null && bValue == null) return 0;
+    if (aValue == null) return 1;
+    if (bValue == null) return -1;
+    const compared =
+      typeof aValue === "string" && typeof bValue === "string"
+        ? aValue.localeCompare(bValue)
+        : Number(aValue) - Number(bValue);
+    if (compared !== 0) return compared * sign;
+    return a.hostname.localeCompare(b.hostname);
+  });
 }
