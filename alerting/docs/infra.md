@@ -65,10 +65,11 @@ the resolve edits the bot's own open alert in place (chat.update) into a
 
 ## What it posts to Slack
 
-One message when an episode opens and one when it resolves (including the
-auto-retire resolution). Opens name the subject and evidence (last report
-time, breaching mounts with per-host percentages, or GPU temperature);
-resolves confirm the recovery. Delivery IDs are deterministic per episode
+One message per episode: the bot posts the open alert with subject and
+evidence (last report time, breaching mounts with per-host percentages, or
+GPU temperature), and the resolve edits that same message in place into a
+✅-prefixed, struck-through copy (a fresh post only when the original is
+gone). Delivery IDs are deterministic per episode
 and transition (`infra:<type>:<digest>:<opened epoch>:open|resolve`), so
 retries never duplicate.
 
