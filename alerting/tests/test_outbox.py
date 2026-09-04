@@ -412,14 +412,10 @@ def test_resolve_record_updates_the_paired_open_message_in_place() -> None:
         ),
         now=clock.now(),
     )
-    # Resolve payload carries the resolution banner text.
-    record = outbox.get_outbox("infra:unreporting:abc123:100:resolve")
-    assert record is not None
-    record.payload["text"] = "host is reporting again"
 
     assert runtime.dispatch_due_notifications().delivered == 1
 
-    # No new message: the bot edited its own open alert instead.
+    # No new message: the bot struck through its own open alert instead.
     assert [r.delivery_id for r in slack.deliveries] == [
         "infra:unreporting:abc123:100:open"
     ]
@@ -428,7 +424,7 @@ def test_resolve_record_updates_the_paired_open_message_in_place() -> None:
             "channel": "C0ANHBE642Y",
             "ts": "1724900000.001",
             "payload": {
-                "text": "8 jobs failed within 30s\n\nhost is reporting again"
+                "text": ":white_check_mark: ~8 jobs failed within 30s~ (edited)"
             },
         }
     ]

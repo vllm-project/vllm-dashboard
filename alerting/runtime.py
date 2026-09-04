@@ -139,10 +139,10 @@ class AlertingRuntime:
         """A resolve record edits its paired open message in place when possible.
 
         Infra notifications pair as `<base>:open` / `<base>:resolve`; when the
-        open record was delivered via bot token we chat.update that message
-        with the original alert plus the resolution banner instead of posting
-        a second message. Falls back to a fresh post when the original is
-        gone (deleted message, shadow-era open, webhook destination).
+        open record was delivered via bot token we chat.update that message to
+        a ✅-prefixed, struck-through copy of the original alert instead of
+        posting a second message. Falls back to a fresh post when the original
+        is gone (deleted message, shadow-era open, webhook destination).
         """
         if (
             record.delivery_id.endswith(":resolve")
@@ -157,12 +157,13 @@ class AlertingRuntime:
                 and open_record.slack_ts
             ):
                 original = str(open_record.payload.get("text") or "")
-                banner = str(record.payload.get("text") or "")
                 try:
                     self._slack.update_message(
                         channel=open_record.destination,
                         ts=open_record.slack_ts,
-                        payload={"text": f"{original}\n\n{banner}"},
+                        payload={
+                            "text": f":white_check_mark: ~{original}~ (edited)"
+                        },
                     )
                 except SlackPermanentError:
                     # Original message deleted or channel gone: fresh post.
