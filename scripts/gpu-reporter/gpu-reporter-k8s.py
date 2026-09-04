@@ -88,6 +88,24 @@ CADVISOR_FS_RE = re.compile(
     r'^container_fs_(usage|limit)_bytes\{([^}]*)\}\s+(\S+)'
 )
 
+# cAdvisor rows for container/pod plumbing are noise: overlay_* rows are
+# per-container views duplicating the root filesystem's usage (the real
+# underlying device is reported on its own row, which stays the base), and
+# tmpfs rows use their mount path as the device value, so every pod adds
+# "devices" like /run/containerd/.../shm and kubelet service-account volumes.
+# A busy node accumulates dozens of these (dgxb200-12 had ~20), all empty or
+# duplicates.
+PLUMBING_DEVICE_RE = re.compile(
+    r"^/(run/.+|var/lib/kubelet|sys/fs/cgroup)(/|$)"
+)
+
+
+def is_container_plumbing(device):
+    """True for cAdvisor device values that are container/pod plumbing."""
+    return device.startswith("overlay") or bool(
+        PLUMBING_DEVICE_RE.match(device)
+    )
+
 
 def kubectl(*args, timeout=KUBECTL_TIMEOUT):
     result = subprocess.run(
@@ -329,6 +347,11 @@ def build_disk_entries(node_name, fs_map, rootfs_capacity):
         # skip zero-capacity devices (e.g. unbacked /dev/loopN): nothing can
         # fill them, and the ingestion contract requires total_bytes >= 1.
         if device.startswith("/dev/loop"):
+            continue
+        # Container/pod plumbing: overlays duplicate the root filesystem
+        # (the underlying device is reported on its own row), per-pod tmpfs
+        # paths can never fill. A busy node accumulates dozens of these.
+        if is_container_plumbing(device):
             continue
         if not entry["total_bytes"]:
             continue

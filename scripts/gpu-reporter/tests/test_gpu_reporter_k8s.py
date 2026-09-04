@@ -193,6 +193,27 @@ def test_loop_devices_are_skipped(reporter_k8s):
     assert [d["device"] for d in disks] == ["/dev/md0"]
 
 
+def test_container_plumbing_devices_are_skipped(reporter_k8s):
+    # Busy nodes report one overlay row per container (duplicating the root
+    # fs usage of /dev/md0) and one tmpfs row per pod sandbox shm /
+    # service-account volume — dgxb200-12 had ~20 of these, all empty or
+    # duplicates. Real mounts (/dev/md0, /dev/shm, /run) stay the base.
+    fs_map = {
+        "/dev/md0": {"used_bytes": 1, "total_bytes": 1800000000000},
+        "overlay_0-569": {"used_bytes": 1, "total_bytes": 1800000000000},
+        "/dev/shm": {"used_bytes": 2, "total_bytes": 1082331758592},
+        "/run": {"used_bytes": 3, "total_bytes": 216466350080},
+        "/run/lock": {"used_bytes": 4, "total_bytes": 5242880},
+        "/run/containerd/io.containerd.grpc.v1.cri/sandboxes/abc123/shm":
+            {"used_bytes": 5, "total_bytes": 67108864},
+        "/var/lib/kubelet/pods/0102f2e2/volumes/"
+        "kubernetes.io~projected/kube-api-access-gjhj7":
+            {"used_bytes": 6, "total_bytes": 2164663500800},
+    }
+    disks = reporter_k8s.build_disk_entries("dgxb200-12", fs_map, 1800000000000)
+    assert [d["device"] for d in disks] == ["/dev/md0", "/dev/shm", "/run"]
+
+
 def test_disk_scrape_cadence(reporter_k8s, monkeypatch):
     calls = []
 
