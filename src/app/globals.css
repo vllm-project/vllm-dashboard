@@ -4,11 +4,49 @@
    prefers-color-scheme media query, so the theme toggle can override it. */
 @custom-variant dark (&:is(.dark *));
 
+/* ------------------------------------------------------------------------
+   Design tokens
+
+   One palette for the whole dashboard. Surfaces and lines are neutral zinc;
+   the single accent is blue; pass/warn/fail are the only other hues used for
+   meaning. Charts read the same variables so Recharts and Plotly match.
+   ------------------------------------------------------------------------ */
 :root {
   --background: #fafafa;
-  --foreground: #171717;
+  --foreground: #18181b;
+
+  --surface: #ffffff;
+  --surface-muted: #f4f4f5;
+  --surface-raised: #ffffff;
+
+  --line: #e4e4e7;
+  --line-strong: #d4d4d8;
+
+  --muted: #71717a;
+  --muted-strong: #52525b;
+
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --accent-soft: #eff6ff;
+
+  --ok: #059669;
+  --ok-soft: #ecfdf5;
+  --warn: #d97706;
+  --warn-soft: #fffbeb;
+  --bad: #dc2626;
+  --bad-soft: #fef2f2;
+
   --chart-grid: #e4e4e7;
   --chart-axis: #71717a;
+  --chart-1: #2563eb;
+  --chart-2: #d97706;
+  --chart-3: #7c3aed;
+  --chart-4: #059669;
+  --chart-5: #db2777;
+  --chart-6: #0891b2;
+  --chart-7: #ea580c;
+  --chart-8: #4f46e5;
+
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 }
@@ -16,27 +54,78 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-surface-raised: var(--surface-raised);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-muted: var(--muted);
+  --color-muted-strong: var(--muted-strong);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --font-sans: var(--font-geist-sans), -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo,
+    monospace;
 }
 
 .dark {
   --background: #09090b;
   --foreground: #ededed;
+
+  --surface: #101012;
+  --surface-muted: #18181b;
+  --surface-raised: #1c1c1f;
+
+  --line: #27272a;
+  --line-strong: #3f3f46;
+
+  --muted: #8b8b94;
+  --muted-strong: #a1a1aa;
+
+  --accent: #60a5fa;
+  --accent-strong: #93c5fd;
+  --accent-soft: rgb(59 130 246 / 14%);
+
+  --ok: #34d399;
+  --ok-soft: rgb(16 185 129 / 14%);
+  --warn: #fbbf24;
+  --warn-soft: rgb(245 158 11 / 14%);
+  --bad: #f87171;
+  --bad-soft: rgb(239 68 68 / 14%);
+
   --chart-grid: #27272a;
   --chart-axis: #71717a;
+  --chart-1: #60a5fa;
+  --chart-2: #fbbf24;
+  --chart-3: #a78bfa;
+  --chart-4: #34d399;
+  --chart-5: #f472b6;
+  --chart-6: #22d3ee;
+  --chart-7: #fb923c;
+  --chart-8: #818cf8;
+
   color-scheme: dark;
 }
 
 html {
   min-width: 320px;
   font-optical-sizing: auto;
+  text-rendering: optimizeLegibility;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
   line-height: 1.5;
   overflow-x: clip;
 }
@@ -51,9 +140,15 @@ h2 {
   background: rgb(59 130 246 / 22%);
 }
 
-:where(a, button, input, select, textarea):focus-visible {
-  outline: 2px solid #3b82f6;
+:where(a, button, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Numbers in tables and stat cards line up. */
+.tabular,
+table {
+  font-variant-numeric: tabular-nums;
 }
 
 .dashboard-nav {
@@ -97,6 +192,7 @@ h2 {
   display: none;
 }
 
+/* Plotly: match the rest of the UI. */
 .js-plotly-plot .plotly .modebar-btn {
   display: inline-flex !important;
   width: 44px !important;
@@ -106,12 +202,22 @@ h2 {
   padding: 10px !important;
 }
 
+.js-plotly-plot .plotly .main-svg {
+  font-family: var(--font-sans) !important;
+}
+
 @media (min-width: 640px) {
   .js-plotly-plot .plotly .modebar-btn {
     width: 40px !important;
     height: 40px !important;
     padding: 9px !important;
   }
+}
+
+/* Recharts: inherit the UI font instead of the SVG default. */
+.recharts-wrapper,
+.recharts-wrapper text {
+  font-family: var(--font-sans);
 }
 
 @media (hover: hover) and (pointer: fine) {

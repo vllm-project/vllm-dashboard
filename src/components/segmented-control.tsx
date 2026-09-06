@@ -1,30 +1,54 @@
+import type { ReactNode } from "react";
+
 /**
- * A compact group of mutually exclusive options rendered as one control, for
- * toolbars where a row of standalone pills would read as noise.
+ * The one segmented control for the dashboard: a compact group of mutually
+ * exclusive options rendered as a single track. Use it for time ranges,
+ * chart modes, and metric toggles. Tabs that switch page content should use
+ * `Tabs` instead.
  */
 export interface SegmentedOption<T extends string> {
   value: T;
-  label: string;
+  label: ReactNode;
   /** Shown after the label in muted tabular figures. */
   count?: number;
+  /** Accessible name when `label` is not plain text. */
+  ariaLabel?: string;
 }
+
+type SegmentedSize = "sm" | "md";
+
+const SIZE_CLASSES: Record<SegmentedSize, { track: string; item: string }> = {
+  sm: {
+    track: "rounded-lg p-0.5",
+    item: "h-7 rounded-md px-2.5 text-xs",
+  },
+  md: {
+    track: "rounded-lg p-1",
+    item: "h-8 rounded-md px-3 text-sm sm:h-8",
+  },
+};
 
 export function SegmentedControl<T extends string>({
   label,
   value,
   options,
   onChange,
+  size = "sm",
+  className = "",
 }: {
   label: string;
   value: T;
   options: readonly SegmentedOption<T>[];
   onChange: (value: T) => void;
+  size?: SegmentedSize;
+  className?: string;
 }) {
+  const sizes = SIZE_CLASSES[size];
   return (
     <div
       role="group"
       aria-label={label}
-      className="inline-flex items-center rounded-lg border border-zinc-200 bg-zinc-100/70 p-0.5 dark:border-zinc-800 dark:bg-zinc-900"
+      className={`scrollbar-hidden inline-flex max-w-full items-center overflow-x-auto border border-line bg-surface-muted dark:border-line ${sizes.track} ${className}`}
     >
       {options.map((option) => {
         const active = option.value === value;
@@ -33,22 +57,17 @@ export function SegmentedControl<T extends string>({
             key={option.value}
             type="button"
             aria-pressed={active}
+            aria-label={option.ariaLabel}
             onClick={() => onChange(option.value)}
-            className={`dashboard-control inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium whitespace-nowrap ${
+            className={`dashboard-control inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap font-medium tabular-nums ${sizes.item} ${
               active
-                ? "bg-white text-zinc-950 shadow-sm ring-1 ring-zinc-200 dark:bg-zinc-800 dark:text-zinc-50 dark:ring-zinc-700"
-                : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                ? "bg-surface text-foreground shadow-sm ring-1 ring-line dark:bg-surface-raised dark:ring-line-strong"
+                : "text-muted hover:text-foreground"
             }`}
           >
             {option.label}
             {option.count !== undefined && (
-              <span
-                className={`tabular-nums ${
-                  active
-                    ? "text-zinc-500 dark:text-zinc-400"
-                    : "text-zinc-400 dark:text-zinc-500"
-                }`}
-              >
+              <span className={active ? "text-muted" : "text-muted/70"}>
                 {option.count}
               </span>
             )}

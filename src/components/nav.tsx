@@ -33,6 +33,8 @@ function defaultDataUrls(href: string): string[] {
 
   switch (href) {
     case "/":
+      return ["/api/overview"];
+    case "/builds":
       return [
         `/api/builds?${buildParams}&page=0`,
         "/api/builds/filters",
@@ -79,7 +81,7 @@ export function Nav() {
     prefetchedRoutes.add(href);
     const requests = defaultDataUrls(href).map(async (url) => {
       const data = await preload(url, fetcher);
-      if (href === "/" && url.startsWith("/api/builds?")) {
+      if (href === "/builds" && url.startsWith("/api/builds?")) {
         const buildIds = (
           data as { builds?: Array<{ id?: string }> }
         ).builds
@@ -181,8 +183,8 @@ export function Nav() {
                   onPointerDown={() => prefetchRouteData(link.href)}
                   className={`dashboard-control inline-flex min-h-10 items-center whitespace-nowrap rounded-md px-3 text-sm font-medium ${
                     active
-                      ? "bg-zinc-950/[0.06] text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-white/10 dark:text-zinc-50 dark:ring-white/10"
-                      : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50"
+                      ? "bg-zinc-950/[0.06] text-foreground shadow-sm ring-1 ring-black/[0.04] dark:bg-white/10 dark:ring-white/10"
+                      : "text-muted hover:text-zinc-950 dark:hover:text-zinc-50"
                   }`}
                 >
                   {link.label}
@@ -212,8 +214,8 @@ export function Nav() {
                 onPointerDown={() => prefetchRouteData(link.href)}
                 className={`inline-flex min-h-11 shrink-0 items-center rounded-md px-3 py-2 text-sm font-medium ${
                   active
-                    ? "bg-zinc-950/[0.07] text-zinc-950 shadow-sm ring-1 ring-black/[0.04] dark:bg-white/10 dark:text-zinc-50 dark:ring-white/10"
-                    : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50"
+                    ? "bg-zinc-950/[0.07] text-foreground shadow-sm ring-1 ring-black/[0.04] dark:bg-white/10 dark:ring-white/10"
+                    : "text-muted hover:text-zinc-950 dark:hover:text-zinc-50"
                 }`}
               >
                 {link.label}

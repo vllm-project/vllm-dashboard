@@ -27,16 +27,16 @@ function stateColor(state: string) {
 
 export function QueueTable({ agents }: { agents: Agent[] }) {
   return (
-    <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
-        <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+    <div className="rounded-lg border border-line bg-surface">
+      <div className="border-b border-line px-5 py-3">
+        <h3 className="text-sm font-medium text-muted">
           Agents
         </h3>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            <tr className="border-b border-line text-left text-muted">
               <th className="px-5 py-2.5 font-medium">Name</th>
               <th className="px-5 py-2.5 font-medium">Queue</th>
               <th className="px-5 py-2.5 font-medium">State</th>
@@ -68,7 +68,7 @@ export function QueueTable({ agents }: { agents: Agent[] }) {
                 <td className="px-5 py-2.5 font-mono text-xs text-zinc-500">
                   {agent.ip_address}
                 </td>
-                <td className="whitespace-nowrap px-5 py-2.5 text-zinc-500 dark:text-zinc-400">
+                <td className="whitespace-nowrap px-5 py-2.5 text-muted">
                   {agent.last_job_finished_at
                     ? new Date(agent.last_job_finished_at).toLocaleString()
                     : "—"}

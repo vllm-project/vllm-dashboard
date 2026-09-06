@@ -58,7 +58,7 @@ function AgentTooltip({
     .sort((a, b) => b[1].total - a[1].total);
 
   return (
-    <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+    <div className="rounded-md border border-line bg-white px-3 py-2 text-xs shadow-lg dark:bg-zinc-900">
       <p className="mb-1 font-medium">{timeLabel}</p>
       {sorted.map(([queue, v]) => (
         <div key={queue} className="flex items-center justify-between gap-4">
@@ -99,7 +99,7 @@ export function AgentChart({ data, queues, colors, formatXTick, tickInterval }: 
         />
         {queues.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
         {queues.map((q) => (
-          <Area
+          <Area isAnimationActive={false}
             key={`${q}_busy`}
             type="monotone"
             dataKey={`${q}_agents_busy`}
@@ -113,7 +113,7 @@ export function AgentChart({ data, queues, colors, formatXTick, tickInterval }: 
           />
         ))}
         {queues.map((q) => (
-          <Area
+          <Area isAnimationActive={false}
             key={`${q}_idle`}
             type="monotone"
             dataKey={`${q}_agents_idle`}

@@ -1,5 +1,9 @@
 "use client";
 
+import { PageHeader } from "@/components/page-header";
+import { Tabs } from "@/components/tabs";
+import { ToggleSwitch } from "@/components/toggle-switch";
+
 import { useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
@@ -80,46 +84,6 @@ interface AlertOptions {
   hide: ReadonlySet<HideOption>;
 }
 
-function ToggleSwitch({
-  checked,
-  onToggle,
-  label,
-}: {
-  checked: boolean;
-  onToggle: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={onToggle}
-      className={`dashboard-control inline-flex items-center gap-2 text-xs font-semibold whitespace-nowrap ${
-        checked
-          ? "text-zinc-950 dark:text-zinc-50"
-          : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50"
-      }`}
-    >
-      <span
-        aria-hidden="true"
-        className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full border p-0.5 transition-colors duration-150 ${
-          checked
-            ? "border-zinc-950 bg-zinc-950 dark:border-zinc-50 dark:bg-zinc-50"
-            : "border-zinc-300 bg-zinc-200 dark:border-zinc-700 dark:bg-zinc-800"
-        }`}
-      >
-        <span
-          className={`h-3.5 w-3.5 rounded-full bg-white transition-transform duration-150 motion-reduce:transition-none ${
-            checked ? "translate-x-4 dark:bg-zinc-950" : "translate-x-0 dark:bg-zinc-400"
-          }`}
-        />
-      </span>
-      {label}
-    </button>
-  );
-}
-
 interface FastCIAlertsResponse {
   events?: FastFailureEvent[];
   windowDays?: number;
@@ -197,12 +161,12 @@ function AlertSection({
         aria-busy="true"
       >
         <div className="h-8 w-56 animate-pulse rounded-lg bg-zinc-200 dark:bg-zinc-800" />
-        <div className="divide-y divide-zinc-100 overflow-hidden rounded-lg border border-zinc-200 bg-white dark:divide-zinc-800/70 dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface">
           {Array.from({ length: 5 }, (_, index) => (
             <div key={index} className="flex items-center gap-3 px-4 py-3">
-              <div className="h-3.5 w-3.5 animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+              <div className="h-3.5 w-3.5 animate-pulse rounded bg-surface-muted" />
               <div className="h-3.5 w-64 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
-              <div className="ml-auto h-3 w-24 animate-pulse rounded bg-zinc-100 dark:bg-zinc-900" />
+              <div className="ml-auto h-3 w-24 animate-pulse rounded bg-surface-muted" />
             </div>
           ))}
         </div>
@@ -325,14 +289,14 @@ function MainCISection({
                   : "Unlock resolve actions"}
               </button>
               {showAccess && (
-                <label className="mt-2 flex max-w-md flex-col gap-1.5 text-xs text-zinc-500 dark:text-zinc-400 sm:flex-row sm:items-center">
+                <label className="mt-2 flex max-w-md flex-col gap-1.5 text-xs text-muted sm:flex-row sm:items-center">
                   <span className="shrink-0">Operator token</span>
                   <input
                     type="password"
                     value={operatorToken}
                     onChange={(event) => saveOperatorToken(event.target.value)}
                     autoComplete="off"
-                    className="min-h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm text-zinc-900 shadow-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                    className="min-h-10 min-w-0 flex-1 rounded-md border border-line bg-zinc-50 px-3 text-sm text-foreground shadow-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:bg-zinc-900"
                   />
                 </label>
               )}
@@ -481,65 +445,53 @@ export default function AlertsContent() {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight">Alerts</h1>
-        <div className="flex items-center gap-1.5">
-          <SegmentedControl
-            label="Time window"
-            value={timeWindow}
-            options={ALERT_TIME_WINDOWS}
-            onChange={(next) => navigate(tab, next, options)}
-          />
-          <InfoPopover text={activeTab.description} />
-        </div>
-      </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-zinc-200 dark:border-zinc-800">
-        <div role="tablist" aria-label="Alert sources" className="flex gap-6">
-          {ALERT_TABS.map((item) => {
-            const active = item.value === tab;
-            return (
-              <button
-                key={item.value}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => navigate(item.value, timeWindow, options)}
-                className={`dashboard-control -mb-px inline-flex min-h-11 items-center border-b-2 text-sm font-semibold sm:min-h-10 ${
-                  active
-                    ? "border-zinc-950 text-zinc-950 dark:border-zinc-50 dark:text-zinc-50"
-                    : "border-transparent text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50"
-                }`}
-              >
-                {item.label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pb-2">
-          {tab === "fast-ci" && (
-            <ToggleSwitch
-              checked={options.showSoftFailed}
-              onToggle={() =>
-                navigate(tab, timeWindow, {
-                  ...options,
-                  showSoftFailed: !options.showSoftFailed,
-                })
-              }
-              label="Show soft failed"
+      <PageHeader
+        title="Alerts"
+        actions={
+          <div className="flex items-center gap-1.5">
+            <SegmentedControl
+              label="Time window"
+              size="md"
+              value={timeWindow}
+              options={ALERT_TIME_WINDOWS}
+              onChange={(next) => navigate(tab, next, options)}
             />
-          )}
-          {tab === "main-ci" &&
-            HIDE_OPTIONS.map((option) => (
+            <InfoPopover text={activeTab.description} />
+          </div>
+        }
+      />
+
+      <Tabs
+        label="Alert sources"
+        value={tab}
+        onChange={(next) => navigate(next, timeWindow, options)}
+        items={ALERT_TABS.map((item) => ({ value: item.value, label: item.label }))}
+        trailing={
+          <>
+            {tab === "fast-ci" && (
               <ToggleSwitch
-                key={option.value}
-                checked={options.hide.has(option.value)}
-                onToggle={() => toggleHide(option.value)}
-                label={option.label}
+                checked={options.showSoftFailed}
+                onToggle={() =>
+                  navigate(tab, timeWindow, {
+                    ...options,
+                    showSoftFailed: !options.showSoftFailed,
+                  })
+                }
+                label="Show soft failed"
               />
-            ))}
-        </div>
-      </div>
+            )}
+            {tab === "main-ci" &&
+              HIDE_OPTIONS.map((option) => (
+                <ToggleSwitch
+                  key={option.value}
+                  checked={options.hide.has(option.value)}
+                  onToggle={() => toggleHide(option.value)}
+                  label={option.label}
+                />
+              ))}
+          </>
+        }
+      />
 
       {tab === "main-ci" ? (
         <MainCISection timeWindow={timeWindow} options={options} />

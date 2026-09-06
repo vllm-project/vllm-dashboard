@@ -78,7 +78,7 @@ export function SearchableSelect({
     >
       <label
         htmlFor={triggerId}
-        className="mb-1 block text-xs font-medium tracking-[0.01em] text-zinc-500 dark:text-zinc-400"
+        className="mb-1 block text-xs font-medium tracking-[0.01em] text-muted"
       >
         {label}
       </label>
@@ -90,7 +90,7 @@ export function SearchableSelect({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
-        className="dashboard-control flex min-h-11 w-full items-center justify-between rounded-md border border-zinc-200 bg-white px-3 text-left text-sm shadow-sm hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 sm:min-h-10 sm:w-52"
+        className="dashboard-control flex min-h-11 w-full items-center justify-between rounded-md border border-line bg-white px-3 text-left text-sm shadow-sm hover:border-zinc-300 dark:bg-zinc-900 dark:hover:border-zinc-600 sm:min-h-10 sm:w-52"
       >
         <span className={`min-w-0 truncate ${value ? "" : "text-zinc-400"}`}>
           {value || allLabel}
@@ -107,7 +107,7 @@ export function SearchableSelect({
       </button>
       {open && (
         <div className="dashboard-popover absolute left-0 z-50 mt-2 w-full min-w-64 rounded-lg border border-black/10 bg-white shadow-[0_16px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-zinc-900 dark:shadow-[0_20px_50px_rgba(0,0,0,0.45)] sm:w-72">
-          <div className="border-b border-zinc-200 p-2 dark:border-zinc-700">
+          <div className="border-b border-line p-2">
             <input
               ref={inputRef}
               type="text"
@@ -115,7 +115,7 @@ export function SearchableSelect({
               onChange={(e) => setSearch(e.target.value)}
               placeholder={`Search ${label.toLowerCase()}...`}
               aria-label={`Search ${label.toLowerCase()}`}
-              className="min-h-10 w-full rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-zinc-700 dark:bg-zinc-800"
+              className="min-h-10 w-full rounded-md border border-line bg-zinc-50 px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:bg-zinc-800"
             />
           </div>
           <ul

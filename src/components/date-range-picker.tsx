@@ -113,7 +113,7 @@ export function DateRangePicker({
     >
       <label
         htmlFor={triggerId}
-        className="mb-1 block text-xs font-medium tracking-[0.01em] text-zinc-500 dark:text-zinc-400"
+        className="mb-1 block text-xs font-medium tracking-[0.01em] text-muted"
       >
         Time Range
       </label>
@@ -124,7 +124,7 @@ export function DateRangePicker({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        className="dashboard-control flex min-h-11 w-full items-center justify-between rounded-md border border-zinc-200 bg-white px-3 text-left text-sm shadow-sm hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 sm:min-h-10 sm:w-72"
+        className="dashboard-control flex min-h-11 w-full items-center justify-between rounded-md border border-line bg-white px-3 text-left text-sm shadow-sm hover:border-zinc-300 dark:bg-zinc-900 dark:hover:border-zinc-600 sm:min-h-10 sm:w-72"
       >
         <span className={`min-w-0 truncate ${startDate ? "" : "text-zinc-400"}`}>
           {displayLabel}
@@ -177,7 +177,7 @@ export function DateRangePicker({
                   className={`dashboard-control min-h-11 rounded-md px-3 py-2 text-xs font-medium sm:min-h-10 ${
                     isActive
                       ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                      : "border border-zinc-200 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                      : "border border-line hover:bg-zinc-100 dark:hover:bg-zinc-800"
                   }`}
                 >
                   {preset.label}
@@ -187,7 +187,7 @@ export function DateRangePicker({
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <div className="flex-1">
-              <label className="mb-1 block text-xs text-zinc-500 dark:text-zinc-400">
+              <label className="mb-1 block text-xs text-muted">
                 From
               </label>
               <input
@@ -195,11 +195,11 @@ export function DateRangePicker({
                 value={draftStartOnly}
                 max={draftEndOnly || formatDate(new Date())}
                 onChange={(e) => setDraftStart(e.target.value)}
-                className="min-h-11 w-full rounded border border-zinc-200 bg-zinc-50 px-3 text-sm outline-none focus:border-blue-400 dark:border-zinc-700 dark:bg-zinc-800 sm:min-h-10"
+                className="min-h-11 w-full rounded border border-line bg-zinc-50 px-3 text-sm outline-none focus:border-blue-400 dark:bg-zinc-800 sm:min-h-10"
               />
             </div>
             <div className="flex-1">
-              <label className="mb-1 block text-xs text-zinc-500 dark:text-zinc-400">
+              <label className="mb-1 block text-xs text-muted">
                 To
               </label>
               <input
@@ -208,7 +208,7 @@ export function DateRangePicker({
                 min={draftStartOnly}
                 max={formatDate(new Date())}
                 onChange={(e) => setDraftEnd(e.target.value)}
-                className="min-h-11 w-full rounded border border-zinc-200 bg-zinc-50 px-3 text-sm outline-none focus:border-blue-400 dark:border-zinc-700 dark:bg-zinc-800 sm:min-h-10"
+                className="min-h-11 w-full rounded border border-line bg-zinc-50 px-3 text-sm outline-none focus:border-blue-400 dark:bg-zinc-800 sm:min-h-10"
               />
             </div>
           </div>
@@ -216,7 +216,7 @@ export function DateRangePicker({
             <button
               type="button"
               onClick={() => applyAndClose("", "")}
-              className="dashboard-control inline-flex min-h-11 items-center rounded-md px-3 text-sm text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 sm:min-h-10"
+              className="dashboard-control inline-flex min-h-11 items-center rounded-md px-3 text-sm text-muted hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 sm:min-h-10"
             >
               Clear
             </button>

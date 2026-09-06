@@ -1,6 +1,9 @@
 "use client";
 
-import { useState, useMemo, useEffect, useSyncExternalStore } from "react";
+import { PageHeader } from "@/components/page-header";
+
+import { Suspense, useState, useMemo, useEffect, useSyncExternalStore } from "react";
+import { useUrlState } from "@/lib/use-url-state";
 import useSWR from "swr";
 import dynamic from "next/dynamic";
 import { SearchableSelect } from "@/components/searchable-select";
@@ -237,9 +240,9 @@ function ScoreChart({ rows }: { rows: EvalRow[] }) {
   if (traces.length === 0) return null;
 
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-zinc-800/80 dark:bg-zinc-950 dark:shadow-[0_1px_3px_rgba(0,0,0,0.3)]">
+    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-surface shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-zinc-800/80 dark:shadow-[0_1px_3px_rgba(0,0,0,0.3)]">
       <div className="px-5 pt-4 pb-0">
-        <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+        <h3 className="text-[13px] font-semibold tracking-tight text-foreground">
           Scores over time
         </h3>
       </div>
@@ -327,7 +330,7 @@ function SampleItem({ sample }: { sample: EvalSample }) {
   const preview = (sample.question || sample.prompt || "").slice(0, 160);
 
   return (
-    <div className="rounded-lg border border-zinc-200 dark:border-zinc-800">
+    <div className="rounded-lg border border-line">
       <button
         type="button"
         onClick={() => setOpen(!open)}
@@ -344,7 +347,7 @@ function SampleItem({ sample }: { sample: EvalSample }) {
           {correct ? "✓" : "✗"}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+          <div className="flex items-center gap-2 text-xs text-muted">
             <span className="font-mono">#{sample.doc_id}</span>
             <span>·</span>
             <span>{sample.filter}</span>
@@ -366,7 +369,7 @@ function SampleItem({ sample }: { sample: EvalSample }) {
         </svg>
       </button>
       {open && (
-        <div className="space-y-3 border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
+        <div className="space-y-3 border-t border-line px-4 py-3">
           {sample.question && (
             <div>
               <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Question</div>
@@ -434,16 +437,16 @@ function SamplesDrawer({
   const samples = data?.samples ?? [];
 
   return (
-    <div className="fixed right-0 top-0 z-50 flex h-screen w-full max-w-3xl flex-col border-l border-zinc-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-950">
-        <div className="flex items-start justify-between gap-4 border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
+    <div className="fixed right-0 top-0 z-50 flex h-screen w-full max-w-3xl flex-col border-l border-line bg-surface shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-line px-6 py-4">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <h2 className="truncate text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+              <h2 className="truncate text-lg font-semibold tracking-tight text-foreground">
                 {row.task}
               </h2>
               <span className="font-mono text-sm text-zinc-500">{row.model}</span>
             </div>
-            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
               {m && (
                 <span>
                   {metric} ({filter}):{" "}
@@ -476,13 +479,13 @@ function SamplesDrawer({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-zinc-200 px-2.5 py-1 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            className="rounded-md border border-line px-2.5 py-1 text-sm text-zinc-600 hover:bg-zinc-50 dark:text-zinc-300 dark:hover:bg-zinc-900"
           >
             Close
           </button>
         </div>
 
-        <div className="flex items-center gap-2 border-b border-zinc-200 px-6 py-3 dark:border-zinc-800">
+        <div className="flex items-center gap-2 border-b border-line px-6 py-3">
           {(["all", "correct", "incorrect"] as const).map((opt) => {
             const active = correctness === opt;
             const n =
@@ -500,8 +503,8 @@ function SamplesDrawer({
                       ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
                       : opt === "incorrect"
                       ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
-                      : "bg-zinc-100 text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100"
-                    : "text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                      : "bg-zinc-100 text-foreground dark:bg-zinc-800"
+                    : "text-muted hover:bg-zinc-100 dark:hover:bg-zinc-800"
                 }`}
               >
                 {opt[0].toUpperCase() + opt.slice(1)}
@@ -566,20 +569,20 @@ function LeaderboardTable({
   if (allRuns.length === 0) return null;
 
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-950">
-      <div className="flex flex-col gap-1 border-b border-zinc-200 px-4 py-3 sm:flex-row sm:items-baseline sm:justify-between sm:px-5 dark:border-zinc-800">
-        <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-surface dark:border-zinc-800/80">
+      <div className="flex flex-col gap-1 border-b border-line px-4 py-3 sm:flex-row sm:items-baseline sm:justify-between sm:px-5">
+        <h3 className="text-[13px] font-semibold tracking-tight text-foreground">
           All runs ({allRuns.length}) — newest first
         </h3>
         <span className="text-xs text-zinc-400">Select a run to inspect samples</span>
       </div>
       <div className="divide-y divide-zinc-100 md:hidden dark:divide-zinc-800">
-        {pageRows.map((row) => {
+        {pageRows.map((row, index) => {
           const metric = row.metrics[0] ?? null;
           const clickable = !!row.buildkite_build_id;
           return (
             <button
-              key={`mobile-${row.model}|${row.task}|${row.ingest_ts}`}
+              key={`mobile-${row.model}|${row.task}|${row.ingest_ts}|${index}`}
               type="button"
               onClick={clickable ? () => onSelect(row) : undefined}
               disabled={!clickable}
@@ -587,13 +590,13 @@ function LeaderboardTable({
               title={clickable ? "View per-sample answers" : "No per-sample data linked to this run"}
             >
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                <span className="block truncate text-sm font-medium text-foreground">
                   {row.task}
                 </span>
-                <span className="mt-1 block truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                <span className="mt-1 block truncate font-mono text-xs text-muted">
                   {row.model || "Unknown model"}
                 </span>
-                <span className="mt-2 flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                <span className="mt-2 flex items-center gap-2 text-xs text-muted">
                   <span>{formatTime(row.run_date)}</span>
                   <span aria-hidden="true">·</span>
                   <span className="font-mono text-blue-600 dark:text-blue-400">
@@ -604,7 +607,7 @@ function LeaderboardTable({
                 </span>
               </span>
               <span className="shrink-0 text-right">
-                <span className="block text-lg font-semibold tabular-nums tracking-tight text-zinc-900 dark:text-zinc-100">
+                <span className="block text-lg font-semibold tabular-nums tracking-tight text-foreground">
                   {metric ? formatPct(metric.value) : "—"}
                 </span>
                 <span className="mt-1 block text-[11px] text-zinc-400">
@@ -617,7 +620,7 @@ function LeaderboardTable({
       </div>
       <div className="hidden overflow-x-auto md:block">
         <table className="w-full text-sm">
-          <thead className="bg-zinc-50 text-xs font-medium text-zinc-500 dark:bg-zinc-900/50 dark:text-zinc-400">
+          <thead className="bg-surface-muted/60 text-xs font-medium text-muted">
             <tr>
               <th className="px-4 py-2 text-left">When</th>
               <th className="px-4 py-2 text-left">Commit</th>
@@ -632,12 +635,12 @@ function LeaderboardTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-            {pageRows.map((r) => {
+            {pageRows.map((r, index) => {
               const m = r.metrics[0] ?? null;
               const clickable = !!r.buildkite_build_id;
               return (
                 <tr
-                  key={`${r.model}|${r.task}|${r.ingest_ts}`}
+                  key={`${r.model}|${r.task}|${r.ingest_ts}|${index}`}
                   onClick={clickable ? () => onSelect(r) : undefined}
                   className={
                     clickable
@@ -689,7 +692,7 @@ function LeaderboardTable({
         </table>
       </div>
       {totalPages > 1 && (
-        <div className="flex items-center justify-between border-t border-zinc-200 px-4 py-3 sm:px-5 dark:border-zinc-800">
+        <div className="flex items-center justify-between border-t border-line px-4 py-3 sm:px-5">
           <span className="text-xs text-zinc-400">
             {pageIndex * PAGE_SIZE + 1}–{Math.min((pageIndex + 1) * PAGE_SIZE, allRuns.length)} of {allRuns.length}
           </span>
@@ -698,7 +701,7 @@ function LeaderboardTable({
               type="button"
               disabled={pageIndex === 0}
               onClick={() => setPage(pageIndex - 1)}
-              className="min-h-11 rounded-md border border-zinc-200 px-3 text-xs font-medium text-zinc-600 transition-[background-color,transform] hover:bg-zinc-50 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-10 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+              className="min-h-11 rounded-md border border-line px-3 text-xs font-medium text-zinc-600 transition-[background-color,transform] hover:bg-zinc-50 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-10 dark:text-zinc-300 dark:hover:bg-zinc-900"
             >
               Prev
             </button>
@@ -706,7 +709,7 @@ function LeaderboardTable({
               type="button"
               disabled={pageIndex >= totalPages - 1}
               onClick={() => setPage(pageIndex + 1)}
-              className="min-h-11 rounded-md border border-zinc-200 px-3 text-xs font-medium text-zinc-600 transition-[background-color,transform] hover:bg-zinc-50 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-10 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+              className="min-h-11 rounded-md border border-line px-3 text-xs font-medium text-zinc-600 transition-[background-color,transform] hover:bg-zinc-50 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-10 dark:text-zinc-300 dark:hover:bg-zinc-900"
             >
               Next
             </button>
@@ -864,11 +867,11 @@ function EvaluationOverview({ rows }: { rows: EvalRow[] }) {
         <div>
           <h2
             id="evaluation-overview-title"
-            className="text-sm font-semibold text-zinc-900 dark:text-zinc-100"
+            className="text-sm font-semibold text-foreground"
           >
             Evaluation overview
           </h2>
-          <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+          <p className="mt-0.5 text-xs text-muted">
             Latest activity and statistically meaningful changes
           </p>
         </div>
@@ -896,14 +899,14 @@ function EvaluationOverview({ rows }: { rows: EvalRow[] }) {
           color={overview.regressions > 0 ? "red" : "green"}
         />
       </div>
-      <div className="rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-950">
-        <div className="border-b border-zinc-200 px-4 py-3 sm:px-5 dark:border-zinc-800">
-          <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+      <div className="rounded-xl border border-zinc-200/80 bg-surface dark:border-zinc-800/80">
+        <div className="border-b border-line px-4 py-3 sm:px-5">
+          <h3 className="text-[13px] font-semibold tracking-tight text-foreground">
             Strongest changes vs previous run
           </h3>
         </div>
         {overview.changes.length === 0 ? (
-          <p className="px-4 py-5 text-sm text-zinc-500 sm:px-5 dark:text-zinc-400">
+          <p className="px-4 py-5 text-sm text-muted sm:px-5">
             No changes exceeded the 2σ watch threshold.
           </p>
         ) : (
@@ -914,10 +917,10 @@ function EvaluationOverview({ rows }: { rows: EvalRow[] }) {
                 className="flex min-h-14 items-center justify-between gap-4 px-4 py-3 sm:px-5"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                  <p className="truncate text-sm font-medium text-foreground">
                     {change.task}
                   </p>
-                  <p className="mt-0.5 truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                  <p className="mt-0.5 truncate font-mono text-xs text-muted">
                     {change.model || "Unknown model"} · {change.significance.toFixed(1)}σ
                   </p>
                 </div>
@@ -940,10 +943,16 @@ function EvaluationOverview({ rows }: { rows: EvalRow[] }) {
   );
 }
 
-export default function EvalPage() {
-  const [model, setModel] = useState("");
-  const [task, setTask] = useState("");
-  const [image, setImage] = useState("");
+const EVAL_URL_DEFAULTS = { model: "", task: "", image: "" };
+
+function EvalPageContent() {
+  const [url, setUrl] = useUrlState(EVAL_URL_DEFAULTS);
+  const model = url.model;
+  const task = url.task;
+  const image = url.image;
+  const setModel = (next: string) => setUrl({ model: next });
+  const setTask = (next: string) => setUrl({ task: next });
+  const setImage = (next: string) => setUrl({ image: next });
   const [selectedRow, setSelectedRow] = useState<EvalRow | null>(null);
 
   const { data: filters } = useSWR<FiltersResponse>("/api/eval/filters", fetcher);
@@ -964,17 +973,12 @@ export default function EvalPage() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Accuracy Evaluations
-        </h1>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          lm-evaluation-harness results ingested from CI runs. Click a leaderboard row
-          to drill into per-sample answers (correct vs incorrect).
-        </p>
-      </div>
+      <PageHeader
+        title="Accuracy evaluations"
+        description="lm-evaluation-harness results ingested from CI runs. Select a run to drill into per-sample answers."
+      />
 
-      <div className="flex flex-wrap items-end gap-x-4 gap-y-3 rounded-xl border border-zinc-200/80 bg-white px-5 py-4 dark:border-zinc-800/80 dark:bg-zinc-950">
+      <div className="flex flex-wrap items-end gap-x-4 gap-y-3 rounded-xl border border-line bg-surface px-4 py-4 sm:px-5">
         <SearchableSelect
           label="Model"
           value={model}
@@ -1037,5 +1041,19 @@ export default function EvalPage() {
         />
       )}
     </div>
+  );
+}
+
+export default function EvalPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-64 items-center justify-center text-sm text-muted">
+          Loading evaluations...
+        </div>
+      }
+    >
+      <EvalPageContent />
+    </Suspense>
   );
 }

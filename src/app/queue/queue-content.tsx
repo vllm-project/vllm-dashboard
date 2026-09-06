@@ -1,5 +1,8 @@
 "use client";
 
+import { PageHeader } from "@/components/page-header";
+import { SegmentedControl } from "@/components/segmented-control";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
@@ -215,12 +218,12 @@ export default function QueueContent() {
 
   if (error && !metricsData) {
     return (
-      <div className="flex h-64 flex-col items-center justify-center gap-3 text-sm text-zinc-500 dark:text-zinc-400">
+      <div className="flex h-64 flex-col items-center justify-center gap-3 text-sm text-muted">
         <p>Queue data couldn&apos;t be loaded.</p>
         <button
           type="button"
           onClick={() => void refreshMetrics()}
-          className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 font-medium text-zinc-700 transition-colors hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
+          className="rounded-md border border-zinc-300 bg-surface px-3 py-1.5 font-medium text-zinc-700 transition-colors hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
         >
           Retry
         </button>
@@ -269,38 +272,35 @@ export default function QueueContent() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Queue Metrics</h1>
-          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-            Buildkite API · refreshes every 5 minutes
-          </p>
-        </div>
-        <div className="flex gap-3">
-          <SearchableSelect
-            label="Queue"
-            value={queue}
-            onChange={(nextQueue) => navigate(nextQueue, metricsHours)}
-            options={metricsQueuesForFilter}
-          />
-          <div className="flex gap-1 rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700">
-            {METRICS_HOURS_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => navigate(queue, opt.value)}
-                aria-pressed={metricsHours === opt.value}
-                className={`min-h-11 min-w-11 rounded px-2 text-xs font-medium transition-colors active:scale-[0.97] sm:min-h-10 ${
-                  metricsHours === opt.value
-                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                    : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
+      <PageHeader
+        title="Queue"
+        meta="Buildkite API · refreshes every 5 minutes"
+        actions={
+          <>
+            <SearchableSelect
+              label="Queue"
+              value={queue}
+              onChange={(nextQueue) => navigate(nextQueue, metricsHours)}
+              options={metricsQueuesForFilter}
+            />
+            <div>
+              <div className="mb-1 block text-xs font-medium tracking-[0.01em] text-muted">
+                Time Range
+              </div>
+              <SegmentedControl
+                label="Queue history time range"
+                size="md"
+                value={String(metricsHours)}
+                onChange={(next) => navigate(queue, Number(next))}
+                options={METRICS_HOURS_OPTIONS.map((opt) => ({
+                  value: String(opt.value),
+                  label: opt.label,
+                }))}
+              />
+            </div>
+          </>
+        }
+      />
 
       {/* Stat cards */}
       <div ref={metricsRef} className="grid scroll-mt-20 grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3 xl:grid-cols-6">
@@ -338,9 +338,9 @@ export default function QueueContent() {
       </div>
 
       {/* Queue Overview Chart */}
-      <div className="rounded-lg border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="rounded-lg border border-line bg-surface p-5">
         <div className="mb-4 flex min-h-6 flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+          <h3 className="text-sm font-medium text-muted">
             Jobs &amp; Agents{queue ? ` — ${queue}` : ""}
           </h3>
           {overviewChartData.length > 0 && (isValidating || error) && (
@@ -412,16 +412,16 @@ export default function QueueContent() {
       )}
 
       {/* Queue Summary Table */}
-      <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-        <div className="border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
-          <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+      <div className="rounded-lg border border-line bg-surface">
+        <div className="border-b border-line px-5 py-3">
+          <h3 className="text-sm font-medium text-muted">
             Queue Summary
           </h3>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+              <tr className="border-b border-line text-left text-muted">
                 {([
                   ["queue", "Queue"],
                   ["agents", "Agents"],

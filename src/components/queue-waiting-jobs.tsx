@@ -111,8 +111,8 @@ export function QueueWaitingJobs({
   );
 
   return (
-    <section className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="border-b border-zinc-200 px-5 py-4 dark:border-zinc-800">
+    <section className="overflow-hidden rounded-lg border border-line bg-surface">
+      <div className="border-b border-line px-5 py-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <div className="flex items-center gap-2">
@@ -123,7 +123,7 @@ export function QueueWaitingJobs({
                 </span>
               )}
             </div>
-            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            <p className="mt-1 text-sm text-muted">
               {queue} · priority first, then earliest scheduled
             </p>
           </div>
@@ -163,14 +163,14 @@ export function QueueWaitingJobs({
               {operatorToken ? "Operator access enabled for this tab" : "Unlock promotion actions"}
             </button>
             {showAccess && (
-              <label className="mt-2 flex max-w-md flex-col gap-1.5 text-xs text-zinc-500 dark:text-zinc-400 sm:flex-row sm:items-center">
+              <label className="mt-2 flex max-w-md flex-col gap-1.5 text-xs text-muted sm:flex-row sm:items-center">
                 <span className="shrink-0">Operator token</span>
                 <input
                   type="password"
                   value={operatorToken}
                   onChange={(event) => setOperatorToken(event.target.value)}
                   autoComplete="off"
-                  className="min-h-10 min-w-0 flex-1 rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm text-zinc-900 shadow-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+                  className="min-h-10 min-w-0 flex-1 rounded-md border border-line bg-zinc-50 px-3 text-sm text-foreground shadow-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:bg-zinc-900"
                 />
               </label>
             )}
@@ -189,13 +189,13 @@ export function QueueWaitingJobs({
       </div>
 
       {isLoading && !data && (
-        <div className="flex min-h-36 items-center justify-center px-5 text-sm text-zinc-500 dark:text-zinc-400">
+        <div className="flex min-h-36 items-center justify-center px-5 text-sm text-muted">
           Loading waiting jobs…
         </div>
       )}
 
       {error && !data && (
-        <div className="flex min-h-36 flex-col items-center justify-center gap-3 px-5 text-center text-sm text-zinc-500 dark:text-zinc-400">
+        <div className="flex min-h-36 flex-col items-center justify-center gap-3 px-5 text-center text-sm text-muted">
           <p>{error instanceof Error ? error.message : "Waiting jobs couldn't be loaded."}</p>
           <button
             type="button"
@@ -208,7 +208,7 @@ export function QueueWaitingJobs({
       )}
 
       {data && data.jobs.length === 0 && !isValidating && !error && (
-        <div className="flex min-h-36 items-center justify-center px-5 text-center text-sm text-zinc-500 dark:text-zinc-400">
+        <div className="flex min-h-36 items-center justify-center px-5 text-center text-sm text-muted">
           {hasReservedJobs
             ? `Buildkite reports ${reportedWaitingCount} waiting jobs in ${queue}, but its Agent Stack has reserved them. The public API does not expose their individual details or priority.`
             : `No command jobs are waiting in ${queue}.`}
@@ -219,7 +219,7 @@ export function QueueWaitingJobs({
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-sm">
             <thead>
-              <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-[0.08em] text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+              <tr className="border-b border-line text-left text-xs uppercase tracking-[0.08em] text-muted">
                 <th className="w-16 px-5 py-3 font-medium">Order</th>
                 <th className="px-5 py-3 font-medium">Job</th>
                 <th className="px-5 py-3 font-medium">Priority</th>
@@ -236,7 +236,7 @@ export function QueueWaitingJobs({
                     key={job.uuid}
                     className={`border-b border-zinc-100 last:border-0 dark:border-zinc-800/50 ${isFirst ? "bg-amber-50/55 dark:bg-amber-950/15" : ""}`}
                   >
-                    <td className="px-5 py-3 font-mono text-xs tabular-nums text-zinc-500 dark:text-zinc-400">
+                    <td className="px-5 py-3 font-mono text-xs tabular-nums text-muted">
                       {String(index + 1).padStart(2, "0")}
                     </td>
                     <td className="max-w-md px-5 py-3">
@@ -287,7 +287,7 @@ export function QueueWaitingJobs({
       )}
 
       {data && data.jobs.length > 0 && (
-        <p className="border-t border-zinc-100 px-5 py-3 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+        <p className="border-t border-zinc-100 px-5 py-3 text-xs text-muted dark:border-zinc-800">
           Buildkite breaks identical priority and scheduled-time ties by pipeline upload order; that final tie-breaker is not exposed in this view.
         </p>
       )}

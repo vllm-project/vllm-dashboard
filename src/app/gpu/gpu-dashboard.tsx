@@ -1,5 +1,7 @@
 "use client";
 
+import { SegmentedControl } from "@/components/segmented-control";
+
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
@@ -20,7 +22,7 @@ const GpuMemChart = dynamic(
   () => import("@/components/gpu-util-chart").then((module) => module.GpuMemChart),
   {
     ssr: false,
-    loading: () => <div className="h-[360px] animate-pulse rounded bg-zinc-100 dark:bg-zinc-900 sm:h-[420px]" />,
+    loading: () => <div className="h-[360px] animate-pulse rounded bg-surface-muted sm:h-[420px]" />,
   },
 );
 
@@ -354,8 +356,8 @@ export function GpuDashboard({
       <div className="space-y-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h1 className="text-3xl font-semibold tracking-[-0.03em]">GPU Metrics</h1>
-            <p className="mt-1.5 text-sm text-zinc-500 dark:text-zinc-400">
+            <h1 className="text-2xl font-semibold tracking-tight">GPU</h1>
+            <p className="mt-1 text-sm text-muted">
               {filteredHosts.length.toLocaleString()} hosts · {filtered.length.toLocaleString()} GPUs ·{" "}
               {formatCapacityGb(totalCapacityGb)} total memory
             </p>
@@ -397,7 +399,7 @@ export function GpuDashboard({
                     : "Live readings unavailable"
                   : `Checked ${formatCheckedAgo(latestCheckedAt, now)}`}
             </span>
-            <span className="text-zinc-500 dark:text-zinc-400">
+            <span className="text-muted">
               {latestIsValidating && latest.length > 0
                 ? "Showing the last update while new data loads."
                 : latestError
@@ -410,7 +412,7 @@ export function GpuDashboard({
               type="button"
               onClick={() => void refreshLatest()}
               disabled={latestIsValidating}
-              className="dashboard-control inline-flex min-h-11 items-center gap-1.5 rounded-md px-3 py-2 font-medium text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-wait disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 sm:min-h-10"
+              className="dashboard-control inline-flex min-h-11 items-center gap-1.5 rounded-md px-3 py-2 font-medium text-muted hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-wait disabled:opacity-50 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 sm:min-h-10"
               aria-label={latestError ? "Retry GPU data refresh" : "Refresh GPU data now"}
             >
               <svg
@@ -428,7 +430,7 @@ export function GpuDashboard({
             </button>
           </div>
         </div>
-        <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 sm:p-5">
+        <div className="rounded-lg border border-line bg-surface p-4 shadow-sm sm:p-5">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
             <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
               <SearchableSelect
@@ -447,39 +449,26 @@ export function GpuDashboard({
               />
             </div>
             <div className="min-w-0">
-              <div className="mb-1 block text-xs font-medium tracking-[0.01em] text-zinc-500 dark:text-zinc-400">
+              <div className="mb-1 block text-xs font-medium tracking-[0.01em] text-muted">
                 Time Range
               </div>
-              <div className="scrollbar-hidden -mx-1 overflow-x-auto px-1">
-                <div
-                  className="flex min-w-max gap-1 rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700"
-                  role="group"
-                  aria-label="GPU history time range"
-                >
-                  {HOURS_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      onClick={() => setHours(opt.value)}
-                      aria-pressed={hours === opt.value}
-                      className={`dashboard-control min-h-11 rounded px-3 py-2 text-sm font-medium sm:min-h-10 ${
-                        hours === opt.value
-                          ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                          : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <SegmentedControl
+                label="GPU history time range"
+                size="md"
+                value={String(hours)}
+                onChange={(next) => setHours(Number(next))}
+                options={HOURS_OPTIONS.map((opt) => ({
+                  value: String(opt.value),
+                  label: opt.label,
+                }))}
+              />
             </div>
           </div>
         </div>
       </div>
 
       {/* Per-host GPU metric chart */}
-      <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none sm:p-6">
+      <div className="min-w-0 overflow-hidden rounded-lg border border-line bg-surface p-4 shadow-sm dark:shadow-none sm:p-6">
         <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold tracking-[-0.02em]">
@@ -493,7 +482,7 @@ export function GpuDashboard({
                     ? "Memory Utilization by Host"
                     : "Stacked Memory by Host"}
             </h2>
-            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            <p className="mt-1 text-sm text-muted">
               {chartMode === "overview"
                 ? filteredHosts.length === 1
                   ? "Utilization for the selected host."
@@ -510,62 +499,32 @@ export function GpuDashboard({
                 Updating {HOURS_OPTIONS.find((option) => option.value === hours)?.label ?? `${hours}h`} chart…
               </span>
             )}
-            <div
-              className="flex gap-1 rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700"
-              role="group"
-              aria-label="GPU chart metric"
-            >
-              {([
-                { label: "Memory", value: "memory" },
-                { label: "GPU Utilization", value: "utilization" },
-              ] as const).map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => {
-                    setMetric(option.value);
-                    if (option.value === "utilization" && chartMode === "stacked") {
-                      setChartMode("overview");
-                    }
-                  }}
-                  aria-pressed={metric === option.value}
-                  className={`dashboard-control min-h-11 rounded px-3 py-2 text-sm font-medium sm:min-h-10 ${
-                    metric === option.value
-                      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                      : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                  }`}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-            <div
-              className="flex gap-1 rounded-md border border-zinc-200 p-0.5 dark:border-zinc-700"
-              role="group"
-              aria-label="GPU chart mode"
-            >
-              {([
-                { label: "Overview", value: "overview" },
-                { label: "Hosts", value: "hosts" },
-                { label: "Stacked", value: "stacked" },
-              ] as const)
-                .filter((option) => metric === "memory" || option.value !== "stacked")
-                .map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    onClick={() => setChartMode(option.value)}
-                    aria-pressed={chartMode === option.value}
-                    className={`dashboard-control min-h-11 rounded px-3 py-2 text-sm font-medium sm:min-h-10 ${
-                      chartMode === option.value
-                        ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
-                        : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                    }`}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-            </div>
+            <SegmentedControl
+              label="GPU chart metric"
+              value={metric}
+              onChange={(next) => {
+                setMetric(next);
+                if (next === "utilization" && chartMode === "stacked") {
+                  setChartMode("overview");
+                }
+              }}
+              options={[
+                { value: "memory", label: "Memory" },
+                { value: "utilization", label: "GPU Utilization" },
+              ]}
+            />
+            <SegmentedControl
+              label="GPU chart mode"
+              value={chartMode}
+              onChange={setChartMode}
+              options={(
+                [
+                  { value: "overview", label: "Overview" },
+                  { value: "hosts", label: "Hosts" },
+                  { value: "stacked", label: "Stacked" },
+                ] as const
+              ).filter((option) => metric === "memory" || option.value !== "stacked")}
+            />
           </div>
         </div>
         <GpuMemChart

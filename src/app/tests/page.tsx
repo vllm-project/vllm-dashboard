@@ -1,6 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { PageHeader } from "@/components/page-header";
+import { SegmentedControl } from "@/components/segmented-control";
+
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useUrlState } from "@/lib/use-url-state";
 import useSWR from "swr";
 
 import { groupParametrizedTests, type TestGroupRow } from "@/lib/test-groups";
@@ -151,10 +155,10 @@ function HistoryPanel({ test }: { test: TestRecord }) {
     <div className="grid gap-5 px-5 py-5 sm:px-7 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
       <div className="min-w-0">
         <div className="mb-2 flex items-center justify-between gap-4">
-          <p className="font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-zinc-500 dark:text-zinc-400">
+          <p className="font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-muted">
             Results in this window
           </p>
-          <p className="text-xs tabular-nums text-zinc-500 dark:text-zinc-400">
+          <p className="text-xs tabular-nums text-muted">
             {test.executions_count.toLocaleString()} executions
           </p>
         </div>
@@ -190,7 +194,7 @@ function HistoryPanel({ test }: { test: TestRecord }) {
           href={test.web_url}
           target="_blank"
           rel="noreferrer"
-          className="dashboard-control inline-flex min-h-10 items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm hover:border-zinc-300 hover:text-zinc-950 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-50"
+          className="dashboard-control inline-flex min-h-10 items-center gap-2 rounded-md border border-line bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm hover:border-zinc-300 hover:text-zinc-950 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-50"
         >
           Open execution history
           <ExternalLinkIcon />
@@ -229,10 +233,10 @@ function MobileTestCard({
             <Chevron open={isOpen} />
           </span>
           <span className="min-w-0">
-            <span className="line-clamp-2 break-words text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+            <span className="line-clamp-2 break-words text-sm font-semibold text-foreground">
               {test.scope ? `${test.scope} · ` : ""}{test.name}
             </span>
-            <span className="mt-1 block truncate font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+            <span className="mt-1 block truncate font-mono text-[11px] text-muted">
               {test.location || test.file_name || "Location not reported"}
             </span>
             {test.labels.length > 0 && (
@@ -296,11 +300,11 @@ function MobileGroupCard({
             <Chevron open={isOpen} />
           </span>
           <span className="min-w-0">
-            <span className="line-clamp-2 break-words text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+            <span className="line-clamp-2 break-words text-sm font-semibold text-foreground">
               {group.scope ? `${group.scope} · ` : ""}{group.name}
             </span>
             <span className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
-              <span className="truncate font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+              <span className="truncate font-mono text-[11px] text-muted">
                 {group.file || "Location not reported"}
               </span>
               <LabelChip label={`${group.tests.length} variants`} />
@@ -336,7 +340,7 @@ function MobileGroupCard({
         </span>
       </button>
       {isOpen && (
-        <div className="divide-y divide-zinc-200 border-t border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+        <div className="divide-y divide-line border-t border-line">
           {group.tests.map((test) => (
             <MobileTestCard
               key={test.id}
@@ -373,10 +377,10 @@ function DesktopTestRows({
           >
             <span className="mt-1 text-zinc-400 group-hover:text-zinc-700 dark:group-hover:text-zinc-200"><Chevron open={isOpen} /></span>
             <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+              <span className="block truncate text-sm font-semibold text-foreground">
                 {test.scope ? `${test.scope} · ` : ""}{test.name}
               </span>
-              <span className="mt-1 flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+              <span className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted">
                 <span className="truncate font-mono">{test.location || test.file_name || "Location not reported"}</span>
                 {test.labels.map((label) => (
                   <LabelChip key={label} label={label} />
@@ -431,10 +435,10 @@ function DesktopGroupRows({
           >
             <span className="mt-1 text-zinc-400 group-hover:text-zinc-700 dark:group-hover:text-zinc-200"><Chevron open={isOpen} /></span>
             <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+              <span className="block truncate text-sm font-semibold text-foreground">
                 {group.scope ? `${group.scope} · ` : ""}{group.name}
               </span>
-              <span className="mt-1 flex min-w-0 items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+              <span className="mt-1 flex min-w-0 items-center gap-2 text-xs text-muted">
                 <span className="truncate font-mono">{group.file || "Location not reported"}</span>
                 <LabelChip label={`${group.tests.length} variants`} />
                 {group.labels.map((label) => (
@@ -471,12 +475,12 @@ function DesktopGroupRows({
 
 function LoadingRows() {
   return (
-    <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
+    <div className="divide-y divide-line">
       {Array.from({ length: 8 }).map((_, index) => (
         <div key={index} className="grid grid-cols-[1fr_120px_100px] gap-6 px-5 py-5 sm:px-7">
           <div className="space-y-2">
             <div className="h-4 w-2/3 animate-pulse rounded bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" />
-            <div className="h-3 w-1/3 animate-pulse rounded bg-zinc-100 motion-reduce:animate-none dark:bg-zinc-900" />
+            <div className="h-3 w-1/3 animate-pulse rounded bg-surface-muted motion-reduce:animate-none" />
           </div>
           <div className="h-4 animate-pulse rounded bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" />
           <div className="h-4 animate-pulse rounded bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800" />
@@ -486,13 +490,32 @@ function LoadingRows() {
   );
 }
 
-export default function TestsPage() {
-  const [period, setPeriod] = useState<Period>("1day");
-  const [state, setState] = useState<TestState>("all");
-  const [label, setLabel] = useState<TestLabel>("all");
-  const [sortBy, setSortBy] = useState<SortBy>("reliability");
-  const [order, setOrder] = useState<"asc" | "desc">("asc");
-  const [page, setPage] = useState(1);
+const TESTS_URL_DEFAULTS = {
+  period: "1day",
+  state: "all",
+  label: "all",
+  sort: "reliability",
+  order: "asc",
+  page: "1",
+};
+
+function TestsPageContent() {
+  const [url, setUrl] = useUrlState(TESTS_URL_DEFAULTS);
+  const period = url.period as Period;
+  const setPeriod = (next: Period) => setUrl({ period: next });
+  const state = url.state as TestState;
+  const setState = (next: TestState) => setUrl({ state: next });
+  const label = url.label as TestLabel;
+  const setLabel = (next: TestLabel) => setUrl({ label: next });
+  const sortBy = url.sort as SortBy;
+  const setSortBy = (next: SortBy) => setUrl({ sort: next });
+  const order: "asc" | "desc" = url.order === "desc" ? "desc" : "asc";
+  const setOrder = (
+    next: "asc" | "desc" | ((current: "asc" | "desc") => "asc" | "desc"),
+  ) => setUrl({ order: typeof next === "function" ? next(order) : next });
+  const page = Math.max(1, parseInt(url.page, 10) || 1);
+  const setPage = (next: number | ((current: number) => number)) =>
+    setUrl({ page: String(typeof next === "function" ? next(page) : next) });
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [grouped, setGrouped] = useState(true);
@@ -500,13 +523,23 @@ export default function TestsPage() {
   const [expandedTest, setExpandedTest] = useState<string | null>(null);
 
   // Debounce the search box before hitting the server-side search.
-  // A new search starts back on page one with everything collapsed.
+  // A changed search starts back on page one with everything collapsed; the
+  // initial run leaves a deep-linked page alone.
+  const setPageRef = useRef(setPage);
+  useEffect(() => {
+    setPageRef.current = setPage;
+  });
+  const lastDebouncedRef = useRef("");
   useEffect(() => {
     const handle = setTimeout(() => {
-      setDebouncedQuery(query.trim());
-      setPage(1);
-      setExpandedGroup(null);
-      setExpandedTest(null);
+      const next = query.trim();
+      setDebouncedQuery(next);
+      if (next !== lastDebouncedRef.current) {
+        lastDebouncedRef.current = next;
+        setPageRef.current(1);
+        setExpandedGroup(null);
+        setExpandedTest(null);
+      }
     }, 300);
     return () => clearTimeout(handle);
   }, [query]);
@@ -558,38 +591,22 @@ export default function TestsPage() {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-col gap-5 border-b border-zinc-200 pb-6 dark:border-zinc-800 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <div className="mb-2 flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-[0.12em] text-blue-600 dark:text-blue-400">
-            <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-            CI · Test Engine
-          </div>
-          <h1 className="text-2xl font-semibold sm:text-3xl">Tests</h1>
-          <p className="mt-2 max-w-2xl text-sm text-zinc-500 dark:text-zinc-400">
-            Find unreliable tests and inspect their results over time.
-          </p>
-        </div>
-        <div className="inline-flex w-fit rounded-lg border border-zinc-200 bg-white p-1 shadow-sm dark:border-zinc-800 dark:bg-zinc-950" aria-label="History window">
-          {periods.map((item) => (
-            <button
-              key={item.value}
-              type="button"
-              aria-pressed={period === item.value}
-              onClick={() => changePeriod(item.value)}
-              className={`dashboard-control min-h-9 min-w-10 rounded-md px-2.5 text-sm font-medium tabular-nums sm:min-w-11 ${
-                period === item.value
-                  ? "bg-blue-50 text-blue-700 shadow-sm ring-1 ring-blue-100 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-400/20"
-                  : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-900 dark:hover:text-zinc-100"
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      </header>
+      <PageHeader
+        title="Tests"
+        description="Buildkite Test Engine reliability. Find unreliable tests and inspect their results over time."
+        actions={
+          <SegmentedControl
+            label="History window"
+            size="md"
+            value={period}
+            onChange={changePeriod}
+            options={periods.map((item) => ({ value: item.value, label: item.label }))}
+          />
+        }
+      />
 
-      <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-        <div className="flex flex-col gap-3 border-b border-zinc-200 p-4 dark:border-zinc-800 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+      <section className="overflow-hidden rounded-xl border border-line bg-surface shadow-sm">
+        <div className="flex flex-col gap-3 border-b border-line p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
           <div className="flex flex-wrap items-center gap-2">
             <label className="sr-only" htmlFor="test-state">Test state</label>
             <select
@@ -600,7 +617,7 @@ export default function TestsPage() {
                 setPage(1);
                 collapseAll();
               }}
-              className="dashboard-control min-h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+              className="dashboard-control min-h-10 rounded-md border border-line bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm dark:bg-zinc-900 dark:text-zinc-200"
             >
               <option value="all">All states</option>
               <option value="enabled">Enabled</option>
@@ -616,7 +633,7 @@ export default function TestsPage() {
                 setPage(1);
                 collapseAll();
               }}
-              className="dashboard-control min-h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+              className="dashboard-control min-h-10 rounded-md border border-line bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm dark:bg-zinc-900 dark:text-zinc-200"
             >
               <option value="all">All tests</option>
               <option value="flaky">Flaky only</option>
@@ -629,7 +646,7 @@ export default function TestsPage() {
                 setGrouped((value) => !value);
                 collapseAll();
               }}
-              className="dashboard-control min-h-10 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+              className="dashboard-control min-h-10 rounded-md border border-line bg-white px-3 text-sm font-medium text-zinc-700 shadow-sm dark:bg-zinc-900 dark:text-zinc-200"
             >
               {grouped ? "Grouped" : "Ungrouped"}
             </button>
@@ -644,7 +661,7 @@ export default function TestsPage() {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search tests"
-              className="dashboard-control min-h-10 w-full rounded-md border border-zinc-200 bg-white py-2 pl-9 pr-3 text-sm shadow-sm placeholder:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-900"
+              className="dashboard-control min-h-10 w-full rounded-md border border-line bg-white py-2 pl-9 pr-3 text-sm shadow-sm placeholder:text-zinc-400 dark:bg-zinc-900"
             />
           </label>
         </div>
@@ -654,14 +671,14 @@ export default function TestsPage() {
             <div className="max-w-lg">
               <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-rose-50 text-lg text-rose-600 dark:bg-rose-500/10 dark:text-rose-300">!</div>
               <h2 className="text-base font-semibold">Tests are not available</h2>
-              <p className="mt-2 text-sm leading-6 text-zinc-500 dark:text-zinc-400">{errorMessage}</p>
+              <p className="mt-2 text-sm leading-6 text-muted">{errorMessage}</p>
             </div>
           </div>
         ) : isLoading ? (
           <LoadingRows />
         ) : (
           <>
-            <div className="divide-y divide-zinc-200 md:hidden dark:divide-zinc-800">
+            <div className="divide-y divide-line md:hidden">
               {grouped
                 ? groups.map((group) =>
                     group.parametrized ? (
@@ -694,7 +711,7 @@ export default function TestsPage() {
 
             <div className="hidden overflow-x-auto md:block">
               <table className="w-full min-w-[760px] table-fixed text-left">
-                <thead className="border-b border-zinc-200 bg-zinc-50/70 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-400">
+                <thead className="border-b border-line bg-zinc-50/70 text-xs text-muted dark:bg-zinc-900/50">
                   <tr>
                     <th className="w-auto px-5 py-3 font-medium sm:px-7">Test</th>
                     <th className="w-36 px-4 py-3 font-medium">Executions</th>
@@ -712,7 +729,7 @@ export default function TestsPage() {
                     </th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+                <tbody className="divide-y divide-line">
                   {grouped
                     ? groups.map((group) =>
                         group.parametrized ? (
@@ -749,15 +766,15 @@ export default function TestsPage() {
               <div className="flex min-h-56 items-center justify-center px-6 py-12 text-center">
                 <div>
                   <h2 className="text-sm font-semibold">No tests match this view</h2>
-                  <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+                  <p className="mt-2 text-sm text-muted">
                     {debouncedQuery ? "Clear the search or change the filters." : "Try a longer history window or another filter."}
                   </p>
                 </div>
               </div>
             )}
 
-            <footer className="flex flex-col gap-3 border-t border-zinc-200 px-5 py-4 text-sm dark:border-zinc-800 sm:flex-row sm:items-center sm:justify-between sm:px-7">
-              <p className="text-zinc-500 dark:text-zinc-400">
+            <footer className="flex flex-col gap-3 border-t border-line px-5 py-4 text-sm sm:flex-row sm:items-center sm:justify-between sm:px-7">
+              <p className="text-muted">
                 {data?.tests.length ? `Tests ${firstItem.toLocaleString()}–${lastItem.toLocaleString()}` : "No tests"}
                 {debouncedQuery && data?.pagination.totalMatches != null &&
                   ` · ${data.pagination.totalMatches.toLocaleString()} match${data.pagination.totalMatches === 1 ? "" : "es"}`}
@@ -772,7 +789,7 @@ export default function TestsPage() {
                   type="button"
                   disabled={page === 1}
                   onClick={() => { setPage((value) => Math.max(1, value - 1)); collapseAll(); }}
-                  className="dashboard-control min-h-10 rounded-md border border-zinc-200 bg-white px-3 font-medium shadow-sm hover:border-zinc-300 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600"
+                  className="dashboard-control min-h-10 rounded-md border border-line bg-white px-3 font-medium shadow-sm hover:border-zinc-300 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-900 dark:hover:border-zinc-600"
                 >
                   Previous
                 </button>
@@ -780,7 +797,7 @@ export default function TestsPage() {
                   type="button"
                   disabled={!data?.pagination.hasNext}
                   onClick={() => { setPage((value) => value + 1); collapseAll(); }}
-                  className="dashboard-control min-h-10 rounded-md border border-zinc-200 bg-white px-3 font-medium shadow-sm hover:border-zinc-300 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600"
+                  className="dashboard-control min-h-10 rounded-md border border-line bg-white px-3 font-medium shadow-sm hover:border-zinc-300 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-900 dark:hover:border-zinc-600"
                 >
                   Next
                 </button>
@@ -790,5 +807,19 @@ export default function TestsPage() {
         )}
       </section>
     </div>
+  );
+}
+
+export default function TestsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-64 items-center justify-center text-sm text-muted">
+          Loading tests...
+        </div>
+      }
+    >
+      <TestsPageContent />
+    </Suspense>
   );
 }

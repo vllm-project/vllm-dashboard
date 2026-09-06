@@ -295,7 +295,7 @@ export function BuildWaterfall({
 
   if (isLoading && !data) {
     return (
-      <div className="flex min-h-40 items-center justify-center border-t border-zinc-200 bg-zinc-50/70 px-6 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/30 dark:text-zinc-400">
+      <div className="flex min-h-40 items-center justify-center border-t border-line bg-zinc-50/70 px-6 text-sm text-muted dark:bg-zinc-900/30">
         Loading trace spans…
       </div>
     );
@@ -303,14 +303,14 @@ export function BuildWaterfall({
 
   if (error) {
     return (
-      <div className="flex min-h-40 flex-col items-center justify-center gap-3 border-t border-zinc-200 bg-zinc-50/70 px-6 text-center dark:border-zinc-800 dark:bg-zinc-900/30">
+      <div className="flex min-h-40 flex-col items-center justify-center gap-3 border-t border-line bg-zinc-50/70 px-6 text-center dark:bg-zinc-900/30">
         <p className="text-sm font-medium text-red-600 dark:text-red-400">
           Trace data could not be loaded.
         </p>
         <button
           type="button"
           onClick={() => mutate()}
-          className="dashboard-control min-h-10 rounded-md border border-zinc-300 bg-white px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
+          className="dashboard-control min-h-10 rounded-md border border-zinc-300 bg-surface px-3 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
         >
           Retry
         </button>
@@ -320,11 +320,11 @@ export function BuildWaterfall({
 
   if (!data?.available || !data.summary || jobLanes.length === 0) {
     return (
-      <div className="border-t border-zinc-200 bg-zinc-50/70 px-6 py-8 dark:border-zinc-800 dark:bg-zinc-900/30">
+      <div className="border-t border-line bg-zinc-50/70 px-6 py-8 dark:bg-zinc-900/30">
         <p className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
           No trace spans for this build
         </p>
-        <p className="mt-1 max-w-2xl text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+        <p className="mt-1 max-w-2xl text-xs leading-5 text-muted">
           Older builds predate OTel collection. Active builds populate here as
           spans finish; the current build roster still comes from Databricks.
         </p>
@@ -358,12 +358,12 @@ export function BuildWaterfall({
   return (
     <section
       aria-label={`Build ${buildNumber} waterfall`}
-      className="sticky left-0 w-[calc(100vw-2rem)] max-w-[1376px] border-t border-zinc-200 bg-zinc-50/80 sm:w-[calc(100vw-3rem)] lg:w-[calc(100vw-4rem)] dark:border-zinc-800 dark:bg-zinc-900/35"
+      className="sticky left-0 w-[calc(100vw-2rem)] max-w-[1376px] border-t border-line bg-zinc-50/80 sm:w-[calc(100vw-3rem)] lg:w-[calc(100vw-4rem)] dark:bg-zinc-900/35"
     >
-      <div className="flex flex-col gap-4 border-b border-zinc-200 px-5 py-4 lg:flex-row lg:items-start lg:justify-between dark:border-zinc-800">
+      <div className="flex flex-col gap-4 border-b border-line px-5 py-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h4 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+            <h4 className="text-sm font-semibold text-foreground">
               Build #{buildNumber} timeline
             </h4>
             <span className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-[0.12em] ${traceStateColor}`}>
@@ -371,7 +371,7 @@ export function BuildWaterfall({
             </span>
             {isValidating && <span className="text-[11px] text-zinc-400">Checking…</span>}
           </div>
-          <p className="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+          <p className="mt-1 text-xs leading-5 text-muted">
             Select a traced job to see its commands. Select a pytest command to
             see every test. Amber jobs are inferred build-limiting work.
           </p>
@@ -381,11 +381,11 @@ export function BuildWaterfall({
             href={buildUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="dashboard-control inline-flex min-h-9 items-center gap-1.5 rounded-md border border-zinc-300 bg-white px-3 text-xs font-semibold text-blue-600 hover:border-blue-300 hover:bg-blue-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-blue-400 dark:hover:border-blue-800 dark:hover:bg-blue-950/50"
+            className="dashboard-control inline-flex min-h-9 items-center gap-1.5 rounded-md border border-zinc-300 bg-surface px-3 text-xs font-semibold text-blue-600 hover:border-blue-300 hover:bg-blue-50 dark:border-zinc-700 dark:text-blue-400 dark:hover:border-blue-800 dark:hover:bg-blue-950/50"
           >
             Open Buildkite #{buildNumber}<span aria-hidden="true">↗</span>
           </a>
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted">
             <span><strong className="font-mono font-semibold text-zinc-800 dark:text-zinc-200">{formatDuration(summary.observedDurationMs)}</strong> observed</span>
             <span><strong className="font-mono font-semibold text-zinc-800 dark:text-zinc-200">{summary.laneCount}{coverageTotal !== null ? ` of ${coverageTotal}` : ""}</strong> jobs traced</span>
             {summary.commandCount > 0 && <span><strong className="font-mono font-semibold text-cyan-700 dark:text-cyan-300">{summary.commandCount}</strong> commands</span>}
@@ -396,7 +396,7 @@ export function BuildWaterfall({
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
-        <div className="flex flex-wrap items-center gap-4 text-[11px] text-zinc-500 dark:text-zinc-400">
+        <div className="flex flex-wrap items-center gap-4 text-[11px] text-muted">
           <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-blue-500" /> job</span>
           {summary.commandCount > 0 && <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-cyan-500" /> command</span>}
           {summary.testCount > 0 && <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-emerald-500" /> test</span>}
@@ -413,12 +413,12 @@ export function BuildWaterfall({
             type="button"
             aria-pressed={criticalOnly}
             onClick={() => setCriticalOnly((value) => !value)}
-            className={`dashboard-control min-h-9 rounded-md border px-3 text-xs font-medium ${criticalOnly ? "border-amber-400 bg-amber-50 text-amber-800 dark:border-amber-600 dark:bg-amber-950/60 dark:text-amber-200" : "border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900"}`}
+            className={`dashboard-control min-h-9 rounded-md border px-3 text-xs font-medium ${criticalOnly ? "border-amber-400 bg-amber-50 text-amber-800 dark:border-amber-600 dark:bg-amber-950/60 dark:text-amber-200" : "border-zinc-300 bg-surface text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"}`}
           >
             {criticalOnly ? "Show all jobs" : "Show build-limiting jobs"}
           </button>
           {!criticalOnly && jobLanes.length > INITIAL_JOB_LIMIT && (
-            <button type="button" onClick={() => setShowAll((value) => !value)} className="dashboard-control min-h-9 rounded-md border border-zinc-300 bg-white px-3 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900">
+            <button type="button" onClick={() => setShowAll((value) => !value)} className="dashboard-control min-h-9 rounded-md border border-zinc-300 bg-surface px-3 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900">
               {showAll ? "Show less" : `Show all ${jobLanes.length} jobs`}
             </button>
           )}
@@ -427,7 +427,7 @@ export function BuildWaterfall({
 
       <div className="overflow-x-auto pb-2">
         <div className="min-w-[760px] px-5">
-          <div className="grid grid-cols-[minmax(16rem,21rem)_minmax(32rem,1fr)] gap-4 border-b border-zinc-200 pb-2 dark:border-zinc-800">
+          <div className="grid grid-cols-[minmax(16rem,21rem)_minmax(32rem,1fr)] gap-4 border-b border-line pb-2">
             <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">Job / command / test</div>
             <div className="relative h-5 font-mono text-[10px] text-zinc-400">
               {TICKS.map((tick) => (
@@ -478,7 +478,7 @@ export function BuildWaterfall({
                       ) : <span className="w-6 shrink-0" />}
                       {lane.critical && <span aria-label="Inferred build-limiting job" className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
                       <span className={`truncate text-xs text-zinc-800 dark:text-zinc-200 ${depth === 0 ? "font-medium" : "font-mono text-[11px]"}`} title={jobNameText(lane.label)}><JobName name={lane.label} /></span>
-                      {isExpandable && <span className="shrink-0 rounded bg-zinc-200/70 px-1.5 py-0.5 font-mono text-[9px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">{displayedChildCount}</span>}
+                      {isExpandable && <span className="shrink-0 rounded bg-zinc-200/70 px-1.5 py-0.5 font-mono text-[9px] text-muted dark:bg-zinc-800">{displayedChildCount}</span>}
                       {isLoadingDetails && <span className="shrink-0 text-[9px] text-cyan-600 dark:text-cyan-400">loading tests…</span>}
                       {hasDetailError && <span className="shrink-0 text-[9px] text-red-600 dark:text-red-400">test trace load failed; select again to retry</span>}
                       <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-400">{formatDuration(lane.durationMs)}</span>
@@ -507,14 +507,14 @@ export function BuildWaterfall({
           </div>
 
           {hiddenCount > 0 && !criticalOnly && (
-            <button type="button" onClick={() => setShowAll(true)} className="dashboard-control my-2 min-h-10 w-full rounded-md text-xs font-medium text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/60 dark:hover:text-zinc-200">
+            <button type="button" onClick={() => setShowAll(true)} className="dashboard-control my-2 min-h-10 w-full rounded-md text-xs font-medium text-muted hover:bg-zinc-100 hover:text-zinc-800 dark:hover:bg-zinc-800/60 dark:hover:text-zinc-200">
               Show {hiddenCount} more jobs
             </button>
           )}
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-200 px-5 py-2.5 font-mono text-[10px] text-zinc-400 dark:border-zinc-800">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-5 py-2.5 font-mono text-[10px] text-zinc-400">
         <span>{formatTime(summary.observedStart)} → {formatTime(summary.observedEnd)}</span>
         <span>Last span received {formatTime(summary.latestReceivedAt)}{data.truncated ? " · first 5,000 spans" : ""}</span>
       </div>
