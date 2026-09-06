@@ -44,7 +44,7 @@ test("Fast Failure Events offer no resolution controls", () => {
   assert.doesNotMatch(markup, /<button|<form|<input|<select|<textarea/i);
   assert.doesNotMatch(
     markup,
-    /resolve|resolved|acknowledge|snooze|mute|dismiss|assign/i,
+    /\b(?:resolve|resolved|acknowledge|snooze|mute|dismiss|assign)\b/i,
   );
 });
 

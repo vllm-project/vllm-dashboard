@@ -4,8 +4,14 @@ A Next.js dashboard for observing vLLM's Buildkite CI: build status, job runtime
 
 ## Pages
 
-- **Builds** — pass/fail rates, durations, and per-job breakdowns for recent pipeline builds.
-- **Jobs** — latest job failures and per-job historical run times.
+- **Overview** (`/`) — main branch pass rate with day-over-day change, latest
+  build, open failures, queue backlog, recent builds, and the busiest GPU
+  hosts, each linking into its section. Served by `GET /api/overview`.
+- **Builds** (`/builds`) — pass/fail rates, durations, and per-job breakdowns for recent pipeline builds.
+  Each build links to `/builds/<number>` with its failed jobs by group and the
+  job timeline (served by `GET /api/builds/<number>`).
+- **Jobs** — latest job failures and per-job historical run times. Each job
+  links to `/jobs/<name>` with run outcomes, durations, and recent runs.
 - **Alerts** — Fast CI observations, analyzed Full CI comparisons, and exact
   main-branch job failures that remain open until the same job passes again.
 - **Tests** — Test Engine reliability, execution counts, and duration history.
@@ -13,6 +19,23 @@ A Next.js dashboard for observing vLLM's Buildkite CI: build status, job runtime
 - **Cost** — compute hours and dollar cost per queue, derived from AWS on-demand pricing.
 - **Performance** — benchmark trends ingested into the warehouse.
 - **Compare** — release-oriented baseline/candidate image deltas across performance and evaluation metrics.
+
+Navigation groups these into **CI Health** (Builds, Jobs, Queue, Tests,
+Alerts), **Infrastructure** (GPU, Cost), and **Benchmarks** (Trends,
+Frontier, Accuracy, Compare); the grouping lives in
+`src/lib/dashboard-navigation.ts`.
+
+## UI conventions
+
+Pages are built from a small shared kit in `src/components/`: `PageHeader`
+(title, description, filters), `Panel` (every chart and table container),
+`StatCard` (with optional delta chip and sparkline), `Tabs` (underline tabs
+that switch content), `SegmentedControl` (mutually exclusive options such as
+time ranges and chart modes), and `ToggleSwitch` (view options). Colors come
+from the tokens in `src/app/globals.css` (`surface`, `line`, `muted`,
+`accent`, `ok`, `warn`, `bad`, `chart-1..8`); avoid raw palette classes so
+light and dark stay in step. Filters that define a view belong in the URL via
+`useUrlState` so every view is a shareable link.
 
 ## Architecture
 

@@ -87,7 +87,7 @@ function FailureTooltipContent({ active, payload }: { active?: boolean; payload?
   if (!active || !payload?.[0]) return null;
   const d = payload[0].payload;
   return (
-    <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+    <div className="rounded-md border border-line bg-white px-3 py-2 text-xs shadow-lg dark:bg-zinc-900">
       <p className={`font-medium ${d.failed ? "text-red-600" : "text-emerald-600"}`}>
         {d.failed ? "Failed" : "Passed"}
       </p>
@@ -101,7 +101,7 @@ function DurationTooltipContent({ active, payload }: { active?: boolean; payload
   if (!active || !payload?.[0]) return null;
   const d = payload[0].payload;
   return (
-    <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+    <div className="rounded-md border border-line bg-white px-3 py-2 text-xs shadow-lg dark:bg-zinc-900">
       <p className={`font-medium ${d.failed ? "text-red-600" : "text-emerald-600"}`}>
         {d.failed ? "Failed" : "Passed"} — {formatDuration(d.duration)}
       </p>
@@ -166,7 +166,7 @@ export function JobRunsChart({
   if (mode === "failures") {
     return (
       <div className="space-y-2">
-        <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400">
+        <div className="flex items-center justify-between text-xs text-muted">
           <span>{runs.length} runs</span>
           <span>
             <span className="text-emerald-600 dark:text-emerald-400">{passCount} passed</span>
@@ -194,7 +194,7 @@ export function JobRunsChart({
             />
             <Tooltip content={<FailureTooltipContent />} cursor={{ fill: "rgba(113,113,122,0.1)" }} />
             <ReferenceLine y={0} stroke="#3f3f46" strokeDasharray="3 3" />
-            <Bar dataKey="status" radius={[2, 2, 0, 0]} cursor="pointer" onClick={(_: unknown, idx: number) => handleClick(data[idx])}>
+            <Bar isAnimationActive={false} dataKey="status" radius={[2, 2, 0, 0]} cursor="pointer" onClick={(_: unknown, idx: number) => handleClick(data[idx])}>
               {data.map((d, i) => (
                 <Cell key={i} fill={d.failed ? "#ef4444" : "#10b981"} />
               ))}
@@ -210,7 +210,7 @@ export function JobRunsChart({
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400">
+      <div className="flex items-center justify-between text-xs text-muted">
         <span>{runs.length} runs</span>
         <span>
           <span className="text-emerald-600 dark:text-emerald-400">{passCount} passed</span>
@@ -237,7 +237,7 @@ export function JobRunsChart({
             domain={[0, roundTicks(maxDur)[roundTicks(maxDur).length - 1] || maxDur]}
           />
           <Tooltip content={<DurationTooltipContent />} cursor={{ fill: "rgba(113,113,122,0.1)" }} />
-          <Bar dataKey="duration" radius={[2, 2, 0, 0]} cursor="pointer" onClick={(_: unknown, idx: number) => handleClick(data[idx])}>
+          <Bar isAnimationActive={false} dataKey="duration" radius={[2, 2, 0, 0]} cursor="pointer" onClick={(_: unknown, idx: number) => handleClick(data[idx])}>
             {data.map((d, i) => (
               <Cell key={i} fill={d.failed ? "#ef4444" : "#10b981"} />
             ))}

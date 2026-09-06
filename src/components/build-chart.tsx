@@ -1,5 +1,8 @@
 "use client";
 
+import { Panel } from "@/components/panel";
+import { SegmentedControl } from "@/components/segmented-control";
+
 import { useMemo, useState } from "react";
 import {
   BarChart,
@@ -96,9 +99,9 @@ function OverviewTooltip({
   if (!active || !payload?.[0]) return null;
   const point = payload[0].payload;
   return (
-    <div className="min-w-44 rounded-lg border border-zinc-200 bg-white px-3 py-2.5 text-xs shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
-      <p className="font-medium text-zinc-900 dark:text-zinc-100">{point.date}</p>
-      <dl className="mt-2 space-y-1.5 text-zinc-500 dark:text-zinc-400">
+    <div className="min-w-44 rounded-lg border border-line bg-white px-3 py-2.5 text-xs shadow-xl dark:bg-zinc-900">
+      <p className="font-medium text-foreground">{point.date}</p>
+      <dl className="mt-2 space-y-1.5 text-muted">
         <div className="flex items-center justify-between gap-6">
           <dt>Typical (P50)</dt>
           <dd className="font-medium tabular-nums text-blue-600 dark:text-blue-400">
@@ -118,7 +121,7 @@ function OverviewTooltip({
           </dd>
         </div>
       </dl>
-      <div className="mt-2 flex items-center gap-3 border-t border-zinc-200 pt-2 dark:border-zinc-700">
+      <div className="mt-2 flex items-center gap-3 border-t border-line pt-2">
         <span className="font-medium text-emerald-600 dark:text-emerald-400">
           {point.passed} passed
         </span>
@@ -149,14 +152,14 @@ function BuildOutcomeStrip({ data }: { data: DailyPoint[] }) {
           Build status by day
         </p>
         <div className="flex items-center gap-3 text-xs tabular-nums">
-          <span className="inline-flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
+          <span className="inline-flex items-center gap-1.5 text-muted">
             <span
               aria-hidden="true"
               className="h-2 w-2 rounded-full bg-emerald-500"
             />
             {totals.passed} passed
           </span>
-          <span className="inline-flex items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
+          <span className="inline-flex items-center gap-1.5 text-muted">
             <span
               aria-hidden="true"
               className="h-2 w-2 rounded-full bg-red-500"
@@ -207,11 +210,11 @@ function RunTooltip({
   if (!active || !payload?.[0]) return null;
   const point = payload[0].payload;
   return (
-    <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2.5 text-xs shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+    <div className="rounded-lg border border-line bg-white px-3 py-2.5 text-xs shadow-xl dark:bg-zinc-900">
       <p className={`font-medium ${point.failed ? "text-red-600 dark:text-red-400" : "text-emerald-600 dark:text-emerald-400"}`}>
         {point.failed ? "Failed" : "Passed"} · {formatDuration(point.duration)}
       </p>
-      <p className="mt-1 text-zinc-500 dark:text-zinc-400">{point.date}</p>
+      <p className="mt-1 text-muted">{point.date}</p>
     </div>
   );
 }
@@ -293,14 +296,11 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
 
   if (data.length === 0) {
     return (
-      <div className="rounded-lg border border-zinc-200 bg-white p-4 sm:p-5 dark:border-zinc-800 dark:bg-zinc-950">
-        <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
-          Build Duration · {rangeLabel}
-        </h3>
-        <div className="flex h-[240px] items-center justify-center text-sm text-zinc-400">
+      <Panel title="Build Duration" description={rangeLabel} padded>
+        <div className="flex h-[240px] items-center justify-center text-sm text-muted">
           No build data
         </div>
-      </div>
+      </Panel>
     );
   }
 
@@ -326,44 +326,29 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
   }
 
   return (
-    <section className="rounded-lg border border-zinc-200 bg-white p-4 sm:p-5 dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h3 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            Build Duration
-          </h3>
-          <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-            {rangeLabel} · {filteredData.length} builds
-            {hideOutliers && filteredData.length !== data.length && (
-              <span> ({data.length - filteredData.length} outliers hidden)</span>
-            )}
-          </p>
-        </div>
-        <div
-          className="inline-flex w-fit rounded-lg bg-zinc-100 p-0.5 dark:bg-zinc-900"
-          aria-label="Build duration chart mode"
-        >
-          {([
-            ["runs", "Runs"],
-            ["overview", "Overview"],
-          ] as const).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setMode(value)}
-              aria-pressed={mode === value}
-              className={`min-h-11 rounded-md px-3 text-sm font-medium transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
-                mode === value
-                  ? "bg-white text-zinc-900 shadow-sm ring-1 ring-black/5 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10"
-                  : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-
+    <Panel
+      title="Build Duration"
+      description={
+        <>
+          {rangeLabel} · {filteredData.length} builds
+          {hideOutliers && filteredData.length !== data.length && (
+            <span> ({data.length - filteredData.length} outliers hidden)</span>
+          )}
+        </>
+      }
+      actions={
+        <SegmentedControl
+          label="Build duration chart mode"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: "runs", label: "Runs" },
+            { value: "overview", label: "Overview" },
+          ]}
+        />
+      }
+      padded
+    >
       <div className="h-[320px] sm:h-[360px]">
         <ResponsiveContainer width="100%" height="100%">
           {mode === "overview" ? (
@@ -432,7 +417,7 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
                 name="P50–P90 range"
                 stackId="p50p90"
                 stroke="none"
-                fill="#3b82f6"
+                fill="var(--chart-1)"
                 fillOpacity={0.15}
                 isAnimationActive={false}
               />
@@ -441,7 +426,7 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
                 type="monotone"
                 dataKey="p50"
                 name="Typical (P50)"
-                stroke="#3b82f6"
+                stroke="var(--chart-1)"
                 strokeWidth={2.5}
                 dot={false}
                 activeDot={{ r: 4 }}
@@ -452,7 +437,7 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
                 type="monotone"
                 dataKey="p90"
                 name="High (P90)"
-                stroke="#f59e0b"
+                stroke="var(--chart-2)"
                 strokeWidth={1.5}
                 dot={false}
                 activeDot={{ r: 4 }}
@@ -463,7 +448,7 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
                 type="monotone"
                 dataKey="passRate"
                 name="Pass rate"
-                stroke="#10b981"
+                stroke="var(--ok)"
                 strokeWidth={2}
                 strokeDasharray="6 4"
                 dot={false}
@@ -503,11 +488,11 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
                 content={<RunTooltip />}
                 cursor={{ fill: "rgba(113,113,122,0.1)" }}
               />
-              <Bar dataKey="duration" radius={[2, 2, 0, 0]}>
+              <Bar dataKey="duration" radius={[2, 2, 0, 0]} isAnimationActive={false}>
                 {runData.map((point) => (
                   <Cell
                     key={point.index}
-                    fill={point.failed ? "#ef4444" : "#10b981"}
+                    fill={point.failed ? "var(--bad)" : "var(--ok)"}
                   />
                 ))}
               </Bar>
@@ -516,6 +501,6 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
         </ResponsiveContainer>
       </div>
       {mode === "overview" && <BuildOutcomeStrip data={dailyData} />}
-    </section>
+    </Panel>
   );
 }

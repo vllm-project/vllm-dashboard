@@ -1,57 +1,14 @@
-"use client";
+import { PerfSettingsProvider } from "@/app/perf/perf-settings";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import {
-  PerfSettingsMenu,
-  PerfSettingsProvider,
-} from "@/app/perf/perf-settings";
-
-const tabs = [
-  { href: "/perf", label: "Trends" },
-  { href: "/perf/benchmarks", label: "Benchmarks" },
-];
-
+/**
+ * Trends and Frontier share the benchmark start-date setting. The section
+ * shell (eyebrow, description, tabs) comes from the root layout, so this
+ * layout only provides the shared context.
+ */
 export default function PerfLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return (
-    <PerfSettingsProvider>
-      <PerfLayoutContent>{children}</PerfLayoutContent>
-    </PerfSettingsProvider>
-  );
-}
-
-function PerfLayoutContent({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
-
-  return (
-    <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Performance</h1>
-        <div className="mt-3 flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
-          {tabs.map((t) => {
-            const active = pathname === t.href;
-            return (
-              <Link
-                key={t.href}
-                href={t.href}
-                className={`-mb-px inline-flex min-h-11 items-center border-b-2 px-3 text-sm font-medium transition-[color,transform] active:scale-[0.98] sm:min-h-10 ${
-                  active
-                    ? "border-indigo-500 text-zinc-900 dark:text-zinc-100"
-                    : "border-transparent text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                }`}
-              >
-                {t.label}
-              </Link>
-            );
-          })}
-          <PerfSettingsMenu />
-        </div>
-      </div>
-      {children}
-    </div>
-  );
+  return <PerfSettingsProvider>{children}</PerfSettingsProvider>;
 }

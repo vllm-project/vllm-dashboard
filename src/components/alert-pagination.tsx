@@ -18,7 +18,7 @@ export function AlertPagination({
   if (pageCount <= 1) return null;
 
   return (
-    <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400">
+    <div className="flex items-center justify-between text-xs text-muted">
       <span>
         Page {currentPage + 1} of {pageCount} · {total}{" "}
         {total === 1 ? unit.one : unit.many}

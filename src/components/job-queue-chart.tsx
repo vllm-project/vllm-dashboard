@@ -41,7 +41,7 @@ function JobTooltip({
     : "";
   const sorted = [...payload].filter((p) => p.value > 0).sort((a, b) => b.value - a.value);
   return (
-    <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+    <div className="rounded-md border border-line bg-white px-3 py-2 text-xs shadow-lg dark:bg-zinc-900">
       <p className="mb-1 font-medium">{timeLabel}</p>
       {sorted.map((p) => (
         <div key={p.name} className="flex items-center justify-between gap-4">
@@ -93,7 +93,7 @@ export function JobQueueChart({
         />
         {queues.length > 1 && <Legend wrapperStyle={{ fontSize: 11 }} />}
         {queues.map((q) => (
-          <Line
+          <Line isAnimationActive={false}
             key={q}
             type="monotone"
             dataKey={`${q}_jobs_${metric}`}

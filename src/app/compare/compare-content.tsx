@@ -1,5 +1,7 @@
 "use client";
 
+import { PageHeader } from "@/components/page-header";
+
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
@@ -234,7 +236,7 @@ function StatusBadge({ status }: { status: DeltaStatus }) {
     noisy:
       "bg-yellow-50 text-yellow-700 ring-yellow-200 dark:bg-yellow-950/40 dark:text-yellow-300 dark:ring-yellow-900",
     unchanged:
-      "bg-zinc-100 text-zinc-600 ring-zinc-200 dark:bg-zinc-900 dark:text-zinc-300 dark:ring-zinc-800",
+      "bg-surface-muted text-zinc-600 ring-zinc-200 dark:text-zinc-300 dark:ring-zinc-800",
   }[status];
 
   return (
@@ -296,7 +298,7 @@ function ImageCommitInfo({ image }: { image: string }) {
 
   const dateLabel = formatCommitDate(data.date);
   return (
-    <div className="mt-2 space-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+    <div className="mt-2 space-y-0.5 text-[11px] text-muted">
       <div className="flex items-center gap-2 font-mono">
         <a
           href={data.url}
@@ -317,7 +319,7 @@ function ImageCommitInfo({ image }: { image: string }) {
 
 function AreaTag({ area }: { area: Area }) {
   return (
-    <span className="rounded border border-zinc-200 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+    <span className="rounded border border-line px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wider text-muted">
       {area}
     </span>
   );
@@ -376,17 +378,17 @@ function VerdictHero({
 
   return (
     <div className="grid gap-px overflow-hidden rounded-xl border border-zinc-200/80 bg-zinc-200 dark:border-zinc-800/80 dark:bg-zinc-800 lg:grid-cols-[1.1fr_1.6fr]">
-      <div className="bg-white px-6 py-5 dark:bg-zinc-950">
-        <div className="mb-2.5 inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+      <div className="bg-surface px-6 py-5">
+        <div className="mb-2.5 inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider text-muted">
           <span
             className={`h-2 w-2 rounded-full ring-4 ${statusDot}`}
           />
           {statusLabelText}
         </div>
-        <h2 className="mb-2 text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+        <h2 className="mb-2 text-2xl font-semibold tracking-tight text-foreground">
           {title}
         </h2>
-        <p className="max-w-prose text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="max-w-prose text-sm text-muted">
           {sub}
         </p>
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] text-zinc-400 dark:text-zinc-500">
@@ -398,7 +400,7 @@ function VerdictHero({
           </span>
         </div>
       </div>
-      <div className="bg-white p-px dark:bg-zinc-950">
+      <div className="bg-surface p-px">
         <div className="grid grid-cols-2 gap-px bg-zinc-200 sm:grid-cols-4 dark:bg-zinc-800">
           <MiniStat
             label="Pass rate"
@@ -450,10 +452,10 @@ function MiniStat({
     good: "text-emerald-600 dark:text-emerald-400",
     bad: "text-red-600 dark:text-red-400",
     warn: "text-yellow-600 dark:text-yellow-500",
-    neutral: "text-zinc-900 dark:text-zinc-100",
+    neutral: "text-foreground",
   }[tone];
   return (
-    <div className="bg-white px-4 py-3 dark:bg-zinc-950">
+    <div className="bg-surface px-4 py-3">
       <div className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">
         {label}
       </div>
@@ -462,7 +464,7 @@ function MiniStat({
       >
         {big}
       </div>
-      <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+      <div className="mt-1 text-[11px] text-muted">
         {sub}
       </div>
     </div>
@@ -485,12 +487,12 @@ function SummaryStrip({
 
   return (
     <div className="grid gap-px overflow-hidden rounded-xl border border-zinc-200/80 bg-zinc-200 dark:border-zinc-800/80 dark:bg-zinc-800 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_1fr_1fr_1fr]">
-      <div className="bg-white px-5 py-4 dark:bg-zinc-950">
+      <div className="bg-surface px-5 py-4">
         <div className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">
           Matched checks
         </div>
         <div className="mt-1 flex items-baseline gap-2">
-          <div className="text-3xl font-semibold leading-none text-zinc-900 dark:text-zinc-100">
+          <div className="text-3xl font-semibold leading-none text-foreground">
             {s.matched}
           </div>
           <div className="font-mono text-xs text-zinc-400">
@@ -511,7 +513,7 @@ function SummaryStrip({
             />
           )}
         </div>
-        <div className="mt-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+        <div className="mt-2 text-[11px] text-muted">
           {s.improvements} wins · {s.regressions} regressions · {s.unchanged} noise
         </div>
       </div>
@@ -559,17 +561,17 @@ function SimpleStat({
   hint: string;
 }) {
   return (
-    <div className="bg-white px-5 py-4 dark:bg-zinc-950">
+    <div className="bg-surface px-5 py-4">
       <div className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
         <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
         {label}
       </div>
       <div
-        className={`mt-1 text-3xl font-semibold leading-none ${valueClass ?? "text-zinc-900 dark:text-zinc-100"}`}
+        className={`mt-1 text-3xl font-semibold leading-none ${valueClass ?? "text-foreground"}`}
       >
         {value}
       </div>
-      <div className="mt-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+      <div className="mt-2 text-[11px] text-muted">
         {hint}
       </div>
     </div>
@@ -609,24 +611,24 @@ function Distribution({
   } | null>(null);
 
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-950">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
+    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-surface dark:border-zinc-800/80">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-5 py-3">
         <div className="flex items-baseline gap-2">
-          <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+          <h3 className="text-[13px] font-semibold tracking-tight text-foreground">
             Delta distribution
           </h3>
           <span className="font-mono text-[11px] text-zinc-400">
             {all.length} checks
           </span>
         </div>
-        <div className="flex flex-wrap gap-3 font-mono text-[10px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+        <div className="flex flex-wrap gap-3 font-mono text-[10px] uppercase tracking-wider text-muted">
           <Legend dot="bg-emerald-500" label="Improvement" />
           <Legend dot="bg-red-500" label="Regression" />
           <Legend dot="bg-zinc-400" label="Noise" />
         </div>
       </div>
       <div className="px-5 pb-5 pt-4">
-        <div className="relative h-24 border-b border-dashed border-zinc-200 dark:border-zinc-800">
+        <div className="relative h-24 border-b border-dashed border-line">
           <div
             className="absolute top-0 bottom-0 w-px bg-zinc-300 dark:bg-zinc-700"
             style={{ left: `${xPct(0)}%` }}
@@ -717,10 +719,10 @@ function ByModel({ items }: { items: DeltaItem[] }) {
   const models = [...map.entries()].sort((a, b) => b[1].good - a[1].good);
 
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-950">
-      <div className="flex items-baseline justify-between gap-2 border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
+    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-surface dark:border-zinc-800/80">
+      <div className="flex items-baseline justify-between gap-2 border-b border-line px-5 py-3">
         <div className="flex items-baseline gap-2">
-          <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+          <h3 className="text-[13px] font-semibold tracking-tight text-foreground">
             By model
           </h3>
           <span className="font-mono text-[11px] text-zinc-400">
@@ -764,7 +766,7 @@ function ByModel({ items }: { items: DeltaItem[] }) {
                   />
                 )}
               </div>
-              <div className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+              <div className="font-mono text-[11px] text-muted">
                 {c.good ? (
                   <span className="text-emerald-600 dark:text-emerald-400">
                     +{c.good}
@@ -802,7 +804,7 @@ function StatusChip({
       className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] transition ${
         on
           ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
-          : "border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100"
+          : "border-line bg-surface text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
       }`}
     >
       <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
@@ -885,10 +887,10 @@ function DeltaTable({
   const range = kind === "perf" ? 30 : 5;
 
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-950">
-      <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
+    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-surface dark:border-zinc-800/80">
+      <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-line px-5 py-3">
         <div className="flex items-baseline gap-2">
-          <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+          <h3 className="text-[13px] font-semibold tracking-tight text-foreground">
             {title}
           </h3>
           <span className="font-mono text-[11px] text-zinc-400">
@@ -899,7 +901,7 @@ function DeltaTable({
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-zinc-50 text-[10px] font-medium uppercase tracking-wider text-zinc-500 dark:bg-zinc-900/50 dark:text-zinc-400">
+          <thead className="bg-surface-muted/60 text-[10px] font-medium uppercase tracking-wider text-muted">
             <tr>
               <th className="w-6 px-2 py-2.5"></th>
               <th
@@ -980,7 +982,7 @@ function DeltaTable({
                       isExp ? "bg-zinc-50 dark:bg-zinc-900/40" : ""
                     } ${
                       r.status === "noisy" || r.status === "unchanged"
-                        ? "text-zinc-500 dark:text-zinc-400"
+                        ? "text-muted"
                         : ""
                     }`}
                     onClick={() => setExpandedRow(isExp ? null : id)}
@@ -1005,7 +1007,7 @@ function DeltaTable({
                         {r.model}
                       </span>
                     </td>
-                    <td className="min-w-[240px] px-3 py-2 font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+                    <td className="min-w-[240px] px-3 py-2 font-mono text-[11px] text-muted">
                       {r.dimension}
                     </td>
                     <td className="px-3 py-2 font-mono text-xs">
@@ -1017,7 +1019,7 @@ function DeltaTable({
                     <td className="whitespace-nowrap px-3 py-2 text-right font-mono text-xs text-zinc-500">
                       {formatValue(r, r.baselineValue)}
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2 text-right font-mono text-xs font-medium text-zinc-900 dark:text-zinc-100">
+                    <td className="whitespace-nowrap px-3 py-2 text-right font-mono text-xs font-medium text-foreground">
                       {formatValue(r, r.candidateValue)}
                     </td>
                     <td className="px-3 py-2">
@@ -1131,7 +1133,7 @@ function ExpandCell({
         {label}
       </div>
       <div
-        className={`mt-1 truncate text-xs text-zinc-900 dark:text-zinc-100 ${mono ? "font-mono" : ""}`}
+        className={`mt-1 truncate text-xs text-foreground ${mono ? "font-mono" : ""}`}
         title={title ?? value}
       >
         {value}
@@ -1150,9 +1152,9 @@ function CoverageCard({
   emptyText: string;
 }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-950">
-      <div className="flex items-baseline justify-between border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
-        <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-surface dark:border-zinc-800/80">
+      <div className="flex items-baseline justify-between border-b border-line px-5 py-3">
+        <h3 className="text-[13px] font-semibold tracking-tight text-foreground">
           {title}
         </h3>
         <span className="font-mono text-[11px] text-zinc-400">
@@ -1160,7 +1162,7 @@ function CoverageCard({
         </span>
       </div>
       {items.length === 0 ? (
-        <div className="m-4 rounded-lg border border-dashed border-zinc-200 px-5 py-6 text-center font-mono text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+        <div className="m-4 rounded-lg border border-dashed border-line px-5 py-6 text-center font-mono text-xs text-muted">
           <div className="mx-auto mb-2 grid h-7 w-7 place-items-center rounded-full bg-emerald-50 text-emerald-600 dark:bg-emerald-950/50 dark:text-emerald-400">
             ✓
           </div>
@@ -1169,7 +1171,7 @@ function CoverageCard({
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-zinc-50 text-[10px] font-medium uppercase tracking-wider text-zinc-500 dark:bg-zinc-900/50 dark:text-zinc-400">
+            <thead className="bg-surface-muted/60 text-[10px] font-medium uppercase tracking-wider text-muted">
               <tr>
                 <th className="px-3 py-2 text-left">Area</th>
                 <th className="px-3 py-2 text-left">Model</th>
@@ -1190,7 +1192,7 @@ function CoverageCard({
                       {item.model}
                     </span>
                   </td>
-                  <td className="min-w-[260px] px-3 py-2 font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+                  <td className="min-w-[260px] px-3 py-2 font-mono text-[11px] text-muted">
                     {item.dimension}
                   </td>
                   <td className="px-3 py-2 font-mono text-xs">
@@ -1477,16 +1479,15 @@ export default function ComparePage() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Perf &amp; Eval Compare</h1>
-        <p className="mt-1 max-w-prose text-sm text-zinc-500 dark:text-zinc-400">
-          Compare two vLLM images across performance benchmarks and accuracy
-          evaluations.
-        </p>
+        <PageHeader
+          title="Compare images"
+          description="Baseline versus candidate vLLM image across performance benchmarks and accuracy evaluations."
+        />
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-950">
+      <div className="overflow-hidden rounded-xl border border-line bg-surface">
         {presets.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 border-b border-zinc-200 px-4 py-3 sm:px-5 dark:border-zinc-800">
+          <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3 sm:px-5">
             <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">
               Presets
             </span>
@@ -1502,7 +1503,7 @@ export default function ComparePage() {
                   className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[11px] transition ${
                     active
                       ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
-                      : "border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-100"
+                      : "border-line bg-surface text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
                   }`}
                 >
                   {preset.label}
@@ -1554,12 +1555,12 @@ export default function ComparePage() {
               updateCompareUrl({ baseline: candidate, candidate: baseline });
             }}
             disabled={!baseline && !candidate}
-            className="order-3 min-h-11 rounded-md border border-zinc-200 px-4 text-sm font-medium text-zinc-600 transition-[background-color,transform] hover:bg-zinc-50 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 md:order-2 md:min-h-10 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
+            className="order-3 min-h-11 rounded-md border border-line px-4 text-sm font-medium text-zinc-600 transition-[background-color,transform] hover:bg-zinc-50 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 md:order-2 md:min-h-10 dark:text-zinc-300 dark:hover:bg-zinc-900"
           >
             Swap
           </button>
         </div>
-        <details className="group border-t border-zinc-200 dark:border-zinc-800">
+        <details className="group border-t border-line">
           <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-50 sm:min-h-10 sm:px-5 dark:text-zinc-300 dark:hover:bg-zinc-900/60 [&::-webkit-details-marker]:hidden">
             <span>Advanced filters</span>
             <span className="flex items-center gap-2 text-xs font-normal text-zinc-400">
@@ -1603,7 +1604,7 @@ export default function ComparePage() {
               allLabel="All Tasks"
             />
             <label className="block">
-              <span className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">
+              <span className="mb-1 block text-xs font-medium text-muted">
                 Threshold
               </span>
               <div className="group relative w-28">
@@ -1613,7 +1614,7 @@ export default function ComparePage() {
                   step="0.5"
                   value={perfThresholdPct}
                   onChange={(event) => updatePerfThresholdPct(event.target.value)}
-                  className="min-h-11 w-full rounded-md border border-zinc-200 bg-white pl-3 pr-7 text-sm tabular-nums shadow-sm outline-none transition-colors hover:border-zinc-300 focus:border-zinc-400 focus:ring-2 focus:ring-zinc-900/10 sm:min-h-10 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 dark:focus:border-zinc-500 dark:focus:ring-zinc-100/10 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  className="min-h-11 w-full rounded-md border border-line bg-white pl-3 pr-7 text-sm tabular-nums shadow-sm outline-none transition-colors hover:border-zinc-300 focus:border-zinc-400 focus:ring-2 focus:ring-zinc-900/10 sm:min-h-10 dark:bg-zinc-900 dark:hover:border-zinc-600 dark:focus:border-zinc-500 dark:focus:ring-zinc-100/10 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 />
                 <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-xs text-zinc-400">
                   %
@@ -1621,7 +1622,7 @@ export default function ComparePage() {
               </div>
             </label>
             <div>
-              <span className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">
+              <span className="mb-1 block text-xs font-medium text-muted">
                 Date range
               </span>
               <DateRangePicker
@@ -1677,15 +1678,15 @@ export default function ComparePage() {
             perfThreshold={perfThreshold}
           />
 
-          <div className="rounded-xl border border-zinc-200/80 bg-white px-5 py-4 dark:border-zinc-800/80 dark:bg-zinc-950">
-            <div className="grid gap-px overflow-hidden rounded-lg border border-zinc-200 bg-zinc-200 md:grid-cols-[1fr_auto_1fr] dark:border-zinc-800 dark:bg-zinc-800">
-              <div className="bg-white p-4 dark:bg-zinc-950">
+          <div className="rounded-xl border border-zinc-200/80 bg-surface px-5 py-4 dark:border-zinc-800/80">
+            <div className="grid gap-px overflow-hidden rounded-lg border border-line bg-zinc-200 md:grid-cols-[1fr_auto_1fr] dark:bg-zinc-800">
+              <div className="bg-surface p-4">
                 <div className="mb-1.5 inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
                   <span className="h-1.5 w-1.5 rounded-full bg-zinc-400" />
                   Baseline image
                 </div>
                 <div
-                  className="truncate font-mono text-sm text-zinc-900 dark:text-zinc-100"
+                  className="truncate font-mono text-sm text-foreground"
                   title={data.baseline}
                 >
                   {baselineShort}
@@ -1695,7 +1696,7 @@ export default function ComparePage() {
                 </div>
                 <ImageCommitInfo image={data.baseline} />
               </div>
-              <div className="grid place-items-center bg-white px-3 dark:bg-zinc-950">
+              <div className="grid place-items-center bg-surface px-3">
                 <button
                   type="button"
                   onClick={() => {
@@ -1706,7 +1707,7 @@ export default function ComparePage() {
                       candidate: baseline,
                     });
                   }}
-                  className="grid h-8 w-8 place-items-center rounded-full border border-zinc-200 text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
+                  className="grid h-8 w-8 place-items-center rounded-full border border-line text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 dark:text-zinc-300 dark:hover:border-zinc-600 dark:hover:text-zinc-100"
                   title="Swap baseline & candidate"
                   aria-label="Swap baseline and candidate"
                 >
@@ -1722,13 +1723,13 @@ export default function ComparePage() {
                   </svg>
                 </button>
               </div>
-              <div className="bg-white p-4 dark:bg-zinc-950">
+              <div className="bg-surface p-4">
                 <div className="mb-1.5 inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-zinc-400">
                   <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
                   Candidate image
                 </div>
                 <div
-                  className="truncate font-mono text-sm text-zinc-900 dark:text-zinc-100"
+                  className="truncate font-mono text-sm text-foreground"
                   title={data.candidate}
                 >
                   {candidateShort}
@@ -1758,7 +1759,7 @@ export default function ComparePage() {
             <ByModel items={[...classifiedPerf, ...classifiedEval]} />
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-zinc-200/80 bg-white px-4 py-3 dark:border-zinc-800/80 dark:bg-zinc-950">
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-zinc-200/80 bg-surface px-4 py-3 dark:border-zinc-800/80">
             <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-400">
               Show
             </span>
@@ -1790,13 +1791,13 @@ export default function ComparePage() {
             <select
               value={areaFilter}
               onChange={(e) => setAreaFilter(e.target.value as AreaFilter)}
-              className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+              className="rounded-md border border-line bg-white px-2 py-1 text-xs dark:bg-zinc-900"
             >
               <option value="all">All</option>
               <option value="perf">Performance</option>
               <option value="eval">Accuracy</option>
             </select>
-            <div className="ml-auto flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900">
+            <div className="ml-auto flex items-center gap-1.5 rounded-md border border-line bg-white px-2 py-1 dark:bg-zinc-900">
               <svg
                 width="12"
                 height="12"

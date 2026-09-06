@@ -28,15 +28,15 @@ function EventRow({ event }: { event: FastFailureEventView }) {
         {event.state}
       </span>
       {event.softFailed && (
-        <span className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
+        <span className="shrink-0 text-xs text-muted">
           soft failed
         </span>
       )}
-      <span className="shrink-0 text-xs tabular-nums text-zinc-500 dark:text-zinc-400">
+      <span className="shrink-0 text-xs tabular-nums text-muted">
         {event.durationSeconds}s
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-3">
-        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+        <span className="text-xs text-muted">
           {formatAlertDateTime(event.finishedAt)}
         </span>
         <NotificationBadge state={event.notificationState} />
@@ -83,12 +83,12 @@ function JobGroupRow({ jobGroup }: { jobGroup: FastFailureJobGroup }) {
             {latest.state}
           </span>
           {latest.softFailed && (
-            <span className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
+            <span className="shrink-0 text-xs text-muted">
               soft failed
             </span>
           )}
           <span className="ml-auto flex shrink-0 items-center gap-3">
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">
+            <span className="text-xs text-muted">
               {formatAlertDateTime(jobGroup.lastFinishedAt)}
             </span>
             <NotificationBadge state={jobGroup.notificationState} />
@@ -116,8 +116,8 @@ function GroupCard({ group }: { group: FastFailureGroup }) {
     : group.jobGroups.slice(0, VISIBLE_JOB_GROUPS);
 
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-zinc-200 px-4 py-3 sm:px-5 dark:border-zinc-800">
+    <div className="overflow-hidden rounded-xl border border-line bg-surface">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-line px-4 py-3 sm:px-5">
         <a
           href={commitUrl(group.commitSha)}
           target="_blank"
@@ -144,15 +144,15 @@ function GroupCard({ group }: { group: FastFailureGroup }) {
             PR #{group.prNumber}
           </a>
         )}
-        <span className="text-sm text-zinc-500 dark:text-zinc-400">
+        <span className="text-sm text-muted">
           {group.pipeline} · {group.branch} · {group.author}
         </span>
-        <span className="ml-auto text-xs text-zinc-500 dark:text-zinc-400">
+        <span className="ml-auto text-xs text-muted">
           {group.events.length} fast{" "}
           {group.events.length === 1 ? "failure" : "failures"} ·{" "}
           {formatAlertDateTime(group.latestFinishedAt)}
         </span>
-        <p className="w-full truncate text-xs text-zinc-500 dark:text-zinc-400">
+        <p className="w-full truncate text-xs text-muted">
           {group.message}
         </p>
       </div>

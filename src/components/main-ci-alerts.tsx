@@ -190,8 +190,8 @@ function SortHeader({
         align === "right" ? "justify-self-end" : "justify-self-start"
       } ${
         active
-          ? "text-zinc-900 dark:text-zinc-100"
-          : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+          ? "text-foreground"
+          : "text-muted hover:text-zinc-800 dark:hover:text-zinc-200"
       }`}
     >
       {column.label}
@@ -243,7 +243,7 @@ function SortSelect({
               : null,
           );
         }}
-        className="dashboard-control h-8 cursor-pointer appearance-none rounded-md border border-zinc-200 bg-white pr-7 pl-2.5 text-xs font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-100 dark:focus:border-zinc-600"
+        className="dashboard-control h-8 cursor-pointer appearance-none rounded-md border border-line bg-surface pr-7 pl-2.5 text-xs font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 focus:border-zinc-400 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-100 dark:focus:border-zinc-600"
       >
         <option value="">Default order</option>
         {SORT_COLUMNS.map((column) => (
@@ -324,10 +324,10 @@ function ReasonSelect({
             isReasonFilter(event.target.value) ? event.target.value : null,
           )
         }
-        className={`dashboard-control h-8 cursor-pointer appearance-none rounded-md border bg-white pr-7 text-xs focus:border-zinc-400 dark:bg-zinc-950 dark:focus:border-zinc-600 ${
+        className={`dashboard-control h-8 cursor-pointer appearance-none rounded-md border bg-surface pr-7 text-xs focus:border-zinc-400 dark:focus:border-zinc-600 ${
           value === null
-            ? "border-zinc-200 pl-2.5 font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-800 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
-            : "border-zinc-400 pl-6 font-semibold text-zinc-950 dark:border-zinc-600 dark:text-zinc-50"
+            ? "border-line pl-2.5 font-medium text-zinc-600 hover:border-zinc-300 hover:text-zinc-900 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+            : "border-zinc-400 pl-6 font-semibold text-foreground dark:border-zinc-600"
         }`}
       >
         <option value="">All reasons</option>
@@ -385,13 +385,13 @@ function ReasonBadge({ analysis }: { analysis: MainCiJobAnalysis }) {
 /** Failure counts read on a ramp: one is a blip, several is a pattern. */
 function failureCountClasses(count: number): string {
   if (count >= 5) return "text-red-600 dark:text-red-400";
-  if (count >= 2) return "text-zinc-900 dark:text-zinc-100";
-  return "text-zinc-500 dark:text-zinc-400";
+  if (count >= 2) return "text-foreground";
+  return "text-muted";
 }
 
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <h4 className="text-[11px] font-semibold tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
+    <h4 className="text-[11px] font-semibold tracking-wide text-muted uppercase">
       {children}
     </h4>
   );
@@ -450,7 +450,7 @@ function TimelineItem({
           </p>
         )}
         {note && (
-          <p className="mt-0.5 text-zinc-500 dark:text-zinc-400">{note}</p>
+          <p className="mt-0.5 text-muted">{note}</p>
         )}
       </div>
     </li>
@@ -495,7 +495,7 @@ function Timeline({ alert }: { alert: MainCiJobAlert }) {
           />
         )}
       </ol>
-      <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+      <p className="mt-3 text-xs text-muted">
         Last failing commit{" "}
         <a
           href={commitUrl(alert.lastFailure.commitSha)}
@@ -519,7 +519,7 @@ function LinkList({
 }) {
   return (
     <div className="min-w-0">
-      <dt className="text-[11px] font-semibold tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
+      <dt className="text-[11px] font-semibold tracking-wide text-muted uppercase">
         {label}
       </dt>
       <dd className="mt-1">
@@ -559,8 +559,8 @@ function AnalysisPanel({ analysis }: { analysis: MainCiJobAnalysis | null }) {
       <p className="text-[13px] leading-relaxed text-zinc-800 dark:text-zinc-200">
         {analysis.summary}
       </p>
-      <div className="rounded-md border border-zinc-200 bg-white px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-950">
-        <p className="text-[11px] font-semibold tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
+      <div className="rounded-md border border-line bg-surface px-3 py-2.5">
+        <p className="text-[11px] font-semibold tracking-wide text-muted uppercase">
           Recommended action
         </p>
         <p className="mt-1 text-[13px] leading-relaxed text-zinc-800 dark:text-zinc-200">
@@ -662,7 +662,7 @@ export function MainCiAlertRow({
             className={`min-w-0 truncate text-sm font-medium ${
               resolved
                 ? "text-zinc-600 dark:text-zinc-400"
-                : "text-zinc-900 dark:text-zinc-100"
+                : "text-foreground"
             }`}
           >
             <JobName name={alert.jobName} />
@@ -714,14 +714,14 @@ export function MainCiAlertRow({
         <time
           dateTime={alert.openedAt}
           title={`opened ${formatAlertDateTime(alert.openedAt)}`}
-          className="hidden text-right text-xs tabular-nums text-zinc-500 sm:block dark:text-zinc-400"
+          className="hidden text-right text-xs tabular-nums text-muted sm:block"
         >
           {formatRelativeTime(alert.openedAt, now)}
         </time>
         <time
           dateTime={alert.lastFailure.finishedAt}
           title={`last failed ${formatAlertDateTime(alert.lastFailure.finishedAt)}`}
-          className="hidden text-right text-xs tabular-nums text-zinc-500 sm:block dark:text-zinc-400"
+          className="hidden text-right text-xs tabular-nums text-muted sm:block"
         >
           {formatRelativeTime(alert.lastFailure.finishedAt, now)}
         </time>
@@ -735,7 +735,7 @@ export function MainCiAlertRow({
                 event.preventDefault();
                 void resolve();
               }}
-              className="dashboard-control h-6 rounded-md border border-zinc-200 px-2 text-[11px] font-medium whitespace-nowrap text-zinc-500 hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+              className="dashboard-control h-6 rounded-md border border-line px-2 text-[11px] font-medium whitespace-nowrap text-muted hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
             >
               {resolving ? "Resolving…" : "Resolve"}
             </button>
@@ -900,7 +900,7 @@ export function MainCIAlerts({
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Filter by job name"
             aria-label="Filter by job name"
-            className="dashboard-control h-8 w-52 rounded-md border border-zinc-200 bg-white pr-2.5 pl-8 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-zinc-600"
+            className="dashboard-control h-8 w-52 rounded-md border border-line bg-surface pr-2.5 pl-8 text-xs text-foreground placeholder:text-zinc-400 focus:border-zinc-400 dark:placeholder:text-zinc-500 dark:focus:border-zinc-600"
           />
         </label>
       </div>
@@ -908,11 +908,11 @@ export function MainCIAlerts({
       {visible.length === 0 ? (
         <EmptyState>No Main CI job alerts match these filters.</EmptyState>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="overflow-hidden rounded-lg border border-line bg-surface">
           <div
             role="group"
             aria-label="Sort alerts"
-            className={`${ROW_GRID} hidden border-b border-zinc-200 border-l-[3px] border-l-transparent bg-zinc-50/80 px-3 py-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase sm:grid dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-400`}
+            className={`${ROW_GRID} hidden border-b border-line border-l-[3px] border-l-transparent bg-zinc-50/80 px-3 py-2 text-[11px] font-semibold tracking-wide text-muted uppercase sm:grid dark:bg-zinc-900/60`}
           >
             <span />
             <SortHeader columnKey="job" sort={sort} onSort={toggleSort} />
@@ -937,7 +937,7 @@ export function MainCIAlerts({
             />
             <span />
           </div>
-          <div className="divide-y divide-zinc-100 dark:divide-zinc-800/70">
+          <div className="divide-y divide-line">
             {visible.map((alert) => (
               <MainCiAlertRow
                 key={alert.alertId}

@@ -56,7 +56,7 @@ export function PerfSettingsMenu() {
   }, []);
 
   return (
-    <div ref={ref} className="relative ml-auto self-center">
+    <div ref={ref} className="relative self-end">
       <button
         type="button"
         aria-label="Performance settings"
@@ -85,17 +85,17 @@ export function PerfSettingsMenu() {
           />
         </svg>
         {overridden && (
-          <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-indigo-500 ring-2 ring-white dark:ring-zinc-950" />
+          <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent ring-2 ring-surface" />
         )}
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+        <div className="dashboard-popover absolute right-0 top-full z-50 mt-2 w-72 rounded-lg border border-black/10 bg-white p-4 shadow-[0_16px_40px_rgba(0,0,0,0.14)] dark:border-white/10 dark:bg-zinc-900 dark:shadow-[0_20px_50px_rgba(0,0,0,0.45)]">
           <div className="mb-3">
-            <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+            <p className="text-sm font-medium text-foreground">
               Performance data
             </p>
-            <p className="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+            <p className="mt-1 text-xs leading-5 text-muted">
               Choose the earliest benchmark date to include on this tab.
             </p>
           </div>
@@ -112,7 +112,7 @@ export function PerfSettingsMenu() {
             onInput={(event) =>
               setStartDate(event.currentTarget.value || PERF_DATA_START_DATE)
             }
-            className="w-full rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+            className="w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-foreground outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
           />
           <div className="mt-3 flex items-center justify-between border-t border-zinc-100 pt-3 dark:border-zinc-800">
             <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
@@ -122,7 +122,7 @@ export function PerfSettingsMenu() {
               type="button"
               onClick={() => setStartDate(PERF_DATA_START_DATE)}
               disabled={!overridden}
-              className="text-xs font-medium text-indigo-600 transition-colors hover:text-indigo-500 disabled:cursor-default disabled:text-zinc-300 dark:text-indigo-400 dark:hover:text-indigo-300 dark:disabled:text-zinc-600"
+              className="text-xs font-medium text-accent transition-colors hover:text-accent-strong disabled:cursor-default disabled:text-zinc-300 dark:disabled:text-zinc-600"
             >
               Reset
             </button>

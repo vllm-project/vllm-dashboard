@@ -58,7 +58,7 @@ function MemTooltip({
   const total = entries.reduce((sum, entry) => sum + Number(entry.value), 0);
 
   return (
-    <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+    <div className="rounded-md border border-line bg-white px-3 py-2 text-xs shadow-lg dark:bg-zinc-900">
       <div className="mb-1 flex items-center justify-between gap-5">
         <p className="font-medium">{timeLabel}</p>
         {mode === "stacked" && (

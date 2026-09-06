@@ -1,6 +1,12 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { PageHeader } from "@/components/page-header";
+import { Panel } from "@/components/panel";
+import { SegmentedControl } from "@/components/segmented-control";
+import { Tabs } from "@/components/tabs";
+
+import { Suspense, useMemo } from "react";
+import { isoDate, useUrlState } from "@/lib/use-url-state";
 import useSWR from "swr";
 import {
   BarChart,
@@ -18,16 +24,6 @@ import { DateRangePicker } from "@/components/date-range-picker";
 import { JobName, jobNameText } from "@/components/job-name";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
-
-function daysAgo(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().split("T")[0];
-}
-
-function today(): string {
-  return new Date().toISOString().split("T")[0];
-}
 
 function formatCost(v: number): string {
   if (v >= 1000) return `$${(v / 1000).toFixed(1)}k`;
@@ -117,7 +113,7 @@ function StackedTooltip({
   const total = sorted.reduce((s, p) => s + (p.value || 0), 0);
   const isCost = mode === "cost";
   return (
-    <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+    <div className="rounded-md border border-line bg-white px-3 py-2 text-xs shadow-lg dark:bg-zinc-900">
       <p className="mb-1 font-medium">{label}</p>
       {sorted.map((p) => (
         <div key={p.name} className="flex items-center justify-between gap-4">
@@ -134,7 +130,7 @@ function StackedTooltip({
         </div>
       ))}
       {sorted.length > 1 && (
-        <div className="mt-1 border-t border-zinc-200 pt-1 text-right font-medium dark:border-zinc-700">
+        <div className="mt-1 border-t border-line pt-1 text-right font-medium">
           {isCost ? `$${total.toFixed(2)}` : `${total.toFixed(1)}h`}
         </div>
       )}
@@ -144,40 +140,40 @@ function StackedTooltip({
 
 // ── Tab button helper ────────────────────────────────────────────────────────
 
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`min-h-11 px-4 text-sm font-medium transition-[color,transform] active:scale-[0.98] sm:min-h-10 ${
-        active
-          ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
-          : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-export default function CostPage() {
-  const [pipeline, setPipeline] = useState("CI");
-  const [branch, setBranch] = useState("");
-  const [startDate, setStartDate] = useState(daysAgo(14));
-  const [endDate, setEndDate] = useState(today());
-  const [tab, setTab] = useState<"overview" | "builds" | "jobs">("overview");
-  const [chartMode, setChartMode] = useState<"cost" | "hours">("cost");
-  const [seriesMode, setSeriesMode] = useState<"top" | "all">("top");
-  const [buildPage, setBuildPage] = useState(0);
+const COST_URL_DEFAULTS = {
+  pipeline: "CI",
+  branch: "",
+  start: "",
+  end: "",
+  tab: "overview",
+  chart: "cost",
+  series: "top",
+  bpage: "0",
+};
+
+function CostPageContent() {
+  const [url, setUrl] = useUrlState(COST_URL_DEFAULTS);
+  const pipeline = url.pipeline;
+  const branch = url.branch;
+  const startDate = url.start || isoDate(14);
+  const endDate = url.end || isoDate(0);
+  const setPipeline = (next: string) => setUrl({ pipeline: next, bpage: "0" });
+  const setBranch = (next: string) => setUrl({ branch: next, bpage: "0" });
+  const setStartDate = (next: string) => setUrl({ start: next, bpage: "0" });
+  const setEndDate = (next: string) => setUrl({ end: next, bpage: "0" });
+  const tab: "overview" | "builds" | "jobs" =
+    url.tab === "builds" || url.tab === "jobs" ? url.tab : "overview";
+  const setTab = (next: "overview" | "builds" | "jobs") => setUrl({ tab: next });
+  const chartMode: "cost" | "hours" = url.chart === "hours" ? "hours" : "cost";
+  const setChartMode = (next: "cost" | "hours") => setUrl({ chart: next });
+  const seriesMode: "top" | "all" = url.series === "all" ? "all" : "top";
+  const setSeriesMode = (next: "top" | "all") => setUrl({ series: next });
+  const buildPage = Math.max(0, parseInt(url.bpage, 10) || 0);
+  const setBuildPage = (next: number | ((current: number) => number)) =>
+    setUrl({ bpage: String(typeof next === "function" ? next(buildPage) : next) });
 
   const params = new URLSearchParams();
   if (pipeline) params.set("pipeline", pipeline);
@@ -268,33 +264,35 @@ export default function CostPage() {
   return (
     <div className="space-y-6">
       {/* Header + filters */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-semibold">Cost</h1>
-        <div className="flex gap-3">
-          <SearchableSelect
-            label="Pipeline"
-            value={pipeline}
-            onChange={setPipeline}
-            options={filters?.pipelines ?? []}
-            allLabel="All Pipelines"
-          />
-          <SearchableSelect
-            label="Branch"
-            value={branch}
-            onChange={setBranch}
-            options={filters?.branches ?? []}
-            allLabel="All Branches"
-          />
-          <DateRangePicker
-            startDate={startDate}
-            endDate={endDate}
-            onChange={(s, e) => {
-              setStartDate(s);
-              setEndDate(e);
-            }}
-          />
-        </div>
-      </div>
+      <PageHeader
+        title="Cost"
+        actions={
+          <>
+            <SearchableSelect
+              label="Pipeline"
+              value={pipeline}
+              onChange={setPipeline}
+              options={filters?.pipelines ?? []}
+              allLabel="All Pipelines"
+            />
+            <SearchableSelect
+              label="Branch"
+              value={branch}
+              onChange={setBranch}
+              options={filters?.branches ?? []}
+              allLabel="All Branches"
+            />
+            <DateRangePicker
+              startDate={startDate}
+              endDate={endDate}
+              onChange={(s, e) => {
+                setStartDate(s);
+                setEndDate(e);
+              }}
+            />
+          </>
+        }
+      />
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">
@@ -306,101 +304,64 @@ export default function CostPage() {
       </div>
 
       {/* Tab bar */}
-      <div className="flex gap-1 border-b border-zinc-200 dark:border-zinc-800">
-        <TabButton active={tab === "overview"} onClick={() => setTab("overview")}>
-          Overview
-        </TabButton>
-        <TabButton active={tab === "builds"} onClick={() => { setTab("builds"); setBuildPage(0); }}>
-          By Build
-        </TabButton>
-        <TabButton active={tab === "jobs"} onClick={() => setTab("jobs")}>
-          By Job
-        </TabButton>
-      </div>
+      <Tabs
+        label="Cost views"
+        value={tab}
+        onChange={(next) => {
+          setTab(next);
+          if (next === "builds") setBuildPage(0);
+        }}
+        items={[
+          { value: "overview", label: "Overview" },
+          { value: "builds", label: "By Build" },
+          { value: "jobs", label: "By Job" },
+        ]}
+      />
 
       {/* ── Overview tab ── */}
       {tab === "overview" && (
         <>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div
-              className="inline-flex w-fit rounded-lg bg-zinc-100 p-0.5 dark:bg-zinc-900"
-              aria-label="Cost chart metric"
-            >
-              <button
-                onClick={() => setChartMode("cost")}
-                aria-pressed={chartMode === "cost"}
-                className={`min-h-11 rounded-md px-3 text-xs font-medium transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
-                  chartMode === "cost"
-                    ? "bg-white text-zinc-900 shadow-sm ring-1 ring-black/5 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10"
-                    : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                }`}
-              >
-                Daily Cost
-              </button>
-              <button
-                onClick={() => setChartMode("hours")}
-                aria-pressed={chartMode === "hours"}
-                className={`min-h-11 rounded-md px-3 text-xs font-medium transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
-                  chartMode === "hours"
-                    ? "bg-white text-zinc-900 shadow-sm ring-1 ring-black/5 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10"
-                    : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                }`}
-              >
-                Compute Hours
-              </button>
-            </div>
-            <div
-              className="inline-flex w-fit rounded-lg bg-zinc-100 p-0.5 dark:bg-zinc-900"
-              aria-label="Cost chart queue detail"
-            >
-              <button
-                type="button"
-                onClick={() => setSeriesMode("top")}
-                aria-pressed={seriesMode === "top"}
-                className={`min-h-11 rounded-md px-3 text-xs font-medium transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
-                  seriesMode === "top"
-                    ? "bg-white text-zinc-900 shadow-sm ring-1 ring-black/5 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10"
-                    : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                }`}
-              >
-                Top 5 + Other
-              </button>
-              <button
-                type="button"
-                onClick={() => setSeriesMode("all")}
-                aria-pressed={seriesMode === "all"}
-                className={`min-h-11 rounded-md px-3 text-xs font-medium transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
-                  seriesMode === "all"
-                    ? "bg-white text-zinc-900 shadow-sm ring-1 ring-black/5 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10"
-                    : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-                }`}
-              >
-                All Queues
-              </button>
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-zinc-200 bg-white p-4 sm:p-5 dark:border-zinc-800 dark:bg-zinc-950">
-            <div className="mb-4">
-              <h3 className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                {chartMode === "cost" ? "Daily cost" : "Daily compute hours"} by queue
-              </h3>
-              <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
-                {seriesMode === "top"
-                  ? "Highest-volume queues are shown individually; the remainder is grouped."
-                  : `${queues.length} queues shown for detailed inspection.`}
-              </p>
-            </div>
+          <Panel
+            title={`${chartMode === "cost" ? "Daily cost" : "Daily compute hours"} by queue`}
+            description={
+              seriesMode === "top"
+                ? "Highest-volume queues are shown individually; the remainder is grouped."
+                : `${queues.length} queues shown for detailed inspection.`
+            }
+            actions={
+              <>
+                <SegmentedControl
+                  label="Cost chart metric"
+                  value={chartMode}
+                  onChange={setChartMode}
+                  options={[
+                    { value: "cost", label: "Daily cost" },
+                    { value: "hours", label: "Compute hours" },
+                  ]}
+                />
+                <SegmentedControl
+                  label="Cost chart queue detail"
+                  value={seriesMode}
+                  onChange={setSeriesMode}
+                  options={[
+                    { value: "top", label: "Top 5 + other" },
+                    { value: "all", label: "All queues" },
+                  ]}
+                />
+              </>
+            }
+            padded
+          >
             <ResponsiveContainer width="100%" height={340}>
               <BarChart data={stackedData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#71717a" />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="var(--chart-axis)" />
                 <YAxis
                   tick={{ fontSize: 11 }}
                   tickFormatter={(v: number) =>
                     chartMode === "cost" ? formatCost(v) : `${v}h`
                   }
-                  stroke="#71717a"
+                  stroke="var(--chart-axis)"
                   width={50}
                 />
                 <Tooltip
@@ -419,23 +380,24 @@ export default function CostPage() {
                     stackId="a"
                     fill={queueColors[q]}
                     radius={0}
+                    isAnimationActive={false}
                   />
                 ))}
               </BarChart>
             </ResponsiveContainer>
-          </div>
+          </Panel>
 
           {/* Cost by Queue table */}
-          <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-            <div className="border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
-              <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+          <div className="rounded-lg border border-line bg-surface">
+            <div className="border-b border-line px-5 py-3">
+              <h3 className="text-sm font-medium text-muted">
                 Cost by Queue
               </h3>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                  <tr className="border-b border-line text-left text-muted">
                     <th className="px-5 py-2.5 font-medium">Queue</th>
                     <th className="px-5 py-2.5 font-medium">Instance</th>
                     <th className="px-5 py-2.5 font-medium">$/hr</th>
@@ -455,7 +417,7 @@ export default function CostPage() {
                       <td className="px-5 py-2.5 tabular-nums">{q.total_hours.toFixed(1)}</td>
                       <td className="px-5 py-2.5 font-medium tabular-nums">
                         {q.total_cost != null ? (
-                          <span className="text-purple-600 dark:text-purple-400">${q.total_cost.toFixed(2)}</span>
+                          <span className="font-medium text-foreground">${q.total_cost.toFixed(2)}</span>
                         ) : (
                           <span className="text-zinc-400">{"\u2014"}</span>
                         )}
@@ -477,9 +439,9 @@ export default function CostPage() {
 
       {/* ── By Build tab ── */}
       {tab === "builds" && (
-        <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-          <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
-            <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+        <div className="rounded-lg border border-line bg-surface">
+          <div className="flex items-center justify-between border-b border-line px-5 py-3">
+            <h3 className="text-sm font-medium text-muted">
               Cost by Build
               <span className="ml-2 text-xs font-normal text-zinc-400">
                 {byBuild.length} builds
@@ -490,7 +452,7 @@ export default function CostPage() {
                 <button
                   onClick={() => setBuildPage((p) => Math.max(0, p - 1))}
                   disabled={buildPage === 0}
-                  className="min-h-11 rounded px-3 text-xs font-medium text-zinc-500 transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] disabled:opacity-40 sm:min-h-10 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  className="min-h-11 rounded px-3 text-xs font-medium text-muted transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] disabled:opacity-40 sm:min-h-10 dark:hover:bg-zinc-800"
                 >
                   Prev
                 </button>
@@ -500,7 +462,7 @@ export default function CostPage() {
                 <button
                   onClick={() => setBuildPage((p) => Math.min(buildTotalPages - 1, p + 1))}
                   disabled={buildPage >= buildTotalPages - 1}
-                  className="min-h-11 rounded px-3 text-xs font-medium text-zinc-500 transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] disabled:opacity-40 sm:min-h-10 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  className="min-h-11 rounded px-3 text-xs font-medium text-muted transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] disabled:opacity-40 sm:min-h-10 dark:hover:bg-zinc-800"
                 >
                   Next
                 </button>
@@ -510,7 +472,7 @@ export default function CostPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <tr className="border-b border-line text-left text-muted">
                   <th className="px-5 py-2.5 font-medium">#</th>
                   <th className="px-5 py-2.5 font-medium">Build</th>
                   <th className="px-5 py-2.5 font-medium">Commit</th>
@@ -559,11 +521,11 @@ export default function CostPage() {
                         <div className="flex items-center gap-2">
                           <div className="h-2 w-20 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
                             <div
-                              className="h-full rounded-full bg-purple-500"
+                              className="h-full rounded-full bg-accent"
                               style={{ width: `${Math.min(pct, 100)}%` }}
                             />
                           </div>
-                          <span className="text-xs font-medium tabular-nums text-purple-600 dark:text-purple-400">
+                          <span className="text-xs font-medium tabular-nums text-foreground">
                             ${b.total_cost.toFixed(0)}
                           </span>
                         </div>
@@ -583,7 +545,7 @@ export default function CostPage() {
           </div>
           {/* Bottom pagination */}
           {buildTotalPages > 1 && (
-            <div className="flex items-center justify-between border-t border-zinc-200 px-5 py-3 dark:border-zinc-800">
+            <div className="flex items-center justify-between border-t border-line px-5 py-3">
               <span className="text-xs text-zinc-400">
                 Showing {buildPage * BUILDS_PER_PAGE + 1}–{Math.min((buildPage + 1) * BUILDS_PER_PAGE, byBuild.length)} of {byBuild.length}
               </span>
@@ -591,7 +553,7 @@ export default function CostPage() {
                 <button
                   onClick={() => setBuildPage((p) => Math.max(0, p - 1))}
                   disabled={buildPage === 0}
-                  className="min-h-11 rounded px-3 text-xs font-medium text-zinc-500 transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] disabled:opacity-40 sm:min-h-10 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  className="min-h-11 rounded px-3 text-xs font-medium text-muted transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] disabled:opacity-40 sm:min-h-10 dark:hover:bg-zinc-800"
                 >
                   Prev
                 </button>
@@ -601,7 +563,7 @@ export default function CostPage() {
                 <button
                   onClick={() => setBuildPage((p) => Math.min(buildTotalPages - 1, p + 1))}
                   disabled={buildPage >= buildTotalPages - 1}
-                  className="min-h-11 rounded px-3 text-xs font-medium text-zinc-500 transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] disabled:opacity-40 sm:min-h-10 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  className="min-h-11 rounded px-3 text-xs font-medium text-muted transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] disabled:opacity-40 sm:min-h-10 dark:hover:bg-zinc-800"
                 >
                   Next
                 </button>
@@ -613,9 +575,9 @@ export default function CostPage() {
 
       {/* ── By Job tab ── */}
       {tab === "jobs" && (
-        <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-          <div className="border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
-            <h3 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+        <div className="rounded-lg border border-line bg-surface">
+          <div className="border-b border-line px-5 py-3">
+            <h3 className="text-sm font-medium text-muted">
               Cost by Job
               <span className="ml-2 text-xs font-normal text-zinc-400">
                 {byJob.length} jobs
@@ -625,7 +587,7 @@ export default function CostPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <tr className="border-b border-line text-left text-muted">
                   <th className="px-5 py-2.5 font-medium">#</th>
                   <th className="px-5 py-2.5 font-medium">Job</th>
                   <th className="px-5 py-2.5 font-medium text-right">Runs</th>
@@ -654,11 +616,11 @@ export default function CostPage() {
                         <div className="flex items-center justify-end gap-2">
                           <div className="h-2 w-16 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
                             <div
-                              className="h-full rounded-full bg-purple-500"
+                              className="h-full rounded-full bg-accent"
                               style={{ width: `${Math.min(pct, 100)}%` }}
                             />
                           </div>
-                          <span className="text-xs font-medium tabular-nums text-purple-600 dark:text-purple-400">
+                          <span className="text-xs font-medium tabular-nums text-foreground">
                             ${j.total_cost.toFixed(2)}
                           </span>
                         </div>
@@ -680,5 +642,19 @@ export default function CostPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function CostPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-64 items-center justify-center text-sm text-muted">
+          Loading cost...
+        </div>
+      }
+    >
+      <CostPageContent />
+    </Suspense>
   );
 }

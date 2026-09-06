@@ -1,6 +1,11 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { PageHeader } from "@/components/page-header";
+import { ToggleSwitch } from "@/components/toggle-switch";
+import { PerfSettingsMenu } from "@/app/perf/perf-settings";
+
+import { Suspense, useState, useMemo, useEffect } from "react";
+import { useUrlState } from "@/lib/use-url-state";
 import useSWR from "swr";
 import dynamic from "next/dynamic";
 import { SearchableSelect } from "@/components/searchable-select";
@@ -293,9 +298,9 @@ function PerfChart({
   const textColor = dark ? "#a1a1aa" : "#71717a";
 
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-zinc-800/80 dark:bg-zinc-950 dark:shadow-[0_1px_3px_rgba(0,0,0,0.3)]">
+    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-surface shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-zinc-800/80 dark:shadow-[0_1px_3px_rgba(0,0,0,0.3)]">
       <div className="px-5 pt-4 pb-0">
-        <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+        <h3 className="text-[13px] font-semibold tracking-tight text-foreground">
           {title}
         </h3>
       </div>
@@ -382,13 +387,21 @@ function PerfChart({
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-export default function PerfPage() {
+const FRONTIER_URL_DEFAULTS = { model: "", device: "", tp: "", conc: "", optimal: "" };
+
+function PerfFrontierPageContent() {
   const { startDate } = usePerfSettings();
-  const [model, setModel] = useState("");
-  const [device, setDevice] = useState("");
-  const [tp, setTp] = useState("");
-  const [conc, setConc] = useState("");
-  const [hideNonOptimal, setHideNonOptimal] = useState(false);
+  const [url, setUrl] = useUrlState(FRONTIER_URL_DEFAULTS);
+  const model = url.model;
+  const device = url.device;
+  const tp = url.tp;
+  const conc = url.conc;
+  const hideNonOptimal = url.optimal === "1";
+  const setModel = (next: string) => setUrl({ model: next, device: "", tp: "", conc: "" });
+  const setDevice = (next: string) => setUrl({ device: next });
+  const setTp = (next: string) => setUrl({ tp: next });
+  const setConc = (next: string) => setUrl({ conc: next });
+  const setHideNonOptimal = (next: boolean) => setUrl({ optimal: next ? "1" : "" });
 
   const { data: filters } = useSWR<FiltersResponse>(
     `/api/perf/filters?start=${encodeURIComponent(startDate)}`,
@@ -449,21 +462,18 @@ export default function PerfPage() {
 
   return (
     <div className="space-y-5">
-      <p className="text-sm text-zinc-500 dark:text-zinc-400">
-        Throughput-latency tradeoff curves across hardware configurations.
-        Points on the Pareto frontier represent optimal throughput/latency tradeoffs.
-      </p>
+      <PageHeader
+        title="Throughput–latency frontier"
+        description="Tradeoff curves across hardware configurations. Points on the Pareto frontier are the best available throughput for a given latency."
+        actions={<PerfSettingsMenu />}
+      />
 
       {/* Filter bar */}
-      <div className="flex flex-wrap items-end gap-x-4 gap-y-3 rounded-xl border border-zinc-200/80 bg-white px-5 py-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-zinc-800/80 dark:bg-zinc-950 dark:shadow-[0_1px_3px_rgba(0,0,0,0.3)]">
+      <div className="flex flex-wrap items-end gap-x-4 gap-y-3 rounded-xl border border-line bg-surface px-4 py-4 sm:px-5">
         <SearchableSelect
           label="Model"
           value={model}
-          onChange={(v) => {
-            setModel(v);
-            setDevice("");
-            setTp("");
-          }}
+          onChange={setModel}
           options={filters?.models ?? []}
           counts={filters?.modelCounts}
           allLabel="Select Model"
@@ -490,27 +500,12 @@ export default function PerfPage() {
           allLabel="All Concurrency"
         />
         {model && chartRows.length > 0 && (
-          <div className="flex items-center gap-2.5 pb-0.5">
-            <button
-              type="button"
-              role="switch"
-              aria-checked={hideNonOptimal}
-              onClick={() => setHideNonOptimal(!hideNonOptimal)}
-              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 ${
-                hideNonOptimal
-                  ? "bg-indigo-500"
-                  : "bg-zinc-200 dark:bg-zinc-700"
-              }`}
-            >
-              <span
-                className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${
-                  hideNonOptimal ? "translate-x-[18px]" : "translate-x-[3px]"
-                }`}
-              />
-            </button>
-            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
-              Optimal only
-            </span>
+          <div className="pb-1">
+            <ToggleSwitch
+              label="Optimal only"
+              checked={hideNonOptimal}
+              onToggle={() => setHideNonOptimal(!hideNonOptimal)}
+            />
           </div>
         )}
       </div>
@@ -556,5 +551,19 @@ export default function PerfPage() {
       )}
 
     </div>
+  );
+}
+
+export default function PerfFrontierPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-64 items-center justify-center text-sm text-muted">
+          Loading benchmark frontier...
+        </div>
+      }
+    >
+      <PerfFrontierPageContent />
+    </Suspense>
   );
 }

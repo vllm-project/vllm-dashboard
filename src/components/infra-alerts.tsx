@@ -28,20 +28,20 @@ function RetiredBadge() {
 function EpisodeRow({ episode }: { episode: InfraAlertEpisodeView }) {
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm sm:px-5">
-      <span className="min-w-0 truncate font-mono text-zinc-900 dark:text-zinc-100">
+      <span className="min-w-0 truncate font-mono text-foreground">
         {episode.subjectKey}
       </span>
-      <span className="shrink-0 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+      <span className="shrink-0 text-xs font-medium text-muted">
         {episode.typeLabel}
       </span>
       <StatusBadge status={episode.status} />
       {episode.retired && <RetiredBadge />}
-      <span className="ml-auto shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
+      <span className="ml-auto shrink-0 text-xs text-muted">
         Opened {formatAlertDateTime(episode.openedAt)}
         {episode.resolvedAt !== null &&
           ` · Resolved ${formatAlertDateTime(episode.resolvedAt)}`}
       </span>
-      <p className="w-full text-xs text-zinc-500 dark:text-zinc-400">
+      <p className="w-full text-xs text-muted">
         {episode.summary}
       </p>
     </li>
@@ -64,7 +64,7 @@ function EpisodeSection({
           {episodes.length}
         </span>
       </h2>
-      <ul className="divide-y divide-zinc-100 overflow-hidden rounded-xl border border-zinc-200 bg-white dark:divide-zinc-800/60 dark:border-zinc-800 dark:bg-zinc-950">
+      <ul className="divide-y divide-zinc-100 overflow-hidden rounded-xl border border-line bg-surface dark:divide-zinc-800/60">
         {episodes.map((episode) => (
           <EpisodeRow key={episode.alertId} episode={episode} />
         ))}
@@ -83,22 +83,22 @@ function RetiredHosts({ hosts }: { hosts: InfraRetiredHost[] }) {
           {hosts.length}
         </span>
       </h2>
-      <ul className="divide-y divide-zinc-100 overflow-hidden rounded-xl border border-dashed border-zinc-300 bg-white dark:divide-zinc-800/60 dark:border-zinc-700 dark:bg-zinc-950">
+      <ul className="divide-y divide-zinc-100 overflow-hidden rounded-xl border border-dashed border-zinc-300 bg-surface dark:divide-zinc-800/60 dark:border-zinc-700">
         {hosts.map((host) => (
           <li
             key={host.subjectKey}
             className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm sm:px-5"
           >
-            <span className="min-w-0 truncate font-mono text-zinc-500 dark:text-zinc-400">
+            <span className="min-w-0 truncate font-mono text-muted">
               {host.subjectKey}
             </span>
             <RetiredBadge />
-            <span className="ml-auto shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
+            <span className="ml-auto shrink-0 text-xs text-muted">
               {host.lastReportedAt !== null &&
                 `Last report ${formatAlertDateTime(host.lastReportedAt)} · `}
               Retired {formatAlertDateTime(host.retiredAt)}
             </span>
-            <p className="w-full text-xs text-zinc-500 dark:text-zinc-400">
+            <p className="w-full text-xs text-muted">
               Stopped reporting and was auto-retired after 7 days absent from
               every expected source; it no longer alerts.
             </p>

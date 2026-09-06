@@ -45,7 +45,7 @@ function OverviewTooltip({
       })
     : "";
   return (
-    <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+    <div className="rounded-md border border-line bg-white px-3 py-2 text-xs shadow-lg dark:bg-zinc-900">
       <p className="mb-1 font-medium">{timeLabel}</p>
       {payload.map((p) => (
         <div key={p.name} className="flex items-center justify-between gap-4">
@@ -116,7 +116,7 @@ export function QueueOverviewChart({
             <button
               type="button"
               onClick={onRetry}
-              className="mt-1 rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
+              className="mt-1 rounded-md border border-zinc-300 bg-surface px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-500 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-900"
             >
               Retry
             </button>
@@ -127,7 +127,7 @@ export function QueueOverviewChart({
 
     return (
       <div className="flex h-[300px] flex-col items-center justify-center gap-1 text-center">
-        <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+        <p className="text-sm font-medium text-muted">
           No history in this range
         </p>
         <p className="text-xs text-zinc-400">
@@ -158,7 +158,7 @@ export function QueueOverviewChart({
           cursor={{ fill: "rgba(113,113,122,0.08)" }}
         />
         <Legend wrapperStyle={{ fontSize: 11 }} />
-        <Bar
+        <Bar isAnimationActive={false}
 
           dataKey="running"
           name="Running"
@@ -166,7 +166,7 @@ export function QueueOverviewChart({
           fill="#10b981"
           radius={[0, 0, 0, 0]}
         />
-        <Bar
+        <Bar isAnimationActive={false}
 
           dataKey="scheduled"
           name="Waiting"
@@ -175,7 +175,7 @@ export function QueueOverviewChart({
           radius={showWaiting ? [0, 0, 0, 0] : [2, 2, 0, 0]}
         />
         {showWaiting && (
-          <Bar
+          <Bar isAnimationActive={false}
             dataKey="waiting"
             name="Waiting (raw)"
             stackId="jobs"
@@ -183,7 +183,7 @@ export function QueueOverviewChart({
             radius={[2, 2, 0, 0]}
           />
         )}
-        <Line
+        <Line isAnimationActive={false}
 
           type="monotone"
           dataKey="agents"

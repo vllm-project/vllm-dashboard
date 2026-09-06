@@ -1,6 +1,10 @@
 "use client";
 
-import { useState, Fragment } from "react";
+import { PageHeader } from "@/components/page-header";
+
+import { useState, Fragment, Suspense } from "react";
+import Link from "next/link";
+import { isoDate, useUrlState } from "@/lib/use-url-state";
 import useSWR from "swr";
 import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
@@ -10,16 +14,6 @@ import { JobName, jobNameText } from "@/components/job-name";
 import { JobRunsChart, JobRun } from "@/components/job-runs-chart";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
-
-function daysAgo(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().split("T")[0];
-}
-
-function today(): string {
-  return new Date().toISOString().split("T")[0];
-}
 
 interface FailureRow {
   name: string;
@@ -108,7 +102,7 @@ function JobBadges({ name, hasSoftFail }: { name: string; hasSoftFail: boolean }
         </span>
       )}
       {optional && (
-        <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/40 dark:text-purple-400">
+        <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[10px] font-medium text-accent">
           optional
         </span>
       )}
@@ -127,11 +121,18 @@ function JobAnalysisTab({
   startDate: string;
   endDate: string;
 }) {
-  const [analysisTab, setAnalysisTab] = useState<"failures" | "duration">("failures");
-  const [hideSoftFail, setHideSoftFail] = useState(false);
-  const [hideOptional, setHideOptional] = useState(false);
+  const [url, setUrl] = useUrlState(JOBS_URL_DEFAULTS);
+  const analysisTab: "failures" | "duration" =
+    url.tab === "duration" ? "duration" : "failures";
+  const setAnalysisTab = (next: "failures" | "duration") => setUrl({ tab: next });
+  const hideSoftFail = url.softfail === "1";
+  const setHideSoftFail = (next: boolean) => setUrl({ softfail: next ? "1" : "" });
+  const hideOptional = url.optional === "1";
+  const setHideOptional = (next: boolean) => setUrl({ optional: next ? "1" : "" });
   const [searchQuery, setSearchQuery] = useState("");
-  const [page, setPage] = useState(0);
+  const page = Math.max(0, parseInt(url.page, 10) || 0);
+  const setPage = (next: number | ((current: number) => number)) =>
+    setUrl({ page: String(typeof next === "function" ? next(page) : next) });
   const pageSize = 20;
   const [failureSort, setFailureSort] = useState<{ col: string; asc: boolean }>({ col: "failure_rate", asc: false });
   const [durationSort, setDurationSort] = useState<{ col: string; asc: boolean }>({ col: "p50_duration", asc: false });
@@ -236,9 +237,28 @@ function JobAnalysisTab({
   function ExpandedJobRow({ jobName, colSpan }: { jobName: string; colSpan: number }) {
     const url = `/api/jobs/runs?${runsParams.toString()}&jobName=${encodeURIComponent(jobName)}`;
     const { data, isLoading } = useSWR<{ runs: JobRun[] }>(url, fetcher);
+    const detailHref =
+      `/jobs/${encodeURIComponent(jobName)}?` +
+      new URLSearchParams({
+        pipeline,
+        branch,
+        start: startDate,
+        end: endDate,
+      }).toString();
     return (
       <tr>
-        <td colSpan={colSpan} className="bg-zinc-50 px-5 py-4 dark:bg-zinc-900/50">
+        <td colSpan={colSpan} className="bg-surface-muted/60 px-5 py-4">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="text-xs text-muted">
+              {analysisTab === "failures" ? "Pass/fail per run" : "Duration per run"} over the selected range.
+            </p>
+            <Link
+              href={detailHref}
+              className="dashboard-control text-xs font-medium text-accent hover:text-accent-strong"
+            >
+              Open job page →
+            </Link>
+          </div>
           <JobRunsChart
             runs={data?.runs ?? []}
             mode={analysisTab}
@@ -284,28 +304,31 @@ function JobAnalysisTab({
         />
       </div>
 
-      <div className="flex min-w-0 flex-col gap-3 border-b border-zinc-200 sm:flex-row sm:items-end sm:justify-between sm:gap-4 dark:border-zinc-800">
-        <div className="flex gap-1">
-          <button
-            onClick={() => { setAnalysisTab("failures"); setPage(0); }}
-            className={`min-h-11 px-3 text-sm font-medium transition-colors active:scale-[0.98] sm:min-h-10 sm:px-4 ${
-              analysisTab === "failures"
-                ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
-                : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
-            }`}
-          >
-            Failure Ranking
-          </button>
-          <button
-            onClick={() => { setAnalysisTab("duration"); setPage(0); }}
-            className={`min-h-11 px-3 text-sm font-medium transition-colors active:scale-[0.98] sm:min-h-10 sm:px-4 ${
-              analysisTab === "duration"
-                ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
-                : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
-            }`}
-          >
-            Duration Ranking
-          </button>
+      <div className="flex min-w-0 flex-col gap-3 border-b border-line sm:flex-row sm:items-end sm:justify-between sm:gap-4">
+        <div
+          role="tablist"
+          aria-label="Job rankings"
+          className="scrollbar-hidden -mb-px flex min-w-0 gap-5 overflow-x-auto"
+        >
+          {([
+            ["failures", "Failure Ranking"],
+            ["duration", "Duration Ranking"],
+          ] as const).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={analysisTab === value}
+              onClick={() => { setAnalysisTab(value); setPage(0); }}
+              className={`dashboard-control -mb-px inline-flex min-h-10 shrink-0 items-center whitespace-nowrap border-b-2 px-0.5 text-sm font-medium ${
+                analysisTab === value
+                  ? "border-foreground text-foreground"
+                  : "border-transparent text-muted hover:text-foreground"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 pb-2 sm:justify-end sm:pb-1">
           <input
@@ -313,9 +336,9 @@ function JobAnalysisTab({
             placeholder="Search jobs..."
             value={searchQuery}
             onChange={(e) => { setSearchQuery(e.target.value); setPage(0); }}
-            className="h-11 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:ring-1 focus:ring-zinc-400 sm:h-10 sm:w-48 sm:flex-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500 dark:focus:ring-zinc-500"
+            className="h-11 min-w-0 flex-1 rounded-md border border-line bg-white px-3 text-sm text-foreground placeholder-zinc-400 focus:outline-none focus:ring-1 focus:ring-zinc-400 sm:h-10 sm:w-48 sm:flex-none dark:bg-zinc-900 dark:placeholder-zinc-500 dark:focus:ring-zinc-500"
           />
-          <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500 sm:min-h-10 dark:text-zinc-400">
+          <label className="flex min-h-11 items-center gap-2 text-xs text-muted sm:min-h-10">
             <input
               type="checkbox"
               checked={hideSoftFail}
@@ -324,7 +347,7 @@ function JobAnalysisTab({
             />
             Hide soft fail
           </label>
-          <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500 sm:min-h-10 dark:text-zinc-400">
+          <label className="flex min-h-11 items-center gap-2 text-xs text-muted sm:min-h-10">
             <input
               type="checkbox"
               checked={hideOptional}
@@ -337,11 +360,11 @@ function JobAnalysisTab({
       </div>
 
       {analysisTab === "failures" && (
-        <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="rounded-lg border border-line bg-surface">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <tr className="border-b border-line text-left text-muted">
                   <th className="px-5 py-2.5 font-medium">#</th>
                   <th className="px-5 py-2.5 font-medium">Job</th>
                   <th className="cursor-pointer select-none px-5 py-2.5 font-medium hover:text-zinc-900 dark:hover:text-zinc-100" onClick={() => toggleFailureSort("failure_rate")}>
@@ -362,7 +385,7 @@ function JobAnalysisTab({
                 {pagedFailures.map((row, i) => (
                   <Fragment key={row.name}>
                     <tr
-                      className={`cursor-pointer border-b border-zinc-100 transition-colors hover:bg-zinc-50 dark:border-zinc-800/50 dark:hover:bg-zinc-900/30 ${expandedJob === row.name ? "bg-zinc-50 dark:bg-zinc-900/30" : ""}`}
+                      className={`cursor-pointer border-b border-zinc-100 transition-colors hover:bg-zinc-50 dark:border-zinc-800/50 dark:hover:bg-zinc-900/30 ${expandedJob === row.name ? "bg-surface-muted/60" : ""}`}
                       onClick={() => toggleExpanded(row.name)}
                     >
                       <td className="px-5 py-2.5 text-zinc-400">{page * pageSize + i + 1}</td>
@@ -400,11 +423,11 @@ function JobAnalysisTab({
       )}
 
       {analysisTab === "duration" && (
-        <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="rounded-lg border border-line bg-surface">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <tr className="border-b border-line text-left text-muted">
                   <th className="px-5 py-2.5 font-medium">#</th>
                   <th className="px-5 py-2.5 font-medium">Job</th>
                   <th className="cursor-pointer select-none px-5 py-2.5 font-medium hover:text-zinc-900 dark:hover:text-zinc-100" onClick={() => toggleDurationSort("p50_duration")}>
@@ -428,7 +451,7 @@ function JobAnalysisTab({
                 {pagedDuration.map((row, i) => (
                   <Fragment key={row.name}>
                     <tr
-                      className={`cursor-pointer border-b border-zinc-100 transition-colors hover:bg-zinc-50 dark:border-zinc-800/50 dark:hover:bg-zinc-900/30 ${expandedJob === row.name ? "bg-zinc-50 dark:bg-zinc-900/30" : ""}`}
+                      className={`cursor-pointer border-b border-zinc-100 transition-colors hover:bg-zinc-50 dark:border-zinc-800/50 dark:hover:bg-zinc-900/30 ${expandedJob === row.name ? "bg-surface-muted/60" : ""}`}
                       onClick={() => toggleExpanded(row.name)}
                     >
                       <td className="px-5 py-2.5 text-zinc-400">{page * pageSize + i + 1}</td>
@@ -473,21 +496,21 @@ function JobAnalysisTab({
 
       {totalPages > 1 && (
         <div className="flex items-center justify-between">
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+          <p className="text-sm text-muted">
             Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, totalItems)} of {totalItems} jobs
           </p>
           <div className="flex gap-2">
             <button
               onClick={() => setPage((p) => Math.max(0, p - 1))}
               disabled={page === 0}
-              className="min-h-11 rounded-md border border-zinc-200 px-3 text-sm font-medium transition-colors hover:bg-zinc-100 active:scale-[0.98] disabled:opacity-40 disabled:hover:bg-transparent sm:min-h-10 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              className="min-h-11 rounded-md border border-line px-3 text-sm font-medium transition-colors hover:bg-zinc-100 active:scale-[0.98] disabled:opacity-40 disabled:hover:bg-transparent sm:min-h-10 dark:hover:bg-zinc-800"
             >
               Previous
             </button>
             <button
               onClick={() => setPage((p) => p + 1)}
               disabled={page + 1 >= totalPages}
-              className="min-h-11 rounded-md border border-zinc-200 px-3 text-sm font-medium transition-colors hover:bg-zinc-100 active:scale-[0.98] disabled:opacity-40 disabled:hover:bg-transparent sm:min-h-10 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              className="min-h-11 rounded-md border border-line px-3 text-sm font-medium transition-colors hover:bg-zinc-100 active:scale-[0.98] disabled:opacity-40 disabled:hover:bg-transparent sm:min-h-10 dark:hover:bg-zinc-800"
             >
               Next
             </button>
@@ -499,11 +522,27 @@ function JobAnalysisTab({
 }
 
 /* ── Main page ── */
-export default function JobsPage() {
-  const [pipeline, setPipeline] = useState("CI");
-  const [branch, setBranch] = useState("main");
-  const [startDate, setStartDate] = useState(daysAgo(14));
-  const [endDate, setEndDate] = useState(today());
+const JOBS_URL_DEFAULTS = {
+  pipeline: "CI",
+  branch: "main",
+  start: "",
+  end: "",
+  tab: "failures",
+  page: "0",
+  softfail: "",
+  optional: "",
+};
+
+function JobsPageContent() {
+  const [url, setUrl] = useUrlState(JOBS_URL_DEFAULTS);
+  const pipeline = url.pipeline;
+  const branch = url.branch;
+  const startDate = url.start || isoDate(14);
+  const endDate = url.end || isoDate(0);
+  const setPipeline = (next: string) => setUrl({ pipeline: next, page: "0" });
+  const setBranch = (next: string) => setUrl({ branch: next, page: "0" });
+  const setStartDate = (next: string) => setUrl({ start: next, page: "0" });
+  const setEndDate = (next: string) => setUrl({ end: next, page: "0" });
 
   const { data: filters } = useSWR<FiltersResponse>(
     "/api/builds/filters",
@@ -512,33 +551,35 @@ export default function JobsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-2xl font-semibold">Jobs</h1>
-        <div className="flex gap-3">
-          <SearchableSelect
-            label="Pipeline"
-            value={pipeline}
-            onChange={setPipeline}
-            options={filters?.pipelines ?? []}
-            allLabel="All Pipelines"
-          />
-          <SearchableSelect
-            label="Branch"
-            value={branch}
-            onChange={setBranch}
-            options={filters?.branches ?? []}
-            allLabel="All Branches"
-          />
-          <DateRangePicker
-            startDate={startDate}
-            endDate={endDate}
-            onChange={(s, e) => {
-              setStartDate(s);
-              setEndDate(e);
-            }}
-          />
-        </div>
-      </div>
+      <PageHeader
+        title="Jobs"
+        actions={
+          <>
+            <SearchableSelect
+              label="Pipeline"
+              value={pipeline}
+              onChange={setPipeline}
+              options={filters?.pipelines ?? []}
+              allLabel="All Pipelines"
+            />
+            <SearchableSelect
+              label="Branch"
+              value={branch}
+              onChange={setBranch}
+              options={filters?.branches ?? []}
+              allLabel="All Branches"
+            />
+            <DateRangePicker
+              startDate={startDate}
+              endDate={endDate}
+              onChange={(s, e) => {
+                setStartDate(s);
+                setEndDate(e);
+              }}
+            />
+          </>
+        }
+      />
 
       <JobAnalysisTab
         pipeline={pipeline}
@@ -547,5 +588,19 @@ export default function JobsPage() {
         endDate={endDate}
       />
     </div>
+  );
+}
+
+export default function JobsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-64 items-center justify-center text-sm text-muted">
+          Loading jobs...
+        </div>
+      }
+    >
+      <JobsPageContent />
+    </Suspense>
   );
 }

@@ -1,6 +1,12 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { PageHeader } from "@/components/page-header";
+import { SegmentedControl } from "@/components/segmented-control";
+import { PerfSettingsMenu } from "@/app/perf/perf-settings";
+import { ToggleSwitch } from "@/components/toggle-switch";
+
+import { Suspense, useState, useMemo, useEffect } from "react";
+import { useUrlState } from "@/lib/use-url-state";
 import useSWR from "swr";
 import dynamic from "next/dynamic";
 import { SearchableSelect } from "@/components/searchable-select";
@@ -96,11 +102,27 @@ function metricLabel(metric: string): string {
   return info.unit ? `${info.name} (${info.unit})` : info.name;
 }
 
-const COLORS = [
-  "#818cf8", "#fb923c", "#34d399", "#f87171",
-  "#a78bfa", "#22d3ee", "#f472b6", "#fbbf24",
-  "#60a5fa", "#4ade80", "#e879f9", "#facc15",
+// Same categorical palette as the rest of the dashboard (see globals.css
+// --chart-1..8), with a lighter ramp for dark surfaces.
+const COLORS_LIGHT = [
+  "#2563eb", "#d97706", "#7c3aed", "#059669",
+  "#db2777", "#0891b2", "#ea580c", "#4f46e5",
+  "#65a30d", "#c026d3", "#0d9488", "#b45309",
 ];
+const COLORS_DARK = [
+  "#60a5fa", "#fbbf24", "#a78bfa", "#34d399",
+  "#f472b6", "#22d3ee", "#fb923c", "#818cf8",
+  "#a3e635", "#e879f9", "#2dd4bf", "#f59e0b",
+];
+
+/** How many series to show by default before the reader opts into more. */
+const DEFAULT_VISIBLE_SERIES = 8;
+
+function percentile(sorted: number[], q: number): number {
+  if (sorted.length === 0) return 0;
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * q)));
+  return sorted[index];
+}
 
 // ── Hooks ────────────────────────────────────────────────────────────────────
 
@@ -128,19 +150,38 @@ function TrendChart({
   metric,
   stat,
   colorMap,
+  xRange,
+  hiddenSeries,
+  clipOutliers,
 }: {
   points: TrendPoint[];
   metric: string;
   stat: Stat;
   colorMap: Record<string, string>;
+  /** Shared date range so every chart on the page lines up. */
+  xRange: [string, string] | null;
+  hiddenSeries: ReadonlySet<string>;
+  /** Cap the y axis near the 98th percentile so spikes do not flatten the trend. */
+  clipOutliers: boolean;
 }) {
   const dark = useDarkMode();
   const col = metricColumn(metric, stat);
   const info = METRIC_INFO[metric];
 
-  const { traces, hasData } = useMemo(() => {
-    const valid = points.filter((p) => !isNaN(p[col] as number));
-    if (valid.length === 0) return { traces: [], hasData: false };
+  const { traces, hasData, yRange, clippedCount } = useMemo(() => {
+    const valid = points.filter(
+      (p) => !isNaN(p[col] as number) && !hiddenSeries.has(p.series),
+    );
+    if (valid.length === 0) {
+      return { traces: [], hasData: false, yRange: null, clippedCount: 0 };
+    }
+
+    const values = valid.map((p) => p[col] as number).sort((a, b) => a - b);
+    const max = values[values.length - 1];
+    const cap = percentile(values, 0.98) * 1.25;
+    const shouldClip = clipOutliers && values.length >= 8 && max > cap && cap > 0;
+    const yRange: [number, number] | null = shouldClip ? [0, cap] : null;
+    const clippedCount = shouldClip ? values.filter((v) => v > cap).length : 0;
 
     const groups = new Map<string, TrendPoint[]>();
     for (const p of valid) {
@@ -174,23 +215,30 @@ function TrendChart({
           `<extra></extra>`,
       });
     }
-    return { traces: result, hasData: true };
-  }, [points, col, metric, colorMap, dark]);
+    return { traces: result, hasData: true, yRange, clippedCount };
+  }, [points, col, metric, colorMap, dark, hiddenSeries, clipOutliers]);
 
   if (!hasData) return null;
 
-  const axisColor = dark ? "#52525b" : "#d4d4d8";
-  const gridColor = dark ? "rgba(63,63,70,0.4)" : "rgba(228,228,231,0.6)";
-  const textColor = dark ? "#a1a1aa" : "#71717a";
+  const axisColor = dark ? "#3f3f46" : "#d4d4d8";
+  const gridColor = dark ? "rgba(63,63,70,0.45)" : "rgba(228,228,231,0.7)";
+  const textColor = dark ? "#8b8b94" : "#71717a";
 
   return (
-    <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-zinc-800/80 dark:bg-zinc-950 dark:shadow-[0_1px_3px_rgba(0,0,0,0.3)]">
-      <div className="flex items-baseline justify-between px-5 pt-4 pb-0">
-        <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+    <div className="overflow-hidden rounded-xl border border-line bg-surface">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-5 pt-4 pb-0">
+        <h3 className="text-sm font-semibold tracking-tight text-foreground">
           {metricLabel(metric)}
         </h3>
-        <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
-          {info?.higherIsBetter ? "higher is better" : "lower is better"}
+        <span className="flex items-center gap-3 text-[11px] text-muted">
+          {clippedCount > 0 && (
+            <span title="The y axis is capped near the 98th percentile; hover a series to see exact values or turn off outlier clipping.">
+              {clippedCount} {clippedCount === 1 ? "point" : "points"} above axis
+            </span>
+          )}
+          <span className="font-medium uppercase tracking-wide">
+            {info?.higherIsBetter ? "higher is better" : "lower is better"}
+          </span>
         </span>
       </div>
       <div className="-mx-px">
@@ -204,8 +252,10 @@ function TrendChart({
               color: textColor,
               size: 11,
             },
+            showlegend: false,
             xaxis: {
               type: "date" as const,
+              range: xRange ?? undefined,
               tickfont: { size: 10 },
               gridcolor: gridColor,
               linecolor: axisColor,
@@ -225,26 +275,15 @@ function TrendChart({
               showline: true,
               zeroline: false,
               rangemode: "tozero" as const,
+              range: yRange ?? undefined,
               showgrid: true,
               gridwidth: 1,
               ticks: "outside" as const,
               tickcolor: axisColor,
               ticklen: 4,
             },
-            legend: {
-              font: { size: 10 },
-              bgcolor: "transparent",
-              borderwidth: 0,
-              orientation: "h" as const,
-              y: -0.2,
-              x: 0.5,
-              xanchor: "center" as const,
-              yanchor: "top" as const,
-              tracegroupgap: 4,
-              itemwidth: 30,
-            },
-            height: 340,
-            margin: { l: 56, r: 16, t: 12, b: 70 },
+            height: 300,
+            margin: { l: 56, r: 16, t: 12, b: 40 },
             hovermode: "closest" as const,
             hoverlabel: {
               bgcolor: dark ? "#27272a" : "#ffffff",
@@ -275,13 +314,25 @@ function TrendChart({
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-export default function PerfTrendsPage() {
+const PERF_URL_DEFAULTS = { model: "", device: "", tp: "", conc: "", stat: "p99" };
+
+function PerfTrendsPageContent() {
   const { startDate } = usePerfSettings();
-  const [model, setModel] = useState("");
-  const [device, setDevice] = useState("");
-  const [tp, setTp] = useState("");
-  const [conc, setConc] = useState("");
-  const [stat, setStat] = useState<Stat>("p99");
+  const [url, setUrl] = useUrlState(PERF_URL_DEFAULTS);
+  const model = url.model;
+  const device = url.device;
+  const tp = url.tp;
+  const conc = url.conc;
+  const stat: Stat = STATS.includes(url.stat as Stat) ? (url.stat as Stat) : "p99";
+  const setModel = (next: string) => setUrl({ model: next, device: "", tp: "", conc: "" });
+  const setDevice = (next: string) => setUrl({ device: next });
+  const setTp = (next: string) => setUrl({ tp: next });
+  const setConc = (next: string) => setUrl({ conc: next });
+  const setStat = (next: Stat) => setUrl({ stat: next });
+  const [clipOutliers, setClipOutliers] = useState(true);
+  // Series the reader has switched off. Null means "use the default subset".
+  const [hiddenOverride, setHiddenOverride] = useState<Set<string> | null>(null);
+  const dark = useDarkMode();
 
   const { data: filters } = useSWR<FiltersResponse>(
     `/api/perf/filters?start=${encodeURIComponent(startDate)}`,
@@ -367,28 +418,65 @@ export default function PerfTrendsPage() {
   );
 
   const colorMap = useMemo(() => {
+    const palette = dark ? COLORS_DARK : COLORS_LIGHT;
     const map: Record<string, string> = {};
     seriesKeys.forEach((key, i) => {
-      map[key] = COLORS[i % COLORS.length];
+      map[key] = palette[i % palette.length];
     });
     return map;
-  }, [seriesKeys]);
+  }, [seriesKeys, dark]);
+
+  // Series with the most recent data are the ones worth showing by default.
+  const seriesByRecency = useMemo(() => {
+    const latest = new Map<string, string>();
+    for (const p of points) {
+      const current = latest.get(p.series);
+      if (!current || p.date > current) latest.set(p.series, p.date);
+    }
+    return [...seriesKeys].sort(
+      (a, b) => (latest.get(b) ?? "").localeCompare(latest.get(a) ?? ""),
+    );
+  }, [points, seriesKeys]);
+
+  const hiddenSeries = useMemo(() => {
+    if (hiddenOverride) return hiddenOverride;
+    return new Set(seriesByRecency.slice(DEFAULT_VISIBLE_SERIES));
+  }, [hiddenOverride, seriesByRecency]);
+
+  const xRange = useMemo<[string, string] | null>(() => {
+    if (points.length === 0) return null;
+    let min = points[0].date;
+    let max = points[0].date;
+    for (const p of points) {
+      if (p.date < min) min = p.date;
+      if (p.date > max) max = p.date;
+    }
+    return [min, max];
+  }, [points]);
+
+  const toggleSeries = (series: string) => {
+    const next = new Set(hiddenSeries);
+    if (next.has(series)) next.delete(series);
+    else next.add(series);
+    setHiddenOverride(next);
+  };
 
   const allMetrics = [...THROUGHPUT_METRICS, ...LATENCY_METRICS];
+  const visibleCount = seriesKeys.length - hiddenSeries.size;
 
   return (
     <div className="space-y-5">
+      <PageHeader
+        title="Performance trends"
+        description="Nightly benchmark results per model, device, and configuration over time."
+        actions={<PerfSettingsMenu />}
+      />
       {/* Filter bar */}
-      <div className="flex flex-wrap items-end gap-x-4 gap-y-3 rounded-xl border border-zinc-200/80 bg-white px-5 py-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] dark:border-zinc-800/80 dark:bg-zinc-950 dark:shadow-[0_1px_3px_rgba(0,0,0,0.3)]">
+      <div className="flex flex-wrap items-end gap-x-4 gap-y-3 rounded-xl border border-line bg-surface px-4 py-4 sm:px-5">
         <SearchableSelect
           label="Model"
           value={activeModel}
-          onChange={(v) => {
-            setModel(v);
-            setDevice("");
-            setTp("");
-            setConc("");
-          }}
+          onChange={setModel}
           options={filters?.models ?? []}
           counts={filters?.modelCounts}
           allLabel="Most active model"
@@ -416,32 +504,76 @@ export default function PerfTrendsPage() {
         />
         {/* Statistic toggle */}
         <div>
-          <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">
+          <label className="mb-1 block text-xs font-medium text-muted">
             Latency stat
           </label>
-          <div className="inline-flex rounded-md border border-zinc-200 bg-white p-0.5 dark:border-zinc-700 dark:bg-zinc-900">
-            {STATS.map((s) => (
+          <SegmentedControl
+            label="Latency statistic"
+            size="md"
+            value={stat}
+            onChange={setStat}
+            options={STATS.map((s) => ({ value: s, label: s.toUpperCase() }))}
+          />
+        </div>
+        <div className="pb-1">
+          <ToggleSwitch
+            label="Clip outliers"
+            checked={clipOutliers}
+            onToggle={() => setClipOutliers((value) => !value)}
+          />
+        </div>
+      </div>
+
+      {/* One legend for all six charts */}
+      {activeModel && !isLoading && seriesKeys.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 rounded-xl border border-line bg-surface px-4 py-3 sm:px-5">
+          <span className="mr-1 text-xs font-medium text-muted">
+            {visibleCount} of {seriesKeys.length} series
+          </span>
+          {seriesByRecency.map((series) => {
+            const hidden = hiddenSeries.has(series);
+            return (
               <button
-                key={s}
+                key={series}
                 type="button"
-                onClick={() => setStat(s)}
-                className={`min-h-11 rounded px-3 text-xs font-medium uppercase tracking-wide transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
-                  stat === s
-                    ? "bg-indigo-500 text-white"
-                    : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                aria-pressed={!hidden}
+                onClick={() => toggleSeries(series)}
+                className={`dashboard-control inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium tabular-nums ${
+                  hidden
+                    ? "border-line text-muted hover:text-foreground"
+                    : "border-transparent bg-surface-muted text-foreground"
                 }`}
               >
-                {s}
+                <span
+                  aria-hidden="true"
+                  className="h-2.5 w-2.5 rounded-full"
+                  style={{
+                    background: hidden ? "transparent" : colorMap[series],
+                    boxShadow: hidden ? `inset 0 0 0 1.5px ${colorMap[series]}` : undefined,
+                  }}
+                />
+                {series}
               </button>
-            ))}
-          </div>
+            );
+          })}
+          <span className="ml-auto flex items-center gap-3 text-xs">
+            <button
+              type="button"
+              onClick={() => setHiddenOverride(new Set())}
+              className="dashboard-control font-medium text-accent hover:text-accent-strong"
+            >
+              Show all
+            </button>
+            <button
+              type="button"
+              onClick={() => setHiddenOverride(null)}
+              className="dashboard-control font-medium text-muted hover:text-foreground"
+            >
+              Reset
+            </button>
+          </span>
         </div>
-        {activeModel && seriesKeys.length > 0 && (
-          <div className="pb-1.5 text-xs text-zinc-400 dark:text-zinc-500">
-            {seriesKeys.length} series
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Empty states */}
       {!activeModel && (
@@ -475,10 +607,27 @@ export default function PerfTrendsPage() {
               metric={m}
               stat={stat}
               colorMap={colorMap}
+              xRange={xRange}
+              hiddenSeries={hiddenSeries}
+              clipOutliers={clipOutliers}
             />
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+export default function PerfTrendsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-64 items-center justify-center text-sm text-muted">
+          Loading performance trends...
+        </div>
+      }
+    >
+      <PerfTrendsPageContent />
+    </Suspense>
   );
 }

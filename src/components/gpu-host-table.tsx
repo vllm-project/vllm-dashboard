@@ -145,7 +145,7 @@ function NodeConditionChips({
   return (
     <>
       {conditions.ready === null ? (
-        <span className="rounded-full bg-zinc-100 px-2 py-0.5 font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+        <span className="rounded-full bg-zinc-100 px-2 py-0.5 font-medium text-muted dark:bg-zinc-800">
           Ready: unknown
         </span>
       ) : conditions.ready ? (
@@ -204,7 +204,7 @@ function DiskDetail({ disks }: { disks: NormalizedDiskMetric[] | null }) {
         return (
           <div key={`${mountLabel(disk)}-${index}`}>
             <div className="flex items-center gap-2">
-              <div className="flex w-44 shrink-0 items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+              <div className="flex w-44 shrink-0 items-center gap-1 text-xs text-muted">
                 <span className="truncate font-mono" title={mountLabel(disk)}>
                   {mountLabel(disk)}
                 </span>
@@ -226,7 +226,7 @@ function DiskDetail({ disks }: { disks: NormalizedDiskMetric[] | null }) {
                       style={{ width: `${Math.min(usedPct, 100)}%` }}
                     />
                   </div>
-                  <span className="w-28 shrink-0 whitespace-nowrap tabular-nums text-xs text-zinc-500 dark:text-zinc-400">
+                  <span className="w-28 shrink-0 whitespace-nowrap tabular-nums text-xs text-muted">
                     {Math.round(usedPct)}% of {formatBytes(disk.total_bytes!)}
                   </span>
                 </>
@@ -283,7 +283,7 @@ function HostDrillDown({ row, host }: { row: HostRow; host: HostLatest | undefin
               )}
             </>
           ) : (
-            <span className="text-zinc-500 dark:text-zinc-400">
+            <span className="text-muted">
               No host-level metrics reported yet — the host reporter may not
               have rolled out to this machine.
             </span>
@@ -291,7 +291,7 @@ function HostDrillDown({ row, host }: { row: HostRow; host: HostLatest | undefin
         </div>
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
           <div>
-            <div className="text-xs font-medium tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
+            <div className="text-xs font-medium tracking-wide text-muted uppercase">
               Disks
             </div>
             <DiskDetail disks={host?.disks ?? null} />
@@ -299,7 +299,7 @@ function HostDrillDown({ row, host }: { row: HostRow; host: HostLatest | undefin
           <div className="overflow-x-auto">
             <table className="w-full min-w-[480px] text-sm">
               <thead>
-                <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+                <tr className="border-b border-line text-left text-xs text-muted">
                   <th className="py-1.5 pr-4 font-medium">GPU</th>
                   <th className="py-1.5 pr-4 font-medium">Utilization</th>
                   <th className="py-1.5 pr-4 font-medium">Memory</th>
@@ -383,17 +383,17 @@ export function GpuHostTable({
   }
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-none">
-      <div className="flex min-h-14 items-center justify-between gap-4 border-b border-zinc-200 px-5 py-3 dark:border-zinc-800 sm:px-6">
+    <div className="min-w-0 overflow-hidden rounded-lg border border-line bg-surface shadow-sm dark:shadow-none">
+      <div className="flex min-h-14 items-center justify-between gap-4 border-b border-line px-5 py-3 sm:px-6">
         <h2 className="text-lg font-semibold tracking-[-0.02em]">Host Summary</h2>
-        <span className="text-sm tabular-nums text-zinc-500 dark:text-zinc-400">
+        <span className="text-sm tabular-nums text-muted">
           {hostRows.length} hosts · click a row for details
         </span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[1200px] text-sm">
           <thead>
-            <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            <tr className="border-b border-line text-left text-muted">
               {SORTABLE_COLUMNS.map((column) => {
                 const active = sort.key === column.key;
                 return (
@@ -417,7 +417,7 @@ export function GpuHostTable({
                       {column.label}
                       <span
                         aria-hidden="true"
-                        className={`text-xs ${active ? "text-zinc-900 dark:text-zinc-100" : "text-zinc-400 dark:text-zinc-500"}`}
+                        className={`text-xs ${active ? "text-foreground" : "text-zinc-400 dark:text-zinc-500"}`}
                       >
                         {active ? (sort.direction === "asc" ? "▲" : "▼") : "⇅"}
                       </span>
@@ -459,7 +459,7 @@ export function GpuHostTable({
                     }}
                     tabIndex={0}
                     aria-expanded={isOpen}
-                    className={`cursor-pointer border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-800/50 dark:hover:bg-zinc-900/50 ${stale ? "opacity-50" : ""} ${isOpen ? "bg-zinc-50 dark:bg-zinc-900/50" : ""}`}
+                    className={`cursor-pointer border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-800/50 dark:hover:bg-zinc-900/50 ${stale ? "opacity-50" : ""} ${isOpen ? "bg-surface-muted/60" : ""}`}
                   >
                     <td className="whitespace-nowrap px-5 py-3.5 font-medium sm:px-6">
                       <span className="mr-2 inline-flex">
@@ -475,11 +475,11 @@ export function GpuHostTable({
                           Stale
                         </span>
                       ) : null}
-                      <span className="ml-2 inline-block w-4 text-center text-base leading-none text-zinc-500 dark:text-zinc-400">
+                      <span className="ml-2 inline-block w-4 text-center text-base leading-none text-muted">
                         {isOpen ? "▾" : "▸"}
                       </span>
                       {(agent?.queues[0] || agent?.currentJob) && (
-                        <div className="mt-0.5 whitespace-normal text-xs font-normal text-zinc-500 dark:text-zinc-400">
+                        <div className="mt-0.5 whitespace-normal text-xs font-normal text-muted">
                           {agent.queues[0] ?? ""}
                           {agent.queues[0] && agent.currentJob ? " · " : ""}
                           {agent.currentJob &&
@@ -545,7 +545,7 @@ export function GpuHostTable({
                                   style={{ height: `${Math.max(pct, 2)}%` }}
                                 />
                               </div>
-                              <div className="pointer-events-none absolute -top-14 left-1/2 z-50 hidden -translate-x-1/2 whitespace-nowrap rounded border border-zinc-200 bg-white px-2 py-1 text-xs shadow-lg group-hover:block dark:border-zinc-700 dark:bg-zinc-900">
+                              <div className="pointer-events-none absolute -top-14 left-1/2 z-50 hidden -translate-x-1/2 whitespace-nowrap rounded border border-line bg-white px-2 py-1 text-xs shadow-lg group-hover:block dark:bg-zinc-900">
                                 <span className="font-medium">GPU {gpu.index}</span>
                                 <span className="ml-1 text-zinc-400">
                                   {formatMemory(gpu.memUsedMb)} / {formatMemory(gpu.memTotalMb)} ({pct}%)
@@ -601,7 +601,7 @@ export function GpuHostTable({
                           ? "text-red-600 dark:text-red-400"
                           : stale
                             ? "text-yellow-600 dark:text-yellow-400"
-                            : "text-zinc-500 dark:text-zinc-400"
+                            : "text-muted"
                       }`}
                     >
                       {stale ? formatAgo(ago) : "just now"}
