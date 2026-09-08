@@ -39,6 +39,8 @@ _Avoid_: Incident, alert lifecycle
 **Main CI Job Observation**:
 A hard terminal command-job outcome on the main branch, keyed by configured
 step identity plus rendered job name so matrix cells remain independent.
+Torch-nightly builds are excluded: their failures cannot open or refresh an
+episode, and their passes cannot resolve a standard Main CI failure.
 _Avoid_: Test failure, diagnosis
 
 **Main CI Job Alert**:

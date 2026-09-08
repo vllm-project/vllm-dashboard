@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import pytest
+
 from alerting.commands import ScheduledCommand
 from alerting.full_ci import BuildkiteRestClient
 from alerting.main_ci import (
@@ -367,6 +369,59 @@ def source_runtime_for(
     return runtime, store, clock
 
 
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"env": {"TORCH_NIGHTLY": "1"}, "message": "Manual nightly validation"},
+        {"message": "Full CI run torch nightly"},
+    ],
+)
+def test_torch_nightly_cannot_open_or_resolve_main_alerts(
+    metadata: dict[str, Any],
+) -> None:
+    buildkite = RecordingBuildkite([])
+    runtime, store, _ = source_runtime_for(buildkite)
+    nightly = buildkite_build(
+        300,
+        [buildkite_job(job_id="nightly-fail", state="failed", finished_at=START)],
+    )
+    nightly.update(metadata)
+    buildkite.builds = [nightly]
+    reconcile(runtime, START)
+    assert store.alerts() == []
+
+    standard = buildkite_build(
+        301,
+        [buildkite_job(job_id="main-fail", state="failed", finished_at=START)],
+    )
+    buildkite.builds = [standard]
+    reconcile(runtime, START + timedelta(minutes=2))
+    nightly = buildkite_build(
+        302,
+        [buildkite_job(job_id="nightly-pass", state="passed", finished_at=START)],
+    )
+    nightly.update(metadata)
+    buildkite.builds = [nightly]
+    reconcile(runtime, START + timedelta(minutes=4))
+    assert [(a.status, a.last_failure.job_id) for a in store.alerts()] == [
+        ("open", "main-fail")
+    ]
+
+
+@pytest.mark.parametrize("env", [{}, {"TORCH_NIGHTLY": "0"}, {"NIGHTLY": "1"}])
+def test_standard_full_ci_still_opens_main_alerts(env: dict[str, str]) -> None:
+    build = buildkite_build(
+        300,
+        [buildkite_job(job_id="main-fail", state="failed", finished_at=START)],
+    )
+    build.update(env=env, message="Full CI run")
+    runtime, store, _ = source_runtime_for(RecordingBuildkite([build]))
+    reconcile(runtime, START)
+    assert [(a.status, a.last_failure.job_id) for a in store.alerts()] == [
+        ("open", "main-fail")
+    ]
+
+
 def test_retry_pass_inside_window_resolves_original_failure() -> None:
     failure = buildkite_job(
         job_id="orig", state="failed", finished_at=START - timedelta(hours=3)
@@ -564,6 +619,33 @@ def open_alert(runtime: AlertingRuntime, source: FixtureSource) -> None:
         )
     ]
     reconcile(runtime, START - timedelta(hours=2, minutes=55))
+
+
+def test_backstop_excludes_nightly_from_sweep_and_targeted_recheck() -> None:
+    source = FixtureSource()
+    nightly = buildkite_build(
+        300,
+        [
+            buildkite_job(job_id="nightly-pass", state="passed", finished_at=START),
+            buildkite_job(
+                job_id="nightly-fail",
+                state="failed",
+                finished_at=START,
+                name="Other job",
+                step_key="other",
+            ),
+        ],
+    )
+    nightly["env"] = {"TORCH_NIGHTLY": "1"}
+    builds = FixtureBuilds({300: nightly})
+    builds.sweep_builds = [nightly]
+    runtime, store, _ = combined_runtime_for(source, builds)
+    open_alert(runtime, source)
+    backstop(runtime, START)
+    assert builds.calls == [(300, True)]
+    assert [(a.status, a.last_failure.job_id) for a in store.alerts()] == [
+        ("open", "orig")
+    ]
 
 
 def test_backstop_resolves_open_alert_whose_retried_job_now_passes() -> None:
