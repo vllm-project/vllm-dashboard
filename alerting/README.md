@@ -58,7 +58,10 @@ Queue-wait alerting is owned by the dashboard context:
   job-outcome records, and chronological reconciliation handler. Analyzer
   invocation remains outside this ingest-only slice.
 - `main_ci.py` — the two-minute Buildkite main-branch poller and exact-job
-  lifecycle. It ignores soft/non-command/non-terminal jobs, protects newer
+  lifecycle. It excludes builds with `TORCH_NIGHTLY=1` or the scheduled message
+  `Full CI run torch nightly` from both polling and backstop reconciliation,
+  including passing outcomes. Other nightly/full CI builds remain eligible.
+  It ignores soft/non-command/non-terminal jobs, protects newer
   outcomes from older builds finishing late, and resolves only on a positive
   pass. Retried executions are fetched alongside originals (`include_retried_jobs`),
   retried-out executions that lack a step key inherit it from the same-named

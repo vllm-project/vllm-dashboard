@@ -1,6 +1,7 @@
 """Main-branch CI job alert lifecycle reconciliation.
 
-Every hard terminal failure opens (or refreshes) one alert keyed by the
+Torch-nightly builds are excluded from both failure and recovery observations.
+Every other hard terminal failure opens (or refreshes) one alert keyed by the
 Buildkite step key. Only a positively observed pass of that same logical job
 in the same or a newer main build resolves it. Older builds that finish late
 cannot overwrite a newer outcome.
@@ -125,6 +126,14 @@ def build_job_observations(build: dict[str, Any]) -> list[MainCIJobObservation]:
     name → step-key map, and same-named executions missing the key inherit
     it, so every execution of a step shares the alert's job key.
     """
+    env = build.get("env") or {}
+    if isinstance(env, dict) and str(env.get("TORCH_NIGHTLY", "")) == "1":
+        return []
+    # The scheduled build label also identifies older API payloads without env.
+    message = str(build.get("message") or "").strip().lower()
+    if message == "full ci run torch nightly":
+        return []
+
     jobs = build.get("jobs")
     if not isinstance(jobs, list):
         return []
