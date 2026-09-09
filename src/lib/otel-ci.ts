@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db";
+import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { resolveGroupsToJobConditions } from "@/lib/test-groups";
 import type { ServerTiming } from "@/lib/server-timing";
 
@@ -224,13 +225,19 @@ export async function queryBuildsFromOtel(
     durationsPromise,
   ]);
 
+  const enrichedBuilds = await enrichBuildAuthors(builds);
   const counts = countRows[0] ?? { total: 0, passed: 0, failed: 0 };
   const total = Number(counts.total) || 0;
   const passed = Number(counts.passed) || 0;
   const failed = Number(counts.failed) || 0;
   const passRate = passed + failed > 0 ? Math.round((passed / (passed + failed)) * 100) : 0;
 
-  return { builds, buildDurations, summary: { total, passed, failed, passRate }, total };
+  return {
+    builds: enrichedBuilds,
+    buildDurations,
+    summary: { total, passed, failed, passRate },
+    total,
+  };
 }
 
 // ---------------------------------------------------------------------------
