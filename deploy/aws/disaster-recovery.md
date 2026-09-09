@@ -4,6 +4,36 @@ The alerting worker is disposable. All durable state lives in Postgres (runs,
 comparisons, analyses, scan cursors, outbox, execution records) and the S3
 checkpoint bucket (analyzer memory, delivery modes), both outside the instance.
 
+## In-place code updates (SSM)
+
+The worker role includes `AmazonSSMManagedInstanceCore`, so the instance is
+SSM-managed (the security group's 443 egress is all the agent needs; there is
+still no SSH ingress). A merged code change deploys without replacing the
+instance — pull the repo on the box and re-run `install.sh` via Run Command:
+
+```bash
+aws ssm send-command \
+  --instance-ids <instance-id> \
+  --document-name AWS-RunShellScript \
+  --timeout-seconds 600 \
+  --parameters '{"commands":[
+    "cd /opt/alerting/source && git fetch origin main && git reset --hard origin/main",
+    "/opt/alerting/source/deploy/aws/install.sh <checkpoint-bucket> <worker-secret-arn> <github-secret-arn> <kimi-effort> <kimi-main-ci-effort>"
+  ]}'
+```
+
+Take the `install.sh` arguments from the live stack
+(`aws cloudformation describe-stacks --stack-name <stack-name>` — the secret
+ARNs and Kimi efforts are parameters, the bucket name is an output).
+`install.sh` is idempotent for this purpose: it rebuilds the venv package,
+reinstalls the same units and env file, and re-enables the timers. The workers
+are timer-triggered oneshots, so the next tick picks up the new code; verify
+with `systemctl list-timers 'alerting-*' --no-pager`.
+
+Because SSM access is in the template, instance replacement and stack
+recreation both keep this channel — it is not an out-of-band role edit that a
+redeploy would silently drop.
+
 ## Instance replacement (crash, termination, rebuild)
 
 Redeploy the stack with the same parameters; CloudFormation recreates the

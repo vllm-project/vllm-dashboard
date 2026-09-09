@@ -71,6 +71,11 @@ Resources:
             Principal:
               Service: ec2.amazonaws.com
             Action: sts:AssumeRole
+      # SSM Session Manager / Run Command access for in-place ops (code
+      # updates, health checks). The security group already allows the 443
+      # egress the agent needs; the instance stays without SSH ingress.
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       Policies:
         - PolicyName: AlertingWorkerCheckpointAccess
           PolicyDocument:

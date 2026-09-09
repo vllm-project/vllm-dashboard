@@ -41,6 +41,13 @@ def test_instance_role_is_scoped_to_checkpoint_bucket_and_named_secrets() -> Non
     assert "Resource: '*'" not in template
 
 
+def test_instance_role_is_ssm_managed_for_in_place_ops() -> None:
+    template = read("alerting-worker.yaml")
+
+    assert "ManagedPolicyArns" in template
+    assert "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" in template
+
+
 def test_full_ci_timer_uses_pacific_wall_clock_and_recovers_after_downtime() -> None:
     timer = read("systemd/alerting-full-ci.timer")
 
