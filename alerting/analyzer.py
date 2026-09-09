@@ -455,6 +455,12 @@ def _build_summary(
             "new": len(_hard_failures(jobs) - set(cache.failed_tests)),
             "recurring": len(_hard_failures(jobs) & set(cache.failed_tests)),
             "scheduled": sum(1 for job in jobs if job.state == "scheduled"),
+            # Cascaded and unfinished-terminal jobs are not failures, but the
+            # old report gave them their own sections and the analyzer model
+            # cannot count the jobs array reliably.
+            "cascaded": sum(1 for job in jobs if job.state == "waiting_failed"),
+            "timed_out": sum(1 for job in jobs if job.state == "timed_out"),
+            "canceled": sum(1 for job in jobs if job.state == "canceled"),
             "has_previous_data": cache.build_number is not None,
             "total": len(jobs),
         },
