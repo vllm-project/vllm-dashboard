@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 
 import pytest
 
@@ -46,6 +47,22 @@ def test_instance_role_is_ssm_managed_for_in_place_ops() -> None:
 
     assert "ManagedPolicyArns" in template
     assert "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" in template
+
+
+@pytest.mark.parametrize("parameter", ["WorkerSecretArn", "GitHubReadOnlySecretArn"])
+def test_secret_parameters_reject_partial_arns_used_as_iam_resources(parameter: str) -> None:
+    block = read("alerting-worker.yaml").split(f"  {parameter}:\n", 1)[1]
+    block = re.split(r"\n  \S", block, maxsplit=1)[0]
+    pattern = block.split("AllowedPattern: '", 1)[1].split("'", 1)[0]
+    partial = "arn:aws:secretsmanager:us-east-1:123456789012:secret:github-read"
+
+    assert re.fullmatch(pattern, partial) is None
+    assert re.fullmatch(pattern, "github-read") is None
+    assert re.fullmatch(pattern, partial + "-Ab12Cd") is not None
+    assert re.fullmatch(
+        pattern,
+        "arn:aws-us-gov:secretsmanager:us-gov-west-1:123456789012:secret:ci/token-Ab12Cd",
+    ) is not None
 
 
 def test_full_ci_timer_uses_pacific_wall_clock_and_recovers_after_downtime() -> None:
