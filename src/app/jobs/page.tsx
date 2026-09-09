@@ -1,13 +1,19 @@
 "use client";
 
 import { useState, Fragment } from "react";
+import dynamic from "next/dynamic";
 import useSWR from "swr";
 import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
 import { JobName, jobNameText } from "@/components/job-name";
-import { JobRunsChart, JobRun } from "@/components/job-runs-chart";
+import type { JobRun } from "@/components/job-runs-chart";
+
+const JobRunsChart = dynamic(
+  () => import("@/components/job-runs-chart").then((module) => module.JobRunsChart),
+  { loading: () => <div className="flex h-48 items-center justify-center text-zinc-400">Loading chart...</div> },
+);
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 

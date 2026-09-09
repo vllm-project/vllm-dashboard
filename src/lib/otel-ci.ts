@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db";
 import { resolveGroupsToJobConditions } from "@/lib/test-groups";
+import type { ServerTiming } from "@/lib/server-timing";
 
 // ---------------------------------------------------------------------------
 // Shared types / helpers
@@ -282,8 +283,40 @@ export interface OtelJobStatsResult {
   durationStats: Record<string, unknown>[];
 }
 
+interface OtelJobStatsRow {
+  name: string;
+  total_runs: number;
+  failures: number;
+  passes: number;
+  failure_rate: string;
+  has_soft_fail: number;
+  avg_duration: number | null;
+  p50_duration: number | null;
+  p90_duration: number | null;
+  max_duration: number | null;
+}
+
+/** Preserve the two ranking contracts when both come from one aggregate. */
+export function splitOtelJobStats(rows: OtelJobStatsRow[]): OtelJobStatsResult {
+  return {
+    failureRanking: rows
+      .filter((row) => row.failures > 0)
+      .map(({ name, total_runs, failures, passes, failure_rate, has_soft_fail }) => ({
+        name, total_runs, failures, passes, failure_rate, has_soft_fail,
+      }))
+      .sort((a, b) => Number(b.failure_rate) - Number(a.failure_rate) || b.failures - a.failures),
+    durationStats: rows
+      .filter((row) => row.passes > 0)
+      .map(({ name, passes, avg_duration, p50_duration, p90_duration, max_duration }) => ({
+        name, total_runs: passes, avg_duration, p50_duration, p90_duration, max_duration,
+      }))
+      .sort((a, b) => Number(b.p50_duration) - Number(a.p50_duration)),
+  };
+}
+
 export async function queryJobStatsFromOtel(
   f: CiFilter & { hasDateRange: boolean },
+  timing?: ServerTiming,
 ): Promise<OtelJobStatsResult> {
   const sql: Sql = getDb();
   // Filter the job span (j) on the indexed pipeline_slug and start_time so the
@@ -303,7 +336,9 @@ export async function queryJobStatsFromOtel(
     ? sql``
     : sql`AND j.start_time >= NOW() - INTERVAL '7 days'`;
 
-  const failurePromise = sql<Record<string, unknown>[]>`
+  // Both rankings use the same completed jobs. Aggregate once to avoid a
+  // second span scan/build join and a second connection on a cold request.
+  const query = sql<OtelJobStatsRow[]>`
     SELECT
       j.job_label AS name,
       COUNT(*)::int AS total_runs,
@@ -314,37 +349,23 @@ export async function queryJobStatsFromOtel(
         / NULLIF(COUNT(*) FILTER (WHERE ${sql.unsafe(JOB_COMPLETED)}), 0),
         1
       ) AS failure_rate,
-      MAX(CASE WHEN j.job_soft_failed = 'true' THEN 1 ELSE 0 END) AS has_soft_fail
+      MAX(CASE WHEN j.job_soft_failed = 'true' THEN 1 ELSE 0 END) AS has_soft_fail,
+      ROUND(AVG(j.duration_ms) FILTER (WHERE ${sql.unsafe(JOB_PASSED)}) / 1000.0)::int AS avg_duration,
+      ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY j.duration_ms)
+        FILTER (WHERE ${sql.unsafe(JOB_PASSED)}) / 1000.0)::int AS p50_duration,
+      ROUND(percentile_cont(0.9) WITHIN GROUP (ORDER BY j.duration_ms)
+        FILTER (WHERE ${sql.unsafe(JOB_PASSED)}) / 1000.0)::int AS p90_duration,
+      ROUND(MAX(j.duration_ms) FILTER (WHERE ${sql.unsafe(JOB_PASSED)}) / 1000.0)::int AS max_duration
     FROM otel_spans AS j
     INNER JOIN otel_spans AS b ON ${sql.unsafe(BUILD_JOIN)}
     WHERE ${baseWhere}
       AND ${sql.unsafe(JOB_COMPLETED)}
       ${recency}
     GROUP BY j.job_label
-    HAVING COUNT(*) FILTER (WHERE ${sql.unsafe(JOB_FAILED)}) > 0
-    ORDER BY failure_rate DESC, failures DESC
   `;
 
-  const durationPromise = sql<Record<string, unknown>[]>`
-    SELECT
-      j.job_label AS name,
-      COUNT(*)::int AS total_runs,
-      ROUND(AVG(j.duration_ms) / 1000.0)::int AS avg_duration,
-      ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY j.duration_ms) / 1000.0)::int AS p50_duration,
-      ROUND(percentile_cont(0.9) WITHIN GROUP (ORDER BY j.duration_ms) / 1000.0)::int AS p90_duration,
-      ROUND(MAX(j.duration_ms) / 1000.0)::int AS max_duration
-    FROM otel_spans AS j
-    INNER JOIN otel_spans AS b ON ${sql.unsafe(BUILD_JOIN)}
-    WHERE ${baseWhere}
-      AND ${sql.unsafe(JOB_PASSED)}
-      ${recency}
-    GROUP BY j.job_label
-    HAVING COUNT(*) > 0
-    ORDER BY p50_duration DESC
-  `;
-
-  const [failureRanking, durationStats] = await Promise.all([failurePromise, durationPromise]);
-  return { failureRanking, durationStats };
+  const rows = await (timing ? timing.measure("statistics", query) : query);
+  return splitOtelJobStats(rows);
 }
 
 // ---------------------------------------------------------------------------
