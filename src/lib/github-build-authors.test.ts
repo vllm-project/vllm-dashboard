@@ -20,11 +20,18 @@ test("uses the PR author instead of the merger or /ci commenter", async (t) => {
     const request = JSON.parse(String(init?.body)) as { query: string };
     assert.match(request.query, /pullRequest\(number: 55370\)/);
     assert.match(request.query, /pullRequest\(number: 55713\)/);
+    assert.match(request.query, /associatedPullRequests\(first: 1\)/);
     return Response.json({
       data: {
         repository: {
           item0: { author: { login: "cjackal" } },
           item1: { author: { login: "askliar" } },
+          item2: {
+            author: { user: { login: "merge-operator" } },
+            associatedPullRequests: {
+              nodes: [{ number: 55240, author: { login: "FeathBow" } }],
+            },
+          },
         },
       },
     });
@@ -41,12 +48,19 @@ test("uses the PR author instead of the merger or /ci commenter", async (t) => {
       commit_sha: "bd31e0dc2e6d2f9ed8421c432d51682d2803d502",
       author: "vLLM CI Bot",
     },
+    {
+      message: "Full CI run torch nightly",
+      commit_sha: "c7e9816c6ab0731165a134fd0a9defed6ab1d748",
+      author: null,
+    },
   ]);
 
   assert.equal(builds[0].author, "cjackal");
   assert.equal(builds[0].pr_number, "55370");
   assert.equal(builds[1].author, "askliar");
   assert.equal(builds[1].pr_number, "55713");
+  assert.equal(builds[2].author, "FeathBow");
+  assert.equal(builds[2].pr_number, "55240");
 });
 
 test("uses linked commit authors and preserves existing metadata otherwise", async (t) => {

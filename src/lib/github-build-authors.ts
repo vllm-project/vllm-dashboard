@@ -7,6 +7,7 @@ const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 type BuildRow = Record<string, unknown>;
+type GitHubBuildRef = { author: string | null; prNumber: string | null };
 
 function pullRequestNumber(build: BuildRow): string | null {
   if (typeof build.message !== "string") return null;
@@ -20,10 +21,10 @@ function commitSha(build: BuildRow): string | null {
     : null;
 }
 
-async function fetchAuthors(keys: string[]): Promise<Map<string, string | null>> {
-  const resolved = new Map<string, string | null>();
+async function fetchAuthors(keys: string[]): Promise<Map<string, GitHubBuildRef>> {
+  const resolved = new Map<string, GitHubBuildRef>();
   const missing = keys.filter((key) => {
-    const cached = getCached<string | null>(`github-build-author:${key}`);
+    const cached = getCached<GitHubBuildRef>(`github-build-ref:${key}`);
     if (cached === undefined) return true;
     resolved.set(key, cached);
     return false;
@@ -38,7 +39,7 @@ async function fetchAuthors(keys: string[]): Promise<Map<string, string | null>>
     if (kind === "pr") {
       return `item${index}: pullRequest(number: ${value}) { author { login } }`;
     }
-    return `item${index}: object(oid: "${value}") { ... on Commit { author { user { login } } } }`;
+    return `item${index}: object(oid: "${value}") { ... on Commit { author { user { login } } associatedPullRequests(first: 1) { nodes { number author { login } } } } }`;
   });
   const query = `
     query BuildAuthors($owner: String!, $name: String!) {
@@ -79,14 +80,24 @@ async function fetchAuthors(keys: string[]): Promise<Map<string, string | null>>
               login?: string | null;
               user?: { login?: string | null } | null;
             } | null;
+            associatedPullRequests?: {
+              nodes?: { number?: number; author?: { login?: string | null } | null }[];
+            } | null;
           }
         | null
         | undefined;
-      const author =
-        item?.author?.login?.trim() ||
-        item?.author?.user?.login?.trim() ||
-        null;
-      setCache(`github-build-author:${key}`, author, CACHE_TTL_MS);
+      const pullRequest = item?.associatedPullRequests?.nodes?.[0];
+      const author = {
+        author:
+          item?.author?.login?.trim() ||
+          pullRequest?.author?.login?.trim() ||
+          item?.author?.user?.login?.trim() ||
+          null,
+        prNumber: key.startsWith("pr:")
+          ? key.slice(3)
+          : pullRequest?.number?.toString() ?? null,
+      };
+      setCache(`github-build-ref:${key}`, author, CACHE_TTL_MS);
       resolved.set(key, author);
     }
   } catch {
@@ -106,9 +117,12 @@ export async function enrichBuildAuthors(builds: BuildRow[]): Promise<BuildRow[]
   const keys = [...new Set(normalized.flatMap(({ authorKey }) => authorKey ? [authorKey] : []))];
   const authors = await fetchAuthors(keys);
 
-  return normalized.map(({ build, prNumber, authorKey }) => ({
-    ...build,
-    pr_number: prNumber,
-    author: (authorKey ? authors.get(authorKey) : null) ?? build.author ?? null,
-  }));
+  return normalized.map(({ build, prNumber, authorKey }) => {
+    const github = authorKey ? authors.get(authorKey) : null;
+    return {
+      ...build,
+      pr_number: github?.prNumber ?? prNumber,
+      author: github?.author ?? build.author ?? null,
+    };
+  });
 }
