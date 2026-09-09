@@ -114,6 +114,7 @@ export default function BuildsPage() {
     refreshInterval: 5 * 60 * 1000,
     keepPreviousData: true,
   });
+  const groupsLoading = groupsUrl !== null && !groupData;
 
   const builds = useMemo(
     () =>
@@ -300,6 +301,7 @@ export default function BuildsPage() {
         hideOptional={hideOptional}
         selectedGroups={selectedGroups}
         selectedJobs={selectedJobs}
+        groupsLoading={groupsLoading}
       />
       {pagination.totalPages > 1 && (
         <div className="flex items-center justify-between">

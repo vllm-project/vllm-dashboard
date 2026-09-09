@@ -253,7 +253,14 @@ interface BuildsTableProps {
   hideOptional?: boolean;
   selectedGroups?: Set<string>;
   selectedJobs?: Set<string>;
+  groupsLoading?: boolean;
 }
+
+// Placeholder columns shown while the group matrix loads, so the table grows
+// shimmer columns instead of the group columns appearing out of nowhere. The
+// count approximates the CI pipeline's group count; a small mismatch only
+// changes how far the empty area extends, not any real content.
+const SKELETON_GROUP_COLUMNS = 40;
 
 const fetcher = (url: string) => fetch(url).then((response) => response.json());
 
@@ -267,6 +274,7 @@ export function BuildsTable({
   hideOptional,
   selectedGroups,
   selectedJobs,
+  groupsLoading,
 }: BuildsTableProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedBuildId, setExpandedBuildId] = useState<string | null>(null);
@@ -337,6 +345,8 @@ export function BuildsTable({
   }, []);
 
   const hasGroups = groupOrder.length > 0;
+  const showSkeleton = !hasGroups && Boolean(groupsLoading) && builds.length > 0;
+  const skeletonCount = showSkeleton ? SKELETON_GROUP_COLUMNS : 0;
   const FIXED_COLS = showBranch ? 7 : 6;
 
   return (
@@ -421,6 +431,16 @@ export function BuildsTable({
                     </th>
                   );
                 })}
+              {showSkeleton &&
+                Array.from({ length: skeletonCount }, (_, i) => (
+                  <th
+                    key={`skeleton-group-${i}`}
+                    className="relative p-0 align-bottom"
+                    style={{ width: 28, minWidth: 28, height: 160 }}
+                  >
+                    <div className="absolute bottom-2 left-1/2 h-16 w-2 -translate-x-1/2 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
+                  </th>
+                ))}
             </tr>
           </thead>
           <tbody>
@@ -719,11 +739,19 @@ export function BuildsTable({
                       />
                     );
                     })}
+                    {showSkeleton &&
+                      Array.from({ length: skeletonCount }, (_, i) => (
+                        <td key={`skeleton-group-${i}`} className="px-0 py-2 text-center">
+                          <div className="inline-flex h-5 w-5 items-center justify-center">
+                            <span className="block h-3.5 w-3.5 animate-pulse rounded-sm bg-zinc-200 dark:bg-zinc-800" />
+                          </div>
+                        </td>
+                      ))}
                   </tr>
                   {isTraceExpanded && canShowTrace && (
                     <tr id={`build-trace-${build.id}`}>
                       <td
-                        colSpan={FIXED_COLS + columns.length}
+                        colSpan={FIXED_COLS + columns.length + skeletonCount}
                         className="p-0"
                       >
                         <BuildWaterfall
@@ -742,7 +770,7 @@ export function BuildsTable({
             {builds.length === 0 && (
               <tr>
                 <td
-                  colSpan={FIXED_COLS + columns.length}
+                  colSpan={FIXED_COLS + columns.length + skeletonCount}
                   className="px-5 py-8 text-center text-zinc-400"
                 >
                   No builds found

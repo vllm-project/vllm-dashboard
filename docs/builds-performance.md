@@ -33,7 +33,10 @@ Settled builds (passed/failed/canceled/skipped/not_run/finished) have an
 immutable roster, so they are now cached per build for 24 hours; only active
 builds are refetched. Steady-state misses therefore fetch a handful of builds
 instead of 50. Failed fetches are never cached, and concurrent requests for
-the same build share one fetch.
+the same build share one fetch. `/api/cron/warm-defaults` additionally
+re-requests the default builds chain (builds page, then the group matrix for
+the current build ids) every minute, so the origin caches stay hot for the
+build set users are most likely to load.
 
 ## Remaining risks
 
