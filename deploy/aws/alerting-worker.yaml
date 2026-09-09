@@ -20,10 +20,14 @@ Parameters:
     Default: main
   WorkerSecretArn:
     Type: String
-    Description: ARN of a JSON secret containing runtime environment variables
+    Description: Full ARN of a JSON secret containing runtime environment variables
+    AllowedPattern: 'arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}'
+    ConstraintDescription: Must be a full Secrets Manager ARN including its six-character suffix; use describe-secret --query ARN.
   GitHubReadOnlySecretArn:
     Type: String
-    Description: ARN of a JSON secret containing a read-only GITHUB_TOKEN
+    Description: Full ARN of a JSON secret containing a read-only GITHUB_TOKEN
+    AllowedPattern: 'arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}'
+    ConstraintDescription: Must be a full Secrets Manager ARN including its six-character suffix; use describe-secret --query ARN.
   KimiReasoningEffort:
     Type: String
     Description: Thinking effort for the Full CI Kimi analyzer

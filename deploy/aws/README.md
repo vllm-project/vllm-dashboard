@@ -18,6 +18,18 @@ must be JSON objects whose keys are environment-variable names.
   limited to read-only metadata and contents for required repositories. The
   worker must have no repository write permission.
 
+Pass the **full ARN**, including the six-character suffix, for both parameters:
+
+```bash
+aws secretsmanager describe-secret --secret-id vllm-alerting-github-read \
+  --query ARN --output text
+```
+
+Secrets Manager accepts a partial ARN for lookups, but the template also uses
+these values as exact IAM policy resources. A partial ARN there denies secret
+access and prevents every worker from starting. The parameter validation rejects
+the missing-suffix form; always use the ARN returned by `describe-secret`.
+
 The role can read only these two named secrets and can list, read, and write
 only the stack's checkpoint bucket. The instance has no SSH ingress and needs
 no interactive credential setup; day-to-day access is through SSM Session
