@@ -107,3 +107,19 @@ query per call and a `MAX_MS` budget (default 3000), and prints `dispatchMs`
 (time until the SQL driver sends each statistics query) to distinguish startup
 and connection waits from work after submission. No SQL, credentials, or job
 contents are logged. Filter overrides match the HTTP probe.
+
+## Cold-instance fills and the cache warmer (2026-09-09)
+
+Post-fix, warm-instance application misses measure 300–900 ms. The remaining
+spike is the first fill on a cold serverless instance: 20.7s and 23.1s fills
+were measured on the default key while interleaved warm-instance misses took
+under a second. Because `staleWhileRevalidate` absorbs revalidations, users
+only pay this when a POP has no entry at all — chiefly after the daily
+date-range rollover changes the cache key at midnight.
+
+`/api/cron/warm-jobs` runs every minute and re-requests the Jobs page's
+default 14-day window with a CDN-bypassing parameter, keeping the origin
+application cache warm so first fills cost the warm-query time instead of the
+cold-instance penalty. It warms only the region its request lands in; other
+POPs still fill on first view, but against a warm origin. The cron reports
+the warm request's `Server-Timing` in its JSON response.
