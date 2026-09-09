@@ -127,11 +127,13 @@ function JobAnalysisTab({
   branch,
   startDate,
   endDate,
+  useWindow,
 }: {
   pipeline: string;
   branch: string;
   startDate: string;
   endDate: string;
+  useWindow: boolean;
 }) {
   const [analysisTab, setAnalysisTab] = useState<"failures" | "duration">("failures");
   const [hideSoftFail, setHideSoftFail] = useState(false);
@@ -146,8 +148,14 @@ function JobAnalysisTab({
   const params = new URLSearchParams();
   if (pipeline) params.set("pipeline", pipeline);
   if (branch) params.set("branch", branch);
-  if (startDate) params.set("startDate", startDate);
-  if (endDate) params.set("endDate", endDate);
+  if (useWindow) {
+    // Stable key: the server resolves the rolling window at fill time, so the
+    // CDN entry survives the midnight date rollover.
+    params.set("window", "14d");
+  } else {
+    if (startDate) params.set("startDate", startDate);
+    if (endDate) params.set("endDate", endDate);
+  }
   const apiUrl = `/api/jobs?${params.toString()}`;
 
   const { data, error, isLoading } = useSWR<JobsResponse>(apiUrl, fetcher, {
@@ -508,8 +516,11 @@ function JobAnalysisTab({
 export default function JobsPage() {
   const [pipeline, setPipeline] = useState("CI");
   const [branch, setBranch] = useState("main");
-  const [startDate, setStartDate] = useState(daysAgo(14));
-  const [endDate, setEndDate] = useState(today());
+  // null = default rolling window (sent as window=14d with a stable cache key);
+  // set once the user picks an explicit range.
+  const [range, setRange] = useState<{ start: string; end: string } | null>(null);
+  const startDate = range?.start ?? daysAgo(14);
+  const endDate = range?.end ?? today();
 
   const { data: filters } = useSWR<FiltersResponse>(
     "/api/builds/filters",
@@ -539,8 +550,7 @@ export default function JobsPage() {
             startDate={startDate}
             endDate={endDate}
             onChange={(s, e) => {
-              setStartDate(s);
-              setEndDate(e);
+              setRange({ start: s, end: e });
             }}
           />
         </div>
@@ -551,6 +561,7 @@ export default function JobsPage() {
         branch={branch}
         startDate={startDate}
         endDate={endDate}
+        useWindow={range === null}
       />
     </div>
   );

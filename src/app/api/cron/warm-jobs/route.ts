@@ -3,11 +3,10 @@ import { NextRequest, NextResponse } from "next/server";
 export const maxDuration = 60;
 
 // Keep the Jobs page's default request warm across the CDN and application
-// caches. Without this, the daily date rollover empties both caches and the
-// first request per region pays a cold fill, which on a cold serverless
-// instance has measured up to ~20s (see docs/jobs-performance.md). The page
-// computes its 14-day window client-side; the cron approximates it in UTC,
-// which matches except around local midnight.
+// caches. The page's default view uses a stable window=14d URL whose cache key
+// never changes, so warming it covers the exact entry users hit; without a
+// warmer, the first fill on a cold serverless instance has measured ~20s
+// (see docs/jobs-performance.md).
 export async function GET(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret) {
@@ -17,14 +16,10 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const end = new Date();
-  const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - 14);
   const params = new URLSearchParams({
     pipeline: "CI",
     branch: "main",
-    startDate: start.toISOString().slice(0, 10),
-    endDate: end.toISOString().slice(0, 10),
+    window: "14d",
   });
   const base = process.env.WARM_JOBS_BASE_URL ?? "https://ci.vllm.ai";
 

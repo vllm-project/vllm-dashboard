@@ -39,7 +39,8 @@ function defaultDataUrls(href: string): string[] {
       ];
     case "/jobs":
       return [
-        `/api/jobs?${buildParams}`,
+        // Stable window key shared with the page's default view.
+        `/api/jobs?pipeline=CI&branch=main&window=14d`,
         "/api/builds/filters",
       ];
     case "/tests":

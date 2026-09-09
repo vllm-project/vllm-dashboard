@@ -56,6 +56,35 @@ test("concurrent jobs requests share queries and expose cache/query timings", as
 });
 
 
+test("a relative window uses one stable cache key across resolved dates", async (t) => {
+  configureWarehouse(t);
+  const fetchMock = t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      status: { state: "SUCCEEDED" },
+      manifest: { schema: { columns: [{ name: "name" }] } },
+      result: { data_array: [["test job"]] },
+    }),
+  );
+  const url = "http://localhost/api/jobs?source=databricks&branch=window-test&window=14d";
+
+  const first = await GET(new NextRequest(url));
+  assert.equal(first.status, 200);
+  assert.match(first.headers.get("Server-Timing") ?? "", /cache;desc="MISS"/);
+  assert.equal(fetchMock.mock.callCount(), 2);
+
+  const second = await GET(new NextRequest(url));
+  assert.match(second.headers.get("Server-Timing") ?? "", /cache;desc="HIT"/);
+  assert.equal(fetchMock.mock.callCount(), 2, "the stable window key must not requery");
+
+  const custom = await GET(new NextRequest(`${url}&startDate=2026-09-01&endDate=2026-09-08`));
+  assert.equal(custom.status, 200);
+  assert.equal(fetchMock.mock.callCount(), 4, "explicit dates use their own key");
+
+  const invalid = await GET(new NextRequest("http://localhost/api/jobs?source=databricks&branch=window-test&window=abc"));
+  assert.equal(invalid.status, 200);
+  assert.equal(fetchMock.mock.callCount(), 6, "an invalid window falls back to the no-range key");
+});
+
 test("a partial query failure keeps the fill shared until the other query settles", async (t) => {
   configureWarehouse(t);
   t.mock.method(console, "error", () => {});
