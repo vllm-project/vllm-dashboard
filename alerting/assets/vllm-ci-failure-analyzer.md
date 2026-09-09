@@ -22,8 +22,12 @@ commits, open pull requests, post messages, or mutate Buildkite or GitHub.
    `previous_failures.failed_tests`.
 4. Recurring failures are hard-failure names present in that baseline.
 5. Fixed tests are baseline names now positively observed with `state ==
-   "passed"`. Missing, scheduled, canceled, timed-out, and soft-failed jobs are
-   not fixed.
+   "passed"`. Missing, scheduled, waiting-failed, canceled, timed-out, and
+   soft-failed jobs are not fixed.
+6. Jobs in state `waiting_failed`, `timed_out`, or `canceled` are neither hard
+   nor soft failures and never enter the baseline. `waiting_failed` means an
+   upstream step (usually an image build) failed and the job never ran — a
+   cascade, not a fault. Report them in their own sections (Phase C).
 
 ## Phase B — Investigate new failures
 
@@ -64,7 +68,21 @@ the `jobs` array yourself — it is too long to count reliably. The
 appears only when `stats.failed` > 0 and `stats.has_previous_data` is true;
 otherwise show just `Y failed`. If `stats.scheduled` > 0, append
 `, S scheduled` to the Stats line using `stats.scheduled`. Add sections for new, recurring, fixed,
-and soft failures when present. Investigation summaries must be concise. Show
+and soft failures when present. Also add these sections when their jobs exist:
+
+- If `stats.cascaded` > 0, after the fixed section add
+  `*:hourglass_flowing_sand: Cascaded, never ran (N):*` with N =
+  `stats.cascaded`, listing each `waiting_failed` job with a short reason.
+  These jobs have no log; identify the blocker from `nightly_full.json` (a
+  failed image-build step on the same queue) and write e.g.
+  `• Arm CPU Test Shard 1/2/3 — blocked by CPU arm64 image`, grouping shards
+  that share one blocker into a single bullet. N counts jobs, not bullets.
+- If `stats.timed_out` + `stats.canceled` > 0, add
+  `*:stopwatch: Timed out / cancelled (N):*` with N = `stats.timed_out` +
+  `stats.canceled`, listing each `timed_out` or `canceled` job with a short
+  reason when known (e.g. `— cancelled, never ran a test`).
+
+Investigation summaries must be concise. Show
 at most five bullets per section and link to the build for omitted entries.
 Keep the complete report at or below 2,800 characters without breaking Slack
 links or formatting. Write job names as plain text with their leading emoji

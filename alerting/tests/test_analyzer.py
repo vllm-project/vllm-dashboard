@@ -638,6 +638,9 @@ def test_materialized_working_files_match_skill_contract(tmp_path: Path) -> None
         "new": 0,
         "recurring": 1,
         "scheduled": 0,
+        "cascaded": 0,
+        "timed_out": 0,
+        "canceled": 0,
         "has_previous_data": True,
         "total": 19,
     }
@@ -648,6 +651,46 @@ def test_materialized_working_files_match_skill_contract(tmp_path: Path) -> None
     assert "Phase A" in observed["agent"]
     assert "Phase D" in observed["agent"]
     assert "git push" not in observed["agent"]
+
+
+def test_summary_stats_count_cascaded_and_unfinished_jobs() -> None:
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs(
+                    [
+                        ("Cascaded Job", "waiting_failed", False),
+                        ("Timed Out Job", "timed_out", False),
+                        ("Canceled Job", "canceled", False),
+                    ],
+                    # Unfinished jobs count against the 95% completeness gate.
+                    total=60,
+                ),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+    harness.seed_analysis(run1, failed_tests=())
+    observed: dict[str, Any] = {}
+
+    def capture(working_dir: Path) -> None:
+        logs = working_dir / ".logs"
+        observed["summary"] = json.loads((logs / "nightly_summary.json").read_text())
+        well_behaved(working_dir)
+
+    harness.runner.on_run(capture)
+    harness.analyze()
+
+    stats = observed["summary"]["stats"]
+    assert stats["cascaded"] == 1
+    assert stats["timed_out"] == 1
+    assert stats["canceled"] == 1
+    assert stats["failed"] == 0
+    assert stats["passed"] == 57
 
 
 def test_first_comparison_uses_imported_failure_cache_and_checkpoint() -> None:
