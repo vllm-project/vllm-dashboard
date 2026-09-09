@@ -13,7 +13,7 @@
       "schedule": "17 3 * * *"
     },
     {
-      "path": "/api/cron/warm-jobs",
+      "path": "/api/cron/warm-defaults",
       "schedule": "* * * * *"
     }
   ]

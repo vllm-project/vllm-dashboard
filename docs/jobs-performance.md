@@ -121,7 +121,7 @@ the midnight rollover created a cache key no edge had ever seen.
 The default view now sends `window=14d` instead of absolute dates. The route
 resolves the window at fill time, so the URL — and its CDN entry — is stable
 across days and stale-while-revalidate can serve every request instantly.
-Explicit date ranges keep the old per-day keys. `/api/cron/warm-jobs` runs
+Explicit date ranges keep the old per-day keys. `/api/cron/warm-defaults` runs
 every minute against that same stable URL with a CDN-bypassing parameter,
 keeping the origin application cache warm so even a first fill costs the
 warm-query time (~300–500 ms) instead of the cold-instance penalty. The cron
