@@ -1,24 +1,14 @@
+import { getCached, setCache } from "@/lib/api-cache";
+
 const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 const REPOSITORY_OWNER = "vllm-project";
 const REPOSITORY_NAME = "vllm";
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const CACHE_LIMIT = 2_000;
 
 type BuildRow = Record<string, unknown>;
-type CachedAuthor = { author: string | null; expiresAt: number };
-
-const authorCache = new Map<string, CachedAuthor>();
 
 function pullRequestNumber(build: BuildRow): string | null {
-  const existing = build.pr_number;
-  if (
-    (typeof existing === "string" || typeof existing === "number") &&
-    /^\d+$/.test(String(existing))
-  ) {
-    return String(existing);
-  }
-
   if (typeof build.message !== "string") return null;
   const match = build.message.match(/\(#(\d+)\)|\bPR\s+#(\d+)\b/i);
   return match?.[1] ?? match?.[2] ?? null;
@@ -30,28 +20,10 @@ function commitSha(build: BuildRow): string | null {
     : null;
 }
 
-function cachedAuthor(key: string): string | null | undefined {
-  const cached = authorCache.get(key);
-  if (!cached) return undefined;
-  if (cached.expiresAt <= Date.now()) {
-    authorCache.delete(key);
-    return undefined;
-  }
-  return cached.author;
-}
-
-function cacheAuthor(key: string, author: string | null) {
-  authorCache.set(key, { author, expiresAt: Date.now() + CACHE_TTL_MS });
-  if (authorCache.size > CACHE_LIMIT) {
-    const oldest = authorCache.keys().next().value;
-    if (oldest) authorCache.delete(oldest);
-  }
-}
-
 async function fetchAuthors(keys: string[]): Promise<Map<string, string | null>> {
   const resolved = new Map<string, string | null>();
   const missing = keys.filter((key) => {
-    const cached = cachedAuthor(key);
+    const cached = getCached<string | null>(`github-build-author:${key}`);
     if (cached === undefined) return true;
     resolved.set(key, cached);
     return false;
@@ -90,6 +62,7 @@ async function fetchAuthors(keys: string[]): Promise<Map<string, string | null>>
         variables: { owner: REPOSITORY_OWNER, name: REPOSITORY_NAME },
       }),
       cache: "no-store",
+      signal: AbortSignal.timeout(5_000),
     });
     if (!response.ok) return resolved;
 
@@ -113,7 +86,7 @@ async function fetchAuthors(keys: string[]): Promise<Map<string, string | null>>
         item?.author?.login?.trim() ||
         item?.author?.user?.login?.trim() ||
         null;
-      cacheAuthor(key, author);
+      setCache(`github-build-author:${key}`, author, CACHE_TTL_MS);
       resolved.set(key, author);
     }
   } catch {
@@ -136,9 +109,6 @@ export async function enrichBuildAuthors(builds: BuildRow[]): Promise<BuildRow[]
   return normalized.map(({ build, prNumber, authorKey }) => ({
     ...build,
     pr_number: prNumber,
-    author:
-      authorKey && authors.has(authorKey)
-        ? (authors.get(authorKey) ?? null)
-        : (build.author ?? null),
+    author: (authorKey ? authors.get(authorKey) : null) ?? build.author ?? null,
   }));
 }

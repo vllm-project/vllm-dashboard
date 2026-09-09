@@ -49,28 +49,35 @@ test("uses the PR author instead of the merger or /ci commenter", async (t) => {
   assert.equal(builds[1].pr_number, "55713");
 });
 
-test("uses the commit author when a build has no pull request", async (t) => {
+test("uses linked commit authors and preserves existing metadata otherwise", async (t) => {
   configureToken(t);
   t.mock.method(globalThis, "fetch", async () =>
     Response.json({
       data: {
         repository: {
           item0: { author: { user: { login: "direct-committer" } } },
+          item1: { author: { user: null } },
         },
       },
     }),
   );
 
-  const [build] = await enrichBuildAuthors([
+  const [linked, unlinked] = await enrichBuildAuthors([
     {
       message: "Direct commit",
       commit_sha: "1111111111111111111111111111111111111111",
       author: "Buildkite creator",
     },
+    {
+      message: "Unlinked commit",
+      commit_sha: "3333333333333333333333333333333333333333",
+      author: "Existing author",
+    },
   ]);
 
-  assert.equal(build.author, "direct-committer");
-  assert.equal(build.pr_number, null);
+  assert.equal(linked.author, "direct-committer");
+  assert.equal(linked.pr_number, null);
+  assert.equal(unlinked.author, "Existing author");
 });
 
 test("preserves existing metadata when GitHub enrichment is unavailable", async (t) => {

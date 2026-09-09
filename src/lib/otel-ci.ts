@@ -610,5 +610,5 @@ export async function queryCostFromOtel(f: CiFilter): Promise<OtelCostRaw> {
     byJobPromise,
   ]);
 
-  return { byQueue, dailyCost, byBuild, byJob };
+  return { byQueue, dailyCost, byBuild: await enrichBuildAuthors(byBuild), byJob };
 }
