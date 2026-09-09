@@ -20,10 +20,12 @@ must be JSON objects whose keys are environment-variable names.
 
 The role can read only these two named secrets and can list, read, and write
 only the stack's checkpoint bucket. The instance has no SSH ingress and needs
-no interactive credential setup. Each service fetches credentials through its
-instance role, writes them briefly under `/run/alerting`, removes the file
-before starting Python, and suppresses worker stdout and stderr so credentials,
-CI logs, model output, and Slack payloads do not enter the journal.
+no interactive credential setup; day-to-day access is through SSM Session
+Manager / Run Command via the role's `AmazonSSMManagedInstanceCore` managed
+policy. Each service fetches credentials through its instance role, writes
+them briefly under `/run/alerting`, removes the file before starting Python,
+and suppresses worker stdout and stderr so credentials, CI logs, model output,
+and Slack payloads do not enter the journal.
 
 The Full CI analyzer calls the Kimi API using `KIMI_API_KEY` from
 `WorkerSecretArn`, with a bundled read-only analyzer definition and the stack
@@ -64,6 +66,10 @@ the instance **without** re-running provisioning — cloud-init runs UserData
 only once per instance, so `/etc/alerting/worker.env` is not rewritten. Any
 parameter or environment change requires a real instance replacement (see
 [disaster-recovery.md](disaster-recovery.md)).
+
+A merged code change does **not** need a stack update at all: pull the repo on
+the worker and re-run `install.sh` over SSM Run Command — see
+[disaster-recovery.md](disaster-recovery.md#in-place-code-updates-ssm).
 
 ## Shadow, cutover, and rollback
 
