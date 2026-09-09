@@ -9,6 +9,17 @@ import { queryJobStatsFromOtel } from "@/lib/otel-ci";
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
 
+// A relative window (window=14d) keeps the default view's URL stable across
+// days, so CDN entries survive the midnight date rollover and
+// stale-while-revalidate serves every request instantly. Explicit start/end
+// dates take precedence and keep the old per-day cache keys.
+function parseWindowDays(value: string | null): number | null {
+  const match = value?.match(/^(\d{1,3})d$/);
+  if (!match) return null;
+  const days = parseInt(match[1], 10);
+  return days >= 1 && days <= 90 ? days : null;
+}
+
 export async function GET(request: NextRequest) {
   const timing = new ServerTiming();
   try {
@@ -17,10 +28,21 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const pipeline = searchParams.get("pipeline") || "CI";
     const branch = searchParams.get("branch") || "main";
-    const startDate = searchParams.get("startDate");
-    const endDate = searchParams.get("endDate");
+    let startDate = searchParams.get("startDate");
+    let endDate = searchParams.get("endDate");
+    const windowDays =
+      startDate || endDate ? null : parseWindowDays(searchParams.get("window"));
+    if (windowDays !== null) {
+      const end = new Date();
+      const start = new Date(end);
+      start.setUTCDate(start.getUTCDate() - windowDays);
+      startDate = start.toISOString().slice(0, 10);
+      endDate = end.toISOString().slice(0, 10);
+    }
+    const rangeKey =
+      windowDays !== null ? `window:${windowDays}d` : `${startDate}:${endDate}`;
 
-    const cacheKey = `jobs:${pipeline}:${branch}:${startDate}:${endDate}:${source}`;
+    const cacheKey = `jobs:${pipeline}:${branch}:${rangeKey}:${source}`;
     const { data: result, status } = await getOrLoadCached(cacheKey, TTL, async () => {
       if (source === "otel") {
         return timing.measure("backend", queryJobStatsFromOtel({

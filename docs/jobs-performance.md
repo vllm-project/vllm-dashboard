@@ -107,3 +107,23 @@ query per call and a `MAX_MS` budget (default 3000), and prints `dispatchMs`
 (time until the SQL driver sends each statistics query) to distinguish startup
 and connection waits from work after submission. No SQL, credentials, or job
 contents are logged. Filter overrides match the HTTP probe.
+
+## Cold-instance fills, stable window keys, and the cache warmer (2026-09-09)
+
+Post-fix, warm-instance application misses measure 300–900 ms. The remaining
+spike is the first fill on a cold serverless instance: 20.7s and 23.1s fills
+were measured on the default key while interleaved warm-instance misses took
+under a second. Because `staleWhileRevalidate` absorbs revalidations, users
+only pay this when a POP has no entry at all — which used to happen every
+morning, because the page put absolute `startDate`/`endDate` in the URL and
+the midnight rollover created a cache key no edge had ever seen.
+
+The default view now sends `window=14d` instead of absolute dates. The route
+resolves the window at fill time, so the URL — and its CDN entry — is stable
+across days and stale-while-revalidate can serve every request instantly.
+Explicit date ranges keep the old per-day keys. `/api/cron/warm-jobs` runs
+every minute against that same stable URL with a CDN-bypassing parameter,
+keeping the origin application cache warm so even a first fill costs the
+warm-query time (~300–500 ms) instead of the cold-instance penalty. The cron
+warms only the region its request lands in, and it reports the warm request's
+`Server-Timing` in its JSON response.

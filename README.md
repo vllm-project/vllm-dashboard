@@ -58,7 +58,8 @@ npm run dev
 Open http://localhost:3000.
 
 For slow Jobs loads, use the [latency probe and timing guide](./docs/jobs-performance.md)
-to separate CDN caching, backend queries, and browser startup.
+to separate CDN caching, backend queries, and browser startup. For slow main
+page (Builds) loads, see the [Builds latency guide](./docs/builds-performance.md).
 
 ### Environment variables
 
@@ -79,6 +80,7 @@ to separate CDN caching, backend queries, and browser startup.
 | `SLACK_BOT_TOKEN` | Slack bot for queue-depth alerts (`chat:write`, `reactions:write`) |
 | `SLACK_CI_NOTIFICATIONS_CHANNEL`, `SLACK_CI_FAST_FAILURE_ALERT_CHANNEL`, `SLACK_CI_INFRA_ALERT_CHANNEL` | Per-path Slack channels for Full CI, Fast CI, and infra/queue alerts; `SLACK_CHANNEL_ID` is the legacy shared fallback when a per-path channel is unset |
 | `CRON_SECRET` | Optional shared secret required by Vercel cron handlers |
+| `WARM_JOBS_BASE_URL` | Optional base URL the `/api/cron/warm-jobs` cache warmer requests; defaults to `https://ci.vllm.ai` |
 
 The dashboard assumes a warehouse schema with tables under `vllm_data_warehouse.buildkite.*` (builds, jobs, agent query rules) and `vllm_data_warehouse.default.vllm_perf_data_ingest` for benchmarks. Adapt the queries in `src/app/api/**/route.ts` if your schema differs.
 
