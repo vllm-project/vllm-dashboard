@@ -23,6 +23,7 @@ export async function GET(request: NextRequest) {
           SELECT DISTINCT resource_attributes->>'buildkite.pipeline.name' AS name
           FROM otel_spans
           WHERE span_name = 'buildkite.build'
+            AND start_time > NOW() - INTERVAL '30 days'
             AND resource_attributes->>'buildkite.pipeline.name' IS NOT NULL
           ORDER BY name
         `,

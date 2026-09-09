@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
+import { ServerTiming } from "@/lib/server-timing";
 import {
   aggregateJobsByGroup,
   isFailedJobState,
@@ -25,6 +26,7 @@ function escapeSql(value: string): string {
 }
 
 export async function GET(request: NextRequest) {
+  const timing = new ServerTiming();
   try {
     const buildIds = [
       ...new Set(
@@ -50,7 +52,11 @@ export async function GET(request: NextRequest) {
 
     const cacheKey = `build-groups:${buildIds.join(",")}:${resolveCiDataSource(request)}`;
     const cached = getCached(cacheKey);
-    if (cached) return cachedJson(cached, CDN_CACHE);
+    if (cached) {
+      const cachedResponse = cachedJson(cached, CDN_CACHE);
+      cachedResponse.headers.set("Server-Timing", timing.header());
+      return cachedResponse;
+    }
 
     let jobs: Record<string, unknown>[];
     if (resolveCiDataSource(request) === "otel") {
@@ -59,13 +65,13 @@ export async function GET(request: NextRequest) {
       // the complete job list, so the group columns match the warehouse. Fall
       // back to OTel spans if the roster comes back empty (e.g. API token
       // misconfigured) so the table never loses every column.
-      jobs = await getBuildJobRosterRows(buildIds);
+      jobs = await timing.measure("roster", getBuildJobRosterRows(buildIds));
       if (jobs.length === 0) {
-        jobs = await queryBuildJobsFromOtel(buildIds);
+        jobs = await timing.measure("spans", queryBuildJobsFromOtel(buildIds));
       }
     } else {
       const idList = buildIds.map((id) => `'${escapeSql(id)}'`).join(",");
-      jobs = await queryDatabricks(`
+      jobs = await timing.measure("warehouse", queryDatabricks(`
         SELECT
           j.build_id,
           j.name,
@@ -81,7 +87,7 @@ export async function GET(request: NextRequest) {
           AND j._fivetran_deleted = false
           AND j.type = 'script'
           AND j.name IS NOT NULL
-      `);
+      `));
     }
 
     const jobsByBuild = new Map<
@@ -196,12 +202,14 @@ export async function GET(request: NextRequest) {
     };
     setCache(cacheKey, result, TTL);
 
-    return cachedJson(result, CDN_CACHE);
+    const response = cachedJson(result, CDN_CACHE);
+    response.headers.set("Server-Timing", timing.header());
+    return response;
   } catch (error) {
     console.error("Failed to fetch build group summaries:", error);
     return NextResponse.json(
       { error: "Failed to fetch build group summaries" },
-      { status: 500 },
+      { status: 500, headers: { "Server-Timing": timing.header() } },
     );
   }
 }

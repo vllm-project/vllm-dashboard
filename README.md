@@ -58,7 +58,8 @@ npm run dev
 Open http://localhost:3000.
 
 For slow Jobs loads, use the [latency probe and timing guide](./docs/jobs-performance.md)
-to separate CDN caching, backend queries, and browser startup.
+to separate CDN caching, backend queries, and browser startup. For slow main
+page (Builds) loads, see the [Builds latency guide](./docs/builds-performance.md).
 
 ### Environment variables
 

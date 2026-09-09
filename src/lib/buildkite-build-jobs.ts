@@ -11,6 +11,7 @@ export interface BuildJobRoster {
   jobs: BuildJobRosterEntry[];
   commit: string | null;
   branch: string | null;
+  state: string | null;
 }
 
 export class BuildkiteApiError extends Error {
@@ -83,6 +84,26 @@ export async function getBuildJobRoster(
   return fetchBuildJobRoster(organization, pipeline, buildNumber);
 }
 
+// A finished build's job roster never changes, so it is cached for a day.
+// Builds still running (or waiting on a manual gate) are refetched every time;
+// the route-level cache already bounds how often that happens.
+const SETTLED_BUILD_STATES = new Set([
+  "passed",
+  "failed",
+  "canceled",
+  "skipped",
+  "not_run",
+  "finished",
+]);
+const SETTLED_ROSTER_TTL = 24 * 60 * 60 * 1000;
+const ROSTER_CACHE_LIMIT = 500;
+
+const rosterCache = new Map<
+  string,
+  { roster: BuildJobRoster; expiresAt: number }
+>();
+const rosterInFlight = new Map<string, Promise<BuildJobRoster>>();
+
 // Fetch rosters for many builds concurrently, tolerating per-build failures so
 // one missing/expired build does not blank the whole page.
 export async function getBuildJobRosters(
@@ -92,10 +113,34 @@ export async function getBuildJobRosters(
   const results = await Promise.all(
     builds.map(async ({ pipeline, buildNumber }): Promise<[string, BuildJobRoster]> => {
       const key = `${pipeline}:${buildNumber}`;
+      const cached = rosterCache.get(key);
+      if (cached && cached.expiresAt > Date.now()) return [key, cached.roster];
+      const pending = rosterInFlight.get(key);
+      if (pending) return [key, await pending];
+
+      const promise = (async (): Promise<BuildJobRoster> => {
+        try {
+          const roster = await fetchBuildJobRoster(organization, pipeline, buildNumber);
+          if (roster.state !== null && SETTLED_BUILD_STATES.has(roster.state)) {
+            rosterCache.set(key, {
+              roster,
+              expiresAt: Date.now() + SETTLED_ROSTER_TTL,
+            });
+            if (rosterCache.size > ROSTER_CACHE_LIMIT) {
+              const oldest = rosterCache.keys().next().value;
+              if (oldest) rosterCache.delete(oldest);
+            }
+          }
+          return roster;
+        } catch {
+          return { jobs: [], commit: null, branch: null, state: null };
+        }
+      })();
+      rosterInFlight.set(key, promise);
       try {
-        return [key, await fetchBuildJobRoster(organization, pipeline, buildNumber)];
-      } catch {
-        return [key, { jobs: [], commit: null, branch: null }];
+        return [key, await promise];
+      } finally {
+        rosterInFlight.delete(key);
       }
     }),
   );
@@ -128,6 +173,7 @@ async function fetchBuildJobRoster(
   const build = (await response.json()) as {
     commit?: string;
     branch?: string;
+    state?: string;
     jobs?: Array<{
       name?: string | null;
       state?: string;
@@ -146,7 +192,7 @@ async function fetchBuildJobRoster(
       started_at: job.started_at ?? null,
     }));
 
-  return { jobs, commit: build.commit ?? null, branch: build.branch ?? null };
+  return { jobs, commit: build.commit ?? null, branch: build.branch ?? null, state: build.state ?? null };
 }
 
 // Map the REST API job state vocabulary onto the one the dashboard already
