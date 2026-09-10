@@ -37,9 +37,9 @@ async function fetchAuthors(keys: string[]): Promise<Map<string, GitHubBuildRef>
   const fields = missing.map((key, index) => {
     const [kind, value] = key.split(":", 2);
     if (kind === "pr") {
-      return `item${index}: pullRequest(number: ${value}) { author { login } }`;
+      return `item${index}: pullRequest(number: ${value}) { author { login ... on User { name } } }`;
     }
-    return `item${index}: object(oid: "${value}") { ... on Commit { author { user { login } } associatedPullRequests(first: 1) { nodes { number author { login } } } } }`;
+    return `item${index}: object(oid: "${value}") { ... on Commit { author { name user { login } } associatedPullRequests(first: 1) { nodes { number author { login ... on User { name } } } } } }`;
   });
   const query = `
     query BuildAuthors($owner: String!, $name: String!) {
@@ -78,10 +78,11 @@ async function fetchAuthors(keys: string[]): Promise<Map<string, GitHubBuildRef>
         | {
             author?: {
               login?: string | null;
+              name?: string | null;
               user?: { login?: string | null } | null;
             } | null;
             associatedPullRequests?: {
-              nodes?: { number?: number; author?: { login?: string | null } | null }[];
+              nodes?: { number?: number; author?: { login?: string | null; name?: string | null } | null }[];
             } | null;
           }
         | null
@@ -89,8 +90,10 @@ async function fetchAuthors(keys: string[]): Promise<Map<string, GitHubBuildRef>
       const pullRequest = item?.associatedPullRequests?.nodes?.[0];
       const author = {
         author:
-          item?.author?.login?.trim() ||
+          pullRequest?.author?.name?.trim() ||
           pullRequest?.author?.login?.trim() ||
+          item?.author?.name?.trim() ||
+          item?.author?.login?.trim() ||
           item?.author?.user?.login?.trim() ||
           null,
         prNumber: key.startsWith("pr:")
