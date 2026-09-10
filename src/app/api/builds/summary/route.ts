@@ -231,19 +231,12 @@ export async function GET(request: NextRequest) {
       const buildsWithGroups = builds.map((b) => {
         const buildJobs = jobsByBuild.get(b.id as string) ?? [];
         const testGroups = aggregateJobsByGroup(buildJobs);
-        let prNumber = (b.pr_number as string | null) ?? null;
-        const message = (b.message as string | null) ?? "";
-        if (!prNumber && message) {
-          const match = message.match(/\(#(\d+)\)/);
-          if (match) prNumber = match[1];
-        }
         const matchedJobs = jobNames.length > 0
           ? buildJobs.filter((j) => jobNames.some((n) => j.name === n))
           : undefined;
         return {
           ...(b as unknown as BuildRow),
           duration_mins: null,
-          pr_number: prNumber,
           testGroups,
           matchedJobs,
         };

@@ -92,25 +92,8 @@ export async function GET(request: NextRequest) {
         jobNames,
       });
 
-      const buildsWithMetadata = builds.map((build) => {
-        const b = build as Record<string, unknown>;
-        let prNumber = b.pr_number as string | null;
-        if (!prNumber && b.message) {
-          const match = (b.message as string).match(/\(#(\d+)\)/);
-          if (match) prNumber = match[1];
-        }
-        return {
-          ...b,
-          pr_number: prNumber,
-          build_number:
-            b.build_number === null || b.build_number === undefined
-              ? null
-              : String(b.build_number),
-        };
-      });
-
       const result = {
-        builds: buildsWithMetadata,
+        builds,
         buildDurations,
         summary,
         pagination: { page, pageSize: PAGE_SIZE, totalPages: Math.ceil(total / PAGE_SIZE) },
