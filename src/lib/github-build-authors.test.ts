@@ -24,12 +24,12 @@ test("uses the PR author instead of the merger or /ci commenter", async (t) => {
     return Response.json({
       data: {
         repository: {
-          item0: { author: { login: "cjackal" } },
+          item0: { author: { login: "cjackal", name: "Chris Jack" } },
           item1: { author: { login: "askliar" } },
           item2: {
-            author: { user: { login: "merge-operator" } },
+            author: { name: "Wei Zhao", user: { login: "wzhao18" } },
             associatedPullRequests: {
-              nodes: [{ number: 55240, author: { login: "FeathBow" } }],
+              nodes: [{ number: 55499, author: { login: "wzhao18", name: "Wei Zhao" } }],
             },
           },
         },
@@ -49,18 +49,18 @@ test("uses the PR author instead of the merger or /ci commenter", async (t) => {
       author: "vLLM CI Bot",
     },
     {
-      message: "Full CI run torch nightly",
-      commit_sha: "c7e9816c6ab0731165a134fd0a9defed6ab1d748",
+      message: "Full CI run - daily",
+      commit_sha: "8c87c333b84c85908b1d11f0044457692277c6f3",
       author: null,
     },
   ]);
 
-  assert.equal(builds[0].author, "cjackal");
+  assert.equal(builds[0].author, "Chris Jack");
   assert.equal(builds[0].pr_number, "55370");
   assert.equal(builds[1].author, "askliar");
   assert.equal(builds[1].pr_number, "55713");
-  assert.equal(builds[2].author, "FeathBow");
-  assert.equal(builds[2].pr_number, "55240");
+  assert.equal(builds[2].author, "Wei Zhao");
+  assert.equal(builds[2].pr_number, "55499");
 });
 
 test("uses linked commit authors and preserves existing metadata otherwise", async (t) => {
