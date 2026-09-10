@@ -5,6 +5,7 @@ import { ensureTestAreaMapping } from "@/lib/test-areas";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
+import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { queryBuildsFromOtel } from "@/lib/otel-ci";
 
 const PAGE_SIZE = 50;
@@ -180,7 +181,7 @@ export async function GET(request: NextRequest) {
     // Keep the bootstrap response focused on the chart, summary, and build
     // rows. Group summaries and expanded job details are normalized behind
     // dedicated endpoints so the first screen does not carry 10k+ nested jobs.
-    const buildsWithMetadata = builds.map((build) => {
+    const buildsWithMetadata = (await enrichBuildAuthors(builds)).map((build) => {
       const b = build as Record<string, unknown>;
       const traceIdentity = parseBuildkiteBuildUrl(b.web_url);
       // Parse PR number from commit message if not set (e.g. main branch)

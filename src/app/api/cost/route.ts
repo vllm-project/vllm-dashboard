@@ -4,6 +4,7 @@ import { getQueueCost } from "@/lib/queue-costs";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
+import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { queryCostFromOtel } from "@/lib/otel-ci";
 
 export const maxDuration = 55;
@@ -124,7 +125,9 @@ export async function GET(request: NextRequest) {
 
     byQueue = byQueueResult.status === "fulfilled" ? byQueueResult.value : [];
     dailyCost = dailyCostResult.status === "fulfilled" ? dailyCostResult.value : [];
-    byBuildRaw = byBuildResult.status === "fulfilled" ? byBuildResult.value : [];
+    byBuildRaw = await enrichBuildAuthors(
+      byBuildResult.status === "fulfilled" ? byBuildResult.value : [],
+    );
     byJobRaw = byJobResult.status === "fulfilled" ? byJobResult.value : [];
     }
 
