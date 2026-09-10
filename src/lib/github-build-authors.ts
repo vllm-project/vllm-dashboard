@@ -6,7 +6,11 @@ const REPOSITORY_NAME = "vllm";
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-type BuildRow = Record<string, unknown>;
+type BuildRow = {
+  message?: unknown;
+  commit_sha?: unknown;
+  author?: unknown;
+};
 type GitHubBuildRef = { author: string | null; prNumber: string | null };
 
 function pullRequestNumber(build: BuildRow): string | null {
@@ -110,7 +114,14 @@ async function fetchAuthors(keys: string[]): Promise<Map<string, GitHubBuildRef>
   return resolved;
 }
 
-export async function enrichBuildAuthors(builds: BuildRow[]): Promise<BuildRow[]> {
+export async function enrichBuildAuthors<T extends BuildRow>(
+  builds: T[],
+): Promise<
+  (Omit<T, "author" | "pr_number"> & {
+    author: string | null;
+    pr_number: string | null;
+  })[]
+> {
   const normalized = builds.map((build) => {
     const prNumber = pullRequestNumber(build);
     const sha = commitSha(build);
@@ -125,7 +136,9 @@ export async function enrichBuildAuthors(builds: BuildRow[]): Promise<BuildRow[]
     return {
       ...build,
       pr_number: github?.prNumber ?? prNumber,
-      author: github?.author ?? build.author ?? null,
+      author:
+        github?.author ??
+        (typeof build.author === "string" ? build.author : null),
     };
   });
 }

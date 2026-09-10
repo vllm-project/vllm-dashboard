@@ -7,6 +7,7 @@ import {
 } from "@/lib/test-areas";
 import { getCached, setCache } from "@/lib/api-cache";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
+import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { queryBuildJobsFromOtel, queryBuildsFromOtel } from "@/lib/otel-ci";
 
 const MAX_PER_PAGE = 30;
@@ -56,7 +57,7 @@ interface BuildRow {
   created_at: string;
   started_at: string;
   finished_at: string;
-  author: string;
+  author: string | null;
   pr_number: string | null;
   duration_mins: string | null;
 }
@@ -334,7 +335,8 @@ export async function GET(request: NextRequest) {
       `),
     ]);
 
-    const buildIds = builds.map((b) => b.id);
+    const enrichedBuilds = await enrichBuildAuthors(builds);
+    const buildIds = enrichedBuilds.map((b) => b.id);
     const jobsByBuild = new Map<string, { name: string; state: string }[]>();
 
     if (buildIds.length > 0) {
@@ -361,7 +363,7 @@ export async function GET(request: NextRequest) {
       string,
       ReturnType<typeof getTestAreaMappingForCommit>
     >();
-    for (const build of builds) {
+    for (const build of enrichedBuilds) {
       const mappingKey = `${build.branch}:${build.commit_sha}`;
       if (!mappingsByCommit.has(mappingKey)) {
         mappingsByCommit.set(
@@ -370,7 +372,7 @@ export async function GET(request: NextRequest) {
         );
       }
     }
-    const buildsWithGroups = await Promise.all(builds.map(async (b) => {
+    const buildsWithGroups = await Promise.all(enrichedBuilds.map(async (b) => {
       const buildJobs = jobsByBuild.get(b.id) ?? [];
       const mapping = await mappingsByCommit.get(
         `${b.branch}:${b.commit_sha}`,
