@@ -3,7 +3,7 @@
 import { Fragment, useState, useCallback, useMemo, type MouseEvent, type ReactNode } from "react";
 import useSWR from "swr";
 import { BuildWaterfall } from "@/components/build-waterfall";
-import { JobName, jobNameText } from "@/components/job-name";
+import { JobName, jobNameText, splitJobName } from "@/components/job-name";
 import type { GroupStatus } from "@/lib/test-groups";
 import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
 
@@ -262,6 +262,78 @@ interface BuildsTableProps {
 // changes how far the empty area extends, not any real content.
 const SKELETON_GROUP_COLUMNS = 40;
 
+// Matrix column headers are rotated so ~40 narrow columns fit. The header row
+// must be tall enough for the longest label's vertical extent, otherwise the
+// label runs past the top of the table and the scroll container clips it.
+const HEADER_LABEL_ANGLE = (55 * Math.PI) / 180;
+const HEADER_LABEL_SIN = Math.sin(HEADER_LABEL_ANGLE);
+const HEADER_LABEL_COS = Math.cos(HEADER_LABEL_ANGLE);
+const HEADER_COLUMN_WIDTH = 28;
+const HEADER_LABEL_BOTTOM = 8; // matches the label's bottom-2 offset
+const MIN_HEADER_HEIGHT = 160;
+// Labels wider than this are truncated with an ellipsis (full name in the
+// tooltip) so a single absurdly long job name cannot make the header huge.
+const MAX_HEADER_LABEL_WIDTH = 360;
+const HEADER_LABEL_LINE_HEIGHT = 16; // tallest label line box (12px semibold)
+
+function headerHeightForLabelWidth(width: number): number {
+  const clamped = Math.min(width, MAX_HEADER_LABEL_WIDTH);
+  // A rotated box spans width*sin + height*cos vertically.
+  const extent =
+    clamped * HEADER_LABEL_SIN + HEADER_LABEL_LINE_HEIGHT * HEADER_LABEL_COS;
+  return Math.max(
+    MIN_HEADER_HEIGHT,
+    Math.ceil(extent) + HEADER_LABEL_BOTTOM + 8,
+  );
+}
+
+// Horizontal room the rotated labels need past the last column's right edge.
+function headerSpacerForLabelWidth(width: number): number {
+  const clamped = Math.min(width, MAX_HEADER_LABEL_WIDTH);
+  return Math.max(
+    0,
+    Math.ceil(clamped * HEADER_LABEL_COS) - HEADER_COLUMN_WIDTH / 2,
+  );
+}
+
+// Text widths are measured with a canvas so the header height can be derived
+// during render, without a measure-then-set-state pass. Builds arrive
+// client-side, so the server never renders header columns and the SSR
+// fallback below is only defensive.
+const GROUP_LABEL_FONT_SIZE = 12; // text-[12px] font-semibold
+const JOB_LABEL_FONT_SIZE = 10; // text-[10px]
+const JOB_ICON_WIDTH = 14 + 4; // h-3.5 w-3.5 icon plus mr-1
+const LABEL_MEASURE_SLACK = 1.05; // font swap / subpixel rounding
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+let measureFontFamily: string | undefined;
+
+function measureText(text: string, size: number, weight: number): number {
+  if (typeof document === "undefined") return text.length * size * 0.55;
+  if (measureCtx === undefined) {
+    measureCtx = document.createElement("canvas").getContext("2d");
+    measureFontFamily = getComputedStyle(document.body).fontFamily || "sans-serif";
+  }
+  if (!measureCtx) return text.length * size * 0.55;
+  measureCtx.font = `${weight} ${size}px ${measureFontFamily}`;
+  return measureCtx.measureText(text).width;
+}
+
+function groupLabelWidth(group: string): number {
+  return measureText(`\u25B8 ${group}`, GROUP_LABEL_FONT_SIZE, 600);
+}
+
+function jobLabelWidth(jobName: string): number {
+  const segments = splitJobName(jobName);
+  let width = 0;
+  for (const segment of segments) {
+    width +=
+      segment.type === "icon"
+        ? JOB_ICON_WIDTH
+        : measureText(segment.text, JOB_LABEL_FONT_SIZE, 400);
+  }
+  return width;
+}
+
 const fetcher = (url: string) => fetch(url).then((response) => response.json());
 
 export function BuildsTable({
@@ -349,6 +421,20 @@ export function BuildsTable({
   const skeletonCount = showSkeleton ? SKELETON_GROUP_COLUMNS : 0;
   const FIXED_COLS = showBranch ? 7 : 6;
 
+  // Size the header row for the widest rotated label so long group and job
+  // names are not clipped at the top of the table.
+  let maxLabelWidth = 0;
+  for (const col of columns) {
+    const width =
+      col.type === "job" ? jobLabelWidth(col.jobName!) : groupLabelWidth(col.group);
+    maxLabelWidth = Math.max(maxLabelWidth, width);
+  }
+  maxLabelWidth = Math.ceil(maxLabelWidth * LABEL_MEASURE_SLACK);
+
+  const headerHeight = headerHeightForLabelWidth(maxLabelWidth);
+  const headerSpacer = hasGroups ? headerSpacerForLabelWidth(maxLabelWidth) : 0;
+  const spacerCols = headerSpacer > 0 ? 1 : 0;
+
   return (
     <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
       <div className="border-b border-zinc-200 px-5 py-3 dark:border-zinc-800">
@@ -390,7 +476,11 @@ export function BuildsTable({
                     <th
                       key={key}
                       className="relative p-0 align-bottom"
-                      style={{ width: 28, minWidth: 28, height: 160 }}
+                      style={{
+                        width: HEADER_COLUMN_WIDTH,
+                        minWidth: HEADER_COLUMN_WIDTH,
+                        height: headerHeight,
+                      }}
                     >
                       {/* Short vertical tick at the bottom of the header */}
                       {(isExpanded || isLastJob) && (
@@ -401,7 +491,8 @@ export function BuildsTable({
                         />
                       )}
                       <div
-                        className={`absolute bottom-2 left-1/2 origin-bottom-left whitespace-nowrap ${
+                        title={isGroup ? label : jobNameText(label)}
+                        className={`absolute bottom-2 left-1/2 origin-bottom-left overflow-hidden text-ellipsis whitespace-nowrap ${
                           isGroup
                             ? `cursor-pointer text-[12px] font-semibold ${
                                 isExpanded || isHovered
@@ -418,6 +509,7 @@ export function BuildsTable({
                           transform: "rotate(-55deg)",
                           transformOrigin: "0% 100%",
                           left: "50%",
+                          maxWidth: MAX_HEADER_LABEL_WIDTH,
                         }}
                         onClick={isGroup ? () => toggleGroup(col.group) : undefined}
                       >
@@ -426,17 +518,28 @@ export function BuildsTable({
                             {isExpanded ? "▾" : "▸"}
                           </span>
                         )}
-                        {label}
+                        {isGroup ? label : <JobName name={label} />}
                       </div>
                     </th>
                   );
                 })}
+              {spacerCols > 0 && (
+                <th
+                  aria-hidden
+                  className="p-0"
+                  style={{ width: headerSpacer, minWidth: headerSpacer }}
+                />
+              )}
               {showSkeleton &&
                 Array.from({ length: skeletonCount }, (_, i) => (
                   <th
                     key={`skeleton-group-${i}`}
                     className="relative p-0 align-bottom"
-                    style={{ width: 28, minWidth: 28, height: 160 }}
+                    style={{
+                      width: HEADER_COLUMN_WIDTH,
+                      minWidth: HEADER_COLUMN_WIDTH,
+                      height: MIN_HEADER_HEIGHT,
+                    }}
                   >
                     <div className="absolute bottom-2 left-1/2 h-16 w-2 -translate-x-1/2 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />
                   </th>
@@ -751,7 +854,7 @@ export function BuildsTable({
                   {isTraceExpanded && canShowTrace && (
                     <tr id={`build-trace-${build.id}`}>
                       <td
-                        colSpan={FIXED_COLS + columns.length + skeletonCount}
+                        colSpan={FIXED_COLS + columns.length + skeletonCount + spacerCols}
                         className="p-0"
                       >
                         <BuildWaterfall
@@ -770,7 +873,7 @@ export function BuildsTable({
             {builds.length === 0 && (
               <tr>
                 <td
-                  colSpan={FIXED_COLS + columns.length + skeletonCount}
+                  colSpan={FIXED_COLS + columns.length + skeletonCount + spacerCols}
                   className="px-5 py-8 text-center text-zinc-400"
                 >
                   No builds found
