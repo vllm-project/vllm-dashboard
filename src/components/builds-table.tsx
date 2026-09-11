@@ -1,11 +1,24 @@
 "use client";
 
-import { Fragment, useState, useCallback, useMemo, type MouseEvent, type ReactNode } from "react";
+import {
+  Fragment,
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import useSWR from "swr";
 import { BuildWaterfall } from "@/components/build-waterfall";
 import { JobName, jobNameText, splitJobName } from "@/components/job-name";
 import type { GroupStatus } from "@/lib/test-groups";
 import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
+import {
+  buildDurationDisplay,
+  isBuildInProgress,
+  type BuildDurationKind,
+} from "@/lib/build-duration";
 
 export interface Build {
   id: string;
@@ -214,6 +227,34 @@ function stateTextColor(state: string) {
   }
 }
 
+/**
+ * Current time that re-renders on `intervalMs`. Pass `null` to stop ticking
+ * (the value then only updates when the component re-renders for other
+ * reasons). Used to keep "so far" durations of running builds fresh.
+ */
+function useNow(intervalMs: number | null): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (intervalMs === null) return;
+    const id = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
+function durationColor(kind: BuildDurationKind) {
+  switch (kind) {
+    case "running":
+      return "font-medium text-yellow-600 dark:text-yellow-400";
+    case "queued":
+      return "text-yellow-600 dark:text-yellow-400";
+    case "unknown":
+      return "text-zinc-400 dark:text-zinc-600";
+    default:
+      return "text-zinc-600 dark:text-zinc-400";
+  }
+}
+
 function BuildContext({ build }: { build: Build }) {
   return (
     <p className="mt-1.5 border-t border-zinc-100 pt-1.5 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
@@ -351,6 +392,11 @@ export function BuildsTable({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedBuildId, setExpandedBuildId] = useState<string | null>(null);
   const [hoveredCol, setHoveredCol] = useState<string | null>(null);
+  const hasInProgress = useMemo(
+    () => builds.some((build) => isBuildInProgress(build.state)),
+    [builds],
+  );
+  const now = useNow(hasInProgress ? 30_000 : null);
   const buildIds = useMemo(
     () => builds.map((build) => build.id),
     [builds],
@@ -419,7 +465,7 @@ export function BuildsTable({
   const hasGroups = groupOrder.length > 0;
   const showSkeleton = !hasGroups && Boolean(groupsLoading) && builds.length > 0;
   const skeletonCount = showSkeleton ? SKELETON_GROUP_COLUMNS : 0;
-  const FIXED_COLS = showBranch ? 7 : 6;
+  const FIXED_COLS = showBranch ? 8 : 7;
 
   // Size the header row for the widest rotated label so long group and job
   // names are not clipped at the top of the table.
@@ -460,6 +506,7 @@ export function BuildsTable({
               <th className="px-4 pb-2 text-left align-bottom font-semibold text-zinc-500 dark:text-zinc-400">PR</th>
               <th className="px-4 pb-2 text-left align-bottom font-semibold text-zinc-500 dark:text-zinc-400">Author</th>
               <th className="px-4 pb-2 text-left align-bottom font-semibold text-zinc-500 dark:text-zinc-400">Status</th>
+              <th className="px-4 pb-2 text-left align-bottom font-semibold text-zinc-500 dark:text-zinc-400">Duration</th>
               <th className="px-4 pb-2 text-left align-bottom font-semibold text-zinc-500 dark:text-zinc-400">Message</th>
               {hasGroups &&
                 columns.map((col, i) => {
@@ -576,6 +623,7 @@ export function BuildsTable({
                   build.build_number,
               );
               const isTraceExpanded = expandedBuildId === build.id;
+              const duration = buildDurationDisplay(build, now);
               const startedJobCount = startedJobCountsByBuild[build.id];
 
               return (
@@ -716,6 +764,14 @@ export function BuildsTable({
                         {build.state}
                       </span>
                     )}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-2 text-xs tabular-nums">
+                    <span
+                      className={durationColor(duration.kind)}
+                      title={duration.title}
+                    >
+                      {duration.label}
+                    </span>
                   </td>
                   <td className="max-w-[16rem] truncate px-4 py-2 text-zinc-600 dark:text-zinc-400">
                     {build.message ?? "—"}
