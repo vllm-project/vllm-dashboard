@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
+import { criticalPathIds } from "@/lib/build-critical-path";
 
 export const runtime = "nodejs";
 
@@ -87,24 +88,11 @@ function laneStatus(row: TraceRow): Lane["status"] {
   return "unknown";
 }
 
-function markCompletionFrontier(lanes: Lane[]) {
-  const ordered = [...lanes].sort((a, b) => {
-    const start = Date.parse(a.startTime) - Date.parse(b.startTime);
-    if (start !== 0) return start;
-    return Date.parse(b.endTime) - Date.parse(a.endTime);
-  });
-  let furthestEnd = Number.NEGATIVE_INFINITY;
-  const frontier = new Set<string>();
-  for (const lane of ordered) {
-    const end = Date.parse(lane.endTime);
-    if (end > furthestEnd + 1) {
-      frontier.add(lane.id);
-      furthestEnd = end;
-    }
-  }
+function markCriticalPath(lanes: Lane[]) {
+  const chain = criticalPathIds(lanes);
   return lanes.map((lane) => ({
     ...lane,
-    critical: frontier.has(lane.id),
+    critical: chain.has(lane.id),
   }));
 }
 
@@ -316,7 +304,7 @@ export async function GET(request: NextRequest) {
       jobLaneByJobId.set(jobId, synthetic);
     }
 
-    const jobLanes = markCompletionFrontier(baseJobLanes);
+    const jobLanes = markCriticalPath(baseJobLanes);
     const detailLanes = details.map((row): Lane => {
       const kind = detailKind(row) as "command" | "test";
       const jobParent = row.job_id

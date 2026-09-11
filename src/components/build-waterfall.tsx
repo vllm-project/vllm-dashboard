@@ -3,13 +3,16 @@
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { JobName, jobNameText } from "@/components/job-name";
+import { buildTestTree, type TestTreeNode } from "@/lib/test-tree";
 
 type LaneKind = "job" | "step" | "command" | "test";
+/** Lanes from the API plus the client-side pytest grouping rows. */
+type RowKind = LaneKind | "test-file" | "test-case";
 
 interface WaterfallLane {
   id: string;
   parentId: string | null;
-  kind: LaneKind;
+  kind: RowKind;
   label: string;
   group: string | null;
   stepKey: string | null;
@@ -24,6 +27,16 @@ interface WaterfallLane {
   url: string | null;
   critical: boolean;
   childCount: number;
+  /** Shorter label for tree rows: the part not shown by enclosing groups. */
+  displayLabel?: string;
+  /** Total tests under a grouping row. */
+  testCount?: number;
+  failedCount?: number;
+}
+
+interface VisibleRow {
+  lane: WaterfallLane;
+  depth: number;
 }
 
 interface TraceResponse {
@@ -58,6 +71,8 @@ interface BuildWaterfallProps {
 
 const INITIAL_JOB_LIMIT = 36;
 const TICKS = [0, 0.25, 0.5, 0.75, 1];
+const INDENT_PX = 18;
+const ROW_GRID = "grid-cols-[minmax(22rem,34rem)_minmax(28rem,1fr)]";
 
 async function fetchTrace(url: string): Promise<TraceResponse> {
   const response = await fetch(url);
@@ -108,21 +123,76 @@ function GridLines() {
   );
 }
 
-function laneDepth(lane: WaterfallLane): number {
-  if (lane.kind === "test") return 2;
-  if (lane.kind === "command") return 1;
-  return 0;
+function isJobLane(lane: WaterfallLane): boolean {
+  return lane.kind === "job" || lane.kind === "step";
+}
+
+function isTestGroup(lane: WaterfallLane): boolean {
+  return lane.kind === "test-file" || lane.kind === "test-case";
+}
+
+/** Pytest node IDs contain `::`, which JobName would misread as shortcodes. */
+function laneText(lane: WaterfallLane): string {
+  return isJobLane(lane) ? jobNameText(lane.label) : lane.label;
 }
 
 function laneColor(lane: WaterfallLane): string {
   if (lane.critical) {
     return "border border-amber-500 bg-amber-300 shadow-[0_0_0_1px_rgb(245_158_11_/_0.12)] dark:bg-amber-500";
   }
+  if (isTestGroup(lane)) {
+    // Grouping rows span their children; keep them visually lighter than
+    // the leaf tests so a file row does not read as one giant test.
+    if (lane.status === "failed") return "border border-red-500/70 bg-red-500/25 dark:bg-red-500/30";
+    if (lane.status === "skipped") return "border border-zinc-400/70 bg-zinc-300/50 dark:bg-zinc-600/50";
+    return "border border-emerald-500/70 bg-emerald-500/25 dark:bg-emerald-500/30";
+  }
   if (lane.status === "failed") return "bg-red-500 dark:bg-red-500";
   if (lane.status === "skipped") return "bg-zinc-300 dark:bg-zinc-600";
   if (lane.kind === "test") return "bg-emerald-500 dark:bg-emerald-500";
   if (lane.kind === "command") return "bg-cyan-500 dark:bg-cyan-500";
   return "bg-blue-500 dark:bg-blue-500";
+}
+
+/**
+ * Turn a pytest command's flat test lanes into file → function → parameter
+ * rows. Returns the direct children of the command and registers every
+ * deeper level in `children`.
+ */
+function attachTestTree(
+  commandId: string,
+  tests: WaterfallLane[],
+  children: Map<string, WaterfallLane[]>,
+): WaterfallLane[] {
+  const template = tests[0];
+  const materialize = (nodes: TestTreeNode<WaterfallLane>[], parentId: string): WaterfallLane[] =>
+    nodes.map((node) => {
+      if (node.type === "leaf") {
+        return { ...node.lane, parentId, displayLabel: node.displayLabel };
+      }
+      const row: WaterfallLane = {
+        ...template,
+        id: node.id,
+        parentId,
+        kind: node.kind,
+        label: node.label,
+        startTime: node.startTime,
+        endTime: node.endTime,
+        durationMs: node.durationMs,
+        waitMs: 0,
+        status: node.status,
+        outcome: null,
+        url: null,
+        critical: false,
+        childCount: node.children.length,
+        displayLabel: node.label,
+        testCount: node.testCount,
+        failedCount: node.failedCount,
+      };
+      children.set(node.id, materialize(node.children, node.id));
+      return row;
+    });
+  return materialize(buildTestTree(commandId, tests), commandId);
 }
 
 export function BuildWaterfall({
@@ -134,7 +204,10 @@ export function BuildWaterfall({
 }: BuildWaterfallProps) {
   const [criticalOnly, setCriticalOnly] = useState(false);
   const [showAll, setShowAll] = useState(false);
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  // Explicit open/closed choices; rows absent here fall back to their default.
+  const [openOverrides, setOpenOverrides] = useState<Map<string, boolean>>(
+    () => new Map(),
+  );
   const [jobDetails, setJobDetails] = useState<Record<string, WaterfallLane[]>>(
     {},
   );
@@ -150,7 +223,7 @@ export function BuildWaterfall({
     },
   );
 
-  const { jobLanes, childrenByParent } = useMemo(() => {
+  const { jobLanes, childrenByParent, defaultOpen } = useMemo(() => {
     const detailedJobIds = new Set(Object.keys(jobDetails));
     const lanes = [
       ...(data?.lanes ?? []).filter(
@@ -184,8 +257,24 @@ export function BuildWaterfall({
         return Date.parse(a.startTime) - Date.parse(b.startTime);
       });
     }
-    return { jobLanes: roots, childrenByParent: children };
+    // A shard with one test file gains nothing from a collapsed file row, so
+    // that row starts open and the viewer lands directly on the functions.
+    const defaultOpen = new Set<string>();
+    // Snapshot the entries: attaching a tree adds group rows to the map, and
+    // iterating those would regroup the leaves again without end.
+    for (const [parentId, siblings] of [...children]) {
+      if (!siblings.some((lane) => lane.kind === "test")) continue;
+      const tests = siblings.filter((lane) => lane.kind === "test");
+      const others = siblings.filter((lane) => lane.kind !== "test");
+      const grouped = attachTestTree(parentId, tests, children);
+      children.set(parentId, [...others, ...grouped]);
+      const files = grouped.filter((lane) => lane.kind === "test-file");
+      if (files.length === 1 && others.length === 0) defaultOpen.add(files[0].id);
+    }
+    return { jobLanes: roots, childrenByParent: children, defaultOpen };
   }, [data?.lanes, jobDetails]);
+
+  const isOpen = (id: string) => openOverrides.get(id) ?? defaultOpen.has(id);
 
   const visibleJobs = useMemo(() => {
     const filtered = criticalOnly
@@ -201,19 +290,16 @@ export function BuildWaterfall({
     return filtered.filter((lane) => initiallyVisible.has(lane.id));
   }, [criticalOnly, jobLanes, showAll]);
 
-  const visibleLanes = useMemo(() => {
-    const flattened: WaterfallLane[] = [];
-    for (const job of visibleJobs) {
-      flattened.push(job);
-      if (!expanded.has(job.id)) continue;
-      for (const command of childrenByParent.get(job.id) ?? []) {
-        flattened.push(command);
-        if (!expanded.has(command.id)) continue;
-        flattened.push(...(childrenByParent.get(command.id) ?? []));
-      }
-    }
+  const visibleRows = useMemo(() => {
+    const flattened: VisibleRow[] = [];
+    const walk = (lane: WaterfallLane, depth: number) => {
+      flattened.push({ lane, depth });
+      if (!(openOverrides.get(lane.id) ?? defaultOpen.has(lane.id))) return;
+      for (const child of childrenByParent.get(lane.id) ?? []) walk(child, depth + 1);
+    };
+    for (const job of visibleJobs) walk(job, 0);
     return flattened;
-  }, [childrenByParent, expanded, visibleJobs]);
+  }, [childrenByParent, defaultOpen, openOverrides, visibleJobs]);
 
   async function loadJobDetails(jobId: string, jobParentId: string | null) {
     if (jobDetails[jobId] || loadingJobs.has(jobId)) return;
@@ -270,25 +356,18 @@ export function BuildWaterfall({
     if (lane.kind === "command" && lane.jobId && lane.childCount > 0) {
       void loadJobDetails(lane.jobId, lane.parentId);
     }
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(lane.id)) next.delete(lane.id);
-      else next.add(lane.id);
-      return next;
-    });
+    const open = isOpen(lane.id);
+    setOpenOverrides((current) => new Map(current).set(lane.id, !open));
   }
 
   function toggleAllJobs() {
     const expandableJobs = jobLanes
       .filter((lane) => (childrenByParent.get(lane.id)?.length ?? 0) > 0)
       .map((lane) => lane.id);
-    const allExpanded = expandableJobs.every((id) => expanded.has(id));
-    setExpanded((current) => {
-      const next = new Set(current);
-      for (const id of expandableJobs) {
-        if (allExpanded) next.delete(id);
-        else next.add(id);
-      }
+    const allExpanded = expandableJobs.every((id) => isOpen(id));
+    setOpenOverrides((current) => {
+      const next = new Map(current);
+      for (const id of expandableJobs) next.set(id, !allExpanded);
       return next;
     });
   }
@@ -353,7 +432,7 @@ export function BuildWaterfall({
     (lane) => (childrenByParent.get(lane.id)?.length ?? 0) > 0,
   );
   const allJobsExpanded =
-    expandableJobs.length > 0 && expandableJobs.every((lane) => expanded.has(lane.id));
+    expandableJobs.length > 0 && expandableJobs.every((lane) => isOpen(lane.id));
 
   return (
     <section
@@ -372,8 +451,10 @@ export function BuildWaterfall({
             {isValidating && <span className="text-[11px] text-zinc-400">Checking…</span>}
           </div>
           <p className="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
-            Select a traced job to see its commands. Select a pytest command to
-            see every test. Amber jobs are inferred build-limiting work.
+            Select a traced job to see its commands, and a pytest command to see
+            its test files, functions and parameter combinations. Amber jobs are
+            the inferred critical path: the chain of work that set the build&apos;s
+            duration.
           </p>
         </div>
         <div className="flex flex-col items-start gap-3 lg:items-end">
@@ -427,7 +508,7 @@ export function BuildWaterfall({
 
       <div className="overflow-x-auto pb-2">
         <div className="min-w-[760px] px-5">
-          <div className="grid grid-cols-[minmax(16rem,21rem)_minmax(32rem,1fr)] gap-4 border-b border-zinc-200 pb-2 dark:border-zinc-800">
+          <div className={`grid ${ROW_GRID} gap-4 border-b border-zinc-200 pb-2 dark:border-zinc-800`}>
             <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">Job / command / test</div>
             <div className="relative h-5 font-mono text-[10px] text-zinc-400">
               {TICKS.map((tick) => (
@@ -439,7 +520,7 @@ export function BuildWaterfall({
           </div>
 
           <div>
-            {visibleLanes.map((lane) => {
+            {visibleRows.map(({ lane, depth }) => {
               const start = Date.parse(lane.startTime);
               const end = Date.parse(lane.endTime);
               const queueStart = Math.max(timelineStart, start - lane.waitMs);
@@ -452,6 +533,7 @@ export function BuildWaterfall({
                 ? Math.max(lane.childCount, children.length)
                 : children.length;
               const isExpandable = displayedChildCount > 0;
+              const open = isOpen(lane.id);
               const isLoadingDetails = Boolean(
                 lane.kind === "command" &&
                 lane.jobId &&
@@ -462,23 +544,33 @@ export function BuildWaterfall({
                 lane.jobId &&
                 detailErrors.has(lane.jobId),
               );
-              const depth = laneDepth(lane);
-              const detail = `${jobNameText(lane.label)} · ${formatTime(lane.startTime)}–${formatTime(lane.endTime)} · ${formatDuration(lane.durationMs)}${lane.outcome ? ` · ${lane.outcome}` : ""}`;
+              const text = laneText(lane);
+              const detail = `${text} · ${formatTime(lane.startTime)}–${formatTime(lane.endTime)} · ${formatDuration(lane.durationMs)}${lane.outcome ? ` · ${lane.outcome}` : ""}${lane.testCount ? ` · ${lane.testCount} tests${lane.failedCount ? `, ${lane.failedCount} failed` : ""}` : ""}`;
               const rowTone = depth === 0 ? "" : depth === 1 ? "bg-cyan-50/35 dark:bg-cyan-950/10" : "bg-emerald-50/30 dark:bg-emerald-950/10";
+              const isGroup = isTestGroup(lane);
+              const countBadge = isGroup
+                ? `${lane.testCount ?? displayedChildCount} ${lane.testCount === 1 ? "test" : "tests"}`
+                : String(displayedChildCount);
 
               return (
-                <div key={lane.id} className={`grid min-h-10 grid-cols-[minmax(16rem,21rem)_minmax(32rem,1fr)] items-center gap-4 border-b border-zinc-200/70 last:border-0 dark:border-zinc-800/70 ${rowTone}`}>
-                  <div className="relative min-w-0 py-1.5" style={{ paddingLeft: `${depth * 18}px` }}>
-                    {depth > 0 && <span aria-hidden="true" className={`absolute inset-y-0 w-px ${depth === 1 ? "left-2 bg-cyan-200 dark:bg-cyan-900" : "left-6 bg-emerald-200 dark:bg-emerald-900"}`} />}
+                <div key={lane.id} className={`grid min-h-10 ${ROW_GRID} items-center gap-4 border-b border-zinc-200/70 last:border-0 dark:border-zinc-800/70 ${rowTone}`}>
+                  <div className="relative min-w-0 py-1.5" style={{ paddingLeft: `${depth * INDENT_PX}px` }}>
+                    {depth > 0 && <span aria-hidden="true" className={`absolute inset-y-0 w-px ${depth === 1 ? "bg-cyan-200 dark:bg-cyan-900" : "bg-emerald-200 dark:bg-emerald-900"}`} style={{ left: `${(depth - 1) * INDENT_PX + 8}px` }} />}
                     <div className="flex items-center gap-1.5">
                       {isExpandable ? (
-                        <button type="button" onClick={() => toggleExpanded(lane)} aria-expanded={expanded.has(lane.id)} aria-label={`${expanded.has(lane.id) ? "Collapse" : "Expand"} ${jobNameText(lane.label)}`} className="dashboard-control flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-500 hover:bg-zinc-200/70 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100">
-                          <span aria-hidden="true" className={`transition-transform ${expanded.has(lane.id) ? "rotate-90" : ""}`}>›</span>
+                        <button type="button" onClick={() => toggleExpanded(lane)} aria-expanded={open} aria-label={`${open ? "Collapse" : "Expand"} ${text}`} className="dashboard-control flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-500 hover:bg-zinc-200/70 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100">
+                          <span aria-hidden="true" className={`transition-transform ${open ? "rotate-90" : ""}`}>›</span>
                         </button>
                       ) : <span className="w-6 shrink-0" />}
                       {lane.critical && <span aria-label="Inferred build-limiting job" className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
-                      <span className={`truncate text-xs text-zinc-800 dark:text-zinc-200 ${depth === 0 ? "font-medium" : "font-mono text-[11px]"}`} title={jobNameText(lane.label)}><JobName name={lane.label} /></span>
-                      {isExpandable && <span className="shrink-0 rounded bg-zinc-200/70 px-1.5 py-0.5 font-mono text-[9px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">{displayedChildCount}</span>}
+                      <span
+                        className={`truncate text-xs ${depth === 0 ? "font-medium text-zinc-800 dark:text-zinc-200" : isGroup ? "font-mono text-[11px] font-medium text-zinc-700 dark:text-zinc-300" : "font-mono text-[11px] text-zinc-800 dark:text-zinc-200"}`}
+                        title={text}
+                      >
+                        {isJobLane(lane) ? <JobName name={lane.label} /> : (lane.displayLabel ?? lane.label)}
+                      </span>
+                      {isExpandable && <span className="shrink-0 rounded bg-zinc-200/70 px-1.5 py-0.5 font-mono text-[9px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">{countBadge}</span>}
+                      {isGroup && (lane.failedCount ?? 0) > 0 && <span className="shrink-0 rounded bg-red-100 px-1.5 py-0.5 font-mono text-[9px] font-medium text-red-700 dark:bg-red-950 dark:text-red-300">{lane.failedCount} failed</span>}
                       {isLoadingDetails && <span className="shrink-0 text-[9px] text-cyan-600 dark:text-cyan-400">loading tests…</span>}
                       {hasDetailError && <span className="shrink-0 text-[9px] text-red-600 dark:text-red-400">test trace load failed; select again to retry</span>}
                       <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-400">{formatDuration(lane.durationMs)}</span>
