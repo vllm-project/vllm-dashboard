@@ -8,6 +8,7 @@ export const maxDuration = 55;
 // per-agent Buildkite samples) are kept for 30 days; the 5-minute rollups
 // (gpu_history_5m, host_history_5m) are kept forever as a deliberate choice —
 // they are the long-range history source.
+// One-second job GPU samples are kept for 7 days; command/test spans remain.
 export async function GET(request: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret) {
@@ -19,6 +20,12 @@ export async function GET(request: NextRequest) {
 
   try {
     const db = getDb();
+
+    const jobGpuDeleted = await db`
+      DELETE FROM otel_spans
+      WHERE span_name = 'ci.gpu.samples'
+        AND end_time < NOW() - INTERVAL '7 days'
+    `;
 
     const gpuDeleted = await db`
       DELETE FROM gpu_snapshots
@@ -35,6 +42,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       ok: true,
+      jobGpuSampleBatchesDeleted: jobGpuDeleted.count,
       gpuSnapshotsDeleted: gpuDeleted.count,
       hostSnapshotsDeleted: hostDeleted.count,
       agentSnapshotsDeleted: agentDeleted.count,
