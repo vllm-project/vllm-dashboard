@@ -1,24 +1,59 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import useSWR from "swr";
+import { SegmentedControl } from "@/components/segmented-control";
 import { TimelineHoverArea, useTimelineHoverTime } from "@/components/timeline-cursor";
-import { gpuSegments, summarizeGpuSamples, type JobGpuResponse, type JobGpuSample } from "@/lib/job-gpu";
+import { formatDuration } from "@/lib/format-duration";
+import {
+  gpuSegments,
+  summarizeGpuSamples,
+  type GpuDeviceSummary,
+  type JobGpuResponse,
+  type JobGpuSample,
+} from "@/lib/job-gpu";
 
 interface Props {
   organization: string;
   pipeline: string;
   buildNumber: string;
   jobId: string;
+  /** Human label of the selected job, command, or test. */
   label: string;
   startTime: string;
   endTime: string;
+  /** Build-wide axis, so charts can line up with the waterfall bars. */
   timelineStart: number;
   timelineEnd: number;
+  onClose?: () => void;
+  /** Which time axis the charts use. Owned by the parent so it survives remounts. */
+  axis: GpuAxis;
+  onAxisChange: (axis: GpuAxis) => void;
 }
 
-function gib(bytes: number | null): string {
-  return bytes === null ? "unavailable" : `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+export type GpuAxis = "selection" | "build";
+
+const AXIS_OPTIONS = [
+  { value: "selection", label: "Selection" },
+  { value: "build", label: "Full build" },
+] as const satisfies ReadonlyArray<{ value: GpuAxis; label: string }>;
+
+/** Mirrors the waterfall's row grid so chart edges sit under the timeline bars. */
+const PANEL_GRID = "grid-cols-[minmax(22rem,34rem)_minmax(28rem,1fr)]";
+const TICKS = [0, 0.25, 0.5, 0.75, 1];
+const CHART_HEIGHT = 100;
+
+function gib(bytes: number | null, digits = 1): string {
+  return bytes === null ? "—" : `${(bytes / 1024 ** 3).toFixed(digits)} GiB`;
+}
+
+function percent(value: number | null, digits = 0): string {
+  return value === null ? "—" : `${value.toFixed(digits)}%`;
+}
+
+function memoryPercent(point: JobGpuSample): number | null {
+  if (!point.memoryTotalBytes || point.memoryUsedBytes === null) return null;
+  return (100 * point.memoryUsedBytes) / point.memoryTotalBytes;
 }
 
 async function fetchGpu(url: string): Promise<JobGpuResponse> {
@@ -27,81 +62,234 @@ async function fetchGpu(url: string): Promise<JobGpuResponse> {
   return response.json();
 }
 
-export function GpuSampleChart({ samples, start, end, intervalMs }: {
-  samples: JobGpuSample[]; start: number; end: number; intervalMs: number;
+function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="min-w-0" title={hint}>
+      <div className="text-[9px] font-semibold uppercase tracking-[0.12em] text-zinc-400 dark:text-zinc-500">{label}</div>
+      <div className="font-mono text-[11px] tabular-nums text-zinc-700 dark:text-zinc-300">{value}</div>
+    </div>
+  );
+}
+
+export function GpuSampleChart({
+  samples,
+  start,
+  end,
+  intervalMs,
+  buildStart,
+}: {
+  samples: JobGpuSample[];
+  start: number;
+  end: number;
+  intervalMs: number;
+  buildStart: number;
 }) {
   const hover = useTimelineHoverTime();
-  const x = (time: number) => (time - start) / Math.max(1, end - start) * 1000;
-  const percent = (point: JobGpuSample, metric: "utilization" | "memoryUsedBytes") => metric === "utilization"
-    ? point.utilization : point.memoryTotalBytes && point.memoryUsedBytes !== null
-      ? 100 * point.memoryUsedBytes / point.memoryTotalBytes : null;
-  const nearest = hover === null ? null : samples.reduce<JobGpuSample | null>((best, point) =>
-    !best || Math.abs(point.timestamp - hover) < Math.abs(best.timestamp - hover) ? point : best, null);
-  const selected = nearest && hover !== null && Math.abs(nearest.timestamp - hover) <= intervalMs * 1.5 ? nearest : null;
+  const span = Math.max(1, end - start);
+  const x = (time: number) => ((time - start) / span) * 1000;
+  const y = (value: number | null) => CHART_HEIGHT - 1 - (value ?? 0) * 0.98;
+
+  const utilizationSegments = useMemo(() => gpuSegments(samples, "utilization", intervalMs), [samples, intervalMs]);
+  const memorySegments = useMemo(
+    () => gpuSegments(samples.map((point) => (point.memoryTotalBytes ? point : { ...point, memoryUsedBytes: null })), "memoryUsedBytes", intervalMs),
+    [samples, intervalMs],
+  );
+
+  const selected = useMemo(() => {
+    if (hover === null || samples.length === 0) return null;
+    let best: JobGpuSample | null = null;
+    for (const point of samples) {
+      if (!best || Math.abs(point.timestamp - hover) < Math.abs(best.timestamp - hover)) best = point;
+    }
+    return best && Math.abs(best.timestamp - hover) <= intervalMs * 1.5 ? best : null;
+  }, [hover, samples, intervalMs]);
+
+  const cursorInRange = hover !== null && hover >= start && hover <= end;
+  const cursorFraction = cursorInRange ? (hover - start) / span : 0;
+  const flipLabel = cursorFraction > 0.68;
+
   return (
-    <div className="relative">
-      <TimelineHoverArea start={start} end={end}>
-        <svg viewBox="0 0 1000 100" preserveAspectRatio="none" role="img"
-          aria-label="GPU utilization and used memory as percent of device capacity; gaps mean missing samples"
-          className="h-24 w-full overflow-hidden">
-          {[0, 25, 50, 75, 100].map((value) => <line key={value} x1="0" x2="1000" y1={100 - value} y2={100 - value} stroke="currentColor" className="text-zinc-200 dark:text-zinc-800" strokeWidth="0.6" />)}
-          {(["utilization", "memoryUsedBytes"] as const).map((metric) => gpuSegments(
-            samples.map((point) => metric === "memoryUsedBytes" && !point.memoryTotalBytes ? { ...point, memoryUsedBytes: null } : point), metric, intervalMs,
-          ).map((segment, index) => (
-            <g key={`${metric}-${index}`} className={metric === "utilization" ? "text-cyan-600 dark:text-cyan-400" : "text-violet-600 dark:text-violet-400"}>
-              {segment.length === 1 ? <circle cx={x(segment[0].timestamp)} cy={99 - (percent(segment[0], metric) ?? 0) * 0.98} r="2" fill="currentColor" /> :
-                <polyline fill="none" stroke="currentColor" strokeWidth="1.5" vectorEffect="non-scaling-stroke" points={segment.map((point) => `${x(point.timestamp)},${99 - (percent(point, metric) ?? 0) * 0.98}`).join(" ")} />}
+    <TimelineHoverArea start={start} end={end} className="h-20">
+      <svg
+        viewBox={`0 0 1000 ${CHART_HEIGHT}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label="GPU utilization and used memory as a percent of device capacity. Gaps are missing samples."
+        className="h-full w-full overflow-hidden"
+      >
+        {[25, 50, 75].map((value) => (
+          <line key={value} x1="0" x2="1000" y1={y(value)} y2={y(value)} stroke="currentColor" className="text-zinc-200/80 dark:text-zinc-800" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+        ))}
+        <line x1="0" x2="1000" y1={y(0)} y2={y(0)} stroke="currentColor" className="text-zinc-300 dark:text-zinc-700" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+        {utilizationSegments.map((segment, index) => {
+          const points = segment.map((point) => `${x(point.timestamp)},${y(point.utilization)}`).join(" ");
+          if (segment.length === 1) {
+            return <circle key={`u-${index}`} cx={x(segment[0].timestamp)} cy={y(segment[0].utilization)} r="2" className="fill-cyan-500" />;
+          }
+          const first = segment[0];
+          const last = segment[segment.length - 1];
+          return (
+            <g key={`u-${index}`} className="text-cyan-500 dark:text-cyan-400">
+              <polygon fill="currentColor" fillOpacity="0.14" points={`${x(first.timestamp)},${y(0)} ${points} ${x(last.timestamp)},${y(0)}`} />
+              <polyline fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" vectorEffect="non-scaling-stroke" points={points} />
             </g>
-          )))}
-        </svg>
-      </TimelineHoverArea>
-      <div className="min-h-5 font-mono text-[10px] text-zinc-500" aria-live="polite">
-        {hover !== null ? selected ? `${new Date(selected.timestamp).toISOString().slice(11, 23)} UTC · GPU ${selected.utilization === null ? "unavailable" : `${selected.utilization}%`} · memory ${gib(selected.memoryUsedBytes)} / ${gib(selected.memoryTotalBytes)}` : "No sample at this time" : "Hover to inspect samples · vertical scale 0–100%"}
+          );
+        })}
+        {memorySegments.map((segment, index) => {
+          const points = segment.map((point) => `${x(point.timestamp)},${y(memoryPercent(point))}`).join(" ");
+          return segment.length === 1 ? (
+            <circle key={`m-${index}`} cx={x(segment[0].timestamp)} cy={y(memoryPercent(segment[0]))} r="2" className="fill-violet-500" />
+          ) : (
+            <polyline key={`m-${index}`} fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" vectorEffect="non-scaling-stroke" className="text-violet-500 dark:text-violet-400" points={points} />
+          );
+        })}
+      </svg>
+      <span aria-hidden="true" className="pointer-events-none absolute left-1 top-0 rounded bg-white/80 px-1 font-mono text-[9px] leading-4 text-zinc-400 dark:bg-zinc-950/80 dark:text-zinc-500">100%</span>
+      <span aria-hidden="true" className="pointer-events-none absolute bottom-0 left-1 rounded bg-white/80 px-1 font-mono text-[9px] leading-4 text-zinc-400 dark:bg-zinc-950/80 dark:text-zinc-500">0</span>
+      {cursorInRange && (
+        <div
+          aria-live="polite"
+          className={`pointer-events-none absolute top-1 z-20 whitespace-nowrap rounded-md border border-zinc-200 bg-white/95 px-2 py-1 font-mono text-[10px] leading-4 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/95 ${flipLabel ? "-translate-x-full" : ""}`}
+          style={{ left: `calc(${cursorFraction * 100}% + ${flipLabel ? "-6px" : "6px"})` }}
+        >
+          <span className="text-zinc-500 dark:text-zinc-400">{formatDuration(hover - buildStart)}</span>
+          {selected ? (
+            <>
+              <span className="mx-1.5 text-zinc-300 dark:text-zinc-600">·</span>
+              <span className="font-medium text-cyan-700 dark:text-cyan-300">{percent(selected.utilization)}</span>
+              <span className="mx-1.5 text-zinc-300 dark:text-zinc-600">·</span>
+              <span className="font-medium text-violet-700 dark:text-violet-300">{gib(selected.memoryUsedBytes)}</span>
+            </>
+          ) : (
+            <span className="ml-1.5 text-zinc-400">no sample</span>
+          )}
+        </div>
+      )}
+    </TimelineHoverArea>
+  );
+}
+
+function DeviceRow({
+  device,
+  axisStart,
+  axisEnd,
+  intervalMs,
+  buildStart,
+}: {
+  device: GpuDeviceSummary;
+  axisStart: number;
+  axisEnd: number;
+  intervalMs: number;
+  buildStart: number;
+}) {
+  const capacity = device.samples.find((sample) => sample.memoryTotalBytes)?.memoryTotalBytes ?? null;
+  const hasMig = device.samples.some((sample) => sample.status === "unsupported_mig");
+  return (
+    <div className={`grid ${PANEL_GRID} items-center gap-4 border-t border-zinc-200/70 py-2.5 dark:border-zinc-800/70`}>
+      <div className="min-w-0 pl-7">
+        <p className="truncate text-xs font-medium text-zinc-800 dark:text-zinc-200" title={device.deviceId}>
+          GPU {device.index}
+          <span className="ml-1.5 font-normal text-zinc-500 dark:text-zinc-400">{device.name}</span>
+        </p>
+        <div className="mt-1.5 grid grid-cols-3 gap-3">
+          <Stat label="Mean util" value={percent(device.meanUtilization, 1)} hint="Mean of utilization samples in this interval; not time-weighted" />
+          <Stat label="Peak mem" value={capacity ? `${gib(device.peakMemoryBytes)} / ${gib(capacity, 0)}` : gib(device.peakMemoryBytes)} hint="Highest used memory sample and device capacity" />
+          <Stat label="Coverage" value={`${Math.round(device.coverage * 100)}%`} hint={`${device.samples.length} samples · share of ${intervalMs / 1000}s intervals with a utilization reading`} />
+        </div>
+        {hasMig && (
+          <p className="mt-1.5 text-[11px] text-amber-700 dark:text-amber-400">MIG metrics unavailable; parent GPU memory is not attributed to this job.</p>
+        )}
       </div>
+      <GpuSampleChart samples={device.samples} start={axisStart} end={axisEnd} intervalMs={intervalMs} buildStart={buildStart} />
     </div>
   );
 }
 
 export function JobGpuTimeline(props: Props) {
-  const [focused, setFocused] = useState(false);
+  const { axis, onAxisChange } = props;
   const start = Date.parse(props.startTime);
   const end = Math.max(start + 1, Date.parse(props.endTime));
   const params = new URLSearchParams({
-    organization: props.organization, pipeline: props.pipeline, buildNumber: props.buildNumber,
-    jobId: props.jobId, start: new Date(start).toISOString(), end: new Date(end).toISOString(),
+    organization: props.organization,
+    pipeline: props.pipeline,
+    buildNumber: props.buildNumber,
+    jobId: props.jobId,
+    start: new Date(start).toISOString(),
+    end: new Date(end).toISOString(),
   });
   const { data, error, isLoading, mutate } = useSWR<JobGpuResponse>(`/api/builds/gpu?${params}`, fetchGpu, { refreshInterval: 15_000 });
-  const devices = useMemo(() => summarizeGpuSamples(data?.samples ?? [], start, end, data?.intervalMs ?? 1000), [data, start, end]);
-  const axisStart = focused ? start : props.timelineStart;
-  const axisEnd = focused ? end : props.timelineEnd;
+  const intervalMs = data?.intervalMs ?? 1000;
+  const devices = useMemo(() => summarizeGpuSamples(data?.samples ?? [], start, end, intervalMs), [data, start, end, intervalMs]);
+  const axisStart = axis === "selection" ? start : props.timelineStart;
+  const axisEnd = axis === "selection" ? end : props.timelineEnd;
+  const hover = useTimelineHoverTime();
+
   return (
-    <section aria-label={`GPU samples during ${props.label}`} className="col-span-2 border-y border-cyan-200 bg-white py-3 dark:border-cyan-900 dark:bg-zinc-950">
-      <div className="mb-2 flex items-start justify-between gap-4 text-xs">
+    <section
+      aria-label={`GPU activity during ${props.label}`}
+      className="border-b border-zinc-200/70 bg-cyan-50/40 shadow-[inset_3px_0_0_0_theme(colors.cyan.400)] dark:border-zinc-800/70 dark:bg-cyan-950/15 dark:shadow-[inset_3px_0_0_0_theme(colors.cyan.600)]"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 px-5 pt-3 pb-2 pl-7">
         <div className="min-w-0">
-          <p className="truncate font-medium" title={props.label}>GPU activity during {props.label}</p>
-          <p className="mt-1 text-[11px] text-zinc-500">1s sampling · device activity during this interval, shared by overlapping tests. Short tests may fall between samples.</p>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <h5 className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">GPU activity</h5>
+            <span className="truncate font-mono text-[11px] text-zinc-500 dark:text-zinc-400" title={props.label}>{props.label}</span>
+            <span className="font-mono text-[10px] text-zinc-400">{formatDuration(end - start)}</span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+            <span className="inline-flex items-center gap-1.5"><span className="h-0.5 w-4 rounded bg-cyan-500" /> utilization</span>
+            <span className="inline-flex items-center gap-1.5"><span className="h-0.5 w-4 rounded bg-violet-500" /> used memory, % of capacity</span>
+            <span className="hidden sm:inline">1 s samples · devices are shared by tests that overlap in time</span>
+          </div>
         </div>
-        <button type="button" aria-pressed={focused} onClick={() => setFocused(!focused)} className="shrink-0 rounded border border-zinc-300 px-2 py-1 dark:border-zinc-700">
-          {focused ? "Align with build" : "Zoom to interval"}
-        </button>
+        <div className="flex items-center gap-2">
+          <SegmentedControl label="GPU chart time axis" value={axis} options={AXIS_OPTIONS} onChange={onAxisChange} />
+          {props.onClose && (
+            <button
+              type="button"
+              onClick={props.onClose}
+              aria-label="Close GPU activity"
+              className="dashboard-control flex h-7 w-7 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-200/70 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          )}
+        </div>
       </div>
-      {isLoading && <p className="py-3 text-xs text-zinc-500">Loading GPU samples…</p>}
-      {error && <button type="button" onClick={() => mutate()} className="py-3 text-xs text-red-600">GPU samples could not be loaded. Retry</button>}
-      {data && !error && devices.length === 0 && <p className="py-3 text-xs text-zinc-500">No GPU samples in this interval. This does not mean the GPUs were idle.</p>}
-      {data?.truncated && <p className="mb-2 text-xs text-amber-700">Partial data: this interval exceeds the sample limit. Select a shorter command or test to inspect its full detail.</p>}
-      {devices.length > 0 && <div className="grid grid-cols-[minmax(22rem,34rem)_minmax(28rem,1fr)] gap-4 text-[10px] text-zinc-500">
-        <div><span className="text-cyan-600 dark:text-cyan-400">━ GPU utilization</span> · <span className="text-violet-600 dark:text-violet-400">━ used memory / capacity</span></div>
-        <div className="relative h-5 font-mono">{[0, 0.25, 0.5, 0.75, 1].map((tick) => <span key={tick} className="absolute -translate-x-1/2 first:translate-x-0 last:-translate-x-full" style={{ left: `${tick * 100}%` }}>{((axisStart - props.timelineStart + (axisEnd - axisStart) * tick) / 1000).toFixed(1)}s</span>)}</div>
-      </div>}
-      {devices.map((device) => <div key={device.deviceId} className="grid grid-cols-[minmax(22rem,34rem)_minmax(28rem,1fr)] items-center gap-4 border-t border-zinc-100 py-2 dark:border-zinc-900">
-        <div className="text-xs">
-          <p className="font-medium" title={device.deviceId}>GPU {device.index} · {device.name}</p>
-          <p className="mt-1 font-mono text-[11px]">Sample mean {device.meanUtilization === null ? "unavailable" : `${device.meanUtilization.toFixed(1)}%`} · peak memory {gib(device.peakMemoryBytes)}</p>
-          <p className="mt-1 text-[10px] text-zinc-500">{device.samples.length} samples · {Math.round(device.coverage * 100)}% of 1s intervals have utilization readings</p>
-          {device.samples.some((sample) => sample.status === "unsupported_mig") && <p className="mt-1 text-[11px] text-amber-700">MIG metrics unavailable; parent GPU memory is not attributed to this job.</p>}
+
+      {isLoading && <p className="px-5 pb-3 pl-7 text-xs text-zinc-500">Loading GPU samples…</p>}
+      {error && (
+        <p className="px-5 pb-3 pl-7 text-xs text-red-600 dark:text-red-400">
+          GPU samples could not be loaded.{" "}
+          <button type="button" onClick={() => mutate()} className="font-medium underline">Retry</button>
+        </p>
+      )}
+      {data && !error && devices.length === 0 && (
+        <p className="px-5 pb-3 pl-7 text-xs text-zinc-500">No GPU samples in this interval. That does not mean the GPUs were idle: the interval may be shorter than the sampling period, or samples may not have arrived yet.</p>
+      )}
+      {data?.truncated && (
+        <p className="px-5 pb-2 pl-7 text-xs text-amber-700 dark:text-amber-400">Partial data: this interval exceeds the sample limit. Select a shorter command or test for full detail.</p>
+      )}
+
+      {devices.length > 0 && (
+        <div className="px-5">
+          <div className={`grid ${PANEL_GRID} gap-4 pb-1`}>
+            <div className="pl-7 text-[10px] text-zinc-400">
+              {hover !== null ? `Cursor at ${formatDuration(hover - props.timelineStart)}` : "Hover a chart to read a sample"}
+            </div>
+            <div className="relative h-4 font-mono text-[10px] text-zinc-400">
+              {TICKS.map((tick) => (
+                <span key={tick} className="absolute -translate-x-1/2 first:translate-x-0 last:-translate-x-full" style={{ left: `${tick * 100}%` }}>
+                  {formatDuration(axisStart - props.timelineStart + (axisEnd - axisStart) * tick)}
+                </span>
+              ))}
+            </div>
+          </div>
+          {devices.map((device) => (
+            <DeviceRow key={device.deviceId} device={device} axisStart={axisStart} axisEnd={axisEnd} intervalMs={intervalMs} buildStart={props.timelineStart} />
+          ))}
         </div>
-        <GpuSampleChart samples={device.samples} start={axisStart} end={axisEnd} intervalMs={data?.intervalMs ?? 1000} />
-      </div>)}
+      )}
     </section>
   );
 }
