@@ -205,6 +205,46 @@ command invokes pytest, its lightweight pytest plugin sends one child span per
 test node ID. The build timeline groups those spans as job → command → test;
 telemetry errors are warnings and never change the test command's exit status.
 
+### GPU activity in build timelines
+
+Jobs with `ci.gpu.samples` spans gain a **GPU** button on their job, command,
+pytest file/function, and individual test rows. The panel reads samples for the
+exact organization, pipeline, build, job ID, and selected time interval. Its
+charts align with the build time axis; **Zoom to interval** expands short tests.
+Each device has separate utilization and used-memory curves, sample mean
+utilization, peak memory in GiB, and sampling coverage. The GPU fleet page is
+independent; its minute-level host snapshots are never substituted for job data.
+
+The companion vLLM `.buildkite/scripts/ci-otel/ci_gpu.py` collector runs beside
+each traced command and polls container-visible NVIDIA devices once per second.
+It sends batches every 30 seconds through the existing job-scoped OIDC receiver,
+then spools its final batch before the normal job-end trace flush. Samples are
+OTLP span events stored in `otel_spans`. Apply migration `0021` (a concurrent
+partial index for sample expiry), deploy this dashboard change, and merge the
+companion collector to begin receiving
+new data. Existing builds cannot be backfilled. The collector starts automatically
+where command tracing is already enabled; set `CI_INFRA_GPU_SAMPLING=0` in the
+job environment to disable it.
+
+This initial collector covers NVIDIA jobs in the existing trusted CI tracing
+rollout. CPU jobs, uninstrumented jobs, and the currently excluded AMD mirrors
+do not gain GPU controls. Device metrics include other processes sharing that
+device and cannot attribute overlapping pytest/xdist tests individually. A
+subsecond test can finish between polls. NVIDIA's utilization is itself a device
+sampling-window measurement, not a per-test kernel profiler. MIG parent-device
+metrics are deliberately unavailable rather than attributed to the job; see
+the [NVIDIA SMI documentation](https://docs.nvidia.com/deploy/nvidia-smi/).
+
+Missing/invalid readings remain unknown, charts break across gaps, and summaries
+are sample means rather than time-weighted estimates over missing data. Collection
+and upload failures do not fail tests. Uploads have a two-second deadline and can
+introduce sampling gaps; failed periodic batches are dropped to bound memory.
+Only the final batch uses the existing best-effort job-end spool. The read API
+returns at most 16,000 sample events and marks truncation; select a shorter command
+or test when a long job exceeds that limit. The existing daily retention cron
+expires GPU sample batches after seven days without deleting command/test spans.
+Samples retain the existing OIDC branch/pipeline restrictions.
+
 ## Deployment
 
 Deployed on Vercel. The cron jobs in `vercel.json` require Vercel Cron to be enabled on the project.

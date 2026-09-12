@@ -218,6 +218,7 @@ export async function GET(request: NextRequest) {
           OR (
             ${requestedJobId}::text IS NOT NULL
             AND job_id = ${requestedJobId}
+            AND span_name <> 'ci.gpu.samples'
           )
         )
       ORDER BY start_time ASC, duration_ms DESC, span_id ASC
@@ -337,7 +338,19 @@ export async function GET(request: NextRequest) {
           : 0,
       };
     });
-    const lanes = [...jobLanes, ...detailLanes];
+    const gpuJobs = await db<{ job_id: string }[]>`
+      SELECT DISTINCT job_id FROM otel_spans
+      WHERE organization_slug = ${organization}
+        AND pipeline_slug = ${pipeline}
+        AND build_number = ${buildNumber}::bigint
+        AND span_name = 'ci.gpu.samples'
+        AND (${requestedJobId}::text IS NULL OR job_id = ${requestedJobId})
+    `;
+    const gpuJobIds = new Set(gpuJobs.map((row) => row.job_id));
+    const lanes = [...jobLanes, ...detailLanes].map((lane) => ({
+      ...lane,
+      gpuAvailable: lane.jobId !== null && gpuJobIds.has(lane.jobId),
+    }));
 
     const buildSpans = rows.filter(
       (row) => row.span_name === "buildkite.build",

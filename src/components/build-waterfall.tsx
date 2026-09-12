@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { JobName, jobNameText } from "@/components/job-name";
 import { buildTestTree, type TestTreeNode } from "@/lib/test-tree";
+import { JobGpuTimeline } from "@/components/job-gpu-timeline";
 
 type LaneKind = "job" | "step" | "command" | "test";
 /** Lanes from the API plus the client-side pytest grouping rows. */
@@ -27,6 +28,7 @@ interface WaterfallLane {
   url: string | null;
   critical: boolean;
   childCount: number;
+  gpuAvailable?: boolean;
   /** Shorter label for tree rows: the part not shown by enclosing groups. */
   displayLabel?: string;
   /** Total tests under a grouping row. */
@@ -213,6 +215,7 @@ export function BuildWaterfall({
   );
   const [loadingJobs, setLoadingJobs] = useState<Set<string>>(() => new Set());
   const [detailErrors, setDetailErrors] = useState<Set<string>>(() => new Set());
+  const [gpuLaneId, setGpuLaneId] = useState<string | null>(null);
   const params = new URLSearchParams({ organization, pipeline, buildNumber });
   const { data, error, isLoading, isValidating, mutate } = useSWR<TraceResponse>(
     `/api/builds/trace?${params.toString()}`,
@@ -574,6 +577,14 @@ export function BuildWaterfall({
                       {isLoadingDetails && <span className="shrink-0 text-[9px] text-cyan-600 dark:text-cyan-400">loading tests…</span>}
                       {hasDetailError && <span className="shrink-0 text-[9px] text-red-600 dark:text-red-400">test trace load failed; select again to retry</span>}
                       <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-400">{formatDuration(lane.durationMs)}</span>
+                      {lane.jobId && jobLanes.some((job) => job.jobId === lane.jobId && job.gpuAvailable) && (
+                        <button type="button" aria-expanded={gpuLaneId === lane.id}
+                          aria-label={`GPU activity during ${text}`}
+                          onClick={() => setGpuLaneId(gpuLaneId === lane.id ? null : lane.id)}
+                          className={`shrink-0 rounded border px-1.5 py-1 text-[10px] ${gpuLaneId === lane.id ? "border-cyan-400 bg-cyan-50 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300" : "border-zinc-300 text-zinc-500 hover:text-cyan-600 dark:border-zinc-700"}`}>
+                          GPU
+                        </button>
+                      )}
                     </div>
                     {depth === 0 && (
                       <div className="mt-0.5 flex min-w-0 items-center gap-2 pl-7 font-mono text-[10px] text-zinc-400">
@@ -593,6 +604,12 @@ export function BuildWaterfall({
                       <span role="img" aria-label={detail} title={detail} className={`absolute top-1.5 h-4 min-w-1 rounded-sm ${laneColor(lane)}`} style={{ left: `${runLeft}%`, width: `${Math.max(runWidth, 0.25)}%` }} />
                     )}
                   </div>
+                  {gpuLaneId === lane.id && lane.jobId && (
+                    <JobGpuTimeline key={`${lane.id}-${lane.startTime}-${lane.endTime}`}
+                      organization={organization} pipeline={pipeline} buildNumber={buildNumber}
+                      jobId={lane.jobId} label={text} startTime={lane.startTime} endTime={lane.endTime}
+                      timelineStart={timelineStart} timelineEnd={timelineEnd} />
+                  )}
                 </div>
               );
             })}
