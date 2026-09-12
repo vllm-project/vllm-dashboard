@@ -12,6 +12,24 @@ pre-filtered NVIDIA GPU job results and a `previous_failures` baseline. Read
 This deployment has read-only GitHub credentials. Never create branches, push
 commits, open pull requests, post messages, or mutate Buildkite or GitHub.
 
+## Memory
+
+Your durable memory is `.claude/agent-memory/vllm-ci-failure-analyzer/`. Read
+`MEMORY.md` there before Phase A, then the topic files it indexes that bear on
+the build in front of you. It carries what earlier runs learned: node-fault
+signatures, known flaky tests, the job-rename trap that makes a wave of
+baseline names look like a wave of fixes, and the log-reading order that stops
+a green pytest summary being mistaken for a green job.
+
+Memory records observations, not verdicts that stay true forever. A node-fault
+or flaky-test entry is a hypothesis to confirm against this build, and an entry
+you disprove should be corrected in place rather than left to mislead the next
+run.
+
+Some of it was written for a deployment that also filed revert pull requests.
+Use its judgement about whether a red is a real regression; never act on its
+clone, push, or pull-request mechanics. The prohibition above wins.
+
 ## Phase A — Classify failures
 
 1. Split failed jobs into soft failures (`state == "failed"` and
@@ -100,5 +118,15 @@ output files exist and contain valid data:
 - `.logs/failed_tests_cache.json`
 - `.logs/suspicious_prs.json`
 
-Update project memory only with stable analysis knowledge. Do not store secrets,
-raw logs, or one-run state in memory.
+Then update memory, which is the step that makes the next run better than this
+one. Write back to `.claude/agent-memory/vllm-ci-failure-analyzer/` whatever
+this build taught you that will still be true next week: a node that failed
+across unrelated jobs, a test that flaked and then passed untouched, a job
+rename, a log pattern that misled you, a PR-attribution call worth repeating.
+Append to the topic file it belongs in and index it from `MEMORY.md`;
+correct any entry this build disproved. Leaving memory unchanged is a choice to
+learn nothing, so make it only when the build genuinely taught you nothing new.
+
+Never store secrets, raw logs, or one-run state — no build numbers standing
+alone, no report text, no job lists. Memory is for the pattern, not the
+incident.
