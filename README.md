@@ -2,6 +2,13 @@
 
 A Next.js dashboard for observing vLLM's Buildkite CI: build status, job runtimes, queue depth, agent capacity, infrastructure cost, and performance benchmark trends.
 
+## Agent access
+
+Point agents to **[ci.vllm.ai/agents.md](https://ci.vllm.ai/agents.md)** for the
+read-only CLI, compact JSON APIs, OpenAPI contract, and all agent documentation.
+The canonical source is [`public/agents.md`](./public/agents.md). No browser or
+client credentials are needed for dashboard reads.
+
 ## Pages
 
 - **Builds** — pass/fail rates, durations, and per-job breakdowns for recent pipeline builds.

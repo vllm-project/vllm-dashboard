@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { parseGpuEvents } from "@/lib/job-gpu";
+import { compactGpuSummary, parseGpuEvents } from "@/lib/job-gpu";
 
 export const runtime = "nodejs";
 const MAX_SAMPLES = 16_000;
@@ -39,8 +39,15 @@ export async function GET(request: NextRequest) {
       ORDER BY start_time, span_id, event.position
       LIMIT ${MAX_SAMPLES + 1}
     `;
+    const samples = parseGpuEvents(rows.slice(0, MAX_SAMPLES).map((row) => row.sample), start, end);
     return NextResponse.json({
-      samples: parseGpuEvents(rows.slice(0, MAX_SAMPLES).map((row) => row.sample), start, end),
+      ...(params.get("summary") === "1" ? {
+        schemaVersion: 1, source: "otel-gpu-samples", fetchedAt: new Date().toISOString(),
+        organization, pipeline, buildNumber, jobId,
+        start: new Date(start).toISOString(), end: new Date(end).toISOString(),
+        available: samples.length > 0, devices: compactGpuSummary(samples, start, end, 1000),
+        note: "Device activity shared by overlapping tests. Missing samples are unknown, not idle. Samples expire after seven days. Truncated summaries describe only returned samples.",
+      } : { samples }),
       intervalMs: 1000,
       truncated: rows.length > MAX_SAMPLES,
     }, { headers: { "Cache-Control": "private, max-age=5" } });
