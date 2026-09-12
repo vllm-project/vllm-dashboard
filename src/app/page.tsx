@@ -9,7 +9,11 @@ import { SearchableSelect } from "@/components/searchable-select";
 import { MultiSelect } from "@/components/multi-select";
 import { DateRangePicker } from "@/components/date-range-picker";
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const fetcher = async (url: string) => {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+  return response.json();
+};
 
 function daysAgo(n: number): string {
   const d = new Date();
@@ -120,7 +124,7 @@ export default function BuildsPage() {
     () =>
       buildRows.map((build) => ({
         ...build,
-        testGroups: (groupData?.groupsByBuild[build.id] ?? []).map((group) => ({
+        testGroups: (groupData?.groupsByBuild?.[build.id] ?? []).map((group) => ({
           ...group,
           jobs: [],
         })),

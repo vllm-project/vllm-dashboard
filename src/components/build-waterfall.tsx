@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import useSWR from "swr";
 import { JobName, jobNameText } from "@/components/job-name";
 import { buildTestTree, type TestTreeNode } from "@/lib/test-tree";
-import { JobGpuTimeline } from "@/components/job-gpu-timeline";
+import { JobGpuTimeline, type GpuAxis } from "@/components/job-gpu-timeline";
+import { formatDuration } from "@/lib/format-duration";
 import { TimelineCursorProvider, TimelineHoverArea } from "@/components/timeline-cursor";
 
 type LaneKind = "job" | "step" | "command" | "test";
@@ -40,6 +41,8 @@ interface WaterfallLane {
 interface VisibleRow {
   lane: WaterfallLane;
   depth: number;
+  /** Ids from the top-level job down to this lane, inclusive. */
+  path: string[];
 }
 
 interface TraceResponse {
@@ -84,21 +87,6 @@ async function fetchTrace(url: string): Promise<TraceResponse> {
   return body;
 }
 
-function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "—";
-  if (ms < 1_000) return `${Math.round(ms)}ms`;
-  if (ms < 60_000) {
-    const seconds = ms / 1_000;
-    return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
-  }
-  const totalSeconds = Math.round(ms / 1_000);
-  const seconds = totalSeconds % 60;
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  if (totalMinutes < 60) return `${totalMinutes}m ${seconds}s`;
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${hours}h ${minutes}m`;
-}
 
 function formatTime(value: string): string {
   return new Date(value).toLocaleTimeString("en-US", {
@@ -217,6 +205,7 @@ export function BuildWaterfall({
   const [loadingJobs, setLoadingJobs] = useState<Set<string>>(() => new Set());
   const [detailErrors, setDetailErrors] = useState<Set<string>>(() => new Set());
   const [gpuLaneId, setGpuLaneId] = useState<string | null>(null);
+  const [gpuAxis, setGpuAxis] = useState<GpuAxis>("selection");
   const params = new URLSearchParams({ organization, pipeline, buildNumber });
   const { data, error, isLoading, isValidating, mutate } = useSWR<TraceResponse>(
     `/api/builds/trace?${params.toString()}`,
@@ -296,14 +285,19 @@ export function BuildWaterfall({
 
   const visibleRows = useMemo(() => {
     const flattened: VisibleRow[] = [];
-    const walk = (lane: WaterfallLane, depth: number) => {
-      flattened.push({ lane, depth });
+    const walk = (lane: WaterfallLane, depth: number, ancestors: string[]) => {
+      const path = [...ancestors, lane.id];
+      flattened.push({ lane, depth, path });
       if (!(openOverrides.get(lane.id) ?? defaultOpen.has(lane.id))) return;
-      for (const child of childrenByParent.get(lane.id) ?? []) walk(child, depth + 1);
+      for (const child of childrenByParent.get(lane.id) ?? []) walk(child, depth + 1, path);
     };
-    for (const job of visibleJobs) walk(job, 0);
+    for (const job of visibleJobs) walk(job, 0, []);
     return flattened;
   }, [childrenByParent, defaultOpen, openOverrides, visibleJobs]);
+  const gpuLane = useMemo(
+    () => (gpuLaneId === null ? null : visibleRows.find((row) => row.lane.id === gpuLaneId)?.lane ?? null),
+    [gpuLaneId, visibleRows],
+  );
 
   async function loadJobDetails(jobId: string, jobParentId: string | null) {
     if (jobDetails[jobId] || loadingJobs.has(jobId)) return;
@@ -525,7 +519,7 @@ export function BuildWaterfall({
           </div>
 
           <div>
-            {visibleRows.map(({ lane, depth }) => {
+            {visibleRows.map(({ lane, depth, path }, index) => {
               const start = Date.parse(lane.startTime);
               const end = Date.parse(lane.endTime);
               const queueStart = Math.max(timelineStart, start - lane.waitMs);
@@ -557,8 +551,15 @@ export function BuildWaterfall({
                 ? `${lane.testCount ?? displayedChildCount} ${lane.testCount === 1 ? "test" : "tests"}`
                 : String(displayedChildCount);
 
+              // The GPU panel follows the selected lane's whole visible subtree, so
+              // a job's commands stay directly under the job row.
+              const inGpuSubtree = gpuLaneId !== null && path.includes(gpuLaneId);
+              const nextInGpuSubtree = gpuLaneId !== null && (visibleRows[index + 1]?.path.includes(gpuLaneId) ?? false);
+              const showGpuPanel = inGpuSubtree && !nextInGpuSubtree && gpuLane?.jobId;
+
               return (
-                <div key={lane.id} className={`grid min-h-10 ${ROW_GRID} items-center gap-4 border-b border-zinc-200/70 last:border-0 dark:border-zinc-800/70 ${rowTone}`}>
+                <Fragment key={lane.id}>
+                <div className={`grid min-h-10 ${ROW_GRID} items-center gap-4 border-b border-zinc-200/70 last:border-0 dark:border-zinc-800/70 ${rowTone} ${gpuLaneId === lane.id ? "bg-cyan-50/60 dark:bg-cyan-950/20" : ""}`}>
                   <div className="relative min-w-0 py-1.5" style={{ paddingLeft: `${depth * INDENT_PX}px` }}>
                     {depth > 0 && <span aria-hidden="true" className={`absolute inset-y-0 w-px ${depth === 1 ? "bg-cyan-200 dark:bg-cyan-900" : "bg-emerald-200 dark:bg-emerald-900"}`} style={{ left: `${(depth - 1) * INDENT_PX + 8}px` }} />}
                     <div className="flex items-center gap-1.5">
@@ -580,10 +581,22 @@ export function BuildWaterfall({
                       {hasDetailError && <span className="shrink-0 text-[9px] text-red-600 dark:text-red-400">test trace load failed; select again to retry</span>}
                       <span className="ml-auto shrink-0 font-mono text-[10px] text-zinc-400">{formatDuration(lane.durationMs)}</span>
                       {lane.jobId && jobLanes.some((job) => job.jobId === lane.jobId && job.gpuAvailable) && (
-                        <button type="button" aria-expanded={gpuLaneId === lane.id}
-                          aria-label={`GPU activity during ${text}`}
+                        <button
+                          type="button"
+                          aria-pressed={gpuLaneId === lane.id}
+                          aria-label={`${gpuLaneId === lane.id ? "Hide" : "Show"} GPU activity during ${text}`}
+                          title="GPU utilization and memory during this interval"
                           onClick={() => setGpuLaneId(gpuLaneId === lane.id ? null : lane.id)}
-                          className={`shrink-0 rounded border px-1.5 py-1 text-[10px] ${gpuLaneId === lane.id ? "border-cyan-400 bg-cyan-50 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300" : "border-zinc-300 text-zinc-500 hover:text-cyan-600 dark:border-zinc-700"}`}>
+                          className={`dashboard-control inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-1.5 font-mono text-[10px] font-medium transition-colors ${
+                            gpuLaneId === lane.id
+                              ? "border-cyan-400 bg-cyan-100 text-cyan-800 dark:border-cyan-600 dark:bg-cyan-950 dark:text-cyan-200"
+                              : "border-zinc-300 bg-white text-zinc-500 hover:border-cyan-300 hover:bg-cyan-50 hover:text-cyan-700 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-400 dark:hover:border-cyan-800 dark:hover:bg-cyan-950/50 dark:hover:text-cyan-300"
+                          }`}
+                        >
+                          <svg viewBox="0 0 16 16" aria-hidden="true" className="h-3 w-3">
+                            <rect x="3" y="3" width="10" height="10" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+                            <rect x="6" y="6" width="4" height="4" rx="0.5" fill="currentColor" />
+                          </svg>
                           GPU
                         </button>
                       )}
@@ -608,13 +621,25 @@ export function BuildWaterfall({
                       )}
                     </div>
                   </TimelineHoverArea>
-                  {gpuLaneId === lane.id && lane.jobId && (
-                    <JobGpuTimeline key={`${lane.id}-${lane.startTime}-${lane.endTime}`}
-                      organization={organization} pipeline={pipeline} buildNumber={buildNumber}
-                      jobId={lane.jobId} label={text} startTime={lane.startTime} endTime={lane.endTime}
-                      timelineStart={timelineStart} timelineEnd={timelineEnd} />
-                  )}
                 </div>
+                {showGpuPanel && gpuLane?.jobId && (
+                  <JobGpuTimeline
+                    key={`gpu-${gpuLane.id}-${gpuLane.startTime}-${gpuLane.endTime}`}
+                    organization={organization}
+                    pipeline={pipeline}
+                    buildNumber={buildNumber}
+                    jobId={gpuLane.jobId}
+                    label={laneText(gpuLane)}
+                    startTime={gpuLane.startTime}
+                    endTime={gpuLane.endTime}
+                    timelineStart={timelineStart}
+                    timelineEnd={timelineEnd}
+                    onClose={() => setGpuLaneId(null)}
+                    axis={gpuAxis}
+                    onAxisChange={setGpuAxis}
+                  />
+                )}
+                </Fragment>
               );
             })}
           </div>
