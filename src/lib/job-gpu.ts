@@ -93,6 +93,20 @@ export function summarizeGpuSamples(samples: JobGpuSample[], start: number, end:
   }).sort((a, b) => a.index - b.index || a.deviceId.localeCompare(b.deviceId));
 }
 
+/** The agent API uses the same missing-data and coverage rules as the charts. */
+export function compactGpuSummary(samples: JobGpuSample[], start: number, end: number, intervalMs: number) {
+  return summarizeGpuSamples(samples, start, end, intervalMs).map(device => ({
+    deviceId: device.deviceId, index: device.index, name: device.name,
+    sampleCount: device.samples.length,
+    utilizationSampleCount: device.samples.filter(sample => sample.utilization !== null).length,
+    meanUtilizationPercent: device.meanUtilization,
+    peakMemoryBytes: device.peakMemoryBytes,
+    utilizationCoverage: device.coverage,
+    firstSampleAt: new Date(device.samples[0].timestamp).toISOString(),
+    lastSampleAt: new Date(device.samples[device.samples.length - 1].timestamp).toISOString(),
+  }));
+}
+
 /** Never connect across missing readings or collection/upload gaps. */
 export function gpuSegments(samples: JobGpuSample[], metric: "utilization" | "memoryUsedBytes", intervalMs: number): JobGpuSample[][] {
   const segments: JobGpuSample[][] = [];

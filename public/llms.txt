@@ -1,0 +1,5 @@
+# vLLM CI Dashboard
+
+> Agent access to CI status, job failures, queues, timelines, GPU activity, and analytics.
+
+- [Agent guide](https://ci.vllm.ai/agents.md): Start here. All commands, API access, freshness rules, limitations, and further links in one place.
