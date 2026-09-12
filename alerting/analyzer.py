@@ -349,6 +349,23 @@ def _hard_failures(jobs: list[FullCIJobOutcome]) -> set[str]:
     return {job.name for job in jobs if job.state == "failed" and not job.soft_failed}
 
 
+def _soft_failures(jobs: list[FullCIJobOutcome]) -> set[str]:
+    return {job.name for job in jobs if job.state == "failed" and job.soft_failed}
+
+
+def _fixed(jobs: list[FullCIJobOutcome], cache: FailureCache) -> set[str]:
+    """The legacy rule: a baseline name that is no longer failing is fixed.
+
+    Preserved verbatim from the pre-script's agent contract — fixed is
+    ``previous - hard - soft``, so a job that is missing or unfinished this
+    run also leaves the baseline. Requiring a positively observed pass instead
+    looks stricter but strands renamed and retired job names in the baseline
+    forever, because a name that no longer exists can never be observed
+    passing.
+    """
+    return set(cache.failed_tests) - _hard_failures(jobs) - _soft_failures(jobs)
+
+
 def _amd_failure_payload(
     build: Mapping[str, Any], jobs: list[FullCIJobOutcome]
 ) -> dict[str, Any] | None:
@@ -454,6 +471,7 @@ def _build_summary(
             "failed": len(_hard_failures(jobs)),
             "new": len(_hard_failures(jobs) - set(cache.failed_tests)),
             "recurring": len(_hard_failures(jobs) & set(cache.failed_tests)),
+            "fixed": len(_fixed(jobs, cache)),
             "scheduled": sum(1 for job in jobs if job.state == "scheduled"),
             # Cascaded and unfinished-terminal jobs are not failures, but the
             # old report gave them their own sections and the analyzer model
@@ -662,10 +680,8 @@ class FullCIAnalysisHandler:
             return False  # newer comparisons cannot overtake this baseline
 
         cache = self._store.failure_cache_before(context.current.scheduled_at)
-        passed = {job.name for job in jobs if job.state == "passed"}
-        expected_failures = _hard_failures(jobs) | (
-            set(cache.failed_tests) - passed
-        )
+        # The next baseline is exactly this run's hard failures; see _fixed.
+        expected_failures = _hard_failures(jobs)
         checkpoint = self._store.latest_checkpoint()
         if checkpoint is None:
             # First-ever analysis has no durable memory yet; it starts empty
@@ -785,8 +801,7 @@ class FullCIAnalysisHandler:
                     culprit_pr=prior.culprit_pr if prior is not None else None,
                 )
             )
-        passed = {job.name for job in jobs if job.state == "passed"}
-        for name in sorted((previous - hard) & passed):
+        for name in sorted(_fixed(jobs, cache)):
             prior = self._store.prior_condition(name, before=before)
             conditions.append(self._passed_condition(name, prior))
         return tuple(conditions)
