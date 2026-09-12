@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import useSWR from "swr";
+import { TimelineHoverArea, useTimelineHoverTime } from "@/components/timeline-cursor";
 import { gpuSegments, summarizeGpuSamples, type JobGpuResponse, type JobGpuSample } from "@/lib/job-gpu";
 
 interface Props {
@@ -29,7 +30,7 @@ async function fetchGpu(url: string): Promise<JobGpuResponse> {
 export function GpuSampleChart({ samples, start, end, intervalMs }: {
   samples: JobGpuSample[]; start: number; end: number; intervalMs: number;
 }) {
-  const [hover, setHover] = useState<number | null>(null);
+  const hover = useTimelineHoverTime();
   const x = (time: number) => (time - start) / Math.max(1, end - start) * 1000;
   const percent = (point: JobGpuSample, metric: "utilization" | "memoryUsedBytes") => metric === "utilization"
     ? point.utilization : point.memoryTotalBytes && point.memoryUsedBytes !== null
@@ -39,25 +40,21 @@ export function GpuSampleChart({ samples, start, end, intervalMs }: {
   const selected = nearest && hover !== null && Math.abs(nearest.timestamp - hover) <= intervalMs * 1.5 ? nearest : null;
   return (
     <div className="relative">
-      <svg viewBox="0 0 1000 100" preserveAspectRatio="none" role="img"
-        aria-label="GPU utilization and used memory as percent of device capacity; gaps mean missing samples"
-        className="h-24 w-full overflow-hidden"
-        onMouseLeave={() => setHover(null)}
-        onMouseMove={(event) => {
-          const rect = event.currentTarget.getBoundingClientRect();
-          setHover(start + (event.clientX - rect.left) / rect.width * (end - start));
-        }}>
-        {[0, 25, 50, 75, 100].map((value) => <line key={value} x1="0" x2="1000" y1={100 - value} y2={100 - value} stroke="currentColor" className="text-zinc-200 dark:text-zinc-800" strokeWidth="0.6" />)}
-        {(["utilization", "memoryUsedBytes"] as const).map((metric) => gpuSegments(
-          samples.map((point) => metric === "memoryUsedBytes" && !point.memoryTotalBytes ? { ...point, memoryUsedBytes: null } : point), metric, intervalMs,
-        ).map((segment, index) => (
-          <g key={`${metric}-${index}`} className={metric === "utilization" ? "text-cyan-600 dark:text-cyan-400" : "text-violet-600 dark:text-violet-400"}>
-            {segment.length === 1 ? <circle cx={x(segment[0].timestamp)} cy={99 - (percent(segment[0], metric) ?? 0) * 0.98} r="2" fill="currentColor" /> :
-              <polyline fill="none" stroke="currentColor" strokeWidth="1.5" vectorEffect="non-scaling-stroke" points={segment.map((point) => `${x(point.timestamp)},${99 - (percent(point, metric) ?? 0) * 0.98}`).join(" ")} />}
-          </g>
-        )))}
-        {selected && <line x1={x(selected.timestamp)} x2={x(selected.timestamp)} y1="0" y2="100" stroke="currentColor" strokeDasharray="3 3" className="text-zinc-500" />}
-      </svg>
+      <TimelineHoverArea start={start} end={end}>
+        <svg viewBox="0 0 1000 100" preserveAspectRatio="none" role="img"
+          aria-label="GPU utilization and used memory as percent of device capacity; gaps mean missing samples"
+          className="h-24 w-full overflow-hidden">
+          {[0, 25, 50, 75, 100].map((value) => <line key={value} x1="0" x2="1000" y1={100 - value} y2={100 - value} stroke="currentColor" className="text-zinc-200 dark:text-zinc-800" strokeWidth="0.6" />)}
+          {(["utilization", "memoryUsedBytes"] as const).map((metric) => gpuSegments(
+            samples.map((point) => metric === "memoryUsedBytes" && !point.memoryTotalBytes ? { ...point, memoryUsedBytes: null } : point), metric, intervalMs,
+          ).map((segment, index) => (
+            <g key={`${metric}-${index}`} className={metric === "utilization" ? "text-cyan-600 dark:text-cyan-400" : "text-violet-600 dark:text-violet-400"}>
+              {segment.length === 1 ? <circle cx={x(segment[0].timestamp)} cy={99 - (percent(segment[0], metric) ?? 0) * 0.98} r="2" fill="currentColor" /> :
+                <polyline fill="none" stroke="currentColor" strokeWidth="1.5" vectorEffect="non-scaling-stroke" points={segment.map((point) => `${x(point.timestamp)},${99 - (percent(point, metric) ?? 0) * 0.98}`).join(" ")} />}
+            </g>
+          )))}
+        </svg>
+      </TimelineHoverArea>
       <div className="min-h-5 font-mono text-[10px] text-zinc-500" aria-live="polite">
         {hover !== null ? selected ? `${new Date(selected.timestamp).toISOString().slice(11, 23)} UTC · GPU ${selected.utilization === null ? "unavailable" : `${selected.utilization}%`} · memory ${gib(selected.memoryUsedBytes)} / ${gib(selected.memoryTotalBytes)}` : "No sample at this time" : "Hover to inspect samples · vertical scale 0–100%"}
       </div>

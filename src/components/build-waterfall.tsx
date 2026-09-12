@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { JobName, jobNameText } from "@/components/job-name";
 import { buildTestTree, type TestTreeNode } from "@/lib/test-tree";
 import { JobGpuTimeline } from "@/components/job-gpu-timeline";
+import { TimelineCursorProvider, TimelineHoverArea } from "@/components/timeline-cursor";
 
 type LaneKind = "job" | "step" | "command" | "test";
 /** Lanes from the API plus the client-side pytest grouping rows. */
@@ -438,6 +439,7 @@ export function BuildWaterfall({
     expandableJobs.length > 0 && expandableJobs.every((lane) => isOpen(lane.id));
 
   return (
+    <TimelineCursorProvider>
     <section
       aria-label={`Build ${buildNumber} waterfall`}
       className="sticky left-0 w-[calc(100vw-2rem)] max-w-[1376px] border-t border-zinc-200 bg-zinc-50/80 sm:w-[calc(100vw-3rem)] lg:w-[calc(100vw-4rem)] dark:border-zinc-800 dark:bg-zinc-900/35"
@@ -593,17 +595,19 @@ export function BuildWaterfall({
                       </div>
                     )}
                   </div>
-                  <div className="relative h-7">
-                    <GridLines />
-                    {queueWidth > 0.08 && depth === 0 && (
-                      <span aria-hidden="true" className="absolute top-2 h-3 rounded-l-sm bg-zinc-300 dark:bg-zinc-700" style={{ left: `${queueLeft}%`, width: `${Math.max(queueWidth, 0.2)}%`, backgroundImage: "repeating-linear-gradient(135deg, transparent, transparent 3px, rgb(255 255 255 / 0.35) 3px, rgb(255 255 255 / 0.35) 4px)" }} />
-                    )}
-                    {lane.url ? (
-                      <a href={lane.url} target="_blank" rel="noopener noreferrer" aria-label={detail} title={detail} className={`absolute top-1.5 h-4 min-w-1 rounded-sm transition-[filter] hover:brightness-110 ${laneColor(lane)}`} style={{ left: `${runLeft}%`, width: `${Math.max(runWidth, 0.25)}%` }} />
-                    ) : (
-                      <span role="img" aria-label={detail} title={detail} className={`absolute top-1.5 h-4 min-w-1 rounded-sm ${laneColor(lane)}`} style={{ left: `${runLeft}%`, width: `${Math.max(runWidth, 0.25)}%` }} />
-                    )}
-                  </div>
+                  <TimelineHoverArea start={timelineStart} end={timelineEnd} className="flex min-h-7 self-stretch items-center">
+                    <div className="relative h-7 w-full">
+                      <GridLines />
+                      {queueWidth > 0.08 && depth === 0 && (
+                        <span aria-hidden="true" className="absolute top-2 h-3 rounded-l-sm bg-zinc-300 dark:bg-zinc-700" style={{ left: `${queueLeft}%`, width: `${Math.max(queueWidth, 0.2)}%`, backgroundImage: "repeating-linear-gradient(135deg, transparent, transparent 3px, rgb(255 255 255 / 0.35) 3px, rgb(255 255 255 / 0.35) 4px)" }} />
+                      )}
+                      {lane.url ? (
+                        <a href={lane.url} target="_blank" rel="noopener noreferrer" aria-label={detail} title={detail} className={`absolute top-1.5 h-4 min-w-1 rounded-sm transition-[filter] hover:brightness-110 ${laneColor(lane)}`} style={{ left: `${runLeft}%`, width: `${Math.max(runWidth, 0.25)}%` }} />
+                      ) : (
+                        <span role="img" aria-label={detail} title={detail} className={`absolute top-1.5 h-4 min-w-1 rounded-sm ${laneColor(lane)}`} style={{ left: `${runLeft}%`, width: `${Math.max(runWidth, 0.25)}%` }} />
+                      )}
+                    </div>
+                  </TimelineHoverArea>
                   {gpuLaneId === lane.id && lane.jobId && (
                     <JobGpuTimeline key={`${lane.id}-${lane.startTime}-${lane.endTime}`}
                       organization={organization} pipeline={pipeline} buildNumber={buildNumber}
@@ -628,5 +632,6 @@ export function BuildWaterfall({
         <span>Last span received {formatTime(summary.latestReceivedAt)}{data.truncated ? " · first 5,000 spans" : ""}</span>
       </div>
     </section>
+    </TimelineCursorProvider>
   );
 }
