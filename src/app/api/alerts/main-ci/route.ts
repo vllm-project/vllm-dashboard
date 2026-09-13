@@ -9,6 +9,7 @@ import { hasPostgresErrorCode } from "@/lib/postgres-errors";
 export const dynamic = "force-dynamic";
 
 const MAX_ALERTS = 500;
+const MAX_UPDATES_PER_ALERT = 50;
 
 export async function GET() {
   try {
@@ -34,7 +35,28 @@ export async function GET() {
              an.recommended_action AS analysis_recommended_action,
              an.suspected_fix_prs AS analysis_suspected_fix_prs,
              an.model_version AS analysis_model_version,
-             an.analyzed_at AS analysis_analyzed_at
+             an.analyzed_at AS analysis_analyzed_at,
+             COALESCE((
+               SELECT jsonb_agg(
+                 jsonb_build_object(
+                   'updateId', u.update_id::text,
+                   'failureJobId', u.failure_job_id,
+                   'kind', u.kind,
+                   'message', u.message,
+                   'fixPrs', u.fix_prs,
+                   'author', u.author,
+                   'createdAt', u.created_at
+                 ) ORDER BY u.created_at DESC, u.update_id DESC
+               )
+               FROM (
+                 SELECT update_id, failure_job_id, kind, message, fix_prs,
+                        author, created_at
+                 FROM alerting_main_ci_job_updates
+                 WHERE alert_id = a.alert_id
+                 ORDER BY created_at DESC, update_id DESC
+                 LIMIT ${MAX_UPDATES_PER_ALERT}
+               ) AS u
+             ), '[]'::jsonb) AS agent_updates
       FROM alerting_main_ci_job_alerts AS a
       LEFT JOIN alerting_main_ci_job_analysis AS an
         ON an.alert_id = a.alert_id
@@ -52,7 +74,7 @@ export async function GET() {
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
-    // Preview deployments are created before migrations 0014/0016 are
+    // Preview deployments are created before migrations 0014/0016/0022 are
     // intentionally applied to the shared database. Treat that ordered rollout
     // state as a neutral, explicit response instead of a broken dashboard.
     if (hasPostgresErrorCode(error, "42P01")) {

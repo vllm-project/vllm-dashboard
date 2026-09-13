@@ -6,6 +6,7 @@ import {
   isOptionalJobName,
   isSoftFailJobName,
   type MainCiAnalysisClassification,
+  type MainCiAlertUpdate,
   type MainCiJobAlert,
   type MainCiJobAnalysis,
   type MainCiOutcomeRef,
@@ -610,6 +611,73 @@ function AnalysisPanel({ analysis }: { analysis: MainCiJobAnalysis | null }) {
   );
 }
 
+const UPDATE_KIND_LABELS: Record<MainCiAlertUpdate["kind"], string> = {
+  note: "Note",
+  diagnosis: "Diagnosis",
+  fix_opened: "Fix opened",
+  monitoring: "Monitoring",
+};
+
+function UpdatesPanel({ updates }: { updates: MainCiAlertUpdate[] }) {
+  if (updates.length === 0) return null;
+
+  return (
+    <div className="min-w-0 space-y-3">
+      <SectionLabel>Responder updates</SectionLabel>
+      <ol className="space-y-2">
+        {updates.map((update) => (
+          <li
+            key={update.updateId}
+            className="rounded-md border border-zinc-200 bg-white px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-950"
+          >
+            <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-zinc-800 dark:text-zinc-200">
+                  {update.author}
+                </span>
+                <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 ring-1 ring-blue-200/80 ring-inset dark:bg-blue-900/30 dark:text-blue-200 dark:ring-blue-800/60">
+                  {UPDATE_KIND_LABELS[update.kind]}
+                </span>
+                {update.stale && (
+                  <span className="text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                    Older failure
+                  </span>
+                )}
+              </div>
+              <time
+                dateTime={update.createdAt}
+                className="text-[11px] text-zinc-400 dark:text-zinc-500"
+              >
+                {formatAlertDateTime(update.createdAt)}
+              </time>
+            </div>
+            <p className="mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-zinc-800 dark:text-zinc-200">
+              {update.message}
+            </p>
+            {update.fixPrs.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {update.fixPrs.map((pr) => (
+                  <a
+                    key={pr.url}
+                    href={pr.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={`rounded-md border border-zinc-200 px-2 py-1 text-xs dark:border-zinc-700 ${LINK_CLASSES}`}
+                  >
+                    {pr.number !== null
+                      ? `PR #${pr.number}${pr.title ? ` — ${pr.title}` : ""}`
+                      : pr.title || pr.url}
+                  </a>
+                ))}
+              </div>
+            )}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 export function MainCiAlertRow({
   alert,
   onResolve,
@@ -638,6 +706,9 @@ export function MainCiAlertRow({
   const runsLabel = `${alert.failureCount} failed ${
     alert.failureCount === 1 ? "run" : "runs"
   }`;
+  const fixPrCount = new Set(
+    alert.updates.flatMap((update) => update.fixPrs.map((pr) => pr.url)),
+  ).size;
   return (
     <details className={`group border-l-[3px] ${railFor(alert)}`}>
       <summary
@@ -689,6 +760,11 @@ export function MainCiAlertRow({
               {alert.resolutionKind === "manual"
                 ? "Resolved manually"
                 : "Resolved"}
+            </span>
+          )}
+          {fixPrCount > 0 && (
+            <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 ring-1 ring-blue-200/80 ring-inset dark:bg-blue-900/30 dark:text-blue-200 dark:ring-blue-800/60">
+              {fixPrCount} fix {fixPrCount === 1 ? "PR" : "PRs"}
             </span>
           )}
         </span>
@@ -748,9 +824,12 @@ export function MainCiAlertRow({
             Could not resolve this alert. Try again.
           </p>
         )}
-        <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_15rem]">
-          <AnalysisPanel analysis={alert.analysis} />
-          <Timeline alert={alert} />
+        <div className="space-y-6">
+          <UpdatesPanel updates={alert.updates} />
+          <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_15rem]">
+            <AnalysisPanel analysis={alert.analysis} />
+            <Timeline alert={alert} />
+          </div>
         </div>
       </div>
     </details>

@@ -64,6 +64,7 @@ def test_expected_tables_are_created() -> None:
         "alerting_main_ci_job_states",
         "alerting_main_ci_job_alerts",
         "alerting_main_ci_job_analysis",
+        "alerting_main_ci_job_updates",
         "alerting_infra_host_states",
         "alerting_infra_alerts",
     }
@@ -184,6 +185,25 @@ def test_main_ci_analysis_schema_is_a_cascading_sidecar_to_alert_lifecycle() -> 
         "ALTER TABLE public.alerting_main_ci_job_analysis ENABLE ROW LEVEL SECURITY"
         in sql
     )
+
+
+def test_main_ci_agent_updates_are_append_only_revision_scoped_sidecars() -> None:
+    sql = (MIGRATIONS_DIR / "0022_main_ci_agent_updates.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS alerting_main_ci_job_updates" in sql
+    assert "REFERENCES alerting_main_ci_job_alerts (alert_id) ON DELETE CASCADE" in sql
+    assert "failure_job_id  text NOT NULL" in sql
+    assert "'note', 'diagnosis', 'fix_opened', 'monitoring'" in sql
+    assert "idempotency_key text NOT NULL UNIQUE" in sql
+    assert "jsonb_typeof(fix_prs) = 'array'" in sql
+    assert "jsonb_array_length(fix_prs) <= 10" in sql
+    assert "kind <> 'fix_opened' OR jsonb_array_length(fix_prs) > 0" in sql
+    assert "idx_main_ci_job_updates_alert_created" in sql
+    assert (
+        "ALTER TABLE public.alerting_main_ci_job_updates ENABLE ROW LEVEL SECURITY"
+        in sql
+    )
+    assert "ARRAY['anon'::name, 'authenticated'::name]" in sql
 
 
 def test_dashboard_schema_keeps_legacy_additive_columns_and_covering_index() -> None:

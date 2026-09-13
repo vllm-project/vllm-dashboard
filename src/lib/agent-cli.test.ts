@@ -101,6 +101,8 @@ test("published discovery files and OpenAPI references stay usable", () => {
   const spec = JSON.parse(readFileSync('public/agents/openapi.json', 'utf8'));
   assert.equal(spec.openapi, '3.1.0');
   for (const path of ['/api/agent/build', '/api/agent/builds', '/api/agent/queues', '/api/agent/failures', '/api/builds/trace', '/api/builds/gpu']) assert.ok(spec.paths[path].get);
+  assert.ok(spec.paths['/api/alerts/main-ci/updates'].post);
+  assert.equal(spec.components.securitySchemes.AgentToken.scheme, 'bearer');
   const walk = (value: unknown) => {
     if (!value || typeof value !== 'object') return;
     for (const [key, child] of Object.entries(value)) {

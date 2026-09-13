@@ -51,6 +51,7 @@ function alertRow(
     analysis_suspected_fix_prs: null,
     analysis_model_version: null,
     analysis_analyzed_at: null,
+    agent_updates: [],
     ...overrides,
   };
 }
@@ -85,6 +86,51 @@ test("row mapping exposes only the alert episode and exact Buildkite evidence", 
   assert.equal(alert.lastFailure.buildNumber, 101);
   assert.equal(alert.resolution, null);
   assert.equal(alert.analysis, null);
+  assert.deepEqual(alert.updates, []);
+});
+
+test("responder updates map fix PRs and mark older failure revisions stale", () => {
+  const alert = toMainCiJobAlert(
+    alertRow({
+      agent_updates: [
+        {
+          updateId: "9",
+          failureJobId: "job-2",
+          kind: "fix_opened",
+          message: "Opened a narrow fix.",
+          fixPrs: [
+            {
+              url: "https://github.com/vllm-project/vllm/pull/88",
+              number: 88,
+              title: "Fix GPU test",
+            },
+          ],
+          author: "Sherlock",
+          createdAt: "2026-08-29T09:10:00.000Z",
+        },
+        {
+          updateId: "8",
+          failureJobId: "job-1",
+          kind: "diagnosis",
+          message: "Earlier diagnosis.",
+          fixPrs: [],
+          author: "Sherlock",
+          createdAt: "2026-08-29T08:10:00.000Z",
+        },
+      ],
+    }),
+  );
+
+  assert.equal(alert.updates.length, 2);
+  assert.equal(alert.updates[0].stale, false);
+  assert.equal(alert.updates[1].stale, true);
+  assert.deepEqual(alert.updates[0].fixPrs, [
+    {
+      url: "https://github.com/vllm-project/vllm/pull/88",
+      number: 88,
+      title: "Fix GPU test",
+    },
+  ]);
 });
 
 test("analysis columns map to a nested object with a computed stale flag", () => {

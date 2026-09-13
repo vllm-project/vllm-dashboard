@@ -20,6 +20,24 @@ export interface MainCiSuspectedFixPr {
   title: string;
 }
 
+export type MainCiAlertUpdateKind =
+  | "note"
+  | "diagnosis"
+  | "fix_opened"
+  | "monitoring";
+
+export interface MainCiAlertUpdate {
+  updateId: string;
+  failureJobId: string;
+  kind: MainCiAlertUpdateKind;
+  message: string;
+  fixPrs: MainCiSuspectedFixPr[];
+  author: string;
+  createdAt: string;
+  /** True when this update describes an older failure revision. */
+  stale: boolean;
+}
+
 /** One worker-written diagnosis, keyed to the failure it was computed from. */
 export interface MainCiJobAnalysis {
   analyzedFailureJobId: string;
@@ -59,6 +77,7 @@ export interface MainCiJobAlert {
   resolution: MainCiOutcomeRef | null;
   resolutionKind: MainCiResolutionKind | null;
   analysis: MainCiJobAnalysis | null;
+  updates: MainCiAlertUpdate[];
 }
 
 export interface MainCiJobAlertRow {
@@ -100,6 +119,69 @@ export interface MainCiJobAlertRow {
   analysis_suspected_fix_prs: unknown;
   analysis_model_version: string | null;
   analysis_analyzed_at: Date | null;
+  agent_updates: unknown;
+}
+
+const MAIN_CI_ALERT_UPDATE_KINDS = new Set<MainCiAlertUpdateKind>([
+  "note",
+  "diagnosis",
+  "fix_opened",
+  "monitoring",
+]);
+
+function toSuspectedFixPrs(value: unknown): MainCiSuspectedFixPr[] {
+  return Array.isArray(value)
+    ? value
+        .filter(
+          (entry): entry is { url?: unknown; number?: unknown; title?: unknown } =>
+            typeof entry === "object" && entry !== null,
+        )
+        .filter((entry) => typeof entry.url === "string")
+        .map((entry) => ({
+          url: entry.url as string,
+          number: typeof entry.number === "number" ? entry.number : null,
+          title: typeof entry.title === "string" ? entry.title : "",
+        }))
+    : [];
+}
+
+function toMainCiAlertUpdates(
+  value: unknown,
+  latestFailureJobId: string,
+): MainCiAlertUpdate[] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const candidate = entry as Record<string, unknown>;
+    const kind = candidate.kind;
+    const createdAt = candidate.createdAt;
+    if (
+      (typeof candidate.updateId !== "string" &&
+        typeof candidate.updateId !== "number") ||
+      typeof candidate.failureJobId !== "string" ||
+      typeof kind !== "string" ||
+      !MAIN_CI_ALERT_UPDATE_KINDS.has(kind as MainCiAlertUpdateKind) ||
+      typeof candidate.message !== "string" ||
+      typeof candidate.author !== "string" ||
+      typeof createdAt !== "string" ||
+      Number.isNaN(Date.parse(createdAt))
+    ) {
+      return [];
+    }
+    return [
+      {
+        updateId: String(candidate.updateId),
+        failureJobId: candidate.failureJobId,
+        kind: kind as MainCiAlertUpdateKind,
+        message: candidate.message,
+        fixPrs: toSuspectedFixPrs(candidate.fixPrs),
+        author: candidate.author,
+        createdAt: new Date(createdAt).toISOString(),
+        stale: candidate.failureJobId !== latestFailureJobId,
+      },
+    ];
+  });
 }
 
 function outcome(
@@ -141,19 +223,7 @@ function toMainCiJobAnalysis(row: MainCiJobAlertRow): MainCiJobAnalysis | null {
         (url): url is string => typeof url === "string",
       )
     : [];
-  const suspectedFixPrs = Array.isArray(row.analysis_suspected_fix_prs)
-    ? row.analysis_suspected_fix_prs
-        .filter(
-          (entry): entry is { url?: unknown; number?: unknown; title?: unknown } =>
-            typeof entry === "object" && entry !== null,
-        )
-        .filter((entry) => typeof entry.url === "string")
-        .map((entry) => ({
-          url: entry.url as string,
-          number: typeof entry.number === "number" ? entry.number : null,
-          title: typeof entry.title === "string" ? entry.title : "",
-        }))
-    : [];
+  const suspectedFixPrs = toSuspectedFixPrs(row.analysis_suspected_fix_prs);
   return {
     analyzedFailureJobId: row.analysis_analyzed_failure_job_id,
     classification: row.analysis_classification,
@@ -219,6 +289,7 @@ export function toMainCiJobAlert(row: MainCiJobAlertRow): MainCiJobAlert {
     resolution,
     resolutionKind: row.resolution_kind,
     analysis: toMainCiJobAnalysis(row),
+    updates: toMainCiAlertUpdates(row.agent_updates, row.last_failure_job_id),
   };
 }
 

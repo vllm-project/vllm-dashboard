@@ -307,8 +307,8 @@ function MainCISection({
     >
       {data?.schemaStatus === "pending" ? (
         <div className="flex h-48 items-center justify-center rounded-lg border border-dashed border-amber-300 px-6 text-center text-sm text-amber-700 dark:border-amber-800 dark:text-amber-300">
-          Backend rollout pending. Migrations 0014/0016 and the Main CI workers
-          must be deployed before this preview can show alerts.
+          Backend rollout pending. Migrations 0014/0016/0022 and the Main CI
+          workers must be deployed before this preview can show alerts.
         </div>
       ) : (
         <div className="space-y-3">

@@ -4,7 +4,9 @@ Use **https://ci.vllm.ai/agents.md** as the one link to give an agent.
 This guide, the [downloadable CLI](https://ci.vllm.ai/agents/cli.mjs), and the
 [OpenAPI contract](https://ci.vllm.ai/agents/openapi.json) are served by the dashboard.
 Prefer JSON requests over browser automation. No dashboard login, API key, repo
-checkout, package installation, or database access is needed for these reads.
+checkout, package installation, or database access is needed for reads. Posting
+a responder update is the one authenticated agent operation and requires a
+separately provisioned `ALERT_AGENT_TOKEN`.
 
 Suggested instruction to an agent:
 
@@ -159,6 +161,40 @@ Example without installing any client:
 curl -fsS 'https://ci.vllm.ai/api/agent/build?buildNumber=88448&failed=1'
 curl -fsS 'https://ci.vllm.ai/api/agent/queues?queue=l4-k8s'
 ```
+
+## Post a Main CI responder update
+
+Authorized responders can attach a diagnosis, monitoring note, or opened fix PR
+to an alert without changing its lifecycle or overwriting automated analysis.
+First read `/api/alerts/main-ci` and copy both `alertId` and the exact current
+`lastFailure.buildkiteJobId`. Then post with a stable idempotency key:
+
+```bash
+curl -fsS -X POST 'https://ci.vllm.ai/api/alerts/main-ci/updates' \
+  -H "Authorization: Bearer $ALERT_AGENT_TOKEN" \
+  -H 'Content-Type: application/json' \
+  --data '{
+    "alertId": "1030",
+    "failureJobId": "01a0932d-c77c-43cd-a431-2b4587aff590",
+    "kind": "fix_opened",
+    "message": "Opened a narrow fix; exact lane rerun is in progress.",
+    "fixPrs": [{
+      "number": 56676,
+      "url": "https://github.com/vllm-project/vllm/pull/56676",
+      "title": "Fix collective RPC teardown"
+    }],
+    "author": "Sherlock",
+    "idempotencyKey": "sherlock:alert-1030:pr-56676"
+  }'
+```
+
+`kind` is one of `note`, `diagnosis`, `fix_opened`, or `monitoring`;
+`fix_opened` requires at least one HTTPS PR link. Identical retries return
+`duplicate: true`. HTTP `409` with `stale_failure_revision` means a newer failure
+arrived: re-read the alert and decide whether the update still applies before
+posting a new logical update. Never automatically replace the failure ID. A
+`409` with `idempotency_conflict` means the key was reused for different content.
+Keep the token out of URLs, logs, public chat, and committed files.
 
 ## Everything else: existing read APIs
 

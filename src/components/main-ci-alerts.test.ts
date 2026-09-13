@@ -64,6 +64,7 @@ function alert(overrides: Partial<MainCiJobAlert> = {}): MainCiJobAlert {
     resolution: null,
     resolutionKind: null,
     analysis: null,
+    updates: [],
     ...overrides,
   };
 }
@@ -139,6 +140,44 @@ test("stale analysis carries a visible warning", () => {
 
   assert.match(markup, /Analysis stale — a newer failure was observed/);
   assert.match(markup, />stale</);
+});
+
+test("responder updates surface fix PRs and older failure revisions", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MainCIAlerts, {
+      alerts: [
+        alert({
+          updates: [
+            {
+              updateId: "7",
+              failureJobId: "job-1",
+              kind: "fix_opened",
+              message: "Opened a narrow fix and started the exact rerun.",
+              fixPrs: [
+                {
+                  number: 456,
+                  url: "https://github.com/vllm-project/vllm/pull/456",
+                  title: "Fix collective RPC teardown",
+                },
+              ],
+              author: "Sherlock",
+              createdAt: "2026-08-29T09:10:00.000Z",
+              stale: true,
+            },
+          ],
+        }),
+      ],
+    }),
+  );
+
+  assert.match(markup, /1 fix PR/);
+  assert.match(markup, /Responder updates/);
+  assert.match(markup, /Sherlock/);
+  assert.match(markup, /Fix opened/);
+  assert.match(markup, /Opened a narrow fix/);
+  assert.match(markup, /Older failure/);
+  assert.match(markup, /PR #456 — Fix collective RPC teardown/);
+  assert.match(markup, /https:\/\/github\.com\/vllm-project\/vllm\/pull\/456/);
 });
 
 test("unanalyzed alert renders a subtle placeholder and no reason dropdown", () => {

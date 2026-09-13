@@ -38,6 +38,8 @@ an episode. Episodes can also be closed by hand from the dashboard
 - Control plane: S3 `control/main_ci.mode` (`shadow` default / `live` /
   `disabled`) governs all three timers together. Main CI currently posts
   nothing to Slack, so the mode only enables or disables the timers.
+- Dashboard writes use separate credentials: `ALERT_OPERATOR_TOKEN` for human
+  resolution and `ALERT_AGENT_TOKEN` for append-only responder updates.
 
 ## What it posts to Slack
 
@@ -50,7 +52,17 @@ diagnosis stays a curated Slack concern. The dashboard is the consumer.
 episodes with first/last failure evidence and the sidecar's analysis when
 present, and offers manual resolution (POST
 `src/app/api/alerts/main-ci/resolve`). Backed by
-`src/app/api/alerts/main-ci/route.ts`.
+`src/app/api/alerts/main-ci/route.ts`. Authenticated responders can append
+diagnoses, monitoring notes, and fix PRs through
+`POST /api/alerts/main-ci/updates`; those updates are displayed separately
+from automated analysis and never overwrite it. Every update names the exact
+`lastFailure.buildkiteJobId` it describes, so a later failure makes the older
+update visibly stale instead of silently moving it to a new revision.
+
+The update endpoint requires `Authorization: Bearer $ALERT_AGENT_TOKEN` and an
+idempotency key unique to the logical update. It returns `201` for a new row and
+`200` with `duplicate: true` for an identical retry. Reusing a key for different
+content, or posting against an older failure revision, returns `409`.
 
 ## Tables
 
@@ -61,4 +73,5 @@ older build finishing late cannot overwrite a newer outcome),
 `alerting_main_ci_job_alerts` (episodes; partial unique index keeps at most
 one open episode per job key), `alerting_main_ci_scan_cursors`,
 `alerting_main_ci_job_analysis` (sidecar),
+`alerting_main_ci_job_updates` (append-only responder sidecar),
 `alerting_automation_executions`.

@@ -32,8 +32,8 @@ client credentials are needed for dashboard reads.
   - Databricks warehouse (build/job history) — on dashboard requests with short-lived caching
   - Queue alerting → Slack — every 15 minutes
 - **Alert production**: The separately deployed Python worker lives in
-  [`alerting/`](./alerting). Main CI lifecycle records intentionally contain
-  no automated diagnosis; curated analysis continues in Slack.
+  [`alerting/`](./alerting). Main CI lifecycle records remain deterministic;
+  automated analysis and authenticated responder updates live in sidecar tables.
 - **Schema migrations**: All Postgres table definitions and migration execution
   live in the Python [`migrations/`](./migrations) module. Runtime request
   handlers never create or alter tables.
@@ -79,6 +79,7 @@ page (Builds) loads, see the [Builds latency guide](./docs/builds-performance.md
 | `BUILDKITE_ORGANIZATION`, `BUILDKITE_TEST_SUITE` | Test Engine organization and suite slug (defaults: `vllm`, `ci-1`) |
 | `BUILDKITE_QUEUE_OPERATOR_TOKEN` | Required to enable queue-job promotion; authorized operators enter it for the current browser tab |
 | `ALERT_OPERATOR_TOKEN` | Required to enable manual Main CI alert resolution; authorized operators enter it for the current browser tab, which sends it as a Bearer token |
+| `ALERT_AGENT_TOKEN` | Required for authenticated agents to append revision-scoped Main CI responder updates and fix PRs through `/api/alerts/main-ci/updates` |
 | `OTEL_INGEST_TOKEN` | Shared Bearer token used by Buildkite's OTel notification service |
 | `OTEL_MAX_REQUEST_BYTES` | Optional OTLP request limit; defaults to 4 MiB |
 | `OTEL_ENDPOINT` | Buildkite notification-service base URL; defaults operationally to `https://ci.vllm.ai/api/otel` |

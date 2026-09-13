@@ -1,9 +1,9 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "vLLM CI Agent Reads",
-    "version": "1.0.0",
-    "description": "Read-only compact API. Start with /agents.md for CLI workflows, freshness and coverage rules, and the directory of existing analytics APIs."
+    "title": "vLLM CI Agent API",
+    "version": "1.1.0",
+    "description": "Compact read API plus one authenticated Main CI responder-update operation. Start with /agents.md for workflows, freshness, coverage, and revision-safety rules."
   },
   "servers": [
     {
@@ -332,6 +332,77 @@
         }
       }
     },
+    "/api/alerts/main-ci/updates": {
+      "post": {
+        "operationId": "appendMainCiAlertUpdate",
+        "summary": "Append an authenticated responder update to one exact failure revision",
+        "security": [
+          {
+            "AgentToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MainCiAlertUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Identical idempotent retry; duplicate is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MainCiAlertUpdateResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Update appended to the requested current failure revision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MainCiAlertUpdateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "description": "Stale failure revision or idempotency-key conflict. Inspect the response code and re-read the alert before deciding whether to post again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/api/agent/queues": {
       "get": {
         "operationId": "listQueues",
@@ -595,6 +666,13 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "AgentToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Deployment-provisioned ALERT_AGENT_TOKEN. Never place it in a URL or public log."
+      }
+    },
     "schemas": {
       "Build": {
         "type": "object",
@@ -1524,6 +1602,159 @@
           "summary"
         ]
       },
+      "MainCiFixPr": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://",
+            "maxLength": 2048
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        },
+        "required": [
+          "number",
+          "url",
+          "title"
+        ]
+      },
+      "MainCiAlertUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "alertId": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "pattern": "^[1-9][0-9]{0,18}$"
+          },
+          "failureJobId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "note",
+              "diagnosis",
+              "fix_opened",
+              "monitoring"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "fixPrs": {
+            "type": "array",
+            "maxItems": 10,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/MainCiFixPr"
+            }
+          },
+          "author": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "alertId",
+          "failureJobId",
+          "kind",
+          "message",
+          "fixPrs",
+          "author",
+          "idempotencyKey"
+        ]
+      },
+      "MainCiAlertUpdate": {
+        "type": "object",
+        "properties": {
+          "updateId": {
+            "type": "string"
+          },
+          "alertId": {
+            "type": "string"
+          },
+          "failureJobId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "fixPrs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MainCiFixPr"
+            }
+          },
+          "author": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "updateId",
+          "alertId",
+          "failureJobId",
+          "kind",
+          "message",
+          "fixPrs",
+          "author",
+          "createdAt"
+        ]
+      },
+      "MainCiAlertUpdateResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "duplicate": {
+            "type": "boolean"
+          },
+          "update": {
+            "$ref": "#/components/schemas/MainCiAlertUpdate"
+          }
+        },
+        "required": [
+          "ok",
+          "duplicate",
+          "update"
+        ]
+      },
       "Error": {
         "type": "object",
         "properties": {
@@ -1532,6 +1763,13 @@
           },
           "error": {
             "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "currentFailureJobId": {
+            "type": "string",
+            "format": "uuid"
           }
         },
         "required": [
