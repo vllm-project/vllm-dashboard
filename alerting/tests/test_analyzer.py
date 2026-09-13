@@ -128,9 +128,7 @@ def well_behaved(
         for job in summary["jobs"]
         if job["state"] == "failed" and not job["soft_failed"]
     }
-    previous = set(summary["previous_failures"]["failed_tests"])
-    passed = {job["name"] for job in summary["jobs"] if job["state"] == "passed"}
-    durable_failures = sorted(hard | (previous - passed))
+    durable_failures = sorted(hard)
     (logs / "ci_report.txt").write_text(report)
     (logs / "failed_tests_cache.json").write_text(
         json.dumps(
@@ -637,6 +635,7 @@ def test_materialized_working_files_match_skill_contract(tmp_path: Path) -> None
         "failed": 1,
         "new": 0,
         "recurring": 1,
+        "fixed": 0,
         "scheduled": 0,
         "cascaded": 0,
         "timed_out": 0,
@@ -784,7 +783,7 @@ def test_first_ever_analysis_without_any_checkpoint_starts_with_empty_memory() -
     assert harness.store.analyses()[0].current_build_id == run2.build_id
 
 
-def test_fixed_requires_a_positively_observed_pass() -> None:
+def test_fixed_is_every_baseline_name_no_longer_failing() -> None:
     run1 = make_run(1, RUN1_AT)
     run2 = make_run(2, RUN2_AT)
     harness = Harness(
@@ -828,16 +827,53 @@ def test_fixed_requires_a_positively_observed_pass() -> None:
         for condition in analysis.conditions
         if condition.lifecycle is FailureLifecycle.FIXED
     }
-    assert set(fixed) == {"Fixed Job"}
-    assert fixed["Fixed Job"].summary == "passed without a verified cause"
-    assert all(condition.fixing_pr is None for condition in fixed.values())
-    assert set(analysis.failure_cache.failed_tests) == {
+    # The legacy rule: previous - hard - soft. Missing and unfinished jobs are
+    # fixed; only the still-soft-failing job stays out of the fixed set.
+    assert set(fixed) == {
+        "Fixed Job",
         "Timed Out Job",
         "Running Job",
         "Canceled Job",
         "Scheduled Job",
         "Absent Job",
-        "Soft Job",
+    }
+    assert fixed["Fixed Job"].summary == "passed without a verified cause"
+    assert all(condition.fixing_pr is None for condition in fixed.values())
+    # Nothing carries forward: this run had no hard failures, so the next
+    # baseline is empty and retired names cannot accumulate in it.
+    assert set(analysis.failure_cache.failed_tests) == set()
+
+
+def test_a_renamed_job_leaves_the_baseline_instead_of_accumulating() -> None:
+    """Regression: the baseline must not keep names that no longer exist.
+
+    Production build #88259's baseline had collected `(H200) Core Operation
+    Kernels Shard 3` and three other names that had been renamed or retired
+    builds earlier. Carrying a prior failure forward until it is observed
+    passing makes that permanent, because the old name never runs again.
+    """
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs(
+                    [("(H200 MIG 35GB) Kernels Shard 3", "failed", False)],
+                    total=120,
+                ),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+    harness.seed_analysis(run1, failed_tests=("(H200) Kernels Shard 3",))
+
+    harness.analyze()
+
+    analysis = harness.store.analyses()[-1]
+    assert set(analysis.failure_cache.failed_tests) == {
+        "(H200 MIG 35GB) Kernels Shard 3"
     }
 
 

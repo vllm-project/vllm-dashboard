@@ -16,14 +16,16 @@ commits, open pull requests, post messages, or mutate Buildkite or GitHub.
 
 1. Split failed jobs into soft failures (`state == "failed"` and
    `soft_failed == true`) and hard failures (`state == "failed"` and not soft).
-2. Current hard failures enter the durable baseline. A prior failure leaves it
-   only after a positively observed pass; missing and unfinished jobs remain.
+2. The next baseline is exactly this run's hard failures. Nothing carries
+   forward: a name that is not a hard failure this run leaves the baseline.
 3. New failures are hard-failure names absent from
    `previous_failures.failed_tests`.
 4. Recurring failures are hard-failure names present in that baseline.
-5. Fixed tests are baseline names now positively observed with `state ==
-   "passed"`. Missing, scheduled, waiting-failed, canceled, timed-out, and
-   soft-failed jobs are not fixed.
+5. Fixed tests are baseline names that are neither a hard nor a soft failure
+   this run — `previous - hard - soft`. A missing or unfinished job is fixed
+   by that rule; this is deliberate, because a renamed or retired job name can
+   never be observed passing and would otherwise sit in the baseline forever.
+   Never derive the count yourself: it is `stats.fixed`.
 6. Jobs in state `waiting_failed`, `timed_out`, or `canceled` are neither hard
    nor soft failures and never enter the baseline. `waiting_failed` means an
    upstream step (usually an image build) failed and the job never ran — a
@@ -64,7 +66,8 @@ Write `.logs/ci_report.txt` as Slack mrkdwn, without posting it. Start with:
 Every number on the Stats line comes from the summary's precomputed `stats`
 object: X = `stats.passed`, Y = `stats.failed` (hard failures only). Never count
 the `jobs` array yourself — it is too long to count reliably. The
-`(N new, M recurring)` breakdown uses `stats.new` and `stats.recurring` and
+`(N new, M recurring)` breakdown uses `stats.new` and `stats.recurring`, the
+fixed section's count is `stats.fixed`, and
 appears only when `stats.failed` > 0 and `stats.has_previous_data` is true;
 otherwise show just `Y failed`. If `stats.scheduled` > 0, append
 `, S scheduled` to the Stats line using `stats.scheduled`. Add sections for new, recurring, fixed,
@@ -92,9 +95,10 @@ link labels or backticks render as literal text in Slack.
 ## Phase D — Update outputs
 
 Write `.logs/failed_tests_cache.json` with current `build_number`, current
-`commit`, and a sorted unique `failed_tests` list containing current hard
-failures plus prior failures not positively observed passing. Verify all three
-output files exist and contain valid data:
+`commit`, and a sorted unique `failed_tests` list containing exactly this run's
+hard failures (new + recurring). Do not include soft failures and do not carry
+any prior failure forward. Verify all three output files exist and contain
+valid data:
 
 - `.logs/ci_report.txt`
 - `.logs/failed_tests_cache.json`

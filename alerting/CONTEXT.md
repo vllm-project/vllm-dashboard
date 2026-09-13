@@ -25,7 +25,7 @@ The ordered relationship between one Full CI Run and its preceding scheduled Ful
 _Avoid_: Diff, report
 
 **Full CI Failure Condition**:
-One job's classification in a Full CI Comparison: new, recurring, or fixed, with a cause and PR attribution. A fixed condition requires a positively observed pass; a fixing PR is recorded only when verified merged.
+One job's classification in a Full CI Comparison: new, recurring, or fixed, with a cause and PR attribution. A job is fixed when it was in the baseline and is neither a hard nor a soft failure this run, so the baseline cannot retain names that no longer exist; a fixing PR is recorded only when verified merged.
 _Avoid_: Incident, resolution state
 
 **Analyzer Checkpoint**:
