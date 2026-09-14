@@ -681,6 +681,48 @@ def test_section_headings_are_restored_to_the_legacy_wording() -> None:
     assert "• Job A" in report  # bullets are left alone
 
 
+def test_held_baseline_names_are_counted_for_their_own_section() -> None:
+    """The legacy report gives unfinished baseline names their own section.
+
+    They are neither fixed nor failing, and publishing a fixed list while they
+    are still pending is only honest if the report says which ones are pending.
+    """
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs(
+                    [
+                        ("Slow Job", "scheduled", False),
+                        ("Gone Job", "passed", False),
+                    ],
+                    total=120,
+                ),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+    harness.seed_analysis(run1, failed_tests=("Slow Job", "Gone Job"))
+    observed: dict[str, Any] = {}
+
+    def capture(working_dir: Path) -> None:
+        summary = json.loads((working_dir / ".logs/nightly_summary.json").read_text())
+        observed["stats"] = summary["stats"]
+        well_behaved(working_dir)
+
+    harness.runner.on_run(capture)
+
+    assert harness.analyze().status is ProcessStatus.COMPLETED
+
+    assert observed["stats"]["prev_failing_unrun"] == 1  # Slow Job only
+    assert observed["stats"]["fixed"] == 1  # Gone Job passed
+    analysis = harness.store.analyses()[-1]
+    assert set(analysis.failure_cache.failed_tests) == {"Slow Job"}
+
+
 def test_materialized_working_files_match_skill_contract(tmp_path: Path) -> None:
     run1 = make_run(1, RUN1_AT)
     run2 = make_run(2, RUN2_AT)
@@ -726,6 +768,7 @@ def test_materialized_working_files_match_skill_contract(tmp_path: Path) -> None
         "new": 0,
         "recurring": 1,
         "fixed": 0,
+        "prev_failing_unrun": 0,
         "scheduled": 0,
         "cascaded": 0,
         "timed_out": 0,

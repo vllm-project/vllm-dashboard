@@ -360,6 +360,7 @@ def _authoritative_stats(report_text: str, stats: Mapping[str, Any]) -> str:
 # keyword first; "new" is last because it is the shortest.
 _SECTION_HEADING = re.compile(r"^\*[^*]*\((?P<count>\d+)\):\*\s*$")
 _CANONICAL_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("prev", "*⏳ Prev-failing, not yet run ({count}):*"),
     ("cascad", "*⏳ Cascaded, never ran ({count}):*"),
     ("timed", "*⏱️ Timed out / cancelled ({count}):*"),
     ("cancel", "*⏱️ Timed out / cancelled ({count}):*"),
@@ -558,6 +559,10 @@ def _build_summary(
             "new": len(_hard_failures(jobs) - set(cache.failed_tests)),
             "recurring": len(_hard_failures(jobs) & set(cache.failed_tests)),
             "fixed": len(_fixed(jobs, cache)),
+            # Baseline names held back because their job has no verdict yet.
+            # They are neither fixed nor failing, and the legacy report gives
+            # them their own section so the on-call knows the list is partial.
+            "prev_failing_unrun": len(set(cache.failed_tests) & _unfinished(jobs)),
             "scheduled": sum(1 for job in jobs if job.state == "scheduled"),
             # Cascaded and unfinished-terminal jobs are not failures, but the
             # old report gave them their own sections and the analyzer model

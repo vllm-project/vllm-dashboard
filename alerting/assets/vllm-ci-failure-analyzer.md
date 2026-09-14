@@ -46,7 +46,9 @@ clone, push, or pull-request mechanics. The prohibition above wins.
    failure, nor still awaiting a verdict this run. A job that has vanished is
    fixed; a job that simply has not finished is not, because calling it fixed
    drops it from the baseline and it returns as a phantom new failure on the
-   next run. Never derive the count yourself: it is `stats.fixed`.
+   next run. Those held-back names are reported separately — see the
+   prev-failing section in Phase C. Never derive either count yourself: they
+   are `stats.fixed` and `stats.prev_failing_unrun`.
 6. Jobs in state `waiting_failed`, `timed_out`, or `canceled` are neither hard
    nor soft failures and never enter the baseline. `waiting_failed` means an
    upstream step (usually an image build) failed and the job never ran — a
@@ -103,8 +105,15 @@ identity and the adapter rewrites anything else back to these:
 *🆕 New failures (N):*
 *🔁 Recurring failures (M):*
 *✅ Fixed since last run (K):*
+*⏳ Prev-failing, not yet run (P):*
 *⚠️ Soft failures — warning only (S):*
 ```
+
+The prev-failing section lists baseline names whose job has not reached a
+verdict in this build, so they are neither fixed nor failing yet. Include it
+whenever `stats.prev_failing_unrun` > 0, using that number as P, and place it
+after the fixed section — a fixed list published while those jobs are still
+pending is provisional, and this is what says so.
 
 Also add these sections when their jobs exist:
 
