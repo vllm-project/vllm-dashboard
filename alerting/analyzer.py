@@ -324,6 +324,35 @@ _BULLET_NAME_LINK = re.compile(r"^(?P<prefix>\s*•\s+)<https?://[^|>]+\|(?P<lab
 _BULLET_NAME_CODE = re.compile(r"^(?P<prefix>\s*•\s+)`(?P<name>[^`]+)`")
 
 
+_STATS_LINE = re.compile(r"^\*Stats:\*.*$", re.MULTILINE)
+
+
+def _stats_line(stats: Mapping[str, Any]) -> str:
+    """The Stats line exactly as the report contract specifies it."""
+    text = f"*Stats:* {stats['passed']} passed, {stats['failed']} failed"
+    if stats["failed"] and stats["has_previous_data"]:
+        text += f" ({stats['new']} new, {stats['recurring']} recurring)"
+    if stats["scheduled"]:
+        text += f", {stats['scheduled']} scheduled"
+    return text
+
+
+def _authoritative_stats(report_text: str, stats: Mapping[str, Any]) -> str:
+    """Overwrite the model's Stats line with the computed one.
+
+    The counts have been precomputed since #108 and the instructions say to
+    copy them verbatim, but nothing enforced it and the model does not comply:
+    build #88197 reported 306 passed against 307, and #88685 reported 413
+    against 317 — a number matching no count of anything. Rendering the line
+    here removes the requirement rather than restating it.
+    """
+    line = _stats_line(stats)
+    replaced, count = _STATS_LINE.subn(lambda _: line, report_text, count=1)
+    if count == 0:
+        raise AnalyzerError("report has no *Stats:* line")
+    return replaced
+
+
 def _plain_bullet_names(report_text: str) -> str:
     """Unwrap links and code spans around job names at bullet starts.
 
@@ -353,17 +382,41 @@ def _soft_failures(jobs: list[FullCIJobOutcome]) -> set[str]:
     return {job.name for job in jobs if job.state == "failed" and job.soft_failed}
 
 
-def _fixed(jobs: list[FullCIJobOutcome], cache: FailureCache) -> set[str]:
-    """The legacy rule: a baseline name that is no longer failing is fixed.
+# Everything Buildkite reports once a job has reached a verdict. Anything else
+# — scheduled, running, assigned, accepted, blocked — means "no verdict yet".
+_TERMINAL_STATES = frozenset(
+    {"passed", "failed", "timed_out", "canceled", "waiting_failed", "broken",
+     "skipped", "not_run"}
+)
 
-    Preserved verbatim from the pre-script's agent contract — fixed is
-    ``previous - hard - soft``, so a job that is missing or unfinished this
-    run also leaves the baseline. Requiring a positively observed pass instead
-    looks stricter but strands renamed and retired job names in the baseline
-    forever, because a name that no longer exists can never be observed
-    passing.
+
+def _unfinished(jobs: list[FullCIJobOutcome]) -> set[str]:
+    """Jobs in this build's roster that have not reached a verdict yet."""
+    return {job.name for job in jobs if job.state not in _TERMINAL_STATES}
+
+
+def _fixed(jobs: list[FullCIJobOutcome], cache: FailureCache) -> set[str]:
+    """A baseline name that is no longer failing, and has had its chance to.
+
+    The legacy rule was ``previous - hard - soft``, which drops a name whether
+    it is gone or merely slow. Those are different situations and the 95%
+    completeness gate makes the difference matter: a job still ``scheduled``
+    when the report fires is called fixed, leaves the baseline, and returns as
+    a brand-new failure on the next run. Build #88612 did exactly that to
+    Kimi-Linear DP EP, which then arrived as "new" at #88685 after failing at
+    #88565 — and the legacy analyzer's own memory complains about the same
+    trap, so this is a bug we inherited rather than a behaviour worth keeping.
+
+    A name that is present in this build but has no verdict yet is therefore
+    held back. Retired and renamed names are not in the roster at all, so they
+    still drop out and cannot accumulate the way they did before #162.
     """
-    return set(cache.failed_tests) - _hard_failures(jobs) - _soft_failures(jobs)
+    return (
+        set(cache.failed_tests)
+        - _hard_failures(jobs)
+        - _soft_failures(jobs)
+        - _unfinished(jobs)
+    )
 
 
 def _amd_failure_payload(
@@ -553,6 +606,7 @@ def _read_outputs(
     expected_failures: set[str],
     build_number: int,
     commit_sha: str,
+    stats: Mapping[str, Any],
 ) -> _AnalyzerOutputs:
     report_path = workdir / REPORT_FILE
     if not report_path.is_file():
@@ -563,6 +617,7 @@ def _read_outputs(
     if report_text.strip() == "SKIP":
         raise AnalyzerError("analyzer skipped a comparison the adapter deemed ready")
     report_text = _plain_bullet_names(report_text)
+    report_text = _authoritative_stats(report_text, stats)
     if len(report_text) > REPORT_CHAR_LIMIT:
         raise AnalyzerError(
             f"report exceeds {REPORT_CHAR_LIMIT} characters: {len(report_text)}"
@@ -680,8 +735,11 @@ class FullCIAnalysisHandler:
             return False  # newer comparisons cannot overtake this baseline
 
         cache = self._store.failure_cache_before(context.current.scheduled_at)
-        # The next baseline is exactly this run's hard failures; see _fixed.
-        expected_failures = _hard_failures(jobs)
+        # This run's hard failures, plus any baseline name still awaiting a
+        # verdict in this build — see _fixed for why the unfinished ones stay.
+        expected_failures = _hard_failures(jobs) | (
+            set(cache.failed_tests) & _unfinished(jobs)
+        )
         checkpoint = self._store.latest_checkpoint()
         if checkpoint is None:
             # First-ever analysis has no durable memory yet; it starts empty
@@ -726,6 +784,7 @@ class FullCIAnalysisHandler:
                 expected_failures=expected_failures,
                 build_number=context.current.build_number,
                 commit_sha=commit_sha,
+                stats=summary["stats"],
             )
             conditions = self._classify(context, jobs, cache, outputs)
             checkpoint = self._checkpoints.upload(_read_memory(workdir))

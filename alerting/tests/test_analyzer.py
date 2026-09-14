@@ -116,7 +116,7 @@ class FakeBuildPort:
 def well_behaved(
     working_dir: Path,
     *,
-    report: str = "*Build:* fine",
+    report: str = "*Build:* fine\n*Stats:* 999 passed, 999 failed",
     suspicious: tuple[dict[str, object], ...] = (),
     memory_note: str | None = None,
 ) -> None:
@@ -128,7 +128,15 @@ def well_behaved(
         for job in summary["jobs"]
         if job["state"] == "failed" and not job["soft_failed"]
     }
-    durable_failures = sorted(hard)
+    terminal = {
+        "passed", "failed", "timed_out", "canceled",
+        "waiting_failed", "broken", "skipped", "not_run",
+    }
+    unfinished = {
+        job["name"] for job in summary["jobs"] if job["state"] not in terminal
+    }
+    previous = set(summary["previous_failures"]["failed_tests"])
+    durable_failures = sorted(hard | (previous & unfinished))
     (logs / "ci_report.txt").write_text(report)
     (logs / "failed_tests_cache.json").write_text(
         json.dumps(
@@ -406,7 +414,7 @@ def test_analysis_persists_conditions_report_checkpoint_and_notification() -> No
     harness.runner.on_run(
         lambda wd: well_behaved(
             wd,
-            report="*🆕 New failures (1):*\n• Job B — _suspicious: <https://github.com/vllm-project/vllm/pull/101|PR #101> changed related files_",
+            report="*Stats:* 999 passed, 999 failed\n*🆕 New failures (1):*\n• Job B — _suspicious: <https://github.com/vllm-project/vllm/pull/101|PR #101> changed related files_",
             suspicious=(suspicious_pr(101, ["Job B"]),),
             memory_note="# learned",
         )
@@ -543,6 +551,7 @@ def test_wrapped_bullet_job_names_are_posted_plain_and_attributed() -> None:
             wd,
             report=(
                 "*Build:* fine\n"
+                "*Stats:* 999 passed, 999 failed\n"
                 "*New failures (1):*\n"
                 "• <https://buildkite.com/vllm/ci/builds/2#job-b|`:nvidia: Job B`>"
                 " — _env: disk full_\n"
@@ -587,8 +596,44 @@ def test_shadow_analysis_persists_report_without_slack_delivery() -> None:
     assert harness.analyze().status is ProcessStatus.COMPLETED
     notification = notification_for(harness, run2.build_id)
     assert notification.delivery_mode is DeliveryMode.SHADOW
-    assert notification.payload["text"] == "*Build:* fine"
+    # The placeholder Stats line is overwritten with the computed counts.
+    assert notification.payload["text"] == (
+        "*Build:* fine\n*Stats:* 19 passed, 1 failed"
+    )
     assert harness.runtime.dispatch_due_notifications().delivered == 0
+
+
+def test_report_stats_line_is_rewritten_from_the_computed_counts() -> None:
+    """Regression: build #88685 reported 413 passed against a real 317.
+
+    The counts have been precomputed since #108 and the instructions say to
+    copy them verbatim, but nothing enforced it. The adapter now renders the
+    line itself, so whatever the model writes there is discarded.
+    """
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs([("Job A", "failed", False)], total=40),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+    harness.seed_analysis(run1, failed_tests=("Job A",))
+    harness.runner.on_run(
+        lambda wd: well_behaved(
+            wd, report="*Build:* fine\n*Stats:* 413 passed, 8 failed (6 new, 2 recurring)"
+        )
+    )
+
+    assert harness.analyze().status is ProcessStatus.COMPLETED
+
+    report = harness.store.analyses()[-1].report_text
+    assert "413" not in report
+    assert "*Stats:* 39 passed, 1 failed (0 new, 1 recurring)" in report
 
 
 def test_materialized_working_files_match_skill_contract(tmp_path: Path) -> None:
@@ -783,7 +828,7 @@ def test_first_ever_analysis_without_any_checkpoint_starts_with_empty_memory() -
     assert harness.store.analyses()[0].current_build_id == run2.build_id
 
 
-def test_fixed_is_every_baseline_name_no_longer_failing() -> None:
+def test_fixed_excludes_names_still_awaiting_a_verdict() -> None:
     run1 = make_run(1, RUN1_AT)
     run2 = make_run(2, RUN2_AT)
     harness = Harness(
@@ -827,21 +872,23 @@ def test_fixed_is_every_baseline_name_no_longer_failing() -> None:
         for condition in analysis.conditions
         if condition.lifecycle is FailureLifecycle.FIXED
     }
-    # The legacy rule: previous - hard - soft. Missing and unfinished jobs are
-    # fixed; only the still-soft-failing job stays out of the fixed set.
+    # Terminal verdicts and absent names leave the baseline; the two jobs
+    # still awaiting a verdict are held back rather than called fixed.
     assert set(fixed) == {
         "Fixed Job",
         "Timed Out Job",
-        "Running Job",
         "Canceled Job",
-        "Scheduled Job",
         "Absent Job",
     }
     assert fixed["Fixed Job"].summary == "passed without a verified cause"
     assert all(condition.fixing_pr is None for condition in fixed.values())
-    # Nothing carries forward: this run had no hard failures, so the next
-    # baseline is empty and retired names cannot accumulate in it.
-    assert set(analysis.failure_cache.failed_tests) == set()
+    # This run had no hard failures, so the next baseline is exactly the
+    # names still waiting on a verdict. Retired names are not in the roster
+    # and so cannot accumulate the way they did before #162.
+    assert set(analysis.failure_cache.failed_tests) == {
+        "Running Job",
+        "Scheduled Job",
+    }
 
 
 def test_a_renamed_job_leaves_the_baseline_instead_of_accumulating() -> None:
@@ -1013,7 +1060,9 @@ def test_llm_failure_preserves_baseline_and_recovers_on_retry() -> None:
     [
         pytest.param(lambda wd: well_behaved(wd, report="SKIP"), id="skip-report"),
         pytest.param(
-            lambda wd: well_behaved(wd, report="x" * (REPORT_CHAR_LIMIT + 1)),
+            lambda wd: well_behaved(
+                wd, report="*Stats:* 1 passed, 0 failed\n" + "x" * REPORT_CHAR_LIMIT
+            ),
             id="oversized-report",
         ),
         pytest.param(lambda wd: None, id="no-outputs"),
@@ -1051,7 +1100,9 @@ def test_invalid_analyzer_result_preserves_baseline(
 def _write_cache_only(working_dir: Path, *, failed_tests: list[str]) -> None:
     logs = working_dir / ".logs"
     summary = json.loads((logs / "nightly_summary.json").read_text())
-    (logs / "ci_report.txt").write_text("*Build:* fine")
+    (logs / "ci_report.txt").write_text(
+        "*Build:* fine\n*Stats:* 999 passed, 999 failed"
+    )
     (logs / "failed_tests_cache.json").write_text(
         json.dumps(
             {

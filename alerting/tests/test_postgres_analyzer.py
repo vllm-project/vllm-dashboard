@@ -296,7 +296,9 @@ class WellBehavedRunner:
                 if job["state"] == "failed" and not job["soft_failed"]
             }
         )
-        (logs / "ci_report.txt").write_text("*Build:* fine")
+        (logs / "ci_report.txt").write_text(
+            "*Build:* fine\n*Stats:* 999 passed, 999 failed"
+        )
         (logs / "failed_tests_cache.json").write_text(
             json.dumps(
                 {
