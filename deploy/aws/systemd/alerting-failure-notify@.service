@@ -7,6 +7,9 @@ User=alerting
 Group=alerting
 ExecStart=/opt/alerting/bin/notify-failure %i
 StandardOutput=null
+# Not inherited from StandardOutput: a notifier that fails silently is
+# worse than no notifier. Its stderr carries no secrets.
+StandardError=journal
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

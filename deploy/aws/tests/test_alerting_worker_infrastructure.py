@@ -350,3 +350,19 @@ def test_failure_notifier_never_depends_on_the_database() -> None:
     # Throttled, because the timers that fail every two minutes during an
     # outage would otherwise send hundreds of messages.
     assert "ALERTING_FAILURE_THROTTLE_SECONDS" in script
+
+
+def test_failure_notifier_survives_its_own_sandbox() -> None:
+    """It runs under the same hardening as the workers, and must cope.
+
+    The first deployed version exited 1 before sending anything: `load-secrets`
+    shells out to the AWS CLI, which needs a writable HOME, and the unit's
+    sandbox leaves none. It also inherited `StandardError` from
+    `StandardOutput=null`, so the failure produced no message anywhere.
+    """
+    script = read("bin/notify-failure")
+    assert "export HOME=/run/alerting/home" in script
+    assert 'install -d -m 0700 "$HOME"' in script
+
+    unit = read("systemd/alerting-failure-notify@.service")
+    assert "StandardError=journal" in unit

@@ -13,6 +13,12 @@ stamp="${stamp_dir}/${unit}"
 
 install -d -m 0700 "$stamp_dir"
 
+# load-secrets shells out to the AWS CLI, which needs a writable HOME. Under
+# the unit's sandbox there is none, so it fails before fetching anything —
+# run-worker sets this up for the same reason.
+export HOME=/run/alerting/home
+install -d -m 0700 "$HOME"
+
 credentials_path=/run/alerting/notify-failure.env
 cleanup() { rm -f "$credentials_path"; }
 trap cleanup EXIT HUP INT TERM
