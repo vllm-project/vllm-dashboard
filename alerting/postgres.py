@@ -1095,26 +1095,35 @@ class PostgresAlertStore:
         ]
 
     def latest_reports(self) -> list[HostReport]:
-        """Newest gpu or host snapshot receipt per hostname.
+        """Newest gpu or host rollup receipt per hostname.
 
-        The gpu side is bounded at twice the 7-day retirement age: older
-        last-reports belong to hosts that have already retired, and an
-        unbounded DISTINCT ON over gpu_snapshots (8M+ rows) blows the
-        statement timeout on every scan.
+        Reads the five-minute rollups, not the raw snapshots: reporters
+        write both in one transaction, and a DISTINCT ON over
+        gpu_snapshots (10M+ rows) intermittently blows the statement
+        timeout when the database is under load. Both sides are bounded
+        at twice the 7-day retirement age: older last-reports belong to
+        hosts that have already retired.
+
+        The gpu rollup has no per-sample timestamp, so its last report
+        is the bucket start — up to five minutes earlier than the true
+        last sample. Detection granularity is already the five-minute
+        scan cadence, and the bias is toward alerting slightly early on
+        a host that has actually gone silent.
         """
         with self._connection_factory() as connection:
             rows = connection.execute(
                 """
                 WITH gpu AS (
-                    SELECT DISTINCT ON (hostname) hostname, reported_at
-                    FROM gpu_snapshots
-                    WHERE reported_at >= now() - interval '14 days'
-                    ORDER BY hostname, reported_at DESC
+                    SELECT hostname, max(time_bucket) AS reported_at
+                    FROM gpu_history_5m
+                    WHERE time_bucket >= now() - interval '14 days'
+                    GROUP BY hostname
                 ),
                 host AS (
-                    SELECT DISTINCT ON (hostname) hostname, reported_at
-                    FROM host_snapshots
-                    ORDER BY hostname, reported_at DESC
+                    SELECT hostname, max(latest_reported_at) AS reported_at
+                    FROM host_history_5m
+                    WHERE time_bucket >= now() - interval '14 days'
+                    GROUP BY hostname
                 )
                 SELECT COALESCE(gpu.hostname, host.hostname),
                        GREATEST(gpu.reported_at, host.reported_at)

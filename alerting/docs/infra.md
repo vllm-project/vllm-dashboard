@@ -6,7 +6,8 @@ Three fleet-health signals, reconciled by one five-minute scan
 (`infra_scan`):
 
 - **Unreporting** — an expected host whose latest successful report
-  (any `gpu_snapshots` / `host_snapshots` row) is older than the threshold
+  (newest `gpu_history_5m` / `host_history_5m` rollup row; reporters write
+  raw snapshots and rollups in one transaction) is older than the threshold
   for `consecutive_scans` consecutive scans. The wording always says the
   host "stopped reporting"; the alert never claims a machine is down. A
   host absent from every expected source and silent for 7 days is
@@ -81,7 +82,9 @@ by `src/app/api/alerts/infra/route.ts`.
 
 ## Tables
 
-Reads: `gpu_snapshots`, `host_snapshots`, `alert_thresholds`.
+Reads: `gpu_history_5m`, `host_history_5m` (latest-report times),
+`gpu_snapshots` (recent hosts, GPU temperatures), `host_snapshots` (disk
+mounts), `alert_thresholds`.
 Writes: `alerting_infra_host_states` (per-subject consecutive-breach counts
 and retirement), `alerting_infra_alerts` (episodes; partial unique index
 keeps at most one open episode per `(alert_type, subject_key)`),
