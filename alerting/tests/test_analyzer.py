@@ -636,6 +636,51 @@ def test_report_stats_line_is_rewritten_from_the_computed_counts() -> None:
     assert "*Stats:* 39 passed, 1 failed (0 new, 1 recurring)" in report
 
 
+def test_section_headings_are_restored_to_the_legacy_wording() -> None:
+    """The model rewords the headings run to run; the report must not.
+
+    Build #88685 shipped "Recurring (2)" and "Soft-failed (1)" where the
+    legacy report says "Recurring failures" and "Soft failures — warning
+    only", and #88612 dropped the emoji from every heading.
+    """
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs(
+                    [("Job A", "failed", False), ("Soft Job", "failed", True)]
+                ),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+    harness.seed_analysis(run1, failed_tests=("Job A",))
+    harness.runner.on_run(
+        lambda wd: well_behaved(
+            wd,
+            report=(
+                "*Build:* fine\n"
+                "*Stats:* 1 passed, 1 failed\n"
+                "*:repeat: Recurring (1):*\n"
+                "• Job A\n"
+                "*:large_yellow_circle: Soft-failed (1):*\n"
+                "• Soft Job\n"
+            ),
+        )
+    )
+
+    assert harness.analyze().status is ProcessStatus.COMPLETED
+
+    report = harness.store.analyses()[-1].report_text
+    assert "*🔁 Recurring failures (1):*" in report
+    assert "*⚠️ Soft failures — warning only (1):*" in report
+    assert ":repeat:" not in report and "Soft-failed" not in report
+    assert "• Job A" in report  # bullets are left alone
+
+
 def test_materialized_working_files_match_skill_contract(tmp_path: Path) -> None:
     run1 = make_run(1, RUN1_AT)
     run2 = make_run(2, RUN2_AT)

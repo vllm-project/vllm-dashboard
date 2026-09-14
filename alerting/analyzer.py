@@ -353,6 +353,39 @@ def _authoritative_stats(report_text: str, stats: Mapping[str, Any]) -> str:
     return replaced
 
 
+# The legacy report's section headings, verbatim. The model rewords them every
+# run — "Recurring" for "Recurring failures", "Fixed" for "Fixed since last
+# run", "Soft-failed" for "Soft failures — warning only" — so they are
+# normalised here rather than restated in the instructions. Most specific
+# keyword first; "new" is last because it is the shortest.
+_SECTION_HEADING = re.compile(r"^\*[^*]*\((?P<count>\d+)\):\*\s*$")
+_CANONICAL_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("cascad", "*⏳ Cascaded, never ran ({count}):*"),
+    ("timed", "*⏱️ Timed out / cancelled ({count}):*"),
+    ("cancel", "*⏱️ Timed out / cancelled ({count}):*"),
+    ("soft", "*⚠️ Soft failures — warning only ({count}):*"),
+    ("fixed", "*✅ Fixed since last run ({count}):*"),
+    ("recurring", "*🔁 Recurring failures ({count}):*"),
+    ("new", "*🆕 New failures ({count}):*"),
+)
+
+
+def _canonical_sections(report_text: str) -> str:
+    """Restore the legacy heading wording, whatever the model called them."""
+    lines = []
+    for line in report_text.splitlines():
+        heading = _SECTION_HEADING.match(line)
+        if heading is not None:
+            lowered = line.lower()
+            for keyword, template in _CANONICAL_SECTIONS:
+                if keyword in lowered:
+                    line = template.format(count=heading.group("count"))
+                    break
+        lines.append(line)
+    text = "\n".join(lines)
+    return text + "\n" if report_text.endswith("\n") else text
+
+
 def _plain_bullet_names(report_text: str) -> str:
     """Unwrap links and code spans around job names at bullet starts.
 
@@ -618,6 +651,7 @@ def _read_outputs(
         raise AnalyzerError("analyzer skipped a comparison the adapter deemed ready")
     report_text = _plain_bullet_names(report_text)
     report_text = _authoritative_stats(report_text, stats)
+    report_text = _canonical_sections(report_text)
     if len(report_text) > REPORT_CHAR_LIMIT:
         raise AnalyzerError(
             f"report exceeds {REPORT_CHAR_LIMIT} characters: {len(report_text)}"
