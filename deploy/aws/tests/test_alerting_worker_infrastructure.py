@@ -366,3 +366,14 @@ def test_failure_notifier_survives_its_own_sandbox() -> None:
 
     unit = read("systemd/alerting-failure-notify@.service")
     assert "StandardError=journal" in unit
+
+
+def test_failure_notifier_can_write_its_runtime_directory() -> None:
+    """`ProtectSystem=strict` mounts /run read-only, and load-secrets needs it.
+
+    Without this the notifier dies at `mktemp: ... Read-only file system`
+    before it can fetch the bot token, which is a silent alarm.
+    """
+    unit = read("systemd/alerting-failure-notify@.service")
+    assert "ProtectSystem=strict" in unit
+    assert "ReadWritePaths=/run/alerting" in unit

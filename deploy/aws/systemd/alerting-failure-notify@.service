@@ -15,5 +15,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
+# ProtectSystem=strict mounts /run read-only, and load-secrets needs to
+# write the credential file there. Observed as
+# "mktemp: failed to create file ... Read-only file system".
+ReadWritePaths=/run/alerting
 RestrictSUIDSGID=true
 LockPersonality=true
