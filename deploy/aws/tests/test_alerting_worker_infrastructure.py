@@ -313,3 +313,40 @@ def test_timer_wake_up_creates_a_minute_stable_reconciliation_command(
 
     assert command.command_type == command_type
     assert command.target_time == datetime(2026, 8, 27, 19, 0, tzinfo=timezone.utc)
+
+
+def test_every_scheduled_unit_reports_its_failures_to_slack() -> None:
+    """A failing timer must announce itself; nothing else surfaces it.
+
+    Worker stdout is discarded by design and errors normally land in Postgres,
+    so a failure that is *caused* by Postgres being unreachable leaves no trace
+    anywhere. On 2026-09-14 that hid a seven-hour outage.
+    """
+    notifier = "alerting-failure-notify@%n.service"
+    units = sorted(
+        path
+        for path in (AWS_DIR / "systemd").glob("alerting-*.service")
+        if "failure-notify" not in path.name
+    )
+    assert units, "no scheduled units found"
+    for path in units:
+        assert f"OnFailure={notifier}" in path.read_text(), path.name
+
+    template = read("systemd/alerting-failure-notify@.service")
+    assert "ExecStart=/opt/alerting/bin/notify-failure %i" in template
+    # The notifier must not chain to itself on failure, or one dead Slack token
+    # becomes an endless loop of units failing to report units failing.
+    assert "OnFailure=" not in template
+
+    install = read("install.sh")
+    assert "bin/notify-failure /opt/alerting/bin/notify-failure" in install
+
+
+def test_failure_notifier_never_depends_on_the_database() -> None:
+    script = read("bin/notify-failure")
+    assert "DATABASE_URL" not in script
+    assert "psycopg" not in script
+    assert "chat.postMessage" in script
+    # Throttled, because the timers that fail every two minutes during an
+    # outage would otherwise send hundreds of messages.
+    assert "ALERTING_FAILURE_THROTTLE_SECONDS" in script

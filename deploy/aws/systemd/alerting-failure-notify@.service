@@ -1,0 +1,16 @@
+[Unit]
+Description=Report failed alerting unit %i to Slack
+
+[Service]
+Type=oneshot
+User=alerting
+Group=alerting
+ExecStart=/opt/alerting/bin/notify-failure %i
+StandardOutput=null
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictSUIDSGID=true
+LockPersonality=true

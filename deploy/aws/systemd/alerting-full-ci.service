@@ -2,6 +2,7 @@
 Description=Reconcile Full CI alert history
 After=network-online.target
 Wants=network-online.target
+OnFailure=alerting-failure-notify@%n.service
 
 [Service]
 Type=oneshot

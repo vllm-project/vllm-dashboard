@@ -24,6 +24,7 @@ install -d -m 0755 /opt/alerting/bin /etc/alerting
 install -m 0755 "$source_root"/deploy/aws/bin/load-secrets /opt/alerting/bin/load-secrets
 install -m 0755 "$source_root"/deploy/aws/bin/render-secret-env /opt/alerting/bin/render-secret-env
 install -m 0755 "$source_root"/deploy/aws/bin/run-worker /opt/alerting/bin/run-worker
+install -m 0755 "$source_root"/deploy/aws/bin/notify-failure /opt/alerting/bin/notify-failure
 install -m 0755 "$source_root"/deploy/aws/bin/run-retention /opt/alerting/bin/run-retention
 install -m 0644 "$source_root"/deploy/aws/systemd/*.service /etc/systemd/system/
 install -m 0644 "$source_root"/deploy/aws/systemd/*.timer /etc/systemd/system/
