@@ -34,6 +34,7 @@ from alerting.runtime import AlertingRuntime, ProcessStatus
 START = datetime(2026, 8, 29, 10, 0, tzinfo=timezone.utc)
 
 VALID_PAYLOAD: dict[str, Any] = {
+    "failure_signature": "gpu correctness | agent_lost | process exited before tests",
     "classification": "infra",
     "confidence": "high",
     "summary": "The runner lost its GPU agent before the test binary started.",
@@ -215,6 +216,9 @@ def test_open_alert_is_analyzed_and_the_sidecar_row_is_stored() -> None:
     (analysis,) = store.analyses()
     assert analysis.alert_id == 1
     assert analysis.analyzed_failure_job_id == "job-101-failed"
+    assert analysis.failure_signature == (
+        "gpu correctness | agent_lost | process exited before tests"
+    )
     assert analysis.classification == "infra"
     assert analysis.model_version == "moonshotai/Kimi-K3"
 
@@ -311,6 +315,7 @@ def test_commit_drops_an_analysis_superseded_by_a_newer_failure() -> None:
     analysis = MainCIJobAnalysis(
         alert_id=1,
         analyzed_failure_job_id="job-101-failed",
+        failure_signature="gpu correctness | agent_lost | process exited before tests",
         classification="infra",
         confidence="high",
         summary="summary",
@@ -356,6 +361,9 @@ def test_read_analysis_accepts_the_valid_schema(tmp_path: Path) -> None:
     )
 
     assert analysis.classification == "infra"
+    assert analysis.failure_signature == (
+        "gpu correctness | agent_lost | process exited before tests"
+    )
     assert analysis.confidence == "high"
     assert analysis.suspected_fix_prs[0].number == 123
     assert analysis.evidence_urls == ("https://buildkite.com/vllm/ci/builds/101#job-2",)
@@ -365,6 +373,8 @@ def test_read_analysis_accepts_the_valid_schema(tmp_path: Path) -> None:
     "patch",
     [
         {"classification": "broken"},
+        {"failure_signature": "missing-segments"},
+        {"failure_signature": "scope | family | "},
         {"confidence": "certain"},
         {"summary": ""},
         {"evidence_urls": "not-a-list"},
@@ -420,6 +430,23 @@ def test_read_analysis_accepts_summary_up_to_the_limit(tmp_path: Path) -> None:
     )
 
     assert analysis.summary == "x" * SUMMARY_CHAR_LIMIT
+
+
+def test_read_analysis_normalizes_signature_case_and_whitespace(tmp_path: Path) -> None:
+    payload = {
+        **VALID_PAYLOAD,
+        "failure_signature": " GPU Correctness  |  AGENT_LOST | Process Exited ",
+    }
+
+    analysis = read_analysis(
+        _write_payload(tmp_path, payload),
+        target=_target(),
+        model_version="model",
+    )
+
+    assert analysis.failure_signature == (
+        "gpu correctness | agent_lost | process exited"
+    )
 
 
 def test_read_analysis_requires_the_output_file(tmp_path: Path) -> None:

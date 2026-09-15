@@ -335,7 +335,7 @@
     "/api/alerts/main-ci/updates": {
       "post": {
         "operationId": "appendMainCiAlertUpdate",
-        "summary": "Append an authenticated responder update to one exact failure revision",
+        "summary": "Append an authenticated, signature-bound responder update to one exact failure revision",
         "security": [
           {
             "AgentToken": []
@@ -382,7 +382,7 @@
             "$ref": "#/components/responses/Error"
           },
           "409": {
-            "description": "Stale failure revision or idempotency-key conflict. Inspect the response code and re-read the alert before deciding whether to post again.",
+            "description": "Failure signature unavailable, stale failure revision, or idempotency-key conflict. Inspect the response code and re-read the alert before deciding whether to post again.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1670,6 +1670,17 @@
               "$ref": "#/components/schemas/MainCiFixPr"
             }
           },
+          "solution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MainCiAlertSolution"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional accountable path for this exact failure revision. Omit or send null to leave it explicitly untriaged."
+          },
           "author": {
             "type": "string",
             "minLength": 1,
@@ -1704,6 +1715,13 @@
             "type": "string",
             "format": "uuid"
           },
+          "failureSignature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Server-bound normalized root-failure signature. Fix links may be carried to a later revision only after an exact signature match and live GitHub applicability checks."
+          },
           "kind": {
             "type": "string"
           },
@@ -1715,6 +1733,16 @@
             "items": {
               "$ref": "#/components/schemas/MainCiFixPr"
             }
+          },
+          "solution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MainCiAlertSolution"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "author": {
             "type": "string"
@@ -1728,11 +1756,42 @@
           "updateId",
           "alertId",
           "failureJobId",
+          "failureSignature",
           "kind",
           "message",
           "fixPrs",
+          "solution",
           "author",
           "createdAt"
+        ]
+      },
+      "MainCiAlertSolution": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "code_fix",
+              "infra_action",
+              "known_flake",
+              "monitoring"
+            ]
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "kind",
+          "owner",
+          "action"
         ]
       },
       "MainCiAlertUpdateResponse": {

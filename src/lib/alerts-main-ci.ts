@@ -26,21 +26,68 @@ export type MainCiAlertUpdateKind =
   | "fix_opened"
   | "monitoring";
 
+/** The accountable path currently expected to move an open alert forward. */
+export type MainCiSolutionKind =
+  | "code_fix"
+  | "infra_action"
+  | "known_flake"
+  | "monitoring";
+
+export interface MainCiAlertSolution {
+  kind: MainCiSolutionKind;
+  owner: string;
+  action: string;
+}
+
+export type MainCiFixOwnershipStatus =
+  | "current"
+  | "carried"
+  | "stale"
+  | "signature_changed"
+  | "inactive"
+  | "merged_pending"
+  | "regressed"
+  | "unverified";
+
+export type MainCiSolutionIssue =
+  | "missing_current_solution"
+  | "stale_action"
+  | "signature_changed"
+  | "inactive_fix"
+  | "fix_merged_pending"
+  | "fix_already_contained"
+  | "fix_unverified";
+
+export interface MainCiSolutionCoverage {
+  kind: MainCiSolutionKind | "untriaged";
+  owner: string | null;
+  action: string | null;
+  sourceUpdateId: string | null;
+  updatedAt: string | null;
+  issues: MainCiSolutionIssue[];
+}
+
 export interface MainCiAlertUpdate {
   updateId: string;
   failureJobId: string;
+  failureSignature: string | null;
   kind: MainCiAlertUpdateKind;
   message: string;
   fixPrs: MainCiSuspectedFixPr[];
+  solution: MainCiAlertSolution | null;
   author: string;
   createdAt: string;
   /** True when this update describes an older failure revision. */
   stale: boolean;
+  /** Fix links safe to present as owners of the current failure. */
+  carriedFixPrs: MainCiSuspectedFixPr[];
+  fixOwnershipStatus: MainCiFixOwnershipStatus;
 }
 
 /** One worker-written diagnosis, keyed to the failure it was computed from. */
 export interface MainCiJobAnalysis {
   analyzedFailureJobId: string;
+  failureSignature: string | null;
   classification: MainCiAnalysisClassification;
   confidence: MainCiAnalysisConfidence;
   summary: string;
@@ -78,6 +125,7 @@ export interface MainCiJobAlert {
   resolutionKind: MainCiResolutionKind | null;
   analysis: MainCiJobAnalysis | null;
   updates: MainCiAlertUpdate[];
+  solutionCoverage: MainCiSolutionCoverage;
 }
 
 export interface MainCiJobAlertRow {
@@ -111,6 +159,7 @@ export interface MainCiJobAlertRow {
   resolution_commit_sha: string | null;
   resolution_kind: MainCiResolutionKind | null;
   analysis_analyzed_failure_job_id: string | null;
+  analysis_failure_signature: string | null;
   analysis_classification: MainCiAnalysisClassification | null;
   analysis_confidence: MainCiAnalysisConfidence | null;
   analysis_summary: string | null;
@@ -128,6 +177,30 @@ const MAIN_CI_ALERT_UPDATE_KINDS = new Set<MainCiAlertUpdateKind>([
   "fix_opened",
   "monitoring",
 ]);
+const MAIN_CI_SOLUTION_KINDS = new Set<MainCiSolutionKind>([
+  "code_fix",
+  "infra_action",
+  "known_flake",
+  "monitoring",
+]);
+
+function toMainCiAlertSolution(value: unknown): MainCiAlertSolution | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.kind !== "string" ||
+    !MAIN_CI_SOLUTION_KINDS.has(candidate.kind as MainCiSolutionKind) ||
+    typeof candidate.owner !== "string" ||
+    typeof candidate.action !== "string"
+  ) {
+    return null;
+  }
+  return {
+    kind: candidate.kind as MainCiSolutionKind,
+    owner: candidate.owner,
+    action: candidate.action,
+  };
+}
 
 function toSuspectedFixPrs(value: unknown): MainCiSuspectedFixPr[] {
   return Array.isArray(value)
@@ -148,6 +221,7 @@ function toSuspectedFixPrs(value: unknown): MainCiSuspectedFixPr[] {
 function toMainCiAlertUpdates(
   value: unknown,
   latestFailureJobId: string,
+  currentFailureSignature: string | null,
 ): MainCiAlertUpdate[] {
   if (!Array.isArray(value)) return [];
 
@@ -156,6 +230,10 @@ function toMainCiAlertUpdates(
     const candidate = entry as Record<string, unknown>;
     const kind = candidate.kind;
     const createdAt = candidate.createdAt;
+    const failureSignature =
+      typeof candidate.failureSignature === "string"
+        ? candidate.failureSignature
+        : null;
     if (
       (typeof candidate.updateId !== "string" &&
         typeof candidate.updateId !== "number") ||
@@ -169,16 +247,37 @@ function toMainCiAlertUpdates(
     ) {
       return [];
     }
+    const fixPrs = toSuspectedFixPrs(candidate.fixPrs);
+    const solution = toMainCiAlertSolution(candidate.solution);
+    const stale = candidate.failureJobId !== latestFailureJobId;
+    const signatureMatches =
+      stale &&
+      fixPrs.length > 0 &&
+      failureSignature !== null &&
+      currentFailureSignature !== null &&
+      failureSignature === currentFailureSignature;
     return [
       {
         updateId: String(candidate.updateId),
         failureJobId: candidate.failureJobId,
+        failureSignature,
         kind: kind as MainCiAlertUpdateKind,
         message: candidate.message,
-        fixPrs: toSuspectedFixPrs(candidate.fixPrs),
+        fixPrs,
+        solution,
         author: candidate.author,
         createdAt: new Date(createdAt).toISOString(),
-        stale: candidate.failureJobId !== latestFailureJobId,
+        stale,
+        carriedFixPrs: stale ? [] : fixPrs,
+        fixOwnershipStatus: stale
+          ? signatureMatches
+            ? "unverified"
+            : fixPrs.length > 0 &&
+                failureSignature !== null &&
+                currentFailureSignature !== null
+              ? "signature_changed"
+              : "stale"
+          : "current",
       },
     ];
   });
@@ -226,6 +325,7 @@ function toMainCiJobAnalysis(row: MainCiJobAlertRow): MainCiJobAnalysis | null {
   const suspectedFixPrs = toSuspectedFixPrs(row.analysis_suspected_fix_prs);
   return {
     analyzedFailureJobId: row.analysis_analyzed_failure_job_id,
+    failureSignature: row.analysis_failure_signature,
     classification: row.analysis_classification,
     confidence: row.analysis_confidence,
     summary: row.analysis_summary,
@@ -239,6 +339,7 @@ function toMainCiJobAnalysis(row: MainCiJobAlertRow): MainCiJobAnalysis | null {
 }
 
 export function toMainCiJobAlert(row: MainCiJobAlertRow): MainCiJobAlert {
+  const analysis = toMainCiJobAnalysis(row);
   const resolution =
     row.resolved_at !== null &&
     row.resolution_job_id !== null &&
@@ -288,8 +389,20 @@ export function toMainCiJobAlert(row: MainCiJobAlertRow): MainCiJobAlert {
     resolvedAt: row.resolved_at?.toISOString() ?? null,
     resolution,
     resolutionKind: row.resolution_kind,
-    analysis: toMainCiJobAnalysis(row),
-    updates: toMainCiAlertUpdates(row.agent_updates, row.last_failure_job_id),
+    analysis,
+    updates: toMainCiAlertUpdates(
+      row.agent_updates,
+      row.last_failure_job_id,
+      analysis && !analysis.stale ? analysis.failureSignature : null,
+    ),
+    solutionCoverage: {
+      kind: "untriaged",
+      owner: null,
+      action: null,
+      sourceUpdateId: null,
+      updatedAt: null,
+      issues: ["missing_current_solution"],
+    },
   };
 }
 

@@ -59,6 +59,17 @@ from automated analysis and never overwrite it. Every update names the exact
 `lastFailure.buildkiteJobId` it describes, so a later failure makes the older
 update visibly stale instead of silently moving it to a new revision.
 
+Responders may additionally attach a structured `solution` with a kind
+(`code_fix`, `infra_action`, `known_flake`, or `monitoring`), an owner, and a
+concrete action. A missing solution is explicitly untriaged. Fix ownership is
+carried across revisions only for the same normalized failure signature and
+only while live GitHub state says the PR remains applicable. The alerts read
+path flags changed signatures, closed/non-main PRs, fixes already contained by
+the failing commit, unverifiable PRs, and stale non-code actions. Vercel runs
+`/api/cron/reconcile-main-ci-solutions` hourly so this audit occurs even when
+the page is not open; the same current reconciliation state is rendered in the
+Solution column.
+
 The update endpoint requires `Authorization: Bearer $ALERT_AGENT_TOKEN` and an
 idempotency key unique to the logical update. It returns `201` for a new row and
 `200` with `duplicate: true` for an identical retry. Reusing a key for different
