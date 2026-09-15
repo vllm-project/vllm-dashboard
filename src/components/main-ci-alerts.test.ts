@@ -115,7 +115,7 @@ test("analyzed alert renders classification and the analysis panel", () => {
   );
 
   assert.match(markup, /infra/);
-  assert.match(markup, /· high/);
+  assert.doesNotMatch(markup, /high confidence|· high/);
   assert.match(markup, /The runner lost its GPU agent/);
   assert.match(markup, /Re-run the job on a fresh agent/);
   assert.match(markup, /PR #123 — Guard against agent loss/);
@@ -177,6 +177,9 @@ test("responder updates surface fix PRs and older failure revisions", () => {
   assert.match(markup, /Opened a narrow fix/);
   assert.match(markup, /Older failure/);
   assert.match(markup, /PR #456 — Fix collective RPC teardown/);
+  assert.match(markup, /<span>Solution<\/span>/);
+  assert.match(markup, /PR #456<\/a>/);
+  assert.doesNotMatch(markup, /medium confidence|· medium/);
   assert.match(markup, /https:\/\/github\.com\/vllm-project\/vllm\/pull\/456/);
 });
 

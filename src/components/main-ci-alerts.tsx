@@ -284,7 +284,7 @@ function SortSelect({
  * failure count and action, and drop the two time columns.
  */
 const ROW_GRID =
-  "grid grid-cols-[1rem_minmax(0,1fr)_2.5rem_auto] items-center gap-x-3 sm:grid-cols-[1rem_minmax(0,1fr)_10.5rem_4.5rem_6.5rem_6.5rem_4.5rem]";
+  "grid grid-cols-[1rem_minmax(0,1fr)_2.5rem_auto] items-center gap-x-3 sm:grid-cols-[1rem_minmax(10rem,1fr)_7.5rem_minmax(12rem,1fr)_4.5rem_6.5rem_6.5rem_4.5rem]";
 
 const LINK_CLASSES = "text-blue-600 hover:underline dark:text-blue-400";
 
@@ -362,14 +362,12 @@ function ReasonBadge({ analysis }: { analysis: MainCiJobAnalysis }) {
     <>
       <span
         className={`inline-flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset ${style.badge}`}
-        title={`${analysis.confidence} confidence`}
       >
         <span
           aria-hidden="true"
           className={`h-1.5 w-1.5 shrink-0 rounded-full ${style.dot}`}
         />
         {analysis.classification}
-        <span className="font-normal opacity-70">· {analysis.confidence}</span>
       </span>
       {analysis.stale && (
         <span
@@ -380,6 +378,65 @@ function ReasonBadge({ analysis }: { analysis: MainCiJobAnalysis }) {
         </span>
       )}
     </>
+  );
+}
+
+function SolutionSummary({ alert }: { alert: MainCiJobAlert }) {
+  const update =
+    alert.updates.find((candidate) => !candidate.stale) ?? alert.updates[0];
+  const analysis = alert.analysis?.stale ? null : alert.analysis;
+  const message = update?.message ?? analysis?.recommendedAction ?? null;
+  const fixPrs = update?.fixPrs ?? analysis?.suspectedFixPrs ?? [];
+  const uniqueFixPrs = [
+    ...new Map(fixPrs.map((pr) => [pr.url, pr])).values(),
+  ];
+
+  if (message === null && uniqueFixPrs.length === 0) {
+    return (
+      <span className="hidden text-xs text-zinc-400 sm:block dark:text-zinc-500">
+        No solution posted
+      </span>
+    );
+  }
+
+  return (
+    <span className="hidden min-w-0 sm:block">
+      {message && (
+        <span
+          className="block truncate text-xs text-zinc-600 dark:text-zinc-300"
+          title={message}
+        >
+          {update?.stale && (
+            <span className="font-medium text-amber-700 dark:text-amber-300">
+              Older: {" "}
+            </span>
+          )}
+          {message}
+        </span>
+      )}
+      {uniqueFixPrs.length > 0 && (
+        <span className="mt-0.5 flex min-w-0 gap-2 text-[11px]">
+          {uniqueFixPrs.slice(0, 2).map((pr) => (
+            <a
+              key={pr.url}
+              href={pr.url}
+              target="_blank"
+              rel="noreferrer"
+              title={pr.title || pr.url}
+              onClick={(event) => event.stopPropagation()}
+              className={`truncate font-medium ${LINK_CLASSES}`}
+            >
+              {pr.number !== null ? `PR #${pr.number}` : pr.title || "Fix"}
+            </a>
+          ))}
+          {uniqueFixPrs.length > 2 && (
+            <span className="shrink-0 text-zinc-400 dark:text-zinc-500">
+              +{uniqueFixPrs.length - 2}
+            </span>
+          )}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -780,8 +837,9 @@ export function MainCiAlertRow({
             </span>
           )}
         </span>
+        <SolutionSummary alert={alert} />
         <span
-          className={`col-start-3 row-start-1 text-right text-xs font-medium tabular-nums sm:col-start-4 ${failureCountClasses(alert.failureCount)}`}
+          className={`col-start-3 row-start-1 text-right text-xs font-medium tabular-nums sm:col-start-5 ${failureCountClasses(alert.failureCount)}`}
           title={runsLabel}
           aria-label={runsLabel}
         >
@@ -801,7 +859,7 @@ export function MainCiAlertRow({
         >
           {formatRelativeTime(alert.lastFailure.finishedAt, now)}
         </time>
-        <span className="col-start-4 row-start-1 flex justify-end sm:col-start-7">
+        <span className="col-start-4 row-start-1 flex justify-end sm:col-start-8">
           {!resolved && onResolve && (
             <button
               type="button"
@@ -996,6 +1054,7 @@ export function MainCIAlerts({
             <span />
             <SortHeader columnKey="job" sort={sort} onSort={toggleSort} />
             <span>Reason</span>
+            <span>Solution</span>
             <SortHeader
               columnKey="failures"
               sort={sort}
