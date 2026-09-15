@@ -186,7 +186,9 @@ function SortHeader({
       type="button"
       onClick={() => onSort(columnKey)}
       aria-label={`Sort by ${column.label.toLowerCase()}${
-        direction ? `, currently ${direction === "asc" ? "ascending" : "descending"}` : ""
+        direction
+          ? `, currently ${direction === "asc" ? "ascending" : "descending"}`
+          : ""
       }`}
       className={`dashboard-control group/sort inline-flex items-center gap-1 rounded text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
         align === "right" ? "justify-self-end" : "justify-self-start"
@@ -251,10 +253,7 @@ function SortSelect({
         {SORT_COLUMNS.map((column) => (
           <optgroup key={column.key} label={column.label}>
             {(["desc", "asc"] as const).map((direction) => (
-              <option
-                key={direction}
-                value={`${column.key}:${direction}`}
-              >
+              <option key={direction} value={`${column.key}:${direction}`}>
                 {DIRECTION_LABELS[column.key][direction]}
               </option>
             ))}
@@ -395,63 +394,141 @@ function currentFixPrs(alert: MainCiJobAlert): MainCiSuspectedFixPr[] {
   return [...new Map(fixPrs.map((pr) => [pr.url, pr])).values()];
 }
 
-function SolutionSummary({ alert }: { alert: MainCiJobAlert }) {
+/**
+ * What the Solution column says for one alert: the newest responder update
+ * when there is one (an older revision's update still shows, flagged), else
+ * the automated analysis' recommendation, else nothing.
+ */
+interface SolutionView {
+  label: string;
+  tone: "update" | "older" | "analysis";
+  message: string;
+  by: string;
+  at: string;
+  fixPrs: MainCiSuspectedFixPr[];
+}
+
+function solutionFor(alert: MainCiJobAlert): SolutionView | null {
   const update =
     alert.updates.find((candidate) => !candidate.stale) ?? alert.updates[0];
-  const analysis = alert.analysis?.stale ? null : alert.analysis;
-  const message = update?.message ?? analysis?.recommendedAction ?? null;
-  const fixPrs = currentFixPrs(alert);
-  const fallbackFixPrs =
-    fixPrs.length === 0 && update?.stale ? update.fixPrs : fixPrs;
-  const uniqueFixPrs = [
-    ...new Map(fallbackFixPrs.map((pr) => [pr.url, pr])).values(),
-  ];
+  if (update) {
+    const current = currentFixPrs(alert);
+    return {
+      label: update.stale ? "Older" : UPDATE_KIND_LABELS[update.kind],
+      tone: update.stale ? "older" : "update",
+      message: update.message,
+      by: update.author,
+      at: update.createdAt,
+      fixPrs: current.length > 0 ? current : update.fixPrs,
+    };
+  }
+  const analysis =
+    alert.analysis && !alert.analysis.stale ? alert.analysis : null;
+  if (analysis) {
+    return {
+      label: "Suggested",
+      tone: "analysis",
+      message: analysis.recommendedAction,
+      by: "analysis",
+      at: analysis.analyzedAt,
+      fixPrs: analysis.suspectedFixPrs,
+    };
+  }
+  return null;
+}
 
-  if (message === null && uniqueFixPrs.length === 0) {
+/**
+ * Who is speaking in a Solution cell. Responder updates are solid, a message
+ * about an older failure revision is amber, and the automated analysis'
+ * suggestion is outlined so it never reads as a human commitment.
+ */
+const SOLUTION_LABEL_STYLES: Record<SolutionView["tone"], string> = {
+  update: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
+  older: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
+  analysis:
+    "text-zinc-500 ring-1 ring-zinc-300 ring-inset dark:text-zinc-400 dark:ring-zinc-700",
+};
+
+const SOLUTION_LABEL_TITLES: Record<SolutionView["tone"], string> = {
+  update: "Posted by a responder for the current failure",
+  older:
+    "Posted for an older failure revision; a newer failure has happened since",
+  analysis:
+    "Recommended by the automated analysis; no responder has posted yet",
+};
+
+function SolutionLabel({
+  tone,
+  children,
+}: {
+  tone: SolutionView["tone"];
+  children: ReactNode;
+}) {
+  return (
+    <span
+      className={`shrink-0 rounded px-1 py-px text-[10px] font-semibold tracking-wide uppercase ${SOLUTION_LABEL_STYLES[tone]}`}
+      title={SOLUTION_LABEL_TITLES[tone]}
+    >
+      {children}
+    </span>
+  );
+}
+
+function SolutionSummary({
+  alert,
+  now,
+  groupFixPrUrl,
+}: {
+  alert: MainCiJobAlert;
+  now: Date;
+  /** The PR this row is already grouped under, so the cell need not repeat it. */
+  groupFixPrUrl?: string;
+}) {
+  const solution = solutionFor(alert);
+  if (solution === null) {
     return (
       <span className="hidden text-xs text-zinc-400 sm:block dark:text-zinc-500">
         No solution posted
       </span>
     );
   }
+  const fixPrs = [
+    ...new Map(solution.fixPrs.map((pr) => [pr.url, pr])).values(),
+  ].filter((pr) => pr.url !== groupFixPrUrl);
 
   return (
     <span className="hidden min-w-0 sm:block">
-      {message && (
-        <span
-          className="block truncate text-xs text-zinc-600 dark:text-zinc-300"
-          title={message}
-        >
-          {update?.stale && (
-            <span className="font-medium text-amber-700 dark:text-amber-300">
-              Older: {" "}
-            </span>
-          )}
-          {message}
+      <span
+        className="block truncate text-xs text-zinc-700 dark:text-zinc-300"
+        title={solution.message}
+      >
+        {solution.message}
+      </span>
+      <span className="mt-1 flex min-w-0 items-center gap-x-1.5 text-[11px] text-zinc-400 dark:text-zinc-500">
+        <SolutionLabel tone={solution.tone}>{solution.label}</SolutionLabel>
+        <span className="truncate">
+          {solution.by} ·{" "}
+          <time dateTime={solution.at} title={formatAlertDateTime(solution.at)}>
+            {formatRelativeTime(solution.at, now)}
+          </time>
         </span>
-      )}
-      {uniqueFixPrs.length > 0 && (
-        <span className="mt-0.5 flex min-w-0 gap-2 text-[11px]">
-          {uniqueFixPrs.slice(0, 2).map((pr) => (
-            <a
-              key={pr.url}
-              href={pr.url}
-              target="_blank"
-              rel="noreferrer"
-              title={pr.title || pr.url}
-              onClick={(event) => event.stopPropagation()}
-              className={`truncate font-medium ${LINK_CLASSES}`}
-            >
-              {pr.number !== null ? `PR #${pr.number}` : pr.title || "Fix"}
-            </a>
-          ))}
-          {uniqueFixPrs.length > 2 && (
-            <span className="shrink-0 text-zinc-400 dark:text-zinc-500">
-              +{uniqueFixPrs.length - 2}
-            </span>
-          )}
-        </span>
-      )}
+        {fixPrs.slice(0, 2).map((pr) => (
+          <a
+            key={pr.url}
+            href={pr.url}
+            target="_blank"
+            rel="noreferrer"
+            title={pr.title || pr.url}
+            onClick={(event) => event.stopPropagation()}
+            className={`shrink-0 font-medium ${LINK_CLASSES}`}
+          >
+            {pr.number !== null ? `PR #${pr.number}` : pr.title || "Fix"}
+          </a>
+        ))}
+        {fixPrs.length > 2 && (
+          <span className="shrink-0">+{fixPrs.length - 2}</span>
+        )}
+      </span>
     </span>
   );
 }
@@ -584,13 +661,7 @@ function Timeline({ alert }: { alert: MainCiJobAlert }) {
   );
 }
 
-function LinkList({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
+function LinkList({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="min-w-0">
       <dt className="text-[11px] font-semibold tracking-wide text-zinc-500 uppercase dark:text-zinc-400">
@@ -755,10 +826,13 @@ export function MainCiAlertRow({
   alert,
   onResolve,
   now = new Date(),
+  groupFixPrUrl,
 }: {
   alert: MainCiJobAlert;
   onResolve?: (alertId: string) => Promise<void>;
   now?: Date;
+  /** The fix PR this row is grouped under, if any. */
+  groupFixPrUrl?: string;
 }) {
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState(false);
@@ -779,9 +853,6 @@ export function MainCiAlertRow({
   const runsLabel = `${alert.failureCount} failed ${
     alert.failureCount === 1 ? "run" : "runs"
   }`;
-  const fixPrCount = new Set(
-    alert.updates.flatMap((update) => update.fixPrs.map((pr) => pr.url)),
-  ).size;
   return (
     <details className={`group border-l-[3px] ${railFor(alert)}`}>
       <summary
@@ -835,11 +906,6 @@ export function MainCiAlertRow({
                 : "Resolved"}
             </span>
           )}
-          {fixPrCount > 0 && (
-            <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 ring-1 ring-blue-200/80 ring-inset dark:bg-blue-900/30 dark:text-blue-200 dark:ring-blue-800/60">
-              {fixPrCount} fix {fixPrCount === 1 ? "PR" : "PRs"}
-            </span>
-          )}
         </span>
         <span className="col-start-2 row-start-2 flex min-w-0 items-center gap-1.5 sm:col-start-3 sm:row-start-1">
           {alert.analysis ? (
@@ -853,7 +919,11 @@ export function MainCiAlertRow({
             </span>
           )}
         </span>
-        <SolutionSummary alert={alert} />
+        <SolutionSummary
+          alert={alert}
+          now={now}
+          groupFixPrUrl={groupFixPrUrl}
+        />
         <span
           className={`col-start-3 row-start-1 text-right text-xs font-medium tabular-nums sm:col-start-5 ${failureCountClasses(alert.failureCount)}`}
           title={runsLabel}
@@ -921,6 +991,11 @@ function EmptyState({ children }: { children: ReactNode }) {
 export interface MainCiAlertGroup {
   key: string;
   fixPr: MainCiSuspectedFixPr | null;
+  /**
+   * The newest responder update that linked this PR to any job in the group,
+   * or null when only the automated analysis suspects the PR.
+   */
+  linkedBy: MainCiAlertUpdate | null;
   alerts: MainCiJobAlert[];
 }
 
@@ -937,6 +1012,7 @@ export function groupMainCiAlertsByFixPr(
   const ungrouped: MainCiAlertGroup = {
     key: "unlinked",
     fixPr: null,
+    linkedBy: null,
     alerts: [],
   };
 
@@ -946,13 +1022,34 @@ export function groupMainCiAlertsByFixPr(
       ungrouped.alerts.push(alert);
       continue;
     }
+    const linkedBy = alert.updates
+      .filter(
+        (update) =>
+          !update.stale && update.fixPrs.some((pr) => pr.url === fixPr.url),
+      )
+      .reduce<MainCiAlertUpdate | null>(
+        (newest, update) =>
+          newest === null ||
+          Date.parse(update.createdAt) > Date.parse(newest.createdAt)
+            ? update
+            : newest,
+        null,
+      );
     const group = fixGroups.get(fixPr.url);
     if (group) {
       group.alerts.push(alert);
+      if (
+        linkedBy &&
+        (group.linkedBy === null ||
+          Date.parse(linkedBy.createdAt) > Date.parse(group.linkedBy.createdAt))
+      ) {
+        group.linkedBy = linkedBy;
+      }
     } else {
       fixGroups.set(fixPr.url, {
         key: fixPr.url,
         fixPr,
+        linkedBy,
         alerts: [alert],
       });
     }
@@ -963,94 +1060,132 @@ export function groupMainCiAlertsByFixPr(
   return groups;
 }
 
-function MainCiAlertGroupTable({
+function groupHeading(group: MainCiAlertGroup): string {
+  if (group.fixPr === null) return "No fix PR linked yet";
+  return group.fixPr.number !== null
+    ? `Fix PR #${group.fixPr.number}`
+    : group.fixPr.title || "Linked fix PR";
+}
+
+function PullRequestIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      className="h-3.5 w-3.5 shrink-0 text-zinc-400 dark:text-zinc-500"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="4" cy="3.5" r="1.75" />
+      <circle cx="4" cy="12.5" r="1.75" />
+      <circle cx="12" cy="12.5" r="1.75" />
+      <path d="M4 5.25v5.5M12 10.75V7a2 2 0 0 0-2-2H8.25M10 3.25 8.25 5 10 6.75" />
+    </svg>
+  );
+}
+
+function UnlinkedIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      className="h-3.5 w-3.5 shrink-0 text-zinc-400 dark:text-zinc-500"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    >
+      <circle cx="8" cy="8" r="5.5" strokeDasharray="2.6 2.2" />
+    </svg>
+  );
+}
+
+/**
+ * The band that opens one group inside the table: which PR the rows below
+ * share (or that they share none), how a responder linked it, and how many
+ * jobs ride on it.
+ */
+function AlertGroupBand({ group }: { group: MainCiAlertGroup }) {
+  const jobLabel = `${group.alerts.length} ${
+    group.alerts.length === 1 ? "job" : "jobs"
+  }`;
+  return (
+    <div className="flex min-h-8 min-w-0 items-center gap-2 border-b border-l-[3px] border-zinc-200/80 border-l-transparent bg-zinc-50/80 px-3 py-1.5 dark:border-zinc-800 dark:bg-zinc-900/50">
+      {group.fixPr ? (
+        <>
+          <PullRequestIcon />
+          <h3 className="flex min-w-0 flex-1 items-baseline gap-x-2">
+            <a
+              href={group.fixPr.url}
+              target="_blank"
+              rel="noreferrer"
+              className="shrink-0 text-xs font-semibold text-zinc-900 hover:underline dark:text-zinc-100"
+            >
+              {groupHeading(group)}
+            </a>
+            {group.fixPr.title && (
+              <span className="min-w-0 truncate text-xs text-zinc-500 dark:text-zinc-400">
+                {group.fixPr.title}
+              </span>
+            )}
+          </h3>
+          {group.linkedBy ? (
+            // On narrow screens the PR title wins the space; the caveat that a
+            // PR is only suspected is kept at every width.
+            <span className="hidden sm:contents">
+              <SolutionLabel tone="update">
+                {UPDATE_KIND_LABELS[group.linkedBy.kind]}
+              </SolutionLabel>
+            </span>
+          ) : (
+            <SolutionLabel tone="analysis">Suspected</SolutionLabel>
+          )}
+        </>
+      ) : (
+        <>
+          <UnlinkedIcon />
+          <h3 className="min-w-0 flex-1 truncate text-xs font-semibold text-zinc-600 dark:text-zinc-300">
+            {groupHeading(group)}
+          </h3>
+        </>
+      )}
+      <span className="shrink-0 text-[11px] font-medium tabular-nums text-zinc-500 dark:text-zinc-400">
+        {jobLabel}
+      </span>
+    </div>
+  );
+}
+
+function AlertGroup({
   group,
-  sort,
-  onSort,
+  showBand,
   onResolve,
   now,
 }: {
   group: MainCiAlertGroup;
-  sort: AlertSort | null;
-  onSort: (key: SortKey) => void;
+  showBand: boolean;
   onResolve?: (alertId: string) => Promise<void>;
   now: Date;
 }) {
   const jobLabel = `${group.alerts.length} ${
     group.alerts.length === 1 ? "job" : "jobs"
   }`;
-  const groupLabel = group.fixPr
-    ? group.fixPr.number !== null
-      ? `Fix PR #${group.fixPr.number}`
-      : group.fixPr.title || "Linked fix PR"
-    : "No current fix PR linked";
-
   return (
-    <section aria-label={`${groupLabel}, ${jobLabel}`} className="space-y-1.5">
-      <div className="flex min-h-7 flex-wrap items-baseline gap-x-2 px-1">
-        {group.fixPr ? (
-          <a
-            href={group.fixPr.url}
-            target="_blank"
-            rel="noreferrer"
-            className={`text-sm font-semibold ${LINK_CLASSES}`}
-          >
-            {groupLabel}
-          </a>
-        ) : (
-          <h2 className="text-sm font-semibold text-zinc-600 dark:text-zinc-300">
-            {groupLabel}
-          </h2>
-        )}
-        {group.fixPr?.title && (
-          <span className="min-w-0 flex-1 truncate text-xs text-zinc-500 dark:text-zinc-400">
-            {group.fixPr.title}
-          </span>
-        )}
-        <span className="ml-auto shrink-0 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-          {jobLabel}
-        </span>
-      </div>
-      <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-        <div
-          role="group"
-          aria-label={`Sort alerts in ${groupLabel}`}
-          className={`${ROW_GRID} hidden border-b border-zinc-200 border-l-[3px] border-l-transparent bg-zinc-50/80 px-3 py-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase sm:grid dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-400`}
-        >
-          <span />
-          <SortHeader columnKey="job" sort={sort} onSort={onSort} />
-          <span>Reason</span>
-          <span>Solution</span>
-          <SortHeader
-            columnKey="failures"
-            sort={sort}
-            align="right"
-            onSort={onSort}
+    <section aria-label={`${groupHeading(group)}, ${jobLabel}`}>
+      {showBand && <AlertGroupBand group={group} />}
+      <div className="divide-y divide-zinc-100 dark:divide-zinc-800/70">
+        {group.alerts.map((alert) => (
+          <MainCiAlertRow
+            key={alert.alertId}
+            alert={alert}
+            onResolve={onResolve}
+            now={now}
+            groupFixPrUrl={group.fixPr?.url}
           />
-          <SortHeader
-            columnKey="opened"
-            sort={sort}
-            align="right"
-            onSort={onSort}
-          />
-          <SortHeader
-            columnKey="lastFailed"
-            sort={sort}
-            align="right"
-            onSort={onSort}
-          />
-          <span />
-        </div>
-        <div className="divide-y divide-zinc-100 dark:divide-zinc-800/70">
-          {group.alerts.map((alert) => (
-            <MainCiAlertRow
-              key={alert.alertId}
-              alert={alert}
-              onResolve={onResolve}
-              now={now}
-            />
-          ))}
-        </div>
+        ))}
       </div>
     </section>
   );
@@ -1200,17 +1335,49 @@ export function MainCIAlerts({
       {visible.length === 0 ? (
         <EmptyState>No Main CI job alerts match these filters.</EmptyState>
       ) : (
-        <div className="space-y-5">
-          {groups.map((group) => (
-            <MainCiAlertGroupTable
-              key={group.key}
-              group={group}
+        <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+          <div
+            role="group"
+            aria-label="Sort alerts"
+            className={`${ROW_GRID} hidden border-b border-zinc-200 border-l-[3px] border-l-transparent px-3 py-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase sm:grid dark:border-zinc-800 dark:text-zinc-400`}
+          >
+            <span />
+            <SortHeader columnKey="job" sort={sort} onSort={toggleSort} />
+            <span>Reason</span>
+            <span>Solution</span>
+            <SortHeader
+              columnKey="failures"
               sort={sort}
+              align="right"
               onSort={toggleSort}
-              onResolve={onResolve}
-              now={now}
             />
-          ))}
+            <SortHeader
+              columnKey="opened"
+              sort={sort}
+              align="right"
+              onSort={toggleSort}
+            />
+            <SortHeader
+              columnKey="lastFailed"
+              sort={sort}
+              align="right"
+              onSort={toggleSort}
+            />
+            <span />
+          </div>
+          <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
+            {groups.map((group) => (
+              <AlertGroup
+                key={group.key}
+                group={group}
+                // A lone unlinked group is just the list; the band would only
+                // say what the absence of PR bands already shows.
+                showBand={groups.length > 1 || group.fixPr !== null}
+                onResolve={onResolve}
+                now={now}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>

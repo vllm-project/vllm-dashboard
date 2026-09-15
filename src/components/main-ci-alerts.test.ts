@@ -11,7 +11,9 @@ import {
 } from "./main-ci-alerts";
 import type { MainCiJobAlert, MainCiJobAnalysis } from "../lib/alerts-main-ci";
 
-function analysis(overrides: Partial<MainCiJobAnalysis> = {}): MainCiJobAnalysis {
+function analysis(
+  overrides: Partial<MainCiJobAnalysis> = {},
+): MainCiJobAnalysis {
   return {
     analyzedFailureJobId: "job-2",
     classification: "infra",
@@ -71,7 +73,9 @@ function alert(overrides: Partial<MainCiJobAlert> = {}): MainCiJobAlert {
 }
 
 test("empty lifecycle history renders an explicit empty state", () => {
-  const markup = renderToStaticMarkup(createElement(MainCIAlerts, { alerts: [] }));
+  const markup = renderToStaticMarkup(
+    createElement(MainCIAlerts, { alerts: [] }),
+  );
   assert.match(markup, /No Main CI job alerts/);
 });
 
@@ -171,7 +175,12 @@ test("responder updates surface fix PRs and older failure revisions", () => {
     }),
   );
 
-  assert.match(markup, /1 fix PR/);
+  // The row's Solution cell flags that the message is about an older
+  // failure, credits its author, and keeps the PR link because the row is
+  // not grouped under that PR.
+  assert.match(markup, />Older<\/span>/);
+  assert.match(markup, /Sherlock · /);
+  assert.doesNotMatch(markup, /1 fix PR/);
   assert.match(markup, /Responder updates/);
   assert.match(markup, /Sherlock/);
   assert.match(markup, /Fix opened/);
@@ -218,14 +227,21 @@ test("alerts sharing a current fix PR render in one labeled section", () => {
     ],
   );
 
-  const markup = renderToStaticMarkup(
-    createElement(MainCIAlerts, { alerts }),
-  );
+  const markup = renderToStaticMarkup(createElement(MainCIAlerts, { alerts }));
   assert.match(markup, /Fix PR #456/);
   assert.match(markup, /Fix collective RPC teardown/);
+  assert.match(markup, />Fix opened<\/span>/);
   assert.match(markup, />2 jobs</);
-  assert.match(markup, /No current fix PR linked/);
+  assert.match(markup, /No fix PR linked yet/);
   assert.match(markup, />1 job</);
+  // One column header serves every group.
+  assert.equal(markup.match(/aria-label="Sort by job"/g)?.length, 1);
+  // A grouped row does not repeat its own group's PR in the Solution cell.
+  assert.equal(
+    markup.match(/>PR #456<\/a>/g)?.length,
+    undefined,
+    "row cells should not repeat the group PR",
+  );
 });
 
 test("stale fix links do not group a current failure under an older repair", () => {
@@ -253,7 +269,10 @@ test("stale fix links do not group a current failure under an older repair", () 
   const groups = groupMainCiAlertsByFixPr([stale]);
   assert.equal(groups.length, 1);
   assert.equal(groups[0].key, "unlinked");
-  assert.deepEqual(groups[0].alerts.map((item) => item.alertId), ["1"]);
+  assert.deepEqual(
+    groups[0].alerts.map((item) => item.alertId),
+    ["1"],
+  );
 });
 
 test("unanalyzed alert renders a subtle placeholder and no reason dropdown", () => {
@@ -312,7 +331,10 @@ test("no resolve button without a handler or on resolved rows", () => {
 
   const resolved = renderToStaticMarkup(
     createElement(MainCiAlertRow, {
-      alert: alert({ status: "resolved", resolvedAt: "2026-08-29T09:30:00.000Z" }),
+      alert: alert({
+        status: "resolved",
+        resolvedAt: "2026-08-29T09:30:00.000Z",
+      }),
       onResolve: async () => {},
     }),
   );
@@ -344,9 +366,7 @@ test("hide options filter matching job names out of the list", () => {
     alert({ alertId: "4", jobName: "Optional check" }),
   ];
 
-  const visible = renderToStaticMarkup(
-    createElement(MainCIAlerts, { alerts }),
-  );
+  const visible = renderToStaticMarkup(createElement(MainCIAlerts, { alerts }));
   assert.match(visible, /AMD: MI300X Test/);
   assert.match(visible, /Lint \(soft-fail\)/);
   assert.match(visible, /Optional check/);
@@ -372,21 +392,30 @@ test("column sort orders by job, failures, opened, and last failed in either dir
       jobName: "b test",
       failureCount: 3,
       openedAt: "2026-08-29T08:00:00.000Z",
-      lastFailure: { ...alert().lastFailure, finishedAt: "2026-08-29T10:00:00.000Z" },
+      lastFailure: {
+        ...alert().lastFailure,
+        finishedAt: "2026-08-29T10:00:00.000Z",
+      },
     }),
     alert({
       alertId: "2",
       jobName: "A test",
       failureCount: 9,
       openedAt: "2026-08-28T08:00:00.000Z",
-      lastFailure: { ...alert().lastFailure, finishedAt: "2026-08-29T12:00:00.000Z" },
+      lastFailure: {
+        ...alert().lastFailure,
+        finishedAt: "2026-08-29T12:00:00.000Z",
+      },
     }),
     alert({
       alertId: "3",
       jobName: "c test",
       failureCount: 1,
       openedAt: "2026-08-30T08:00:00.000Z",
-      lastFailure: { ...alert().lastFailure, finishedAt: "2026-08-29T09:00:00.000Z" },
+      lastFailure: {
+        ...alert().lastFailure,
+        finishedAt: "2026-08-29T09:00:00.000Z",
+      },
     }),
   ];
   const ids = (sorted: typeof alerts) => sorted.map((item) => item.alertId);
@@ -433,16 +462,19 @@ test("job sort ignores vendor shortcodes and orders shard numbers naturally", ()
 
 test("clicking a column opens it in its default direction, then flips it", () => {
   assert.deepEqual(nextSort(null, "job"), { key: "job", direction: "asc" });
-  assert.deepEqual(nextSort(null, "failures"), { key: "failures", direction: "desc" });
+  assert.deepEqual(nextSort(null, "failures"), {
+    key: "failures",
+    direction: "desc",
+  });
   assert.deepEqual(
     nextSort({ key: "failures", direction: "desc" }, "failures"),
     { key: "failures", direction: "asc" },
   );
   // Switching columns resets to that column's default rather than carrying the direction over.
-  assert.deepEqual(
-    nextSort({ key: "failures", direction: "asc" }, "opened"),
-    { key: "opened", direction: "desc" },
-  );
+  assert.deepEqual(nextSort({ key: "failures", direction: "asc" }, "opened"), {
+    key: "opened",
+    direction: "desc",
+  });
 });
 
 test("header cells are sort buttons", () => {
