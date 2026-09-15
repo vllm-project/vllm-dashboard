@@ -3,6 +3,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  groupMainCiAlertsByFixPr,
   MainCIAlerts,
   MainCiAlertRow,
   nextSort,
@@ -181,6 +182,78 @@ test("responder updates surface fix PRs and older failure revisions", () => {
   assert.match(markup, /PR #456<\/a>/);
   assert.doesNotMatch(markup, /medium confidence|· medium/);
   assert.match(markup, /https:\/\/github\.com\/vllm-project\/vllm\/pull\/456/);
+});
+
+test("alerts sharing a current fix PR render in one labeled section", () => {
+  const fixPr = {
+    number: 456,
+    url: "https://github.com/vllm-project/vllm/pull/456",
+    title: "Fix collective RPC teardown",
+  };
+  const sharedUpdate = {
+    updateId: "7",
+    failureJobId: "job-2",
+    kind: "fix_opened" as const,
+    message: "Opened a narrow fix and started the exact rerun.",
+    fixPrs: [fixPr],
+    author: "Sherlock",
+    createdAt: "2026-08-29T09:10:00.000Z",
+    stale: false,
+  };
+  const alerts = [
+    alert({ alertId: "1", jobName: "GPU shard 1", updates: [sharedUpdate] }),
+    alert({ alertId: "2", jobName: "GPU shard 2", updates: [sharedUpdate] }),
+    alert({ alertId: "3", jobName: "CPU tests" }),
+  ];
+
+  const groups = groupMainCiAlertsByFixPr(alerts);
+  assert.deepEqual(
+    groups.map((group) => ({
+      key: group.key,
+      alerts: group.alerts.map((item) => item.alertId),
+    })),
+    [
+      { key: fixPr.url, alerts: ["1", "2"] },
+      { key: "unlinked", alerts: ["3"] },
+    ],
+  );
+
+  const markup = renderToStaticMarkup(
+    createElement(MainCIAlerts, { alerts }),
+  );
+  assert.match(markup, /Fix PR #456/);
+  assert.match(markup, /Fix collective RPC teardown/);
+  assert.match(markup, />2 jobs</);
+  assert.match(markup, /No current fix PR linked/);
+  assert.match(markup, />1 job</);
+});
+
+test("stale fix links do not group a current failure under an older repair", () => {
+  const stale = alert({
+    updates: [
+      {
+        updateId: "8",
+        failureJobId: "job-1",
+        kind: "fix_opened",
+        message: "This repair belongs to the previous failure revision.",
+        fixPrs: [
+          {
+            number: 789,
+            url: "https://github.com/vllm-project/vllm/pull/789",
+            title: "Older repair",
+          },
+        ],
+        author: "Sherlock",
+        createdAt: "2026-08-29T08:30:00.000Z",
+        stale: true,
+      },
+    ],
+  });
+
+  const groups = groupMainCiAlertsByFixPr([stale]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].key, "unlinked");
+  assert.deepEqual(groups[0].alerts.map((item) => item.alertId), ["1"]);
 });
 
 test("unanalyzed alert renders a subtle placeholder and no reason dropdown", () => {

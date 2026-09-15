@@ -28,7 +28,14 @@ import {
   type AlertTimeWindow,
 } from "@/lib/alerts-shared";
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+async function fetcher<T>(url: string): Promise<T> {
+  const response = await fetch(url);
+  const payload = (await response.json()) as T & { error?: string };
+  if (!response.ok) {
+    throw new Error(payload.error ?? `Request failed with ${response.status}`);
+  }
+  return payload;
+}
 
 type AlertTab = "main-ci" | "fast-ci" | "infra";
 
@@ -60,6 +67,10 @@ const ALERT_TABS: readonly {
 
 function isAlertTab(value: string | null): value is AlertTab {
   return ALERT_TABS.some((tab) => tab.value === value);
+}
+
+export function resolveAlertTab(value: string | null): AlertTab {
+  return isAlertTab(value) ? value : "main-ci";
 }
 
 /**
@@ -182,11 +193,13 @@ function AlertSection({
   title,
   isLoading,
   failed,
+  onRetry,
   children,
 }: {
   title: string;
   isLoading: boolean;
   failed: boolean;
+  onRetry?: () => void;
   children: ReactNode;
 }) {
   if (isLoading) {
@@ -211,8 +224,17 @@ function AlertSection({
   }
   if (failed) {
     return (
-      <div className="flex h-48 items-center justify-center text-sm text-red-500">
-        Failed to load {title}.
+      <div className="flex h-48 flex-col items-center justify-center gap-3 text-sm text-red-500">
+        <span>Failed to load {title}.</span>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="dashboard-control rounded-md border border-red-200 px-3 py-1.5 text-xs font-semibold hover:border-red-300 hover:bg-red-50 dark:border-red-900 dark:hover:border-red-800 dark:hover:bg-red-950/40"
+          >
+            Retry
+          </button>
+        )}
       </div>
     );
   }
@@ -304,6 +326,7 @@ function MainCISection({
       title="Failures"
       isLoading={isLoading}
       failed={Boolean(error || data?.error)}
+      onRetry={() => void mutate()}
     >
       {data?.schemaStatus === "pending" ? (
         <div className="flex h-48 items-center justify-center rounded-lg border border-dashed border-amber-300 px-6 text-center text-sm text-amber-700 dark:border-amber-800 dark:text-amber-300">
@@ -358,7 +381,7 @@ function FastCISection({
   timeWindow: AlertTimeWindow;
   showSoftFailed: boolean;
 }) {
-  const { data, isLoading, error } = useSWR<FastCIAlertsResponse>(
+  const { data, isLoading, error, mutate } = useSWR<FastCIAlertsResponse>(
     "/api/alerts/fast-ci",
     fetcher,
     { refreshInterval: 5 * 60 * 1000 },
@@ -380,6 +403,7 @@ function FastCISection({
       title="Fast failures (<30s)"
       isLoading={isLoading}
       failed={Boolean(error || data?.error)}
+      onRetry={() => void mutate()}
     >
       <FastCIAlerts groups={groups} showSoftFailed={showSoftFailed} />
     </AlertSection>
@@ -387,7 +411,7 @@ function FastCISection({
 }
 
 function InfraSection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
-  const { data, isLoading, error } = useSWR<InfraAlertsResponse>(
+  const { data, isLoading, error, mutate } = useSWR<InfraAlertsResponse>(
     "/api/alerts/infra",
     fetcher,
     { refreshInterval: 5 * 60 * 1000 },
@@ -408,6 +432,7 @@ function InfraSection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
       title="Infra"
       isLoading={isLoading}
       failed={Boolean(error || data?.error)}
+      onRetry={() => void mutate()}
     >
       {data?.schemaStatus === "pending" ? (
         <div className="flex h-48 items-center justify-center rounded-lg border border-dashed border-amber-300 px-6 text-center text-sm text-amber-700 dark:border-amber-800 dark:text-amber-300">
@@ -426,7 +451,7 @@ export default function AlertsContent() {
   const searchParams = useSearchParams();
 
   const tabParam = searchParams.get("tab");
-  const tab: AlertTab = isAlertTab(tabParam) ? tabParam : "fast-ci";
+  const tab = resolveAlertTab(tabParam);
   const windowParam = searchParams.get("window");
   const timeWindow: AlertTimeWindow = isAlertTimeWindow(windowParam)
     ? windowParam

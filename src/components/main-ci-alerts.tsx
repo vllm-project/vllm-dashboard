@@ -10,6 +10,7 @@ import {
   type MainCiJobAlert,
   type MainCiJobAnalysis,
   type MainCiOutcomeRef,
+  type MainCiSuspectedFixPr,
 } from "@/lib/alerts-main-ci";
 import {
   commitUrl,
@@ -381,14 +382,29 @@ function ReasonBadge({ analysis }: { analysis: MainCiJobAnalysis }) {
   );
 }
 
+function currentFixPrs(alert: MainCiJobAlert): MainCiSuspectedFixPr[] {
+  const updateFixPrs = alert.updates
+    .filter((update) => !update.stale)
+    .flatMap((update) => update.fixPrs);
+  const fixPrs =
+    updateFixPrs.length > 0
+      ? updateFixPrs
+      : alert.analysis && !alert.analysis.stale
+        ? alert.analysis.suspectedFixPrs
+        : [];
+  return [...new Map(fixPrs.map((pr) => [pr.url, pr])).values()];
+}
+
 function SolutionSummary({ alert }: { alert: MainCiJobAlert }) {
   const update =
     alert.updates.find((candidate) => !candidate.stale) ?? alert.updates[0];
   const analysis = alert.analysis?.stale ? null : alert.analysis;
   const message = update?.message ?? analysis?.recommendedAction ?? null;
-  const fixPrs = update?.fixPrs ?? analysis?.suspectedFixPrs ?? [];
+  const fixPrs = currentFixPrs(alert);
+  const fallbackFixPrs =
+    fixPrs.length === 0 && update?.stale ? update.fixPrs : fixPrs;
   const uniqueFixPrs = [
-    ...new Map(fixPrs.map((pr) => [pr.url, pr])).values(),
+    ...new Map(fallbackFixPrs.map((pr) => [pr.url, pr])).values(),
   ];
 
   if (message === null && uniqueFixPrs.length === 0) {
@@ -902,6 +918,144 @@ function EmptyState({ children }: { children: ReactNode }) {
   );
 }
 
+export interface MainCiAlertGroup {
+  key: string;
+  fixPr: MainCiSuspectedFixPr | null;
+  alerts: MainCiJobAlert[];
+}
+
+/**
+ * Assign each alert to one current fix PR so one repair spanning many jobs is
+ * visible as one workstream. An alert with several linked PRs uses the first
+ * current responder link as its primary group and still shows every link in
+ * its Solution cell and expanded history.
+ */
+export function groupMainCiAlertsByFixPr(
+  alerts: readonly MainCiJobAlert[],
+): MainCiAlertGroup[] {
+  const fixGroups = new Map<string, MainCiAlertGroup>();
+  const ungrouped: MainCiAlertGroup = {
+    key: "unlinked",
+    fixPr: null,
+    alerts: [],
+  };
+
+  for (const alert of alerts) {
+    const fixPr = currentFixPrs(alert)[0] ?? null;
+    if (fixPr === null) {
+      ungrouped.alerts.push(alert);
+      continue;
+    }
+    const group = fixGroups.get(fixPr.url);
+    if (group) {
+      group.alerts.push(alert);
+    } else {
+      fixGroups.set(fixPr.url, {
+        key: fixPr.url,
+        fixPr,
+        alerts: [alert],
+      });
+    }
+  }
+
+  const groups = [...fixGroups.values()];
+  if (ungrouped.alerts.length > 0) groups.push(ungrouped);
+  return groups;
+}
+
+function MainCiAlertGroupTable({
+  group,
+  sort,
+  onSort,
+  onResolve,
+  now,
+}: {
+  group: MainCiAlertGroup;
+  sort: AlertSort | null;
+  onSort: (key: SortKey) => void;
+  onResolve?: (alertId: string) => Promise<void>;
+  now: Date;
+}) {
+  const jobLabel = `${group.alerts.length} ${
+    group.alerts.length === 1 ? "job" : "jobs"
+  }`;
+  const groupLabel = group.fixPr
+    ? group.fixPr.number !== null
+      ? `Fix PR #${group.fixPr.number}`
+      : group.fixPr.title || "Linked fix PR"
+    : "No current fix PR linked";
+
+  return (
+    <section aria-label={`${groupLabel}, ${jobLabel}`} className="space-y-1.5">
+      <div className="flex min-h-7 flex-wrap items-baseline gap-x-2 px-1">
+        {group.fixPr ? (
+          <a
+            href={group.fixPr.url}
+            target="_blank"
+            rel="noreferrer"
+            className={`text-sm font-semibold ${LINK_CLASSES}`}
+          >
+            {groupLabel}
+          </a>
+        ) : (
+          <h2 className="text-sm font-semibold text-zinc-600 dark:text-zinc-300">
+            {groupLabel}
+          </h2>
+        )}
+        {group.fixPr?.title && (
+          <span className="min-w-0 flex-1 truncate text-xs text-zinc-500 dark:text-zinc-400">
+            {group.fixPr.title}
+          </span>
+        )}
+        <span className="ml-auto shrink-0 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+          {jobLabel}
+        </span>
+      </div>
+      <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+        <div
+          role="group"
+          aria-label={`Sort alerts in ${groupLabel}`}
+          className={`${ROW_GRID} hidden border-b border-zinc-200 border-l-[3px] border-l-transparent bg-zinc-50/80 px-3 py-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase sm:grid dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-400`}
+        >
+          <span />
+          <SortHeader columnKey="job" sort={sort} onSort={onSort} />
+          <span>Reason</span>
+          <span>Solution</span>
+          <SortHeader
+            columnKey="failures"
+            sort={sort}
+            align="right"
+            onSort={onSort}
+          />
+          <SortHeader
+            columnKey="opened"
+            sort={sort}
+            align="right"
+            onSort={onSort}
+          />
+          <SortHeader
+            columnKey="lastFailed"
+            sort={sort}
+            align="right"
+            onSort={onSort}
+          />
+          <span />
+        </div>
+        <div className="divide-y divide-zinc-100 dark:divide-zinc-800/70">
+          {group.alerts.map((alert) => (
+            <MainCiAlertRow
+              key={alert.alertId}
+              alert={alert}
+              onResolve={onResolve}
+              now={now}
+            />
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function MainCIAlerts({
   alerts,
   onResolve,
@@ -984,6 +1138,7 @@ export function MainCIAlerts({
     });
     return sortMainCiAlerts(matching, sort);
   }, [inScope, reasonFilter, query, sort]);
+  const groups = useMemo(() => groupMainCiAlertsByFixPr(visible), [visible]);
 
   if (alerts.length === 0) {
     return (
@@ -1045,46 +1200,17 @@ export function MainCIAlerts({
       {visible.length === 0 ? (
         <EmptyState>No Main CI job alerts match these filters.</EmptyState>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-          <div
-            role="group"
-            aria-label="Sort alerts"
-            className={`${ROW_GRID} hidden border-b border-zinc-200 border-l-[3px] border-l-transparent bg-zinc-50/80 px-3 py-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase sm:grid dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-400`}
-          >
-            <span />
-            <SortHeader columnKey="job" sort={sort} onSort={toggleSort} />
-            <span>Reason</span>
-            <span>Solution</span>
-            <SortHeader
-              columnKey="failures"
+        <div className="space-y-5">
+          {groups.map((group) => (
+            <MainCiAlertGroupTable
+              key={group.key}
+              group={group}
               sort={sort}
-              align="right"
               onSort={toggleSort}
+              onResolve={onResolve}
+              now={now}
             />
-            <SortHeader
-              columnKey="opened"
-              sort={sort}
-              align="right"
-              onSort={toggleSort}
-            />
-            <SortHeader
-              columnKey="lastFailed"
-              sort={sort}
-              align="right"
-              onSort={toggleSort}
-            />
-            <span />
-          </div>
-          <div className="divide-y divide-zinc-100 dark:divide-zinc-800/70">
-            {visible.map((alert) => (
-              <MainCiAlertRow
-                key={alert.alertId}
-                alert={alert}
-                onResolve={onResolve}
-                now={now}
-              />
-            ))}
-          </div>
+          ))}
         </div>
       )}
     </div>
