@@ -50,9 +50,13 @@ clone, push, or pull-request mechanics. The prohibition above wins.
    prev-failing section in Phase C. Never derive either count yourself: they
    are `stats.fixed` and `stats.prev_failing_unrun`.
 6. Jobs in state `waiting_failed`, `timed_out`, or `canceled` are neither hard
-   nor soft failures and never enter the baseline. `waiting_failed` means an
-   upstream step (usually an image build) failed and the job never ran — a
-   cascade, not a fault. Report them in their own sections (Phase C).
+   nor soft failures, so they never *enter* the baseline on their own.
+   `waiting_failed` means an upstream step (usually an image build) failed and
+   the job never ran — a cascade, not a fault. Report them in their own
+   sections (Phase C). A name that was *already* in the baseline and lands in
+   one of these states has still not been observed passing, so it stays —
+   these states say the job was killed or never started, not that its tests
+   are healthy.
 
 ## Phase B — Investigate new failures
 

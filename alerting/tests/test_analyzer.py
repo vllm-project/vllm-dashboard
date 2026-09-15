@@ -26,6 +26,7 @@ from alerting.analyzer import (
     PullRequestRef,
     pack_checkpoint,
     unpack_checkpoint,
+    _TERMINAL_STATES,
 )
 from alerting.commands import ScheduledCommand
 from alerting.full_ci import FullCIReconciliationHandler, FullCIRun
@@ -128,12 +129,12 @@ def well_behaved(
         for job in summary["jobs"]
         if job["state"] == "failed" and not job["soft_failed"]
     }
-    terminal = {
-        "passed", "failed", "timed_out", "canceled",
-        "waiting_failed", "broken", "skipped", "not_run",
-    }
+    # Imported rather than restated: a copy of this set in the fake is how the
+    # timed-out regression got past the suite in the first place.
     unfinished = {
-        job["name"] for job in summary["jobs"] if job["state"] not in terminal
+        job["name"]
+        for job in summary["jobs"]
+        if job["state"] not in _TERMINAL_STATES
     }
     previous = set(summary["previous_failures"]["failed_tests"])
     durable_failures = sorted(hard | (previous & unfinished))
@@ -723,6 +724,37 @@ def test_held_baseline_names_are_counted_for_their_own_section() -> None:
     assert set(analysis.failure_cache.failed_tests) == {"Slow Job"}
 
 
+def test_a_timed_out_baseline_job_is_not_called_fixed() -> None:
+    """Regression: build #88920 wedged the analyzer for hours over this.
+
+    `(H200 MIG 18GB) CUDAGraph` had failed in the previous build and came back
+    `timed_out`. The adapter counted that as a verdict and dropped it; the
+    model kept it, correctly, and the cache validator then rejected every
+    attempt. A killed job has said nothing about its tests.
+    """
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs([("CUDAGraph", "timed_out", False)], total=120),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+    harness.seed_analysis(run1, failed_tests=("CUDAGraph",))
+
+    assert harness.analyze().status is ProcessStatus.COMPLETED
+
+    analysis = harness.store.analyses()[-1]
+    assert set(analysis.failure_cache.failed_tests) == {"CUDAGraph"}
+    assert not [
+        c for c in analysis.conditions if c.lifecycle is FailureLifecycle.FIXED
+    ]
+
+
 def test_materialized_working_files_match_skill_contract(tmp_path: Path) -> None:
     run1 = make_run(1, RUN1_AT)
     run2 = make_run(2, RUN2_AT)
@@ -960,14 +992,9 @@ def test_fixed_excludes_names_still_awaiting_a_verdict() -> None:
         for condition in analysis.conditions
         if condition.lifecycle is FailureLifecycle.FIXED
     }
-    # Terminal verdicts and absent names leave the baseline; the two jobs
-    # still awaiting a verdict are held back rather than called fixed.
-    assert set(fixed) == {
-        "Fixed Job",
-        "Timed Out Job",
-        "Canceled Job",
-        "Absent Job",
-    }
+    # Only a real verdict or disappearing releases a name. A job that was
+    # killed (timed out) or abandoned (canceled) said nothing about its tests.
+    assert set(fixed) == {"Fixed Job", "Absent Job"}
     assert fixed["Fixed Job"].summary == "passed without a verified cause"
     assert all(condition.fixing_pr is None for condition in fixed.values())
     # This run had no hard failures, so the next baseline is exactly the
@@ -976,6 +1003,8 @@ def test_fixed_excludes_names_still_awaiting_a_verdict() -> None:
     assert set(analysis.failure_cache.failed_tests) == {
         "Running Job",
         "Scheduled Job",
+        "Timed Out Job",
+        "Canceled Job",
     }
 
 

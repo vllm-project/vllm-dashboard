@@ -416,12 +416,16 @@ def _soft_failures(jobs: list[FullCIJobOutcome]) -> set[str]:
     return {job.name for job in jobs if job.state == "failed" and job.soft_failed}
 
 
-# Everything Buildkite reports once a job has reached a verdict. Anything else
-# — scheduled, running, assigned, accepted, blocked — means "no verdict yet".
-_TERMINAL_STATES = frozenset(
-    {"passed", "failed", "timed_out", "canceled", "waiting_failed", "broken",
-     "skipped", "not_run"}
-)
+# A verdict means the job ran its tests and said something about them. Only
+# `passed` and `failed` do that. `timed_out`, `canceled` and `waiting_failed`
+# look terminal but carry no information about the tests: the job was killed,
+# abandoned, or never started. Treating them as verdicts declares a
+# previously-failing job fixed on no evidence, drops it from the baseline, and
+# brings it back as a phantom new failure — the same trap #168 closed for
+# `scheduled`. `broken`, `skipped` and `not_run` stay terminal because they are
+# configuration, not an interrupted run, and holding them would let a
+# permanently skipped job sit in the baseline forever.
+_TERMINAL_STATES = frozenset({"passed", "failed", "broken", "skipped", "not_run"})
 
 
 def _unfinished(jobs: list[FullCIJobOutcome]) -> set[str]:
