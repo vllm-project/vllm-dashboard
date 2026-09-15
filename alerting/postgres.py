@@ -1364,7 +1364,8 @@ class PostgresAlertStore:
                     ON an.alert_id = a.alert_id
                 WHERE a.status = 'open'
                   AND (an.alert_id IS NULL
-                       OR an.analyzed_failure_job_id <> a.last_failure_job_id)
+                       OR an.analyzed_failure_job_id <> a.last_failure_job_id
+                       OR an.failure_signature IS NULL)
                 ORDER BY a.last_failed_at DESC, a.alert_id DESC
                 LIMIT %s
                 """,
@@ -1408,12 +1409,14 @@ class PostgresAlertStore:
                 connection.execute(
                     """
                     INSERT INTO alerting_main_ci_job_analysis (
-                        alert_id, analyzed_failure_job_id, classification,
-                        confidence, summary, evidence_urls, recommended_action,
-                        suspected_fix_prs, model_version, analyzed_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s)
+                        alert_id, analyzed_failure_job_id, failure_signature,
+                        classification, confidence, summary, evidence_urls,
+                        recommended_action, suspected_fix_prs, model_version,
+                        analyzed_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s::jsonb, %s, %s, %s)
                     ON CONFLICT (alert_id) DO UPDATE
                     SET analyzed_failure_job_id = EXCLUDED.analyzed_failure_job_id,
+                        failure_signature = EXCLUDED.failure_signature,
                         classification = EXCLUDED.classification,
                         confidence = EXCLUDED.confidence,
                         summary = EXCLUDED.summary,
@@ -1427,6 +1430,7 @@ class PostgresAlertStore:
                     (
                         analysis.alert_id,
                         analysis.analyzed_failure_job_id,
+                        analysis.failure_signature,
                         analysis.classification,
                         analysis.confidence,
                         analysis.summary,

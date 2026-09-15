@@ -38,6 +38,7 @@ commentary — with exactly these keys:
 
 ```json
 {
+  "failure_signature": "scope-or-test-nodeid | error-family | stable-root-cause-marker",
   "classification": "infra | flaky | code | test | unknown",
   "confidence": "high | medium | low",
   "summary": "one or two sentences naming the root cause",
@@ -49,6 +50,15 @@ commentary — with exactly these keys:
 }
 ```
 
+- `failure_signature`: a canonical exact-match identity for the root failure,
+  formatted as exactly three non-empty `|`-separated segments:
+  `scope-or-test-nodeid | error-family | stable-root-cause-marker`. Lowercase
+  it and keep the failing test/operation plus exception, assertion, CUDA/NCCL,
+  or process-exit family. Remove build/job IDs, commit SHAs, timestamps,
+  runners/hosts, memory addresses, seeds, durations, and random observed
+  values. Preserve stable test parameters and stable error codes. Two reruns
+  of the same root cause must produce exactly the same signature; different
+  root causes in the same job must not.
 - `classification`: `infra` for environment failures (OOM, disk, network,
   CUDA/NCCL setup, agent loss, timeouts in setup); `flaky` for a test that
   passes on retry or fails nondeterministically without a code cause; `code`

@@ -16,6 +16,7 @@ function analysis(
 ): MainCiJobAnalysis {
   return {
     analyzedFailureJobId: "job-2",
+    failureSignature: "gpu correctness | agent_lost | process exited before tests",
     classification: "infra",
     confidence: "high",
     summary: "The runner lost its GPU agent before tests started.",
@@ -156,6 +157,7 @@ test("responder updates surface fix PRs and older failure revisions", () => {
             {
               updateId: "7",
               failureJobId: "job-1",
+              failureSignature: "gpu correctness | agent_lost | process exited before tests",
               kind: "fix_opened",
               message: "Opened a narrow fix and started the exact rerun.",
               fixPrs: [
@@ -168,6 +170,14 @@ test("responder updates surface fix PRs and older failure revisions", () => {
               author: "Sherlock",
               createdAt: "2026-08-29T09:10:00.000Z",
               stale: true,
+              carriedFixPrs: [
+                {
+                  number: 456,
+                  url: "https://github.com/vllm-project/vllm/pull/456",
+                  title: "Fix collective RPC teardown",
+                },
+              ],
+              fixOwnershipStatus: "carried",
             },
           ],
         }),
@@ -185,7 +195,7 @@ test("responder updates surface fix PRs and older failure revisions", () => {
   assert.match(markup, /Sherlock/);
   assert.match(markup, /Fix opened/);
   assert.match(markup, /Opened a narrow fix/);
-  assert.match(markup, /Older failure/);
+  assert.match(markup, /Carried by matching signature/);
   assert.match(markup, /PR #456 — Fix collective RPC teardown/);
   assert.match(markup, /<span>Solution<\/span>/);
   assert.match(markup, /PR #456<\/a>/);
@@ -202,12 +212,15 @@ test("alerts sharing a current fix PR render in one labeled section", () => {
   const sharedUpdate = {
     updateId: "7",
     failureJobId: "job-2",
+    failureSignature: "gpu correctness | agent_lost | process exited before tests",
     kind: "fix_opened" as const,
     message: "Opened a narrow fix and started the exact rerun.",
     fixPrs: [fixPr],
     author: "Sherlock",
     createdAt: "2026-08-29T09:10:00.000Z",
     stale: false,
+    carriedFixPrs: [fixPr],
+    fixOwnershipStatus: "current" as const,
   };
   const alerts = [
     alert({ alertId: "1", jobName: "GPU shard 1", updates: [sharedUpdate] }),
@@ -250,6 +263,7 @@ test("stale fix links do not group a current failure under an older repair", () 
       {
         updateId: "8",
         failureJobId: "job-1",
+        failureSignature: "gpu correctness | old_failure | previous cause",
         kind: "fix_opened",
         message: "This repair belongs to the previous failure revision.",
         fixPrs: [
@@ -262,6 +276,8 @@ test("stale fix links do not group a current failure under an older repair", () 
         author: "Sherlock",
         createdAt: "2026-08-29T08:30:00.000Z",
         stale: true,
+        carriedFixPrs: [],
+        fixOwnershipStatus: "stale",
       },
     ],
   });

@@ -18,6 +18,7 @@ interface UpdateRow {
   update_id: string | number;
   alert_id: string | number;
   failure_job_id: string;
+  failure_signature: string | null;
   kind: MainCiAlertUpdateKind;
   message: string;
   fix_prs: unknown;
@@ -30,6 +31,7 @@ function responseUpdate(row: UpdateRow) {
     updateId: String(row.update_id),
     alertId: String(row.alert_id),
     failureJobId: row.failure_job_id,
+    failureSignature: row.failure_signature,
     kind: row.kind,
     message: row.message,
     fixPrs: row.fix_prs,
@@ -148,17 +150,22 @@ export async function POST(request: Request) {
       }));
     const inserted = await db<UpdateRow[]>`
       INSERT INTO alerting_main_ci_job_updates (
-        alert_id, failure_job_id, kind, message, fix_prs, author,
-        idempotency_key
+        alert_id, failure_job_id, failure_signature, kind, message, fix_prs,
+        author, idempotency_key
       )
-      SELECT a.alert_id, ${input.failureJobId}, ${input.kind}, ${input.message},
-             ${db.json(fixPrsJson)}, ${input.author}, ${input.idempotencyKey}
+      SELECT a.alert_id, ${input.failureJobId}, an.failure_signature,
+             ${input.kind}, ${input.message}, ${db.json(fixPrsJson)},
+             ${input.author}, ${input.idempotencyKey}
       FROM alerting_main_ci_job_alerts AS a
+      LEFT JOIN alerting_main_ci_job_analysis AS an
+        ON an.alert_id = a.alert_id
+       AND an.analyzed_failure_job_id = a.last_failure_job_id
       WHERE a.alert_id = ${input.alertId}
         AND a.last_failure_job_id = ${input.failureJobId}
+        AND (${fixPrsJson.length} = 0 OR an.failure_signature IS NOT NULL)
       ON CONFLICT (idempotency_key) DO NOTHING
-      RETURNING update_id, alert_id, failure_job_id, kind, message, fix_prs,
-                author, created_at
+      RETURNING update_id, alert_id, failure_job_id, failure_signature, kind,
+                message, fix_prs, author, created_at
     `;
     if (inserted.length > 0) {
       return NextResponse.json(
@@ -171,8 +178,8 @@ export async function POST(request: Request) {
     // has advanced since the first insert. Reusing the key for different
     // content is a conflict, never an implicit overwrite.
     const existing = await db<UpdateRow[]>`
-      SELECT update_id, alert_id, failure_job_id, kind, message, fix_prs,
-             author, created_at
+      SELECT update_id, alert_id, failure_job_id, failure_signature, kind,
+             message, fix_prs, author, created_at
       FROM alerting_main_ci_job_updates
       WHERE idempotency_key = ${input.idempotencyKey}
       LIMIT 1
@@ -193,16 +200,36 @@ export async function POST(request: Request) {
       );
     }
 
-    const alerts = await db<{ last_failure_job_id: string }[]>`
-      SELECT last_failure_job_id
-      FROM alerting_main_ci_job_alerts
-      WHERE alert_id = ${input.alertId}
+    const alerts = await db<{
+      last_failure_job_id: string;
+      failure_signature: string | null;
+    }[]>`
+      SELECT a.last_failure_job_id, an.failure_signature
+      FROM alerting_main_ci_job_alerts AS a
+      LEFT JOIN alerting_main_ci_job_analysis AS an
+        ON an.alert_id = a.alert_id
+       AND an.analyzed_failure_job_id = a.last_failure_job_id
+      WHERE a.alert_id = ${input.alertId}
       LIMIT 1
     `;
     if (alerts.length === 0) {
       return NextResponse.json(
         { code: "alert_not_found", error: "Alert does not exist." },
         { status: 404, headers: NO_STORE },
+      );
+    }
+    if (
+      alerts[0].last_failure_job_id === input.failureJobId &&
+      fixPrsJson.length > 0 &&
+      alerts[0].failure_signature === null
+    ) {
+      return NextResponse.json(
+        {
+          code: "failure_signature_unavailable",
+          error:
+            "Fix ownership requires the current failure analysis signature; retry after analysis completes.",
+        },
+        { status: 409, headers: NO_STORE },
       );
     }
     return NextResponse.json(
@@ -214,7 +241,10 @@ export async function POST(request: Request) {
       { status: 409, headers: NO_STORE },
     );
   } catch (error) {
-    if (hasPostgresErrorCode(error, "42P01")) {
+    if (
+      hasPostgresErrorCode(error, "42P01") ||
+      hasPostgresErrorCode(error, "42703")
+    ) {
       return NextResponse.json(
         { error: "Main CI alert updates schema is not deployed yet." },
         { status: 503, headers: NO_STORE },

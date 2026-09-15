@@ -189,12 +189,20 @@ curl -fsS -X POST 'https://ci.vllm.ai/api/alerts/main-ci/updates' \
 ```
 
 `kind` is one of `note`, `diagnosis`, `fix_opened`, or `monitoring`;
-`fix_opened` requires at least one HTTPS PR link. Identical retries return
-`duplicate: true`. HTTP `409` with `stale_failure_revision` means a newer failure
-arrived: re-read the alert and decide whether the update still applies before
-posting a new logical update. Never automatically replace the failure ID. A
-`409` with `idempotency_conflict` means the key was reused for different content.
-Keep the token out of URLs, logs, public chat, and committed files.
+`fix_opened` requires at least one HTTPS PR link. The server binds every fix
+link to the current analyzer-produced `failureSignature`. On a later failure
+of the same `jobKey`—including a new alert episode—the dashboard carries that
+fix into the Solution column only when the fresh signature matches and GitHub
+confirms the PR is open or its merged commit is not yet in the failing commit.
+An already-contained merged fix is labeled as a regression; unavailable
+GitHub verification fails closed. Identical retries return `duplicate: true`.
+
+HTTP `409` with `failure_signature_unavailable` means the current failure is
+still waiting for analysis; retry after it completes. `stale_failure_revision`
+means a newer failure arrived: re-read the alert and decide whether the update
+still applies before posting a new logical update. Never automatically replace
+the failure ID. `idempotency_conflict` means the key was reused for different
+content. Keep the token out of URLs, logs, public chat, and committed files.
 
 ## Everything else: existing read APIs
 

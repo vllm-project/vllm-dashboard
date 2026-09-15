@@ -383,8 +383,7 @@ function ReasonBadge({ analysis }: { analysis: MainCiJobAnalysis }) {
 
 function currentFixPrs(alert: MainCiJobAlert): MainCiSuspectedFixPr[] {
   const updateFixPrs = alert.updates
-    .filter((update) => !update.stale)
-    .flatMap((update) => update.fixPrs);
+    .flatMap((update) => update.carriedFixPrs);
   const fixPrs =
     updateFixPrs.length > 0
       ? updateFixPrs
@@ -410,7 +409,11 @@ interface SolutionView {
 
 function solutionFor(alert: MainCiJobAlert): SolutionView | null {
   const update =
-    alert.updates.find((candidate) => !candidate.stale) ?? alert.updates[0];
+    alert.updates.find((candidate) => !candidate.stale) ??
+    alert.updates.find(
+      (candidate) => candidate.fixOwnershipStatus === "carried",
+    ) ??
+    alert.updates[0];
   if (update) {
     const current = currentFixPrs(alert);
     return {
@@ -782,11 +785,23 @@ function UpdatesPanel({ updates }: { updates: MainCiAlertUpdate[] }) {
                 <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 ring-1 ring-blue-200/80 ring-inset dark:bg-blue-900/30 dark:text-blue-200 dark:ring-blue-800/60">
                   {UPDATE_KIND_LABELS[update.kind]}
                 </span>
-                {update.stale && (
+                {update.fixOwnershipStatus === "carried" ? (
+                  <span className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+                    Carried by matching signature
+                  </span>
+                ) : update.fixOwnershipStatus === "regressed" ? (
+                  <span className="text-[11px] font-medium text-red-700 dark:text-red-300">
+                    Prior fix already in failing commit
+                  </span>
+                ) : update.fixOwnershipStatus === "unverified" ? (
+                  <span className="text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                    Fix ownership unverified
+                  </span>
+                ) : update.stale ? (
                   <span className="text-[11px] font-medium text-amber-700 dark:text-amber-300">
                     Older failure
                   </span>
-                )}
+                ) : null}
               </div>
               <time
                 dateTime={update.createdAt}

@@ -44,6 +44,7 @@ ANALYSES_PER_TICK = 5
 JOB_LOG_CHAR_LIMIT = 200_000
 SUMMARY_CHAR_LIMIT = 1000
 ACTION_CHAR_LIMIT = 300
+FAILURE_SIGNATURE_CHAR_LIMIT = 500
 
 CLASSIFICATIONS = frozenset({"infra", "flaky", "code", "test", "unknown"})
 CONFIDENCES = frozenset({"high", "medium", "low"})
@@ -81,6 +82,7 @@ class MainCIJobAnalysis:
 
     alert_id: int
     analyzed_failure_job_id: str
+    failure_signature: str
     classification: str
     confidence: str
     summary: str
@@ -194,6 +196,31 @@ def _require_string(payload: dict[str, Any], key: str, limit: int) -> str:
     return value
 
 
+def _failure_signature(payload: dict[str, Any]) -> str:
+    """Return a canonical, exact-match identity for the root failure.
+
+    The analyzer owns the semantic normalization (test/operation, failure
+    family, and stable marker). This final pass removes presentation-only
+    differences without erasing stable numeric test parameters.
+    """
+    value = payload.get("failure_signature")
+    if not isinstance(value, str):
+        raise AnalyzerError("analysis failure_signature is missing or not a string")
+    normalized = " ".join(value.strip().lower().split())
+    if not normalized or len(normalized) > FAILURE_SIGNATURE_CHAR_LIMIT:
+        raise AnalyzerError(
+            "analysis failure_signature must contain 1 to "
+            f"{FAILURE_SIGNATURE_CHAR_LIMIT} normalized characters"
+        )
+    if normalized.count("|") != 2 or any(
+        not part.strip() for part in normalized.split("|")
+    ):
+        raise AnalyzerError(
+            "analysis failure_signature must have exactly three non-empty | segments"
+        )
+    return normalized
+
+
 def _parse_fix_prs(payload: Any) -> tuple[SuspectedFixPR, ...]:
     if not isinstance(payload, list):
         raise AnalyzerError("analysis suspected_fix_prs is not a list")
@@ -245,6 +272,7 @@ def read_analysis(
     return MainCIJobAnalysis(
         alert_id=target.alert_id,
         analyzed_failure_job_id=target.failure_job_id,
+        failure_signature=_failure_signature(payload),
         classification=str(classification),
         confidence=str(confidence),
         summary=_require_string(payload, "summary", SUMMARY_CHAR_LIMIT),

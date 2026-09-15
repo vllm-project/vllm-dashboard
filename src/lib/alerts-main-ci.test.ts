@@ -43,6 +43,7 @@ function alertRow(
     resolution_commit_sha: null,
     resolution_kind: null,
     analysis_analyzed_failure_job_id: null,
+    analysis_failure_signature: null,
     analysis_classification: null,
     analysis_confidence: null,
     analysis_summary: null,
@@ -59,6 +60,8 @@ function alertRow(
 function analyzedRow(): Partial<MainCiJobAlertRow> {
   return {
     analysis_analyzed_failure_job_id: "job-2",
+    analysis_failure_signature:
+      "gpu correctness | agent_lost | process exited before tests",
     analysis_classification: "flaky",
     analysis_confidence: "medium",
     analysis_summary: "Test passes on retry with no code change.",
@@ -96,6 +99,8 @@ test("responder updates map fix PRs and mark older failure revisions stale", () 
         {
           updateId: "9",
           failureJobId: "job-2",
+          failureSignature:
+            "gpu correctness | agent_lost | process exited before tests",
           kind: "fix_opened",
           message: "Opened a narrow fix.",
           fixPrs: [
@@ -111,6 +116,7 @@ test("responder updates map fix PRs and mark older failure revisions stale", () 
         {
           updateId: "8",
           failureJobId: "job-1",
+          failureSignature: "gpu correctness | timeout | old runner stall",
           kind: "diagnosis",
           message: "Earlier diagnosis.",
           fixPrs: [],
@@ -124,6 +130,8 @@ test("responder updates map fix PRs and mark older failure revisions stale", () 
   assert.equal(alert.updates.length, 2);
   assert.equal(alert.updates[0].stale, false);
   assert.equal(alert.updates[1].stale, true);
+  assert.equal(alert.updates[0].fixOwnershipStatus, "current");
+  assert.equal(alert.updates[1].fixOwnershipStatus, "stale");
   assert.deepEqual(alert.updates[0].fixPrs, [
     {
       url: "https://github.com/vllm-project/vllm/pull/88",
@@ -133,10 +141,44 @@ test("responder updates map fix PRs and mark older failure revisions stale", () 
   ]);
 });
 
+test("a stale fix becomes a verification candidate only on an exact signature match", () => {
+  const fixPr = {
+    url: "https://github.com/vllm-project/vllm/pull/88",
+    number: 88,
+    title: "Fix GPU test",
+  };
+  const alert = toMainCiJobAlert(
+    alertRow({
+      ...analyzedRow(),
+      agent_updates: [
+        {
+          updateId: "8",
+          failureJobId: "job-1",
+          failureSignature:
+            "gpu correctness | agent_lost | process exited before tests",
+          kind: "fix_opened",
+          message: "Fix for the same root failure.",
+          fixPrs: [fixPr],
+          author: "Sherlock",
+          createdAt: "2026-08-29T08:10:00.000Z",
+        },
+      ],
+    }),
+  );
+
+  assert.equal(alert.updates[0].stale, true);
+  assert.equal(alert.updates[0].fixOwnershipStatus, "unverified");
+  assert.deepEqual(alert.updates[0].carriedFixPrs, []);
+});
+
 test("analysis columns map to a nested object with a computed stale flag", () => {
   const alert = toMainCiJobAlert(alertRow(analyzedRow()));
 
   assert.equal(alert.analysis?.classification, "flaky");
+  assert.equal(
+    alert.analysis?.failureSignature,
+    "gpu correctness | agent_lost | process exited before tests",
+  );
   assert.equal(alert.analysis?.confidence, "medium");
   assert.equal(alert.analysis?.summary, "Test passes on retry with no code change.");
   assert.deepEqual(alert.analysis?.evidenceUrls, [

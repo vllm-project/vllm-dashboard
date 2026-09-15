@@ -206,6 +206,18 @@ def test_main_ci_agent_updates_are_append_only_revision_scoped_sidecars() -> Non
     assert "ARRAY['anon'::name, 'authenticated'::name]" in sql
 
 
+def test_main_ci_fix_ownership_is_bound_to_a_normalized_failure_signature() -> None:
+    sql = (MIGRATIONS_DIR / "0023_main_ci_signature_fix_ownership.sql").read_text()
+
+    assert "ALTER TABLE alerting_main_ci_job_analysis" in sql
+    assert "ALTER TABLE alerting_main_ci_job_updates" in sql
+    assert "ADD COLUMN IF NOT EXISTS failure_signature text" in sql
+    assert "failure_signature = lower(failure_signature)" in sql
+    assert "char_length(failure_signature) BETWEEN 1 AND 500" in sql
+    assert "idx_main_ci_job_updates_signature" in sql
+    assert "jsonb_array_length(fix_prs) > 0" in sql
+
+
 def test_dashboard_schema_keeps_legacy_additive_columns_and_covering_index() -> None:
     sql = (MIGRATIONS_DIR / "0005_dashboard_operational.sql").read_text()
 
