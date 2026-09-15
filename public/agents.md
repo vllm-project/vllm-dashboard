@@ -183,6 +183,11 @@ curl -fsS -X POST 'https://ci.vllm.ai/api/alerts/main-ci/updates' \
       "url": "https://github.com/vllm-project/vllm/pull/56676",
       "title": "Fix collective RPC teardown"
     }],
+    "solution": {
+      "kind": "code_fix",
+      "owner": "Sherlock",
+      "action": "Land PR #56676 after the exact lane passes."
+    },
     "author": "Sherlock",
     "idempotencyKey": "sherlock:alert-1030:pr-56676"
   }'
@@ -196,6 +201,17 @@ fix into the Solution column only when the fresh signature matches and GitHub
 confirms the PR is open or its merged commit is not yet in the failing commit.
 An already-contained merged fix is labeled as a regression; unavailable
 GitHub verification fails closed. Identical retries return `duplicate: true`.
+
+`solution` is optional and is the machine-auditable owner/action for the exact
+failure revision. Its `kind` is `code_fix`, `infra_action`, `known_flake`, or
+`monitoring`; every solution requires non-empty `owner` and `action`, and
+`code_fix` additionally requires a fix PR. Omit it or send `null` when no
+responder owns a current action: the alerts page then labels the row
+**Untriaged** instead of presenting an automated recommendation as a commitment.
+The page and hourly reconciliation cron re-check live PR state, failure
+signature changes, and stale responder updates. Closed-unmerged/non-main PRs,
+fixes already contained by the failing commit, unverifiable PRs, and actions
+bound to an older failure are all surfaced as ownership gaps.
 
 HTTP `409` with `failure_signature_unavailable` means the current failure is
 still waiting for analysis; retry after it completes. `stale_failure_revision`

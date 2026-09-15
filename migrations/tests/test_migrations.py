@@ -218,6 +218,18 @@ def test_main_ci_fix_ownership_is_bound_to_a_normalized_failure_signature() -> N
     assert "jsonb_array_length(fix_prs) > 0" in sql
 
 
+def test_main_ci_structured_solutions_are_complete_and_auditable() -> None:
+    sql = (MIGRATIONS_DIR / "0024_main_ci_structured_solutions.sql").read_text()
+
+    assert "ADD COLUMN IF NOT EXISTS solution_kind text" in sql
+    assert "ADD COLUMN IF NOT EXISTS solution_owner text" in sql
+    assert "ADD COLUMN IF NOT EXISTS solution_action text" in sql
+    assert "'code_fix', 'infra_action', 'known_flake', 'monitoring'" in sql
+    assert "solution_kind <> 'code_fix'" in sql
+    assert "jsonb_array_length(fix_prs) > 0" in sql
+    assert "idx_main_ci_job_updates_current_solution" in sql
+
+
 def test_dashboard_schema_keeps_legacy_additive_columns_and_covering_index() -> None:
     sql = (MIGRATIONS_DIR / "0005_dashboard_operational.sql").read_text()
 

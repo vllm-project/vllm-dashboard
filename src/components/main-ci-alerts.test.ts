@@ -10,6 +10,7 @@ import {
   sortMainCiAlerts,
 } from "./main-ci-alerts";
 import type { MainCiJobAlert, MainCiJobAnalysis } from "../lib/alerts-main-ci";
+import { reconcileMainCiSolution } from "../lib/main-ci-solution-reconciliation";
 
 function analysis(
   overrides: Partial<MainCiJobAnalysis> = {},
@@ -37,7 +38,7 @@ function analysis(
 }
 
 function alert(overrides: Partial<MainCiJobAlert> = {}): MainCiJobAlert {
-  return {
+  const value: MainCiJobAlert = {
     alertId: "1",
     jobKey: "step:gpu|name:GPU test",
     jobName: "GPU test",
@@ -69,8 +70,19 @@ function alert(overrides: Partial<MainCiJobAlert> = {}): MainCiJobAlert {
     resolutionKind: null,
     analysis: null,
     updates: [],
+    solutionCoverage: {
+      kind: "untriaged",
+      owner: null,
+      action: null,
+      sourceUpdateId: null,
+      updatedAt: null,
+      issues: ["missing_current_solution"],
+    },
     ...overrides,
   };
+  return overrides.solutionCoverage
+    ? value
+    : { ...value, solutionCoverage: reconcileMainCiSolution(value) };
 }
 
 test("empty lifecycle history renders an explicit empty state", () => {
@@ -113,6 +125,42 @@ test("open alert renders first and latest exact failure evidence", () => {
   assert.match(markup, /Latest failure/);
   assert.match(markup, /opened/);
   assert.match(markup, /https:\/\/buildkite\.com\/vllm\/ci\/builds\/101/);
+  assert.match(markup, />Untriaged<\/span>/);
+  assert.match(markup, /No accountable action is current/);
+});
+
+test("a structured non-code solution renders its kind, owner, and action", () => {
+  const current = alert({
+    updates: [
+      {
+        updateId: "11",
+        failureJobId: "job-2",
+        failureSignature:
+          "gpu correctness | agent_lost | process exited before tests",
+        kind: "diagnosis",
+        message: "This is an H200 fleet action, not a source repair.",
+        fixPrs: [],
+        solution: {
+          kind: "infra_action",
+          owner: "H200 fleet",
+          action: "Repair the mirror lock, then rerun the exact lane once.",
+        },
+        author: "Sherlock",
+        createdAt: "2026-08-29T09:10:00.000Z",
+        stale: false,
+        carriedFixPrs: [],
+        fixOwnershipStatus: "current",
+      },
+    ],
+  });
+  const markup = renderToStaticMarkup(
+    createElement(MainCIAlerts, { alerts: [current] }),
+  );
+
+  assert.match(markup, />Infra action<\/span>/);
+  assert.match(markup, /H200 fleet · /);
+  assert.match(markup, /Repair the mirror lock/);
+  assert.doesNotMatch(markup, />Untriaged<\/span>/);
 });
 
 test("analyzed alert renders classification and the analysis panel", () => {
@@ -167,6 +215,7 @@ test("responder updates surface fix PRs and older failure revisions", () => {
                   title: "Fix collective RPC teardown",
                 },
               ],
+              solution: null,
               author: "Sherlock",
               createdAt: "2026-08-29T09:10:00.000Z",
               stale: true,
@@ -185,10 +234,10 @@ test("responder updates surface fix PRs and older failure revisions", () => {
     }),
   );
 
-  // The row's Solution cell flags that the message is about an older
-  // failure, credits its author, and keeps the PR link because the row is
-  // not grouped under that PR.
-  assert.match(markup, />Older<\/span>/);
+  // The row's Solution cell treats a live, signature-carried PR as the current
+  // code-fix path, credits its author, and keeps the PR link because the row
+  // is not grouped under that PR.
+  assert.match(markup, />Code fix<\/span>/);
   assert.match(markup, /Sherlock · /);
   assert.doesNotMatch(markup, /1 fix PR/);
   assert.match(markup, /Responder updates/);
@@ -216,6 +265,11 @@ test("alerts sharing a current fix PR render in one labeled section", () => {
     kind: "fix_opened" as const,
     message: "Opened a narrow fix and started the exact rerun.",
     fixPrs: [fixPr],
+    solution: {
+      kind: "code_fix" as const,
+      owner: "Sherlock",
+      action: "Land PR #456 after the exact lane passes.",
+    },
     author: "Sherlock",
     createdAt: "2026-08-29T09:10:00.000Z",
     stale: false,
@@ -273,6 +327,7 @@ test("stale fix links do not group a current failure under an older repair", () 
             title: "Older repair",
           },
         ],
+        solution: null,
         author: "Sherlock",
         createdAt: "2026-08-29T08:30:00.000Z",
         stale: true,

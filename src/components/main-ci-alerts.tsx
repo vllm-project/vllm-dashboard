@@ -17,6 +17,7 @@ import {
   formatAlertDateTime,
   formatRelativeTime,
 } from "@/lib/alerts-shared";
+import { currentMainCiFixPrs } from "@/lib/main-ci-solution-reconciliation";
 
 /**
  * One failure reason's colour, used consistently for the dot beside the reason
@@ -381,18 +382,6 @@ function ReasonBadge({ analysis }: { analysis: MainCiJobAnalysis }) {
   );
 }
 
-function currentFixPrs(alert: MainCiJobAlert): MainCiSuspectedFixPr[] {
-  const updateFixPrs = alert.updates
-    .flatMap((update) => update.carriedFixPrs);
-  const fixPrs =
-    updateFixPrs.length > 0
-      ? updateFixPrs
-      : alert.analysis && !alert.analysis.stale
-        ? alert.analysis.suspectedFixPrs
-        : [];
-  return [...new Map(fixPrs.map((pr) => [pr.url, pr])).values()];
-}
-
 /**
  * What the Solution column says for one alert: the newest responder update
  * when there is one (an older revision's update still shows, flagged), else
@@ -408,6 +397,23 @@ interface SolutionView {
 }
 
 function solutionFor(alert: MainCiJobAlert): SolutionView | null {
+  if (alert.solutionCoverage.kind !== "untriaged") {
+    return {
+      label: {
+        code_fix: alert.solutionCoverage.issues.includes("fix_merged_pending")
+          ? "Merged fix"
+          : "Code fix",
+        infra_action: "Infra action",
+        known_flake: "Known flake",
+        monitoring: "Monitoring",
+      }[alert.solutionCoverage.kind],
+      tone: "update",
+      message: alert.solutionCoverage.action ?? "",
+      by: alert.solutionCoverage.owner ?? "Responder",
+      at: alert.solutionCoverage.updatedAt ?? alert.lastFailure.finishedAt,
+      fixPrs: currentMainCiFixPrs(alert),
+    };
+  }
   const update =
     alert.updates.find((candidate) => !candidate.stale) ??
     alert.updates.find(
@@ -415,7 +421,7 @@ function solutionFor(alert: MainCiJobAlert): SolutionView | null {
     ) ??
     alert.updates[0];
   if (update) {
-    const current = currentFixPrs(alert);
+    const current = currentMainCiFixPrs(alert);
     return {
       label: update.stale ? "Older" : UPDATE_KIND_LABELS[update.kind],
       tone: update.stale ? "older" : "update",
@@ -487,6 +493,33 @@ function SolutionSummary({
   /** The PR this row is already grouped under, so the cell need not repeat it. */
   groupFixPrUrl?: string;
 }) {
+  if (
+    alert.status === "open" &&
+    alert.solutionCoverage.kind === "untriaged"
+  ) {
+    const issueLabels = {
+      missing_current_solution: "No accountable action is current",
+      stale_action: "The last action belongs to an older failure",
+      signature_changed: "The failure signature changed",
+      inactive_fix: "The linked PR is closed or targets another branch",
+      fix_merged_pending: "The merged fix is not in the failing commit yet",
+      fix_already_contained: "The linked fix is already in the failing commit",
+      fix_unverified: "The linked PR could not be verified",
+    };
+    const detail = alert.solutionCoverage.issues
+      .map((issue) => issueLabels[issue])
+      .join("; ");
+    return (
+      <span className="hidden min-w-0 sm:block" title={detail}>
+        <span className="block truncate text-xs text-amber-700 dark:text-amber-300">
+          {detail || "No accountable action is current"}
+        </span>
+        <span className="mt-1 inline-flex rounded bg-amber-100 px-1 py-px text-[10px] font-semibold tracking-wide text-amber-800 uppercase dark:bg-amber-900/40 dark:text-amber-200">
+          Untriaged
+        </span>
+      </span>
+    );
+  }
   const solution = solutionFor(alert);
   if (solution === null) {
     return (
@@ -509,6 +542,11 @@ function SolutionSummary({
       </span>
       <span className="mt-1 flex min-w-0 items-center gap-x-1.5 text-[11px] text-zinc-400 dark:text-zinc-500">
         <SolutionLabel tone={solution.tone}>{solution.label}</SolutionLabel>
+        {alert.solutionCoverage.issues.includes("fix_merged_pending") && (
+          <span className="shrink-0 font-medium text-blue-700 dark:text-blue-300">
+            awaiting main
+          </span>
+        )}
         <span className="truncate">
           {solution.by} ·{" "}
           <time dateTime={solution.at} title={formatAlertDateTime(solution.at)}>
@@ -793,6 +831,18 @@ function UpdatesPanel({ updates }: { updates: MainCiAlertUpdate[] }) {
                   <span className="text-[11px] font-medium text-red-700 dark:text-red-300">
                     Prior fix already in failing commit
                   </span>
+                ) : update.fixOwnershipStatus === "inactive" ? (
+                  <span className="text-[11px] font-medium text-red-700 dark:text-red-300">
+                    Fix PR closed or not targeting main
+                  </span>
+                ) : update.fixOwnershipStatus === "merged_pending" ? (
+                  <span className="text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                    Merged fix not in failing commit yet
+                  </span>
+                ) : update.fixOwnershipStatus === "signature_changed" ? (
+                  <span className="text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                    Failure signature changed
+                  </span>
                 ) : update.fixOwnershipStatus === "unverified" ? (
                   <span className="text-[11px] font-medium text-amber-700 dark:text-amber-300">
                     Fix ownership unverified
@@ -813,6 +863,16 @@ function UpdatesPanel({ updates }: { updates: MainCiAlertUpdate[] }) {
             <p className="mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-zinc-800 dark:text-zinc-200">
               {update.message}
             </p>
+            {update.solution && (
+              <div className="mt-2 rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-2 text-xs dark:border-zinc-700 dark:bg-zinc-900/60">
+                <p className="font-medium text-zinc-700 dark:text-zinc-200">
+                  {update.solution.kind.replaceAll("_", " ")} · {update.solution.owner}
+                </p>
+                <p className="mt-0.5 text-zinc-500 dark:text-zinc-400">
+                  {update.solution.action}
+                </p>
+              </div>
+            )}
             {update.fixPrs.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">
                 {update.fixPrs.map((pr) => (
@@ -1032,7 +1092,7 @@ export function groupMainCiAlertsByFixPr(
   };
 
   for (const alert of alerts) {
-    const fixPr = currentFixPrs(alert)[0] ?? null;
+    const fixPr = currentMainCiFixPrs(alert)[0] ?? null;
     if (fixPr === null) {
       ungrouped.alerts.push(alert);
       continue;
@@ -1040,7 +1100,7 @@ export function groupMainCiAlertsByFixPr(
     const linkedBy = alert.updates
       .filter(
         (update) =>
-          !update.stale && update.fixPrs.some((pr) => pr.url === fixPr.url),
+          update.carriedFixPrs.some((pr) => pr.url === fixPr.url),
       )
       .reduce<MainCiAlertUpdate | null>(
         (newest, update) =>

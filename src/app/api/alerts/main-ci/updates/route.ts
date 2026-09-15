@@ -6,7 +6,10 @@ import {
 } from "@/lib/main-ci-alert-updates";
 import { bearerTokenMatches } from "@/lib/operator-auth";
 import { hasPostgresErrorCode } from "@/lib/postgres-errors";
-import type { MainCiAlertUpdateKind } from "@/lib/alerts-main-ci";
+import type {
+  MainCiAlertUpdateKind,
+  MainCiSolutionKind,
+} from "@/lib/alerts-main-ci";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -22,6 +25,9 @@ interface UpdateRow {
   kind: MainCiAlertUpdateKind;
   message: string;
   fix_prs: unknown;
+  solution_kind: MainCiSolutionKind | null;
+  solution_owner: string | null;
+  solution_action: string | null;
   author: string;
   created_at: Date;
 }
@@ -35,6 +41,16 @@ function responseUpdate(row: UpdateRow) {
     kind: row.kind,
     message: row.message,
     fixPrs: row.fix_prs,
+    solution:
+      row.solution_kind === null ||
+      row.solution_owner === null ||
+      row.solution_action === null
+        ? null
+        : {
+            kind: row.solution_kind,
+            owner: row.solution_owner,
+            action: row.solution_action,
+          },
     author: row.author,
     createdAt: row.created_at.toISOString(),
   };
@@ -151,10 +167,13 @@ export async function POST(request: Request) {
     const inserted = await db<UpdateRow[]>`
       INSERT INTO alerting_main_ci_job_updates (
         alert_id, failure_job_id, failure_signature, kind, message, fix_prs,
-        author, idempotency_key
+        solution_kind, solution_owner, solution_action, author, idempotency_key
       )
       SELECT a.alert_id, ${input.failureJobId}, an.failure_signature,
              ${input.kind}, ${input.message}, ${db.json(fixPrsJson)},
+             ${input.solution?.kind ?? null},
+             ${input.solution?.owner ?? null},
+             ${input.solution?.action ?? null},
              ${input.author}, ${input.idempotencyKey}
       FROM alerting_main_ci_job_alerts AS a
       LEFT JOIN alerting_main_ci_job_analysis AS an
@@ -165,7 +184,8 @@ export async function POST(request: Request) {
         AND (${fixPrsJson.length} = 0 OR an.failure_signature IS NOT NULL)
       ON CONFLICT (idempotency_key) DO NOTHING
       RETURNING update_id, alert_id, failure_job_id, failure_signature, kind,
-                message, fix_prs, author, created_at
+                message, fix_prs, solution_kind, solution_owner,
+                solution_action, author, created_at
     `;
     if (inserted.length > 0) {
       return NextResponse.json(
@@ -179,7 +199,8 @@ export async function POST(request: Request) {
     // content is a conflict, never an implicit overwrite.
     const existing = await db<UpdateRow[]>`
       SELECT update_id, alert_id, failure_job_id, failure_signature, kind,
-             message, fix_prs, author, created_at
+             message, fix_prs, solution_kind, solution_owner, solution_action,
+             author, created_at
       FROM alerting_main_ci_job_updates
       WHERE idempotency_key = ${input.idempotencyKey}
       LIMIT 1

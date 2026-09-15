@@ -1670,6 +1670,17 @@
               "$ref": "#/components/schemas/MainCiFixPr"
             }
           },
+          "solution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MainCiAlertSolution"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional accountable path for this exact failure revision. Omit or send null to leave it explicitly untriaged."
+          },
           "author": {
             "type": "string",
             "minLength": 1,
@@ -1723,6 +1734,16 @@
               "$ref": "#/components/schemas/MainCiFixPr"
             }
           },
+          "solution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MainCiAlertSolution"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "author": {
             "type": "string"
           },
@@ -1739,8 +1760,38 @@
           "kind",
           "message",
           "fixPrs",
+          "solution",
           "author",
           "createdAt"
+        ]
+      },
+      "MainCiAlertSolution": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "code_fix",
+              "infra_action",
+              "known_flake",
+              "monitoring"
+            ]
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "kind",
+          "owner",
+          "action"
         ]
       },
       "MainCiAlertUpdateResponse": {

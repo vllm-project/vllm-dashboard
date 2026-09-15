@@ -30,6 +30,52 @@ test("valid responder updates are trimmed and normalized", () => {
   assert.equal(parsed.value.message, "Opened the narrow fix.");
   assert.equal(parsed.value.author, "Sherlock");
   assert.equal(parsed.value.fixPrs[0].title, "Fix collective RPC teardown");
+  assert.equal(parsed.value.solution, null);
+});
+
+test("structured solutions require an owner and action", () => {
+  const parsed = parseMainCiAlertUpdate({
+    ...validBody,
+    solution: {
+      kind: "code_fix",
+      owner: " Sherlock ",
+      action: " Merge after the exact lane passes. ",
+    },
+  });
+
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+  assert.deepEqual(parsed.value.solution, {
+    kind: "code_fix",
+    owner: "Sherlock",
+    action: "Merge after the exact lane passes.",
+  });
+
+  const missingOwner = parseMainCiAlertUpdate({
+    ...validBody,
+    kind: "diagnosis",
+    fixPrs: [],
+    solution: { kind: "infra_action", owner: "", action: "Repair DNS." },
+  });
+  assert.deepEqual(missingOwner, {
+    ok: false,
+    error: "solution.owner must contain 1 to 80 characters after trimming.",
+  });
+
+  const missingPr = parseMainCiAlertUpdate({
+    ...validBody,
+    kind: "diagnosis",
+    fixPrs: [],
+    solution: {
+      kind: "code_fix",
+      owner: "Sherlock",
+      action: "Open a fix.",
+    },
+  });
+  assert.deepEqual(missingPr, {
+    ok: false,
+    error: "code_fix solutions must include at least one fix PR.",
+  });
 });
 
 test("fix_opened requires a fix PR and only accepts safe links", () => {

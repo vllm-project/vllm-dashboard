@@ -42,6 +42,14 @@ function candidate(number: number): MainCiJobAlert {
     resolution: null,
     resolutionKind: null,
     analysis: null,
+    solutionCoverage: {
+      kind: "untriaged",
+      owner: null,
+      action: null,
+      sourceUpdateId: null,
+      updatedAt: null,
+      issues: ["missing_current_solution"],
+    },
     updates: [
       {
         updateId: "9",
@@ -50,6 +58,7 @@ function candidate(number: number): MainCiJobAlert {
         kind: "fix_opened",
         message: "Opened the fix.",
         fixPrs: [pr],
+        solution: null,
         author: "Sherlock",
         createdAt: "2026-08-29T08:10:00.000Z",
         stale: true,
@@ -74,7 +83,7 @@ test("an open exact-signature fix is carried to the newer failure", async () => 
   assert.equal(alerts[0].updates[0].carriedFixPrs[0].number, 70001);
 });
 
-test("a merged fix is carried when the failing commit predates it", async () => {
+test("a merged fix is flagged as pending when the failing commit predates it", async () => {
   const mergeSha = "cccccccccccccccccccccccccccccccccccccccc";
   const requested: string[] = [];
   const alerts = await verifyMainCiFixOwnership(
@@ -95,7 +104,8 @@ test("a merged fix is carried when the failing commit predates it", async () => 
 
   assert.equal(requested.length, 2);
   assert.match(requested[1], new RegExp(`${mergeSha}\\.\\.\\.${FAILURE_SHA}$`));
-  assert.equal(alerts[0].updates[0].fixOwnershipStatus, "carried");
+  assert.equal(alerts[0].updates[0].fixOwnershipStatus, "merged_pending");
+  assert.equal(alerts[0].updates[0].carriedFixPrs[0].number, 70002);
 });
 
 test("a merged fix already in the failing commit is marked regressed", async () => {
@@ -117,7 +127,7 @@ test("a merged fix already in the failing commit is marked regressed", async () 
   assert.deepEqual(alerts[0].updates[0].carriedFixPrs, []);
 });
 
-test("an open fix targeting another branch is not carried", async () => {
+test("an open fix targeting another branch is marked inactive", async () => {
   const alerts = await verifyMainCiFixOwnership([candidate(70005)], async () =>
     Response.json({
       state: "open",
@@ -127,7 +137,7 @@ test("an open fix targeting another branch is not carried", async () => {
     }),
   );
 
-  assert.equal(alerts[0].updates[0].fixOwnershipStatus, "stale");
+  assert.equal(alerts[0].updates[0].fixOwnershipStatus, "inactive");
   assert.deepEqual(alerts[0].updates[0].carriedFixPrs, []);
 });
 
@@ -137,5 +147,51 @@ test("GitHub failures leave signature-matched ownership unverified", async () =>
   );
 
   assert.equal(alerts[0].updates[0].fixOwnershipStatus, "unverified");
+  assert.deepEqual(alerts[0].updates[0].carriedFixPrs, []);
+});
+
+test("a once-current PR is removed when it closes without merging", async () => {
+  const exact = candidate(70006);
+  exact.updates[0] = {
+    ...exact.updates[0],
+    failureJobId: "job-2",
+    stale: false,
+    carriedFixPrs: exact.updates[0].fixPrs,
+    fixOwnershipStatus: "current",
+  };
+  const alerts = await verifyMainCiFixOwnership([exact], async () =>
+    Response.json({
+      state: "closed",
+      merged: false,
+      merge_commit_sha: null,
+      base: { ref: "main" },
+    }),
+  );
+
+  assert.equal(alerts[0].updates[0].fixOwnershipStatus, "inactive");
+  assert.deepEqual(alerts[0].updates[0].carriedFixPrs, []);
+});
+
+test("a once-current merged PR is removed when the failing commit contains it", async () => {
+  const exact = candidate(70007);
+  exact.updates[0] = {
+    ...exact.updates[0],
+    failureJobId: "job-2",
+    stale: false,
+    carriedFixPrs: exact.updates[0].fixPrs,
+    fixOwnershipStatus: "current",
+  };
+  const alerts = await verifyMainCiFixOwnership([exact], async (input) =>
+    String(input).includes("/compare/")
+      ? Response.json({ status: "ahead" })
+      : Response.json({
+          state: "closed",
+          merged: true,
+          merge_commit_sha: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          base: { ref: "main" },
+        }),
+  );
+
+  assert.equal(alerts[0].updates[0].fixOwnershipStatus, "regressed");
   assert.deepEqual(alerts[0].updates[0].carriedFixPrs, []);
 });

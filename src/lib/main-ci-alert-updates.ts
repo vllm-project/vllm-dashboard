@@ -1,5 +1,7 @@
 import type {
+  MainCiAlertSolution,
   MainCiAlertUpdateKind,
+  MainCiSolutionKind,
   MainCiSuspectedFixPr,
 } from "@/lib/alerts-main-ci";
 
@@ -7,6 +9,12 @@ const UPDATE_KINDS = new Set<MainCiAlertUpdateKind>([
   "note",
   "diagnosis",
   "fix_opened",
+  "monitoring",
+]);
+const SOLUTION_KINDS = new Set<MainCiSolutionKind>([
+  "code_fix",
+  "infra_action",
+  "known_flake",
   "monitoring",
 ]);
 const BUILDKITE_JOB_ID =
@@ -19,8 +27,36 @@ export interface MainCiAlertUpdateInput {
   kind: MainCiAlertUpdateKind;
   message: string;
   fixPrs: MainCiSuspectedFixPr[];
+  solution: MainCiAlertSolution | null;
   author: string;
   idempotencyKey: string;
+}
+
+function parseSolution(
+  value: unknown,
+): { value: MainCiAlertSolution | null } | { error: string } {
+  if (value === undefined || value === null) return { value: null };
+  if (!isRecord(value)) return { error: "solution must be an object or null." };
+  if (
+    typeof value.kind !== "string" ||
+    !SOLUTION_KINDS.has(value.kind as MainCiSolutionKind)
+  ) {
+    return {
+      error:
+        "solution.kind must be one of: code_fix, infra_action, known_flake, monitoring.",
+    };
+  }
+  const owner = boundedString(value.owner, "solution.owner", 80);
+  if ("error" in owner) return { error: owner.error };
+  const action = boundedString(value.action, "solution.action", 1000);
+  if ("error" in action) return { error: action.error };
+  return {
+    value: {
+      kind: value.kind as MainCiSolutionKind,
+      owner: owner.value,
+      action: action.value,
+    },
+  };
 }
 
 export type MainCiAlertUpdateParseResult =
@@ -159,6 +195,14 @@ export function parseMainCiAlertUpdate(
       error: "fix_opened updates must include at least one fix PR.",
     };
   }
+  const solution = parseSolution(body.solution);
+  if ("error" in solution) return { ok: false, error: solution.error };
+  if (solution.value?.kind === "code_fix" && fixPrs.length === 0) {
+    return {
+      ok: false,
+      error: "code_fix solutions must include at least one fix PR.",
+    };
+  }
 
   return {
     ok: true,
@@ -168,6 +212,7 @@ export function parseMainCiAlertUpdate(
       kind: body.kind as MainCiAlertUpdateKind,
       message: message.value,
       fixPrs,
+      solution: solution.value,
       author: author.value,
       idempotencyKey: idempotencyKey.value,
     },
@@ -199,6 +244,9 @@ export function sameMainCiAlertUpdate(
     kind: MainCiAlertUpdateKind;
     message: string;
     fix_prs: unknown;
+    solution_kind?: MainCiSolutionKind | null;
+    solution_owner?: string | null;
+    solution_action?: string | null;
     author: string;
   },
   requested: MainCiAlertUpdateInput,
@@ -209,6 +257,9 @@ export function sameMainCiAlertUpdate(
     existing.kind === requested.kind &&
     existing.message === requested.message &&
     canonicalFixPrs(existing.fix_prs) === canonicalFixPrs(requested.fixPrs) &&
+    (existing.solution_kind ?? null) === (requested.solution?.kind ?? null) &&
+    (existing.solution_owner ?? null) === (requested.solution?.owner ?? null) &&
+    (existing.solution_action ?? null) === (requested.solution?.action ?? null) &&
     existing.author === requested.author
   );
 }

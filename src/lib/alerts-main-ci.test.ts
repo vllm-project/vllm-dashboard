@@ -110,6 +110,11 @@ test("responder updates map fix PRs and mark older failure revisions stale", () 
               title: "Fix GPU test",
             },
           ],
+          solution: {
+            kind: "code_fix",
+            owner: "Sherlock",
+            action: "Land PR #88 after the exact lane passes.",
+          },
           author: "Sherlock",
           createdAt: "2026-08-29T09:10:00.000Z",
         },
@@ -132,6 +137,11 @@ test("responder updates map fix PRs and mark older failure revisions stale", () 
   assert.equal(alert.updates[1].stale, true);
   assert.equal(alert.updates[0].fixOwnershipStatus, "current");
   assert.equal(alert.updates[1].fixOwnershipStatus, "stale");
+  assert.deepEqual(alert.updates[0].solution, {
+    kind: "code_fix",
+    owner: "Sherlock",
+    action: "Land PR #88 after the exact lane passes.",
+  });
   assert.deepEqual(alert.updates[0].fixPrs, [
     {
       url: "https://github.com/vllm-project/vllm/pull/88",
@@ -169,6 +179,34 @@ test("a stale fix becomes a verification candidate only on an exact signature ma
   assert.equal(alert.updates[0].stale, true);
   assert.equal(alert.updates[0].fixOwnershipStatus, "unverified");
   assert.deepEqual(alert.updates[0].carriedFixPrs, []);
+});
+
+test("a stale fix is labeled when the current failure signature changed", () => {
+  const alert = toMainCiJobAlert(
+    alertRow({
+      ...analyzedRow(),
+      agent_updates: [
+        {
+          updateId: "8",
+          failureJobId: "job-1",
+          failureSignature: "gpu correctness | timeout | prior cause",
+          kind: "fix_opened",
+          message: "Fix for the prior root failure.",
+          fixPrs: [
+            {
+              url: "https://github.com/vllm-project/vllm/pull/88",
+              number: 88,
+              title: "Fix prior failure",
+            },
+          ],
+          author: "Sherlock",
+          createdAt: "2026-08-29T08:10:00.000Z",
+        },
+      ],
+    }),
+  );
+
+  assert.equal(alert.updates[0].fixOwnershipStatus, "signature_changed");
 });
 
 test("analysis columns map to a nested object with a computed stale flag", () => {

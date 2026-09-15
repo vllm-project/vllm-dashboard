@@ -11,7 +11,12 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_VERIFICATIONS = 50;
 
 type Fetcher = typeof fetch;
-type FixAssessment = "carry" | "regressed" | "inactive" | "unknown";
+type FixAssessment =
+  | "open"
+  | "merged_pending"
+  | "regressed"
+  | "inactive"
+  | "unknown";
 
 interface PullResponse {
   state?: unknown;
@@ -87,7 +92,7 @@ async function assessFixPr(
   if (pull.data === null) return "unknown";
   if (pull.data.base?.ref === undefined) return "unknown";
   if (pull.data.base.ref !== "main") return "inactive";
-  if (pull.data.state === "open") return "carry";
+  if (pull.data.state === "open") return "open";
   if (pull.data.merged !== true) return "inactive";
 
   const mergeCommitSha = pull.data.merge_commit_sha;
@@ -119,14 +124,16 @@ async function assessFixPr(
     return "regressed";
   }
   if (comparison.data.status === "behind" || comparison.data.status === "diverged") {
-    return "carry";
+    return "merged_pending";
   }
   return "unknown";
 }
 
 /**
- * Verify signature-matched fix links against live GitHub state. Exact-revision
- * updates need no carry decision. Every unverifiable stale link fails closed.
+ * Verify current and signature-matched fix links against live GitHub state.
+ * Every unverifiable link fails closed so a closed or already-contained PR
+ * cannot remain presented as the current owner merely because it was exact
+ * when posted.
  */
 export async function verifyMainCiFixOwnership(
   alerts: MainCiJobAlert[],
@@ -140,7 +147,13 @@ export async function verifyMainCiFixOwnership(
       ...alert,
       updates: await Promise.all(
         alert.updates.map(async (update) => {
-          if (update.fixOwnershipStatus !== "unverified") return update;
+          if (
+            update.fixPrs.length === 0 ||
+            update.fixOwnershipStatus === "stale" ||
+            update.fixOwnershipStatus === "signature_changed"
+          ) {
+            return update;
+          }
           if (verificationCount + update.fixPrs.length > MAX_VERIFICATIONS) {
             return update;
           }
@@ -157,7 +170,10 @@ export async function verifyMainCiFixOwnership(
             })),
           );
           const carriedFixPrs = assessments
-            .filter(({ assessment }) => assessment === "carry")
+            .filter(
+              ({ assessment }) =>
+                assessment === "open" || assessment === "merged_pending",
+            )
             .map(({ pr }) => pr);
           const states = new Set(assessments.map(({ assessment }) => assessment));
           return {
@@ -165,12 +181,18 @@ export async function verifyMainCiFixOwnership(
             carriedFixPrs,
             fixOwnershipStatus:
               carriedFixPrs.length > 0
-                ? "carried"
+                ? states.has("open")
+                  ? update.stale
+                    ? "carried"
+                    : "current"
+                  : "merged_pending"
                 : states.has("unknown")
                   ? "unverified"
                   : states.has("regressed")
                     ? "regressed"
-                    : "stale",
+                    : states.has("inactive")
+                      ? "inactive"
+                      : "stale",
           };
         }),
       ),
