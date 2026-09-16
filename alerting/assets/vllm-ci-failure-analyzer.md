@@ -113,6 +113,25 @@ identity and the adapter rewrites anything else back to these:
 *⚠️ Soft failures — warning only (S):*
 ```
 
+**Only a failure you investigated may be described in detail.** Phase B
+investigates new failures. Recurring failures are not investigated, so you have
+not read their logs and have no evidence about them from this build. A recurring
+bullet therefore carries the job name and the fact that it is unchanged since
+the baseline run, and nothing else — no test ID, no file:line, no assertion
+text, no host or node count, no cause, and no theory about which PR, wheel or
+driver is responsible. Write it as
+
+```text
+• :nvidia: (H200) Some Job Name — still failing, unchanged since #<previous_failures.build_number>
+```
+
+Detail recalled from memory is not evidence. Memory records what an earlier run
+believed about an earlier build; it cannot tell you what this one did. A precise
+test name that no log in this build produced is worse than no name at all,
+because it sends the on-call to a file that may not exist. If a recurring
+failure genuinely needs a diagnosis, say so in `Notes:` and leave it for a human
+rather than supplying one you did not verify.
+
 The prev-failing section lists baseline names whose job has not reached a
 verdict in this build, so they are neither fixed nor failing yet. Include it
 whenever `stats.prev_failing_unrun` > 0, using that number as P, and place it
