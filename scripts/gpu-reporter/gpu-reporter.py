@@ -16,6 +16,7 @@ Environment variables:
   GPU_REPORT_SECRET       - Bearer token for auth (optional, must match dashboard's GPU_REPORT_SECRET)
   GPU_HOSTNAME            - Override hostname (default: system hostname)
   GPU_REPORT_DISK_TIMEOUT - Seconds before a per-mount stat is given up (default: 5)
+  GPU_REPORT_COMPUTE_APPS_TIMEOUT - Seconds before the compute-apps query is given up (default: 10)
 
 The reporter always POSTs, even when nvidia-smi fails: a failed GPU query
 yields an empty "gpus" list with reporter_status="degraded" and last_error
@@ -41,13 +42,17 @@ NVIDIA_SMI_QUERY = (
     "index,name,utilization.gpu,memory.used,memory.total,"
     "temperature.gpu,power.draw,power.limit"
 )
+NVIDIA_SMI_UUID_QUERY = "index,uuid"
+NVIDIA_SMI_COMPUTE_APPS_QUERY = "gpu_uuid,pid,used_memory"
 
 PROC_STAT = "/proc/stat"
 PROC_MEMINFO = "/proc/meminfo"
 PROC_MOUNTS = "/proc/mounts"
+PROC_ROOT = "/proc"
 
 CPU_SAMPLE_INTERVAL = 1.0  # seconds between the two /proc/stat reads
 DISK_STAT_TIMEOUT = float(os.environ.get("GPU_REPORT_DISK_TIMEOUT", "5"))
+COMPUTE_APPS_TIMEOUT = float(os.environ.get("GPU_REPORT_COMPUTE_APPS_TIMEOUT", "10"))
 
 # Per-mount role classification for the H200 CI pool (h200-ci-1..6):
 #   /dev/shm     - buildkite build path is /dev/shm/buildkite-agent/builds
@@ -106,10 +111,74 @@ def query_gpus():
             "temperature_c": safe_float(parts[5]),
             "power_draw_w": safe_float(parts[6]),
             "power_limit_w": safe_float(parts[7]),
+            "dead_proc_mem_mb": None,  # filled in by main(); null = unknown
         })
     if not gpus:
         raise RuntimeError("no GPUs found in nvidia-smi output")
     return gpus
+
+
+def _pid_alive(pid, proc_root=PROC_ROOT):
+    return os.path.isdir(os.path.join(proc_root, str(pid)))
+
+
+def query_dead_proc_memory():
+    """Per-GPU MiB still attributed to processes that no longer exist.
+
+    When a compute process is SIGKILLed mid-teardown the driver can keep its
+    memory allocated to the dead PID indefinitely (observed on the H200 MIG
+    fleet); only a GPU reset or reboot reclaims it. The compute-apps table
+    keys rows by GPU UUID, so a second query maps UUIDs to the indexes used
+    by the rest of the report. Raises on any nvidia-smi failure; the caller
+    degrades the metric to null rather than the whole report.
+    """
+    index_of_uuid = {}
+    result = subprocess.run(
+        [
+            "nvidia-smi",
+            f"--query-gpu={NVIDIA_SMI_UUID_QUERY}",
+            "--format=csv,noheader",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=COMPUTE_APPS_TIMEOUT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"nvidia-smi uuid query failed: {result.stderr.strip()}")
+    for line in result.stdout.strip().split("\n"):
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 2:
+            index_of_uuid[parts[1]] = int(parts[0])
+
+    result = subprocess.run(
+        [
+            "nvidia-smi",
+            f"--query-compute-apps={NVIDIA_SMI_COMPUTE_APPS_QUERY}",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=COMPUTE_APPS_TIMEOUT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"nvidia-smi compute-apps query failed: {result.stderr.strip()}"
+        )
+    dead_mb = {index: 0.0 for index in index_of_uuid.values()}
+    for line in result.stdout.strip().split("\n"):
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            continue
+        gpu_uuid, pid, mem_mb = parts[0], parts[1], parts[2]
+        if gpu_uuid not in index_of_uuid:
+            continue
+        try:
+            mem_mb = float(mem_mb)
+        except ValueError:
+            continue
+        if not _pid_alive(pid):
+            dead_mb[index_of_uuid[gpu_uuid]] += mem_mb
+    return dead_mb
 
 
 def parse_cpu_stat(text):
@@ -275,6 +344,18 @@ def main():
         # reporter_status is "degraded".
         print(str(e), file=sys.stderr)
         gpus, status, last_error = [], "degraded", str(e)
+    else:
+        # Dead-PID memory is a supplementary metric: a compute-apps query
+        # failure (observed hanging on a degraded host, bounded by
+        # COMPUTE_APPS_TIMEOUT) must leave dead_proc_mem_mb null and never
+        # affect reporter_status or the POST.
+        try:
+            dead_mb = query_dead_proc_memory()
+        except Exception as e:
+            print(f"dead process GPU memory query failed: {e}", file=sys.stderr)
+        else:
+            for gpu in gpus:
+                gpu["dead_proc_mem_mb"] = dead_mb.get(gpu["index"], 0.0)
 
     try:
         report(gpus, host, status, last_error)

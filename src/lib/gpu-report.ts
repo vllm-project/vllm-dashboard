@@ -23,6 +23,7 @@ export interface NormalizedGpuMetric {
   temperature_c: number | null;
   power_draw_w: number | null;
   power_limit_w: number | null;
+  dead_proc_mem_mb: number | null;
 }
 
 export interface NormalizedDiskMetric {
@@ -165,6 +166,7 @@ function gpuMetric(value: unknown, index: number): NormalizedGpuMetric {
       "temperature_c",
       "power_draw_w",
       "power_limit_w",
+      "dead_proc_mem_mb",
     ],
     path,
   );
@@ -200,6 +202,10 @@ function gpuMetric(value: unknown, index: number): NormalizedGpuMetric {
     power_limit_w: optionalNumber(gpu.power_limit_w, `${path}.power_limit_w`, {
       min: 0,
       max: 100_000,
+    }),
+    dead_proc_mem_mb: optionalNumber(gpu.dead_proc_mem_mb, `${path}.dead_proc_mem_mb`, {
+      min: 0,
+      max: 1_000_000_000,
     }),
   };
 }

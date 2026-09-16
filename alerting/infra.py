@@ -1,4 +1,5 @@
-"""Infra health alerting: unreporting hosts, disk usage, and GPU temperature.
+"""Infra health alerting: unreporting hosts, disk usage, GPU temperature,
+and dead-process GPU memory.
 
 One five-minute scan reconciles the expected-host set against the latest
 reported telemetry. An episode opens only after a breach sustains across the
@@ -8,7 +9,9 @@ resolve. Unreporting wording always says a host "stopped reporting"; the
 alert never claims a machine is down. Disk usage is keyed by the shared
 (fstype, device) group — not hostname — so a fleet-wide NFS volume pages
 once no matter how many hosts mount it; mounts with role 'other' or a
-per-mount error never alert. GPU temperature is keyed per host and GPU.
+per-mount error never alert. GPU temperature and dead-process GPU memory
+(memory still allocated to processes that no longer exist) are keyed per
+host and GPU.
 RAM, load, and network are display-only and never alert.
 """
 
@@ -60,6 +63,7 @@ class InfraAlertType(StrEnum):
     UNREPORTING = "unreporting"
     DISK_USAGE = "disk_usage"
     GPU_TEMPERATURE = "gpu_temperature"
+    GPU_DEAD_MEMORY = "gpu_dead_memory"
 
 
 @dataclass(frozen=True)
@@ -107,6 +111,16 @@ class GpuTemperatureObservation:
     hostname: str
     gpu_index: int
     temperature_c: float
+    reported_at: datetime
+
+
+@dataclass(frozen=True)
+class GpuDeadMemoryObservation:
+    """One GPU's latest dead-process memory reading from gpu_snapshots."""
+
+    hostname: str
+    gpu_index: int
+    dead_proc_mem_mb: float
     reported_at: datetime
 
 
@@ -180,6 +194,10 @@ class InfraSnapshotPort(Protocol):
 
     def gpu_temperatures(self) -> list[GpuTemperatureObservation]:
         """The latest temperature reading per (hostname, gpu_index)."""
+        ...
+
+    def gpu_dead_memory(self) -> list[GpuDeadMemoryObservation]:
+        """The latest dead-process memory reading per (hostname, gpu_index)."""
         ...
 
 
@@ -475,6 +493,73 @@ def _plan_gpu_temperature(
     )
 
 
+def _plan_gpu_dead_memory(
+    *,
+    now: datetime,
+    threshold: InfraThreshold,
+    gpu_dead_memory: list[GpuDeadMemoryObservation],
+    states: Mapping[tuple[str, str], InfraSubjectState],
+    open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
+) -> InfraScanPlan:
+    out_states: list[InfraSubjectState] = []
+    opened: list[InfraAlertEpisode] = []
+    resolved: list[InfraAlertEpisode] = []
+    observed = sorted(
+        {(reading.hostname, reading.gpu_index) for reading in gpu_dead_memory}
+    )
+    latest = {
+        (reading.hostname, reading.gpu_index): reading for reading in gpu_dead_memory
+    }
+    for hostname, gpu_index in observed:
+        reading = latest[(hostname, gpu_index)]
+        subject = f"gpu-dead-mem:{hostname}:{gpu_index}"
+        key = (InfraAlertType.GPU_DEAD_MEMORY.value, subject)
+        state = states.get(
+            key, InfraSubjectState(InfraAlertType.GPU_DEAD_MEMORY.value, subject)
+        )
+        episode = open_episodes.get(key)
+        details = {
+            "hostname": hostname,
+            "gpu_index": gpu_index,
+            "dead_proc_mem_mb": reading.dead_proc_mem_mb,
+            "threshold_mib": threshold.threshold_value,
+        }
+        if reading.dead_proc_mem_mb >= threshold.threshold_value:
+            breaches = state.consecutive_breaches + 1
+            out_states.append(
+                replace(state, consecutive_breaches=breaches, details=details)
+            )
+            if breaches >= threshold.consecutive_scans and episode is None:
+                opened.append(
+                    InfraAlertEpisode(
+                        alert_type=InfraAlertType.GPU_DEAD_MEMORY.value,
+                        subject_key=subject,
+                        opened_at=now,
+                        details={
+                            **details,
+                            "consecutive_scans": threshold.consecutive_scans,
+                        },
+                    )
+                )
+            continue
+        out_states.append(replace(state, consecutive_breaches=0, details=details))
+        if episode is not None:
+            resolved.append(
+                replace(
+                    episode,
+                    resolved_at=now,
+                    details={
+                        **episode.details,
+                        "resolution": "below_threshold",
+                        "dead_proc_mem_mb": reading.dead_proc_mem_mb,
+                    },
+                )
+            )
+    return InfraScanPlan(
+        states=tuple(out_states), opened=tuple(opened), resolved=tuple(resolved)
+    )
+
+
 def plan_infra_scan(
     *,
     now: datetime,
@@ -483,6 +568,7 @@ def plan_infra_scan(
     latest_reports: Mapping[str, datetime],
     disk_mounts: list[DiskMountObservation],
     gpu_temperatures: list[GpuTemperatureObservation],
+    gpu_dead_memory: list[GpuDeadMemoryObservation],
     states: Mapping[tuple[str, str], InfraSubjectState],
     open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
 ) -> InfraScanPlan:
@@ -521,6 +607,17 @@ def plan_infra_scan(
                 now=now,
                 threshold=gpu_temperature,
                 gpu_temperatures=gpu_temperatures,
+                states=states,
+                open_episodes=open_episodes,
+            )
+        )
+    gpu_dead_memory_threshold = thresholds.get(InfraAlertType.GPU_DEAD_MEMORY.value)
+    if gpu_dead_memory_threshold is not None and gpu_dead_memory_threshold.enabled:
+        plans.append(
+            _plan_gpu_dead_memory(
+                now=now,
+                threshold=gpu_dead_memory_threshold,
+                gpu_dead_memory=gpu_dead_memory,
                 states=states,
                 open_episodes=open_episodes,
             )
@@ -603,6 +700,17 @@ def _render_open(episode: InfraAlertEpisode) -> str:
             f"at {temperature}°C (threshold {threshold}°C, "
             f"{scans} consecutive scans)"
         )
+    if episode.alert_type == InfraAlertType.GPU_DEAD_MEMORY:
+        hostname = _code(episode.details.get("hostname"))
+        gpu_index = _escape(episode.details.get("gpu_index"))
+        dead_mem = _escape(episode.details.get("dead_proc_mem_mb"))
+        threshold = _escape(episode.details.get("threshold_mib"))
+        scans = _escape(episode.details.get("consecutive_scans"))
+        return (
+            f":rotating_light: *Infra alert* — GPU {gpu_index} on {hostname} "
+            f"has {dead_mem} MiB held by dead processes "
+            f"(threshold {threshold} MiB, {scans} consecutive scans)"
+        )
     raise ValueError(f"no open renderer for alert type: {episode.alert_type}")
 
 
@@ -632,6 +740,16 @@ def _render_resolve(episode: InfraAlertEpisode) -> str:
         return (
             f":white_check_mark: *Infra resolved* — GPU {gpu_index} on "
             f"{hostname} back below {threshold}°C (now {temperature}°C)"
+        )
+    if episode.alert_type == InfraAlertType.GPU_DEAD_MEMORY:
+        hostname = _code(episode.details.get("hostname"))
+        gpu_index = _escape(episode.details.get("gpu_index"))
+        threshold = _escape(episode.details.get("threshold_mib"))
+        dead_mem = _escape(episode.details.get("dead_proc_mem_mb"))
+        return (
+            f":white_check_mark: *Infra resolved* — GPU {gpu_index} on "
+            f"{hostname} dead-process memory back below {threshold} MiB "
+            f"(now {dead_mem} MiB)"
         )
     raise ValueError(f"no resolve renderer for alert type: {episode.alert_type}")
 
@@ -723,6 +841,7 @@ class InfraScanHandler:
             },
             disk_mounts=self._snapshots.disk_mounts(),
             gpu_temperatures=self._snapshots.gpu_temperatures(),
+            gpu_dead_memory=self._snapshots.gpu_dead_memory(),
             states={
                 (state.alert_type, state.subject_key): state
                 for state in snapshot.states

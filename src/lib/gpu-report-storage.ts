@@ -26,6 +26,7 @@ export async function storeGpuReport(
     temperature_c: gpu.temperature_c,
     power_draw_w: gpu.power_draw_w,
     power_limit_w: gpu.power_limit_w,
+    dead_proc_mem_mb: gpu.dead_proc_mem_mb,
   }));
 
   const rollupsByName = new Map<
@@ -110,6 +111,7 @@ export async function storeGpuReport(
           "temperature_c",
           "power_draw_w",
           "power_limit_w",
+          "dead_proc_mem_mb",
         )}
       `;
     }

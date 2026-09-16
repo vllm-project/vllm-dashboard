@@ -14,6 +14,7 @@ from alerting.fast_ci import ALERTS_SLACK_CHANNEL
 from alerting.infra import (
     RETIREMENT_AGE,
     DiskMountObservation,
+    GpuDeadMemoryObservation,
     GpuTemperatureObservation,
     HostReport,
     InfraAlertType,
@@ -61,6 +62,7 @@ class FixtureSnapshots:
         self.host_reports: dict[str, datetime] = {}
         self.disks: list[DiskMountObservation] = []
         self.temps: list[GpuTemperatureObservation] = []
+        self.dead_mem: list[GpuDeadMemoryObservation] = []
 
     def infra_thresholds(self) -> list[InfraThreshold]:
         return list(self.threshold_rows)
@@ -86,6 +88,9 @@ class FixtureSnapshots:
 
     def gpu_temperatures(self) -> list[GpuTemperatureObservation]:
         return list(self.temps)
+
+    def gpu_dead_memory(self) -> list[GpuDeadMemoryObservation]:
+        return list(self.dead_mem)
 
 
 def threshold(
@@ -516,6 +521,92 @@ def test_gpu_temperature_requires_sustained_breach_across_scans() -> None:
     assert [episode.status for episode in store.episodes()] == ["resolved"]
     assert outbox.count() == 2
     assert slack.updates[0]["payload"]["text"].endswith("~")
+
+
+def dead_mem_reading(
+    hostname: str,
+    gpu_index: int,
+    dead_proc_mem_mb: float,
+    reported_at: datetime = START,
+) -> GpuDeadMemoryObservation:
+    return GpuDeadMemoryObservation(
+        hostname=hostname,
+        gpu_index=gpu_index,
+        dead_proc_mem_mb=dead_proc_mem_mb,
+        reported_at=reported_at,
+    )
+
+
+def test_gpu_dead_memory_requires_sustained_breach_across_scans() -> None:
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(
+        threshold(InfraAlertType.GPU_DEAD_MEMORY, 4096, "mib")
+    )
+    snapshots.dead_mem = [dead_mem_reading("h200-ci-5", 3, 6144.0)]
+    runtime, store, outbox, slack, clock = runtime_for(FixtureHosts(), snapshots)
+
+    scan(runtime, clock.now())
+    assert store.episodes() == []
+    assert outbox.count() == 0
+
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    runtime.dispatch_due_notifications()
+
+    [episode] = store.episodes()
+    assert episode.alert_type == "gpu_dead_memory"
+    assert episode.subject_key == "gpu-dead-mem:h200-ci-5:3"
+    assert episode.status == "open"
+    text = slack.deliveries[0].payload["text"]
+    assert "GPU 3" in text
+    assert "h200-ci-5" in text
+    assert "6144.0 MiB held by dead processes" in text
+
+    snapshots.dead_mem = [
+        dead_mem_reading("h200-ci-5", 3, 512.0, reported_at=clock.now())
+    ]
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    runtime.dispatch_due_notifications()
+
+    assert [episode.status for episode in store.episodes()] == ["resolved"]
+    assert outbox.count() == 2
+    assert slack.updates[0]["payload"]["text"].endswith("~")
+
+
+def test_gpu_dead_memory_without_readings_never_alerts() -> None:
+    # Hosts that cannot collect dead_proc_mem_mb report null rows, which the
+    # snapshot query filters out; the planner then sees no subject to alert on.
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(
+        threshold(InfraAlertType.GPU_DEAD_MEMORY, 4096, "mib")
+    )
+    runtime, store, outbox, _, clock = runtime_for(FixtureHosts(), snapshots)
+
+    scan(runtime, clock.now())
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+
+    assert store.episodes() == []
+    assert outbox.count() == 0
+
+
+def test_disabled_gpu_dead_memory_threshold_suppresses_alerts() -> None:
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(
+        threshold(InfraAlertType.GPU_DEAD_MEMORY, 4096, "mib", enabled=False)
+    )
+    snapshots.dead_mem = [dead_mem_reading("h200-ci-5", 0, 8192.0)]
+    runtime, store, outbox, _, clock = runtime_for(FixtureHosts(), snapshots)
+
+    scan(runtime, clock.now())
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+
+    assert store.episodes() == []
+    assert outbox.count() == 0
 
 
 class _FakeCompletedProcess:

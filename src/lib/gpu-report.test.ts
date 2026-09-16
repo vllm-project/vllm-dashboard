@@ -103,6 +103,42 @@ test("rejects invalid ranges, partial RAM values, and unknown fields", () => {
   );
 });
 
+test("accepts dead_proc_mem_mb as a number, null, or omitted", () => {
+  const withNumber = parseGpuReportPayload({
+    ...legacyPayload,
+    gpus: [{ ...legacyPayload.gpus[0], dead_proc_mem_mb: 4096.5 }],
+  });
+  assert.equal(withNumber.gpus[0].dead_proc_mem_mb, 4096.5);
+
+  const withNull = parseGpuReportPayload({
+    ...legacyPayload,
+    gpus: [{ ...legacyPayload.gpus[0], dead_proc_mem_mb: null }],
+  });
+  assert.equal(withNull.gpus[0].dead_proc_mem_mb, null);
+
+  const omitted = parseGpuReportPayload(legacyPayload);
+  assert.equal(omitted.gpus[0].dead_proc_mem_mb, null);
+});
+
+test("rejects out-of-range or non-numeric dead_proc_mem_mb", () => {
+  assert.throws(
+    () =>
+      parseGpuReportPayload({
+        ...legacyPayload,
+        gpus: [{ ...legacyPayload.gpus[0], dead_proc_mem_mb: -1 }],
+      }),
+    /dead_proc_mem_mb/,
+  );
+  assert.throws(
+    () =>
+      parseGpuReportPayload({
+        ...legacyPayload,
+        gpus: [{ ...legacyPayload.gpus[0], dead_proc_mem_mb: "4096" }],
+      }),
+    /dead_proc_mem_mb/,
+  );
+});
+
 test("requires a useful error for degraded and failed metric payloads", () => {
   assert.throws(
     () =>

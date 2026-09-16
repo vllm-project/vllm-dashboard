@@ -35,6 +35,7 @@ from alerting.full_ci import (
 )
 from alerting.infra import (
     DiskMountObservation,
+    GpuDeadMemoryObservation,
     GpuTemperatureObservation,
     HostReport,
     InfraAlertEpisode,
@@ -1204,6 +1205,31 @@ class PostgresAlertStore:
                 hostname=str(row[0]),
                 gpu_index=int(row[1]),
                 temperature_c=float(row[2]),
+                reported_at=row[3],
+            )
+            for row in rows
+        ]
+
+    def gpu_dead_memory(self) -> list[GpuDeadMemoryObservation]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT ON (hostname, gpu_index)
+                       hostname, gpu_index, dead_proc_mem_mb, reported_at
+                FROM gpu_snapshots
+                -- Stale readings must not sustain breaches (a silent host is
+                -- the unreporting alert's job), and the bound keeps the scan
+                -- off 8M+ rows of history.
+                WHERE dead_proc_mem_mb IS NOT NULL
+                  AND reported_at >= now() - interval '2 days'
+                ORDER BY hostname, gpu_index, reported_at DESC
+                """
+            ).fetchall()
+        return [
+            GpuDeadMemoryObservation(
+                hostname=str(row[0]),
+                gpu_index=int(row[1]),
+                dead_proc_mem_mb=float(row[2]),
                 reported_at=row[3],
             )
             for row in rows
