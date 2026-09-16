@@ -216,6 +216,7 @@ for a current status check.
 | Performance | `/api/perf?model=MODEL&device=DEVICE&start=YYYY-MM-DD`; `/api/perf/filters` |
 | Evaluation | `/api/eval?model=MODEL&task=TASK&image=IMAGE`; `/api/eval/filters`; `/api/eval/samples?build_id=ID&task=TASK&workload=WORKLOAD&limit=200` |
 | Release comparisons | `/api/compare?baseline=IMAGE&candidate=IMAGE`; optional `model`, `device`, `task`, `perf_threshold=0.02`, `eval_sigma=2` |
+| Force-merge stats | `/api/force-merges`; no parameters — returns rate windows (7/30/90/182 days), weekly rate and volume series, top force-merged PR authors, and recent force-merged PRs |
 
 Full response shapes are defined by the linked OpenAPI contract for the compact
 routes and by [the route source](https://github.com/vllm-project/vllm-dashboard/tree/main/src/app/api)

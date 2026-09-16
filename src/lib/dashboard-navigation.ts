@@ -44,6 +44,7 @@ export const TOP_LEVEL_NAV_ITEMS = [
   { href: "/perf", label: "Performance", routes: ["/perf"] },
   { href: "/eval", label: "Evaluation", routes: ["/eval"] },
   { href: "/compare", label: "Compare", routes: ["/compare"] },
+  { href: "/force-merges", label: "Force-merges", routes: ["/force-merges"] },
 ];
 
 export function routeMatches(pathname: string, href: string): boolean {
