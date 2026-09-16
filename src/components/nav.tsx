@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { preload } from "swr";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { VllmMark } from "@/components/vllm-logo";
 import {
   routeMatches,
   TOP_LEVEL_NAV_ITEMS,
@@ -160,13 +161,30 @@ export function Nav() {
 
   return (
     <nav className="dashboard-nav sticky top-0 z-50 border-b border-black/5 shadow-[0_1px_0_rgba(0,0,0,0.02)] dark:border-white/10">
+      <div aria-hidden="true" className="brand-hairline" />
       <div className="mx-auto max-w-[1440px] px-4 sm:px-6 lg:px-8">
         <div className="flex h-14 items-center gap-6">
           <Link
             href="/"
-            className="shrink-0 whitespace-nowrap text-base font-semibold tracking-[-0.02em] sm:text-lg"
+            aria-label="vLLM CI Dashboard home"
+            className="brand-lockup group flex shrink-0 items-center whitespace-nowrap"
           >
-            vLLM Dashboard
+            <VllmMark className="brand-mark h-[22px] w-[22px] shrink-0 transition-transform duration-300 ease-[var(--ease-out)] group-hover:-translate-y-px group-hover:scale-105" />
+            <span
+              aria-hidden="true"
+              className="ml-[3px] text-[18px] font-bold leading-none tracking-[-0.04em] sm:text-[19px]"
+            >
+              LLM
+            </span>
+            <span
+              aria-hidden="true"
+              className="ml-2.5 hidden items-center gap-2.5 sm:flex"
+            >
+              <span className="h-4 w-px bg-zinc-950/15 dark:bg-white/15" />
+              <span className="text-[13px] font-medium leading-none tracking-[-0.01em] text-zinc-500 dark:text-zinc-400">
+                CI Dashboard
+              </span>
+            </span>
           </Link>
           <div className="hidden min-w-0 flex-1 items-center gap-1 lg:flex">
             {TOP_LEVEL_NAV_ITEMS.map((link) => {

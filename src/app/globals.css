@@ -66,6 +66,21 @@ h2 {
   background: rgb(9 9 11 / 82%);
 }
 
+/* Brand: a hairline in the logo's two colors along the top of the header. */
+.brand-hairline {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: linear-gradient(90deg, #ebb431 0%, #ebb431 38%, #63a1fc 62%, #63a1fc 100%);
+  opacity: 0.9;
+}
+
+/* The mark sits on the text baseline like the official wordmark, where the
+   mark itself is the "v" in vLLM. */
+.brand-lockup .brand-mark {
+  margin-top: 2px;
+}
+
 .dashboard-popover {
   opacity: 1;
   transform: translateY(0) scale(1);
