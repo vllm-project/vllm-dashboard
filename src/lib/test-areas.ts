@@ -1,5 +1,7 @@
 import yaml from "js-yaml";
 
+import { githubHeaders } from "./github";
+
 export interface TestStep {
   label: string;
   parallelism?: number;
@@ -40,15 +42,6 @@ interface CiConfig {
 interface CompareFile {
   filename: string;
   status: string;
-}
-
-function githubHeaders(): HeadersInit {
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-  };
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-  if (token) headers.Authorization = `Bearer ${token}`;
-  return headers;
 }
 
 // Fallback labels for cold starts and GitHub outages. Live discovery replaces

@@ -15,12 +15,13 @@ export const DASHBOARD_SECTIONS = [
     href: "/",
     label: "CI Health",
     description:
-      "Build outcomes, job runs, queue health, test reliability, and alert history.",
+      "Build outcomes, job runs, queue health, test reliability, AMD parity, and alert history.",
     links: [
       { href: "/", label: "Builds" },
       { href: "/jobs", label: "Jobs" },
       { href: "/queue", label: "Queue" },
       { href: "/tests", label: "Tests" },
+      { href: "/parity", label: "Parity" },
       { href: "/alerts", label: "Alerts" },
     ],
   },

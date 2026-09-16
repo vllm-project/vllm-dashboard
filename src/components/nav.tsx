@@ -47,6 +47,8 @@ function defaultDataUrls(href: string): string[] {
       return [
         "/api/tests?period=1day&sortBy=reliability&order=asc&page=1",
       ];
+    case "/parity":
+      return ["/api/parity"];
     case "/queue":
       // No queue is hard-coded: the page reads this summary first and then
       // selects the busiest queue itself.
