@@ -1,5 +1,7 @@
 #!/bin/bash
-# Report a failed alerting unit to Slack, straight from systemd's OnFailure=.
+# Report a failed alerting unit to Slack, straight from systemd's OnFailure= —
+# and, invoked as `notify-failure --resolve` from OnSuccess=, edit that open
+# message in place once the unit succeeds again instead of posting a new one.
 #
 # This deliberately does not touch Postgres. The outage that stops the
 # pipelines is usually the one that takes the database with it, and on
@@ -7,9 +9,21 @@
 # because recording itself needs the database that was down.
 set -euo pipefail
 
-unit=${1:?usage: notify-failure <unit>}
+mode=notify
+if [ "${1:-}" = "--resolve" ]; then
+  mode=resolve
+  shift
+fi
+unit=${1:?usage: notify-failure [--resolve] <unit>}
 stamp_dir=/run/alerting/failure-notified
 stamp="${stamp_dir}/${unit}"
+state="${stamp_dir}/${unit}.json"
+
+if [ "$mode" = resolve ] && [ ! -f "$state" ]; then
+  # OnSuccess= fires on every successful run of every scheduled unit, so the
+  # nothing-to-resolve path must cost nothing: no secrets, no Slack call.
+  exit 0
+fi
 
 install -d -m 0700 "$stamp_dir"
 
@@ -33,6 +47,66 @@ set +a
 rm -f "$credentials_path"
 trap - EXIT HUP INT TERM
 
+destination=${ALERTING_FAILURE_SLACK_DESTINATION:-${SLACK_CHANNEL_ID:-}}
+if [ -z "$destination" ]; then
+  echo "ALERTING_FAILURE_SLACK_DESTINATION is not set" >&2
+  exit 1
+fi
+
+if [ "$mode" = resolve ]; then
+  update_payload=/run/alerting/notify-resolve.json
+  # Strike the open failure message through in place, mirroring the infra
+  # resolve style: Slack mrkdwn strikethrough does not span line breaks, so
+  # every original line is wrapped in ~…~ under a ✅ first line.
+  /opt/alerting/venv/bin/python - "$state" <<'PY' > "$update_payload"
+import json, sys
+with open(sys.argv[1]) as f:
+    state = json.load(f)
+struck = "\n".join(
+    f"~{line}~" if line.strip() else line
+    for line in state["text"].split("\n")
+)
+print(json.dumps({
+    "channel": state["channel"],
+    "ts": state["ts"],
+    "text": f":white_check_mark: {struck}",
+}))
+PY
+
+  response=$(curl -sS -X POST https://slack.com/api/chat.update \
+    -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+    -H "Content-type: application/json; charset=utf-8" \
+    --data @"$update_payload")
+
+  if [[ "$response" != *'"ok":true'* ]]; then
+    # The open message was deleted (or the channel is gone): post the resolve
+    # as a fresh message instead, same fallback as the infra resolve path.
+    post_payload=/run/alerting/notify-resolve-post.json
+    /opt/alerting/venv/bin/python - "$update_payload" <<'PY' > "$post_payload"
+import json, sys
+with open(sys.argv[1]) as f:
+    payload = json.load(f)
+payload.pop("ts", None)
+print(json.dumps(payload))
+PY
+    post_response=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+      -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+      -H "Content-type: application/json; charset=utf-8" \
+      --data @"$post_payload")
+    rm -f "$post_payload" "$update_payload"
+    if [[ "$post_response" != *'"ok":true'* ]]; then
+      echo "Slack rejected the resolve notification: $response; $post_response" >&2
+      exit 1
+    fi
+  else
+    rm -f "$update_payload"
+  fi
+
+  # The episode is over: a new failure must post immediately, not be throttled.
+  rm -f "$state" "$stamp"
+  exit 0
+fi
+
 # One message per unit per window, so a multi-hour outage across timers that
 # fire every two minutes does not turn into hundreds of notifications.
 throttle=${ALERTING_FAILURE_THROTTLE_SECONDS:-1800}
@@ -40,17 +114,41 @@ if [ -f "$stamp" ] && [ "$(( $(date +%s) - $(stat -c %Y "$stamp") ))" -lt "$thro
   exit 0
 fi
 
-destination=${ALERTING_FAILURE_SLACK_DESTINATION:-${SLACK_CHANNEL_ID:-}}
-if [ -z "$destination" ]; then
-  echo "ALERTING_FAILURE_SLACK_DESTINATION is not set" >&2
-  exit 1
+# Result and exit status come from the journal, not `systemctl show`: systemd
+# resets both when the next timer tick re-enters the unit, and on 2026-09-16 a
+# scan that failed on a Postgres statement timeout was reported to Slack as
+# "result success, exit 0" because the notifier read live state in the same
+# second the unit restarted. Journal records are historical and immune to
+# that reset.
+journal=$(journalctl -u "$unit" -n 400 --no-pager -o cat 2>/dev/null || true)
+journal_result=$(grep -oE "Failed with result '[^']*'" <<<"$journal" | tail -n 1 || true)
+journal_result=${journal_result#"Failed with result '"}
+journal_result=${journal_result%"'"}
+journal_status=$(grep -oE 'code=exited, status=[0-9]+' <<<"$journal" | tail -n 1 || true)
+journal_status=${journal_status##*status=}
+
+if [ -n "$journal_result" ]; then
+  result=$journal_result
+  status=${journal_status:-?}
+else
+  # Fallback only, and labeled as such: post-restart live state can read
+  # "success" for a run that actually failed.
+  result="$(systemctl show "$unit" -p Result --value 2>/dev/null || echo unknown) (live state; no journal record)"
+  status="$(systemctl show "$unit" -p ExecMainStatus --value 2>/dev/null || echo '?') (live)"
 fi
 
-result=$(systemctl show "$unit" -p Result --value || echo unknown)
-status=$(systemctl show "$unit" -p ExecMainStatus --value || echo '?')
-log=$(journalctl -u "$unit" -n 4 --no-pager -o cat 2>/dev/null || true)
+# The excerpt stops at the failure line: after an immediate re-entry the
+# journal's tail belongs to the new invocation, not the failed one.
+log=$(awk '
+  { lines[NR] = $0; if (/Failed with result/) last = NR }
+  END { for (i = (last > 4 ? last - 3 : 1); i <= last; i++) print lines[i] }
+' <<<"$journal")
+if [ -z "$log" ]; then
+  log=$(tail -n 4 <<<"$journal")
+fi
 
-/opt/alerting/venv/bin/python - "$destination" "$unit" "$result" "$status" "$log" <<'PY' > /run/alerting/notify-failure.json
+payload_path=/run/alerting/notify-failure.json
+/opt/alerting/venv/bin/python - "$destination" "$unit" "$result" "$status" "$log" <<'PY' > "$payload_path"
 import json, sys
 destination, unit, result, status, log = sys.argv[1:6]
 text = (
@@ -70,10 +168,33 @@ PY
 response=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
   -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
   -H "Content-type: application/json; charset=utf-8" \
-  --data @/run/alerting/notify-failure.json)
-rm -f /run/alerting/notify-failure.json
+  --data @"$payload_path")
 
 case "$response" in
-  *'"ok":true'*) touch "$stamp" ;;
-  *) echo "Slack rejected the failure notification: $response" >&2; exit 1 ;;
+  *'"ok":true'*)
+    touch "$stamp"
+    # Persist the posted message's ts and exact text so `--resolve` can edit
+    # it in place when the unit next succeeds. A throttled failure exits above
+    # before this point, so the older open message's ts stays authoritative.
+    # /run is tmpfs: a worker reboot loses the state file and that open
+    # message simply never gets resolved.
+    /opt/alerting/venv/bin/python - "$payload_path" "$response" "$state" <<'PY'
+import json, sys
+payload_path, response_raw, state_path = sys.argv[1:4]
+with open(payload_path) as f:
+    payload = json.load(f)
+response = json.loads(response_raw)
+with open(state_path, "w") as f:
+    json.dump(
+        {"ts": response["ts"], "channel": response["channel"], "text": payload["text"]},
+        f,
+    )
+PY
+    rm -f "$payload_path"
+    ;;
+  *)
+    echo "Slack rejected the failure notification: $response" >&2
+    rm -f "$payload_path"
+    exit 1
+    ;;
 esac

@@ -1,0 +1,24 @@
+[Unit]
+Description=Resolve the open Slack failure message for alerting unit %i
+
+[Service]
+Type=oneshot
+User=alerting
+Group=alerting
+ExecStart=/opt/alerting/bin/notify-failure --resolve %i
+StandardOutput=null
+# Not inherited from StandardOutput: a resolver that fails silently is
+# worse than no resolver. Its stderr carries no secrets.
+StandardError=journal
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+# ProtectSystem=strict mounts /run read-only, and both the resolve state and
+# the load-secrets credential file live under /run/alerting.
+ReadWritePaths=/run/alerting
+RestrictSUIDSGID=true
+LockPersonality=true
+# No success/failure chaining here: one dead Slack token must not become an
+# endless loop of units resolving units that resolve units.

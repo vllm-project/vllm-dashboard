@@ -3,6 +3,7 @@ Description=Analyze failing Main CI job alerts with the Kimi runner
 After=network-online.target
 Wants=network-online.target
 OnFailure=alerting-failure-notify@%n.service
+OnSuccess=alerting-failure-resolve@%n.service
 
 [Service]
 Type=oneshot

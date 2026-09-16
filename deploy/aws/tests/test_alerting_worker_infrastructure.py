@@ -320,26 +320,98 @@ def test_every_scheduled_unit_reports_its_failures_to_slack() -> None:
 
     Worker stdout is discarded by design and errors normally land in Postgres,
     so a failure that is *caused* by Postgres being unreachable leaves no trace
-    anywhere. On 2026-09-14 that hid a seven-hour outage.
+    anywhere. On 2026-09-14 that hid a seven-hour outage. The matching
+    OnSuccess= unit edits the open failure message in place once the unit
+    succeeds again, mirroring the infra resolve UX.
     """
     notifier = "alerting-failure-notify@%n.service"
+    resolver = "alerting-failure-resolve@%n.service"
     units = sorted(
         path
         for path in (AWS_DIR / "systemd").glob("alerting-*.service")
-        if "failure-notify" not in path.name
+        if "failure-notify" not in path.name and "failure-resolve" not in path.name
     )
     assert units, "no scheduled units found"
     for path in units:
-        assert f"OnFailure={notifier}" in path.read_text(), path.name
+        text = path.read_text()
+        assert f"OnFailure={notifier}" in text, path.name
+        assert f"OnSuccess={resolver}" in text, path.name
 
     template = read("systemd/alerting-failure-notify@.service")
     assert "ExecStart=/opt/alerting/bin/notify-failure %i" in template
     # The notifier must not chain to itself on failure, or one dead Slack token
     # becomes an endless loop of units failing to report units failing.
     assert "OnFailure=" not in template
+    assert "OnSuccess=" not in template
 
     install = read("install.sh")
     assert "bin/notify-failure /opt/alerting/bin/notify-failure" in install
+
+
+def test_failure_resolver_template_is_sandboxed_and_never_chains() -> None:
+    """The resolve template mirrors the notifier's hardening.
+
+    It fires on every successful run of every scheduled unit via OnSuccess=,
+    so it stays a cheap oneshot, and it must not chain — a resolver reporting
+    its own failures would loop on one dead Slack token.
+    """
+    template = read("systemd/alerting-failure-resolve@.service")
+
+    assert "ExecStart=/opt/alerting/bin/notify-failure --resolve %i" in template
+    assert "Type=oneshot" in template
+    assert "User=alerting" in template
+    assert "Group=alerting" in template
+    assert "StandardOutput=null" in template
+    assert "StandardError=journal" in template
+    assert "UMask=0077" in template
+    assert "NoNewPrivileges=true" in template
+    assert "PrivateTmp=true" in template
+    assert "ProtectHome=true" in template
+    assert "ProtectSystem=strict" in template
+    assert "ReadWritePaths=/run/alerting" in template
+    assert "RestrictSUIDSGID=true" in template
+    assert "LockPersonality=true" in template
+    assert "OnFailure=" not in template
+    assert "OnSuccess=" not in template
+    for sensitive_name in ("DATABASE_URL", "TOKEN", "PASSWORD", "psycopg"):
+        assert sensitive_name not in template
+
+    # install.sh ships every unit via the glob, so no per-unit line is needed.
+    assert "systemd/*.service" in read("install.sh")
+
+
+def test_failure_resolver_exits_before_loading_secrets_when_nothing_is_open() -> None:
+    """OnSuccess= fires on every successful tick of all nine timers.
+
+    With no open failure message there is nothing to resolve, and that check
+    must come before secrets load — otherwise every tick of every timer would
+    pay an AWS Secrets Manager round trip for nothing.
+    """
+    script = read("bin/notify-failure")
+    marker = 'if [ "$mode" = resolve ] && [ ! -f "$state" ]; then'
+
+    assert marker in script
+    assert script.index(marker) < script.index("load-secrets")
+    assert script.index(marker) < script.index("SLACK_BOT_TOKEN")
+
+
+def test_failure_notifier_reads_the_failure_from_the_journal() -> None:
+    """Live unit state lies after a fast re-entry.
+
+    systemd resets Result and ExecMainStatus when the next timer tick restarts
+    the unit; on 2026-09-16 a scan failed on a Postgres statement timeout and
+    Slack was told "result success, exit 0" because the notifier read live
+    state in the same second the unit restarted. The journal's
+    "Failed with result" / "Main process exited" records are historical.
+    """
+    script = read("bin/notify-failure")
+
+    assert "Failed with result" in script
+    assert "code=exited, status=" in script
+    # The live-state fallback stays labeled so post-restart "success" is never
+    # presented as the failure's result.
+    assert "live state" in script
+    assert "chat.update" in script
 
 
 def test_failure_notifier_never_depends_on_the_database() -> None:
