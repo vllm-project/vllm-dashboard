@@ -1147,14 +1147,34 @@ class PostgresAlertStore:
         return frozenset(str(row[0]) for row in rows)
 
     def disk_mounts(self) -> list[DiskMountObservation]:
-        """Every mount from each host's latest host_snapshots disk detail."""
+        """Every mount from each host's latest host_snapshots disk detail.
+
+        Loose index scan over idx_host_snapshots_host: one index descent per
+        hostname instead of a DISTINCT ON plan whose plain index scan heap-
+        fetches every row of the table (wide disks jsonb included), which
+        intermittently exceeds the two-minute statement timeout.
+        """
         with self._connection_factory() as connection:
             rows = connection.execute(
                 """
-                WITH latest AS (
-                    SELECT DISTINCT ON (hostname) hostname, disks, reported_at
-                    FROM host_snapshots
-                    ORDER BY hostname, reported_at DESC
+                WITH RECURSIVE latest AS (
+                    (
+                        SELECT hostname, disks, reported_at
+                        FROM host_snapshots
+                        ORDER BY hostname, reported_at DESC
+                        LIMIT 1
+                    )
+                    UNION ALL
+                    SELECT following.hostname, following.disks,
+                           following.reported_at
+                    FROM latest
+                    CROSS JOIN LATERAL (
+                        SELECT s.hostname, s.disks, s.reported_at
+                        FROM host_snapshots s
+                        WHERE s.hostname > latest.hostname
+                        ORDER BY s.hostname, s.reported_at DESC
+                        LIMIT 1
+                    ) following
                 )
                 SELECT latest.hostname,
                        mount->>'mount_point',

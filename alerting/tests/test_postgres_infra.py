@@ -112,7 +112,7 @@ class FakePostgresConnection:
             return Result(rows=list(self.state["reports"]))
         if statement.startswith("SELECT DISTINCT hostname FROM gpu_snapshots"):
             return Result(rows=list(self.state["recent_hosts"]))
-        if statement.startswith("WITH latest AS ("):
+        if statement.startswith("WITH RECURSIVE latest AS ("):
             return Result(rows=list(self.state["mounts"]))
         if statement.startswith("SELECT DISTINCT ON (hostname, gpu_index)"):
             return Result(rows=list(self.state["temps"]))
