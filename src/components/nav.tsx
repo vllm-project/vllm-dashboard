@@ -171,12 +171,16 @@ export function Nav() {
             aria-label="vLLM CI Dashboard home"
             className="brand-lockup group flex shrink-0 items-center whitespace-nowrap"
           >
-            <VllmMark className="brand-mark h-[22px] w-[22px] shrink-0 transition-transform duration-300 ease-[var(--ease-out)] group-hover:-translate-y-px group-hover:scale-105" />
+            {/* Proportions follow the official wordmark: the mark is a lowercase
+                "v" at 0.75x the cap height, sitting on the baseline, with a
+                0.16 cap-height gap before "LLM". Cap height of the system UI
+                font is ~0.7em, so 0.75 * 0.7 = 0.525em and 0.16 * 0.7 = 0.11em. */}
             <span
               aria-hidden="true"
-              className="ml-[3px] text-[18px] font-bold leading-none tracking-[-0.04em] sm:text-[19px]"
+              className="flex items-baseline text-[24px] font-semibold leading-none tracking-[-0.01em]"
             >
-              LLM
+              <VllmMark className="inline-block h-[0.525em] w-[0.525em] self-baseline transition-transform duration-300 ease-[var(--ease-out)] group-hover:-translate-y-px group-hover:scale-105" />
+              <span className="ml-[0.11em]">LLM</span>
             </span>
             <span
               aria-hidden="true"
