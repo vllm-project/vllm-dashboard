@@ -75,12 +75,6 @@ h2 {
   opacity: 0.9;
 }
 
-/* The mark sits on the text baseline like the official wordmark, where the
-   mark itself is the "v" in vLLM. */
-.brand-lockup .brand-mark {
-  margin-top: 2px;
-}
-
 .dashboard-popover {
   opacity: 1;
   transform: translateY(0) scale(1);
