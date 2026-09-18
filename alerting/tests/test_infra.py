@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import subprocess
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -826,3 +827,37 @@ def test_disabled_gpu_count_threshold_suppresses_alerts() -> None:
 
     assert store.episodes() == []
     assert outbox.count() == 0
+
+
+def _newest_migration_defining(constraint: str) -> str:
+    # Constraints are replaced with DROP + ADD, so the highest-numbered
+    # migration that mentions one is the definition in force.
+    root = pathlib.Path(__file__).resolve().parents[2] / "migrations" / "sql"
+    files = sorted(path for path in root.glob("*.sql") if constraint in path.read_text())
+    assert files, f"no migration defines {constraint}"
+    return files[-1].read_text()
+
+
+@pytest.mark.parametrize(
+    "constraint",
+    [
+        "alerting_infra_host_states_alert_type_check",
+        "alerting_infra_alerts_alert_type_check",
+        "alert_thresholds_check",
+    ],
+)
+def test_every_alert_type_is_permitted_by_the_sql_constraints(constraint: str) -> None:
+    # Migration 0023 added an alert type to alert_thresholds but missed the two
+    # infra tables. The first scan after that deploy failed on the host-states
+    # constraint and infra alerting stopped reconciling until 0024 was
+    # hand-applied. A new InfraAlertType that no migration permits is the same
+    # outage, so fail here instead of in production.
+    sql = _newest_migration_defining(constraint)
+    missing = [
+        alert_type.value
+        for alert_type in InfraAlertType
+        if f"'{alert_type.value}'" not in sql
+    ]
+    assert not missing, (
+        f"{constraint} does not permit {missing}; widen it in a new migration"
+    )
