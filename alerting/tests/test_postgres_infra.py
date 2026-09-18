@@ -67,6 +67,7 @@ class FakePostgresConnection:
             "recent_hosts": [],
             "mounts": [],
             "temps": [],
+            "gpu_totals": [],
             "infra_states": {},
             "infra_alerts": [],
             "outbox": {},
@@ -116,6 +117,8 @@ class FakePostgresConnection:
             return Result(rows=list(self.state["mounts"]))
         if statement.startswith("SELECT DISTINCT ON (hostname, gpu_index)"):
             return Result(rows=list(self.state["temps"]))
+        if statement.startswith("SELECT hostname, count(DISTINCT gpu_index)"):
+            return Result(rows=list(self.state["gpu_totals"]))
         if statement.startswith(
             "SELECT alert_type, subject_key, consecutive_breaches"
         ):

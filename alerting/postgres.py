@@ -35,6 +35,7 @@ from alerting.full_ci import (
 )
 from alerting.infra import (
     DiskMountObservation,
+    GpuCountObservation,
     GpuDeadMemoryObservation,
     GpuTemperatureObservation,
     HostReport,
@@ -1251,6 +1252,33 @@ class PostgresAlertStore:
                 gpu_index=int(row[1]),
                 dead_proc_mem_mb=float(row[2]),
                 reported_at=row[3],
+            )
+            for row in rows
+        ]
+
+    def gpu_counts(self) -> list[GpuCountObservation]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT hostname, count(DISTINCT gpu_index) AS observed_gpus,
+                       max(reported_at) AS reported_at
+                FROM gpu_snapshots
+                -- A GPU that falls off the bus stops appearing here at all,
+                -- so only fresh rows may be counted: a stale reading would
+                -- keep a dead GPU in the tally forever. The narrow window
+                -- also keeps the scan off 8M+ rows of history (see the
+                -- statement-timeout incident) and drops silent hosts out
+                -- entirely, which is the unreporting alert's job, not this
+                -- one.
+                WHERE reported_at >= now() - interval '15 minutes'
+                GROUP BY hostname
+                """
+            ).fetchall()
+        return [
+            GpuCountObservation(
+                hostname=str(row[0]),
+                observed_gpus=int(row[1]),
+                reported_at=row[2],
             )
             for row in rows
         ]
