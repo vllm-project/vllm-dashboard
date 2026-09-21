@@ -79,13 +79,11 @@ function TrendTooltip({
 
 export function ParityTrendChart({
   samples,
-  mode,
 }: {
   samples: ParityHistorySample[];
-  mode: "gating" | "all";
 }) {
   const data: TrendPoint[] = samples.map((sample) => {
-    const counts = sample[mode];
+    const counts = sample.gating;
     return {
       date: sample.date,
       nvidiaJobs: counts.nvidiaJobs,

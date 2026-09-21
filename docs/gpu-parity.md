@@ -1,7 +1,8 @@
 # NVIDIA to AMD gating parity
 
-The Parity page (`/parity`) and its APIs answer one question: of the test jobs
+The Parity page (`/parity`) answers one question: of the gating test jobs
 vLLM runs on NVIDIA GPUs and includes in AMD parity, how many declare an AMD mirror?
+The page shows gating jobs only, with no all-jobs scope selector.
 
 ## Source
 
@@ -64,10 +65,11 @@ Scenario suffixes and topology remain significant; unmatched jobs stay visible.
 Rules do not inspect test commands. Generic terms such as `fusion`, `MLA`, `CUDA`,
 `DeepSeek`, `Kimi` and `H100` alone do not trigger exclusions.
 
-Both Gating jobs and All jobs use the filtered counts, including area totals,
-missing-mirror counts and coverage. The page lists excluded jobs and their reasons
-in an expandable section. Every history sample uses the same current rules, so
-the trend and current snapshot measure the same population.
+The page uses gating counts for area totals, missing mirrors, coverage and
+history. Its job filter switches between all eligible gating jobs and those
+missing a mirror. The expandable exclusions section also lists only gating jobs.
+Every history sample uses the same current rules, so the trend and current
+snapshot measure the same population.
 
 ## Metric
 
@@ -77,9 +79,12 @@ For any set of eligible NVIDIA jobs:
 coverage = jobs with a mirror.amd block / eligible NVIDIA jobs
 ```
 
-The snapshot reports it three ways: `all` (every eligible NVIDIA job), `gating` (the
-default view, since those are the jobs a PR must pass), and `nonGating`
-(optional or soft-fail jobs). Per-test-area rows carry `all` and `gating`.
+The page displays `gating` counts, since those are the NVIDIA jobs a PR must pass.
+An optional or soft-fail AMD mirror still counts as a declared mirror and is
+marked accordingly in the job list.
+
+The APIs retain `all`, `gating` and `nonGating` snapshot counts, plus `all` and
+`gating` area/history counts, for compatibility with existing clients.
 
 ## APIs
 
