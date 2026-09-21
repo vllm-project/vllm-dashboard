@@ -1,14 +1,15 @@
 # NVIDIA to AMD gating parity
 
 The Parity page (`/parity`) and its APIs answer one question: of the test jobs
-vLLM runs on NVIDIA GPUs, how many also run on AMD?
+vLLM runs on NVIDIA GPUs and includes in AMD parity, how many declare an AMD mirror?
 
 ## Source
 
 Everything is read from `.buildkite/test_areas/*.yaml` on
 `vllm-project/vllm` `main`, the same files the pipeline generator in
 `vllm-project/ci-infra` turns into Buildkite steps. Nothing is inferred from
-Buildkite job history, so the metric moves only when a YAML file changes.
+Buildkite job history. Counts depend on the YAML and the dashboard's label
+exclusion rules below.
 
 Each file is one test area (`group`) with a list of `steps`. For every step:
 
@@ -33,27 +34,60 @@ Each file is one test area (`group`) with a list of `steps`. For every step:
   gating classification, because such jobs are still optional on pull
   requests.
 
-Only NVIDIA steps count toward parity. CPU-only steps (some of which also have
-AMD mirrors) are excluded and their count is reported so the totals reconcile
-with the YAML.
+Only eligible NVIDIA steps count toward parity. CPU-only steps (some of which
+also have AMD mirrors) are excluded and their count is reported so the totals
+reconcile with the YAML.
+
+## Parity exclusions
+
+NVIDIA jobs without a declared AMD mirror are excluded for whole-word labels
+`FlashInfer`, `DeepGEMM`, `Humming`, `AsyncTP`, `Spark`, `B200` or `NIXL-EP`
+(case-insensitive). NIXL-EP also accepts space/underscore separators. Labels
+containing `Fault Tolerance` and `E2E` identify the current NIXL-EP suite;
+AMD DI coverage is tracked separately. Devices `b200`, `b200-k8s` and `dgx-spark`
+are excluded even when the hardware is absent from the label.
+Unmirrored labels containing both `Fusion` and `E2E` are also outside this plan;
+compiler pass tests remain eligible.
+
+A declared `mirror.amd` always takes precedence. B200 exclusion is a scope
+decision, not a claim that every test scheduled there is incompatible with ROCm.
+
+Hardware variants of a mirrored suite are also omitted from the missing-mirror
+population. Matching requires different hardware and the same source file, area,
+GPU/node counts and normalized suite label,
+removing only the vendor prefix, recognized leading hardware annotation and
+`Shard %N`. For example, a mirrored H100 Batch Invariance suite removes the
+unmirrored A100 variant. Explicit mirrors on multiple platforms are retained.
+This is a naming policy, not a proof of identical test selections or passing runs.
+Scenario suffixes and topology remain significant; unmatched jobs stay visible.
+
+Rules do not inspect test commands. Generic terms such as `fusion`, `MLA`, `CUDA`,
+`DeepSeek`, `Kimi` and `H100` alone do not trigger exclusions.
+
+Both Gating jobs and All jobs use the filtered counts, including area totals,
+missing-mirror counts and coverage. The page lists excluded jobs and their reasons
+in an expandable section. Every history sample uses the same current rules, so
+the trend and current snapshot measure the same population.
 
 ## Metric
 
-For any set of NVIDIA jobs:
+For any set of eligible NVIDIA jobs:
 
 ```
-coverage = jobs with a mirror.amd block / NVIDIA jobs
+coverage = jobs with a mirror.amd block / eligible NVIDIA jobs
 ```
 
-The snapshot reports it three ways: `all` (every NVIDIA job), `gating` (the
+The snapshot reports it three ways: `all` (every eligible NVIDIA job), `gating` (the
 default view, since those are the jobs a PR must pass), and `nonGating`
 (optional or soft-fail jobs). Per-test-area rows carry `all` and `gating`.
 
 ## APIs
 
-- `GET /api/parity` returns `{ source, summary, groups, jobs, skipped }`.
-  `source` names the commit the snapshot was read at. `jobs` lists every
+- `GET /api/parity` returns `{ source, summary, groups, jobs, excluded, skipped }`.
+  `source` names the commit the snapshot was read at. `jobs` lists every eligible
   NVIDIA job with its device, shard count, flags, and mirror (or `null`).
+  `excluded` contains `{ job, reason }` for each NVIDIA job removed by a scope
+  or mirrored-variant rule, preserving its source metadata for inspection.
   Cached one hour at the origin and served stale from the CDN for a day.
 - `GET /api/parity/history?weeks=26` returns weekly `samples`, oldest first.
   Each sample is the last commit that touched `.buildkite/test_areas` on or

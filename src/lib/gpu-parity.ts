@@ -5,8 +5,10 @@
  * step with a `device`. NVIDIA steps may declare a `mirror.amd` block, which
  * the pipeline generator (vllm-project/ci-infra) turns into an `amd-<key>`
  * step on AMD hardware. This module reads those parsed YAML files and counts,
- * per test area and overall, how many NVIDIA jobs exist and how many of them
- * have an AMD mirror.
+ * per test area and overall, how many NVIDIA jobs are eligible for AMD parity
+ * and how many of them have an AMD mirror. Known NVIDIA-specific job families
+ * without a declared AMD mirror are excluded by label or hardware policy.
+ * Hardware variants of an already mirrored suite do not add another gap.
  *
  * A job "gates" a build when it is neither `optional` (only runs when someone
  * unblocks it or in a nightly) nor `soft_fail` (its failure does not fail the
@@ -139,6 +141,7 @@ export interface ParityJob {
   file: string;
   device: string | null;
   numDevices: number;
+  numNodes: number;
   parallelism: number;
   optional: boolean;
   softFail: boolean;
@@ -146,6 +149,57 @@ export interface ParityJob {
   autorunOnMain: boolean;
   gating: boolean;
   mirror: ParityMirror | null;
+}
+
+export interface ParityExcludedJob {
+  job: ParityJob;
+  reason: string;
+}
+
+// These are parity scope rules, not a claim that every excluded test lacks
+// ROCm support. In particular, B200 rows can contain portable selections.
+const AMD_PARITY_EXCLUSIONS = [
+  { patterns: [/\bflashinfer\b/i], reason: "FlashInfer-specific job" },
+  { patterns: [/\bdeepgemm\b/i], reason: "DeepGEMM-specific job" },
+  { patterns: [/\bhumming\b/i], reason: "Humming-specific job" },
+  { patterns: [/\basynctp\b/i], reason: "AsyncTP job outside AMD parity scope" },
+  { patterns: [/\bspark\b/i], reason: "DGX Spark hardware job" },
+  { patterns: [/\b(?:\d+x)?b200s?\b/i], reason: "B200 hardware job outside AMD parity scope" },
+  { patterns: [/\bnixl[ _-]?ep\b/i], reason: "NIXL-EP-specific job" },
+  {
+    patterns: [/\bfusion\b/i, /\be2e\b/i],
+    reason: "Fusion E2E job outside AMD parity scope",
+  },
+  {
+    patterns: [/\bfault\s+tolerance\b/i, /\be2e\b/i],
+    reason: "NIXL-EP fault-tolerance job; AMD DI coverage is tracked separately",
+  },
+] as const;
+
+function amdParityExclusionReason(job: ParityJob): string | null {
+  // An explicit AMD mirror takes precedence over the label heuristic.
+  if (job.mirror) return null;
+  const labelReason = AMD_PARITY_EXCLUSIONS.find(({ patterns }) =>
+    patterns.every((pattern) => pattern.test(job.label)),
+  )?.reason ?? null;
+  if (labelReason) return labelReason;
+  const device = job.device?.toLowerCase();
+  if (device === "b200" || device === "b200-k8s") {
+    return "B200 hardware job outside AMD parity scope";
+  }
+  return device === "dgx-spark" ? "DGX Spark hardware job" : null;
+}
+
+function suiteIdentity(job: ParityJob): string {
+  const label = job.label
+    .replace(/^:nvidia:\s*/i, "")
+    .replace(/^\((?:\d+x)?(?:h100|h200|a100|b200|l4|gh200|dgx)\b[^)]*\)\s*/i, "")
+    .replace(/\s+shard\s+%N\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  // Preserve scenario names and topology: TP2 and TP4 are distinct tests.
+  return JSON.stringify([job.file, job.group, label, job.numDevices, job.numNodes]);
 }
 
 export interface ParityCounts {
@@ -171,6 +225,8 @@ export interface ParitySnapshot {
   };
   groups: ParityGroup[];
   jobs: ParityJob[];
+  /** NVIDIA jobs omitted by scope rules or a mirrored hardware variant. */
+  excluded: ParityExcludedJob[];
   skipped: {
     cpuJobs: number;
     amdJobs: number;
@@ -234,6 +290,7 @@ export function parityJobFromStep(
       step.num_devices ?? step.num_gpus,
       1,
     ),
+    numNodes: asPositiveInteger(step.num_nodes, 1),
     parallelism: asPositiveInteger(step.parallelism, 1),
     optional,
     softFail,
@@ -254,7 +311,9 @@ export function countParity(jobs: readonly ParityJob[]): ParityCounts {
 }
 
 export function computeParity(files: readonly TestAreaFile[]): ParitySnapshot {
+  const candidates: ParityJob[] = [];
   const jobs: ParityJob[] = [];
+  const excluded: ParityExcludedJob[] = [];
   const skipped: ParitySnapshot["skipped"] = {
     cpuJobs: 0,
     amdJobs: 0,
@@ -268,10 +327,10 @@ export function computeParity(files: readonly TestAreaFile[]): ParitySnapshot {
       const label = String(step.label);
       const device = asNullableString(step.device);
       switch (classifyStep(step)) {
-        case "nvidia":
-          jobs.push(parityJobFromStep(file, step));
-          if (!groupFiles.has(file.group)) groupFiles.set(file.group, file.path);
+        case "nvidia": {
+          candidates.push(parityJobFromStep(file, step));
           break;
+        }
         case "cpu":
           skipped.cpuJobs += 1;
           break;
@@ -284,6 +343,31 @@ export function computeParity(files: readonly TestAreaFile[]): ParitySnapshot {
         default:
           skipped.unknown.push({ label: label.trim(), device, file: file.path });
       }
+    }
+  }
+
+  const mirroredSuites = new Map<string, ParityJob[]>();
+  for (const job of candidates) {
+    if (job.mirror) {
+      const identity = suiteIdentity(job);
+      const variants = mirroredSuites.get(identity) ?? [];
+      variants.push(job);
+      mirroredSuites.set(identity, variants);
+    }
+  }
+  for (const job of candidates) {
+    const mirroredVariant = job.mirror ? undefined : mirroredSuites.get(suiteIdentity(job))?.find(
+      (variant) => job.device && variant.device &&
+        job.device.toLowerCase() !== variant.device.toLowerCase(),
+    );
+    const reason = amdParityExclusionReason(job) ?? (mirroredVariant
+      ? `Hardware variant of mirrored job: ${mirroredVariant.label}`
+      : null);
+    if (reason) {
+      excluded.push({ job, reason });
+    } else {
+      jobs.push(job);
+      if (!groupFiles.has(job.group)) groupFiles.set(job.group, job.file);
     }
   }
 
@@ -307,6 +391,7 @@ export function computeParity(files: readonly TestAreaFile[]): ParitySnapshot {
     },
     groups,
     jobs,
+    excluded,
     skipped,
   };
 }

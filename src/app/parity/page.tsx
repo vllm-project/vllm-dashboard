@@ -265,6 +265,9 @@ export default function ParityPage() {
   }
 
   const missing = summary ? summary.nvidiaJobs - summary.mirroredJobs : 0;
+  const excluded = (data.excluded ?? []).filter(
+    ({ job }) => mode === "all" || job.gating,
+  );
 
   return (
     <div className="space-y-6">
@@ -281,7 +284,8 @@ export default function ParityPage() {
             >
               {data.source.repo}/{data.source.directory}
             </a>{" "}
-            and whether each declares an AMD mirror. Snapshot of{" "}
+            and whether each declares an AMD mirror. Out-of-scope jobs and hardware
+            variants of mirrored suites are excluded. Snapshot of{" "}
             <a
               href={data.source.commitUrl}
               target="_blank"
@@ -348,7 +352,7 @@ export default function ParityPage() {
           <h2 className="text-sm font-semibold">AMD mirror coverage over time</h2>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
             Weekly samples of test_areas on {data.source.ref} for the last{" "}
-            {HISTORY_WEEKS} weeks; the last point is the current snapshot.
+            {HISTORY_WEEKS} weeks, using the same exclusions; the last point is the current snapshot.
           </p>
         </div>
         {history && history.samples.length > 0 ? (
@@ -510,6 +514,28 @@ export default function ParityPage() {
             ` ${data.skipped.unknown.length} step(s) with an unrecognised device were also excluded.`}
         </p>
       </section>
+
+      {excluded.length > 0 && (
+        <details className="rounded-lg border border-zinc-200 bg-white p-4 text-sm dark:border-zinc-800 dark:bg-zinc-950">
+          <summary className="dashboard-control cursor-pointer font-medium">
+            Excluded from AMD parity ({excluded.length}{mode === "gating" ? " gating jobs" : " jobs"})
+          </summary>
+          <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+            Exclusions follow AMD parity scope and mirrored-suite rules. Jobs with a
+            declared AMD mirror are always retained.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {excluded.map(({ job, reason }) => (
+              <li key={`${job.file}:${job.label}`}>
+                <JobName name={job.label} />
+                <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
+                  {job.group} · {reason}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }
