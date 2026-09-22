@@ -171,11 +171,8 @@ function JobRow({ job }: { job: ParityJob }) {
               <JobName name={job.mirror.label} />
             </span>
             <DeviceChip device={job.mirror.device} />
-            {job.gating && !job.mirror.gating && (
-              <Badge tone="warn">
-                {job.mirror.softFail ? "mirror soft fail" : "mirror optional"}
-              </Badge>
-            )}
+            {job.mirror.optional && <Badge tone="warn">mirror optional</Badge>}
+            {job.mirror.softFail && <Badge tone="warn">mirror soft fail</Badge>}
           </p>
         ) : (
           <p className="text-sm text-rose-600 dark:text-rose-400">No AMD mirror</p>
@@ -280,8 +277,8 @@ export default function ParityPage() {
             >
               {data.source.repo}/{data.source.directory}
             </a>{" "}
-            and whether each declares an AMD mirror. Out-of-scope jobs and hardware
-            variants of mirrored suites are excluded. Snapshot of{" "}
+            and whether each declares an AMD mirror. Unmirrored FlashInfer,
+            DeepGEMM and A100 Batch Invariance jobs are excluded. Snapshot of{" "}
             <a
               href={data.source.commitUrl}
               target="_blank"
@@ -481,10 +478,11 @@ export default function ParityPage() {
           </table>
         </div>
         <p className="border-t border-zinc-200 px-4 py-3 text-xs text-zinc-500 sm:px-5 dark:border-zinc-800 dark:text-zinc-400">
-          A job gates a build when it is neither <code className="font-mono">optional</code> nor{" "}
-          <code className="font-mono">soft_fail</code>. Mirrors inherit both flags from their
-          NVIDIA job unless the mirror block overrides them. CPU-only steps ({data.skipped.cpuJobs}) are
-          excluded.
+          This view counts a job as gating when <code className="font-mono">optional</code>{" "}
+          is absent or false. <code className="font-mono">soft_fail</code> jobs remain included;
+          their failures do not fail the build. Mirrors inherit both flags unless overridden,
+          and count as declared mirrors regardless of those flags. CPU-only steps ({data.skipped.cpuJobs})
+          are excluded.
           {data.skipped.unknown.length > 0 &&
             ` ${data.skipped.unknown.length} step(s) with an unrecognised device were also excluded.`}
         </p>
@@ -496,7 +494,7 @@ export default function ParityPage() {
             Excluded from AMD parity ({excluded.length} gating jobs)
           </summary>
           <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-            Exclusions follow AMD parity scope and mirrored-suite rules. Jobs with a
+            Unmirrored FlashInfer, DeepGEMM and A100 Batch Invariance jobs are excluded. Jobs with a
             declared AMD mirror are always retained.
           </p>
           <ul className="mt-3 space-y-2">

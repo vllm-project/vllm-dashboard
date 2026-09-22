@@ -37,12 +37,26 @@ steps:
   - label: ":nvidia: FlashInfer Comparison with AMD Mirror"
     key: mirrored-flashinfer
     device: h100
+    soft_fail: true
     mirror:
       amd:
         device: mi300_1
+  - label: ":nvidia: (H100) Batch Invariance"
+    key: batch-invariance-h100
+    device: h100
+    optional: true
+    mirror:
+      amd:
+        device: mi355_1
+        optional: false
+  - label: ":nvidia: (B200) Batch Invariance"
+    key: batch-invariance-b200
+    device: b200
+    optional: false
+    soft_fail: true
 `;
 
-test("parity snapshot and history apply the same AMD exclusions in both scopes", async (t) => {
+test("parity snapshot and history use optional-only gating and retain hardware variants", async (t) => {
   t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0]) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     if (
@@ -77,14 +91,29 @@ test("parity snapshot and history apply the same AMD exclusions in both scopes",
   const snapshot = (await response.json()) as ParitySnapshotResponse;
   assert.equal(snapshot.source.commit, commit);
   assert.deepEqual(snapshot.summary, {
-    all: { nvidiaJobs: 4, mirroredJobs: 1, coverage: 1 / 4 },
-    gating: { nvidiaJobs: 3, mirroredJobs: 1, coverage: 1 / 3 },
-    nonGating: { nvidiaJobs: 1, mirroredJobs: 0, coverage: 0 },
+    all: { nvidiaJobs: 7, mirroredJobs: 2, coverage: 2 / 7 },
+    gating: { nvidiaJobs: 5, mirroredJobs: 1, coverage: 1 / 5 },
+    nonGating: { nvidiaJobs: 2, mirroredJobs: 1, coverage: 1 / 2 },
   });
   assert.deepEqual(
     snapshot.jobs.map((job) => job.key),
-    ["mla-fusion", "deepseek-kernels", "optional-shared", "mirrored-flashinfer"],
+    [
+      "asynctp", "mla-fusion", "deepseek-kernels", "optional-shared",
+      "mirrored-flashinfer", "batch-invariance-h100", "batch-invariance-b200",
+    ],
   );
+  const mirrored = snapshot.jobs.find((job) => job.key === "mirrored-flashinfer");
+  assert.equal(mirrored?.gating, true);
+  assert.equal(mirrored?.softFail, true);
+  assert.equal(mirrored?.mirror?.gating, true);
+  assert.equal(mirrored?.mirror?.softFail, true);
+  const optionalVariant = snapshot.jobs.find((job) => job.key === "batch-invariance-h100");
+  assert.equal(optionalVariant?.gating, false);
+  assert.equal(optionalVariant?.mirror?.gating, true);
+  const requiredVariant = snapshot.jobs.find((job) => job.key === "batch-invariance-b200");
+  assert.equal(requiredVariant?.gating, true);
+  assert.equal(requiredVariant?.softFail, true);
+  assert.equal(requiredVariant?.mirror, null);
   assert.deepEqual(snapshot.groups, [
     {
       group: "Mixed backends",
@@ -102,7 +131,6 @@ test("parity snapshot and history apply the same AMD exclusions in both scopes",
     [
       { key: "flashinfer", gating: true, reason: "FlashInfer-specific job" },
       { key: "deepgemm", gating: false, reason: "DeepGEMM-specific job" },
-      { key: "asynctp", gating: true, reason: "AsyncTP job outside AMD parity scope" },
     ],
   );
 
