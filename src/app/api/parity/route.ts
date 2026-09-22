@@ -6,8 +6,8 @@ import { GitHubError, loadParitySnapshot } from "@/lib/gpu-parity-source";
 export const maxDuration = 60;
 
 // Current NVIDIA-to-AMD mirror parity for vllm-project/vllm main. The data
-// changes only when `.buildkite/test_areas` changes, so the CDN may serve a
-// stale copy for a day while the origin refreshes hourly.
+// depends on `.buildkite/test_areas` and the dashboard's label exclusions. The
+// CDN may serve a stale copy for a day while the origin refreshes hourly.
 const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 86_400 };
 
 export async function GET() {

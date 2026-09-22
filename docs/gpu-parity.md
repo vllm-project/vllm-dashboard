@@ -1,14 +1,16 @@
 # NVIDIA to AMD gating parity
 
-The Parity page (`/parity`) and its APIs answer one question: of the test jobs
-vLLM runs on NVIDIA GPUs, how many also run on AMD?
+The Parity page (`/parity`) answers one question: of the gating test jobs
+vLLM runs on NVIDIA GPUs and includes in AMD parity, how many declare an AMD mirror?
+The page shows gating jobs only, with no all-jobs scope selector.
 
 ## Source
 
 Everything is read from `.buildkite/test_areas/*.yaml` on
 `vllm-project/vllm` `main`, the same files the pipeline generator in
 `vllm-project/ci-infra` turns into Buildkite steps. Nothing is inferred from
-Buildkite job history, so the metric moves only when a YAML file changes.
+Buildkite job history. Counts depend on the YAML and the dashboard's label
+exclusion rules below.
 
 Each file is one test area (`group`) with a list of `steps`. For every step:
 
@@ -25,35 +27,57 @@ Each file is one test area (`group`) with a list of `steps`. For every step:
   rather than dropped silently.
 - **Mirrored** means the step declares a `mirror.amd` block. The generator
   emits that block as an `amd-<key>` step on the AMD device it names.
-- **Gating** means the step is neither `optional: true` (only runs after a
-  manual unblock or in a nightly) nor `soft_fail: true` (its failure does not
-  fail the build). A mirror inherits both flags from its NVIDIA parent unless
-  the block overrides them, matching `_get_amd_mirror_effective_step` in the
-  generator. `autorun_on_main` is surfaced as a badge but does not change the
-  gating classification, because such jobs are still optional on pull
-  requests.
+- **Gating**, for this view, means `optional` is absent or false. A step with
+  `soft_fail: true` remains included, although its failure does not fail the
+  build. A mirror inherits both flags unless its block overrides them.
+  `soft_fail` and `autorun_on_main` are shown as badges but do not change this
+  classification.
 
-Only NVIDIA steps count toward parity. CPU-only steps (some of which also have
-AMD mirrors) are excluded and their count is reported so the totals reconcile
-with the YAML.
+Only eligible NVIDIA steps count toward parity. CPU-only steps (some of which
+also have AMD mirrors) are excluded and their count is reported so the totals
+reconcile with the YAML.
+
+## Parity exclusions
+
+NVIDIA jobs without a declared AMD mirror are excluded when their labels contain
+the whole word `FlashInfer` or `DeepGEMM` (case-insensitive). A declared
+`mirror.amd` always takes precedence.
+
+The unmirrored A100 Batch Invariance job is also excluded: its AMD coverage is
+tracked on the H100 job. Other NVIDIA steps count independently, even if a
+similarly named job on another GPU has a mirror.
+Fusion, Fault Tolerance, NIXL-EP, Humming and AsyncTP remain eligible. Rules do
+not inspect test commands or infer coverage from other CI pipelines.
+
+The page uses gating counts for area totals, missing mirrors, coverage and
+history. Its job filter switches between all eligible gating jobs and those
+missing a mirror. The expandable exclusions section also lists only gating jobs.
+Every history sample uses the same current rules, so the trend and current
+snapshot measure the same population.
 
 ## Metric
 
-For any set of NVIDIA jobs:
+For any set of eligible NVIDIA jobs:
 
 ```
-coverage = jobs with a mirror.amd block / NVIDIA jobs
+coverage = jobs with a mirror.amd block / eligible NVIDIA jobs
 ```
 
-The snapshot reports it three ways: `all` (every NVIDIA job), `gating` (the
-default view, since those are the jobs a PR must pass), and `nonGating`
-(optional or soft-fail jobs). Per-test-area rows carry `all` and `gating`.
+The page displays `gating` counts using the definition above. An optional or
+soft-fail AMD mirror still counts as a declared mirror; each flag is marked
+separately alongside its device in the job list. This measures declared
+coverage, not passing test results or whether an AMD failure blocks a build.
+
+The APIs retain `all`, `gating` and `nonGating` snapshot counts, plus `all` and
+`gating` area/history counts, for compatibility with existing clients.
 
 ## APIs
 
-- `GET /api/parity` returns `{ source, summary, groups, jobs, skipped }`.
-  `source` names the commit the snapshot was read at. `jobs` lists every
+- `GET /api/parity` returns `{ source, summary, groups, jobs, excluded, skipped }`.
+  `source` names the commit the snapshot was read at. `jobs` lists every eligible
   NVIDIA job with its device, shard count, flags, and mirror (or `null`).
+  `excluded` contains `{ job, reason }` for each NVIDIA job removed by a label
+  exclusion, preserving its source metadata for inspection.
   Cached one hour at the origin and served stale from the CDN for a day.
 - `GET /api/parity/history?weeks=26` returns weekly `samples`, oldest first.
   Each sample is the last commit that touched `.buildkite/test_areas` on or

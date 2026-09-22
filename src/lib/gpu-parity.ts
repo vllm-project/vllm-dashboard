@@ -5,14 +5,16 @@
  * step with a `device`. NVIDIA steps may declare a `mirror.amd` block, which
  * the pipeline generator (vllm-project/ci-infra) turns into an `amd-<key>`
  * step on AMD hardware. This module reads those parsed YAML files and counts,
- * per test area and overall, how many NVIDIA jobs exist and how many of them
- * have an AMD mirror.
+ * per test area and overall, how many NVIDIA jobs are eligible for AMD parity
+ * and how many of them have an AMD mirror. Known NVIDIA-specific job families
+ * without a declared AMD mirror are excluded by label. Each YAML step is
+ * counted independently, except for the A100 Batch Invariance job whose AMD
+ * coverage is tracked on the H100 job.
  *
- * A job "gates" a build when it is neither `optional` (only runs when someone
- * unblocks it or in a nightly) nor `soft_fail` (its failure does not fail the
- * build). The AMD mirror inherits both flags from its NVIDIA parent unless
- * the mirror block overrides them, matching `_get_amd_mirror_effective_step`
- * in the generator.
+ * For this view, "gating" means `optional` is not true. `soft_fail` does not
+ * affect inclusion, but is reported separately because it changes whether a
+ * failure blocks the build. The AMD mirror inherits both flags from its NVIDIA
+ * parent unless its block overrides them, matching the pipeline generator.
  */
 
 export type DeviceVendor = "nvidia" | "amd" | "cpu" | "other" | "unknown";
@@ -128,7 +130,7 @@ export interface ParityMirror {
   device: string | null;
   optional: boolean;
   softFail: boolean;
-  /** Mirror runs and blocks: neither optional nor soft-fail after inheritance. */
+  /** Not optional after inheritance; soft-fail is reported separately. */
   gating: boolean;
 }
 
@@ -139,6 +141,7 @@ export interface ParityJob {
   file: string;
   device: string | null;
   numDevices: number;
+  numNodes: number;
   parallelism: number;
   optional: boolean;
   softFail: boolean;
@@ -146,6 +149,34 @@ export interface ParityJob {
   autorunOnMain: boolean;
   gating: boolean;
   mirror: ParityMirror | null;
+}
+
+export interface ParityExcludedJob {
+  job: ParityJob;
+  reason: string;
+}
+
+// Backend-specific suites outside AMD parity scope. Hardware alone never
+// excludes a job: an AMD mirror may use a different device or backend.
+const AMD_PARITY_EXCLUSIONS = [
+  { patterns: [/\bflashinfer\b/i], reason: "FlashInfer-specific job" },
+  { patterns: [/\bdeepgemm\b/i], reason: "DeepGEMM-specific job" },
+] as const;
+
+function amdParityExclusionReason(job: ParityJob): string | null {
+  // An explicit AMD mirror takes precedence over the label heuristic.
+  if (job.mirror) return null;
+  // Track AMD Batch Invariance coverage on the H100 job. Keep this exception
+  // specific to A100; B200 and other scenarios may select additional tests.
+  if (
+    job.device?.trim().toLowerCase() === "a100" &&
+    /^(?::nvidia:\s*)?(?:\(A100\)\s*)?Batch Invariance$/i.test(job.label)
+  ) {
+    return "Batch Invariance AMD coverage is tracked on the H100 job";
+  }
+  return AMD_PARITY_EXCLUSIONS.find(({ patterns }) =>
+    patterns.every((pattern) => pattern.test(job.label)),
+  )?.reason ?? null;
 }
 
 export interface ParityCounts {
@@ -166,11 +197,13 @@ export interface ParitySnapshot {
   summary: {
     all: ParityCounts;
     gating: ParityCounts;
-    /** NVIDIA jobs that are optional or soft-fail, i.e. never block a build. */
+    /** Optional NVIDIA jobs, regardless of soft-fail status. */
     nonGating: ParityCounts;
   };
   groups: ParityGroup[];
   jobs: ParityJob[];
+  /** NVIDIA jobs omitted by parity scope rules. */
+  excluded: ParityExcludedJob[];
   skipped: {
     cpuJobs: number;
     amdJobs: number;
@@ -214,7 +247,7 @@ function parseMirror(
     device: asNullableString(block.device),
     optional,
     softFail,
-    gating: !optional && !softFail,
+    gating: !optional,
   };
 }
 
@@ -234,11 +267,12 @@ export function parityJobFromStep(
       step.num_devices ?? step.num_gpus,
       1,
     ),
+    numNodes: asPositiveInteger(step.num_nodes, 1),
     parallelism: asPositiveInteger(step.parallelism, 1),
     optional,
     softFail,
     autorunOnMain: asBoolean(step.autorun_on_main),
-    gating: !optional && !softFail,
+    gating: !optional,
     mirror: parseMirror(step, optional, softFail),
   };
 }
@@ -254,7 +288,9 @@ export function countParity(jobs: readonly ParityJob[]): ParityCounts {
 }
 
 export function computeParity(files: readonly TestAreaFile[]): ParitySnapshot {
+  const candidates: ParityJob[] = [];
   const jobs: ParityJob[] = [];
+  const excluded: ParityExcludedJob[] = [];
   const skipped: ParitySnapshot["skipped"] = {
     cpuJobs: 0,
     amdJobs: 0,
@@ -268,10 +304,10 @@ export function computeParity(files: readonly TestAreaFile[]): ParitySnapshot {
       const label = String(step.label);
       const device = asNullableString(step.device);
       switch (classifyStep(step)) {
-        case "nvidia":
-          jobs.push(parityJobFromStep(file, step));
-          if (!groupFiles.has(file.group)) groupFiles.set(file.group, file.path);
+        case "nvidia": {
+          candidates.push(parityJobFromStep(file, step));
           break;
+        }
         case "cpu":
           skipped.cpuJobs += 1;
           break;
@@ -284,6 +320,16 @@ export function computeParity(files: readonly TestAreaFile[]): ParitySnapshot {
         default:
           skipped.unknown.push({ label: label.trim(), device, file: file.path });
       }
+    }
+  }
+
+  for (const job of candidates) {
+    const reason = amdParityExclusionReason(job);
+    if (reason) {
+      excluded.push({ job, reason });
+    } else {
+      jobs.push(job);
+      if (!groupFiles.has(job.group)) groupFiles.set(job.group, job.file);
     }
   }
 
@@ -307,6 +353,7 @@ export function computeParity(files: readonly TestAreaFile[]): ParitySnapshot {
     },
     groups,
     jobs,
+    excluded,
     skipped,
   };
 }

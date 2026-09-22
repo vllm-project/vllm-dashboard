@@ -7,6 +7,7 @@ import {
   countParity,
   parityJobFromStep,
   parseTestAreaFile,
+  summarizeForHistory,
   type TestAreaFile,
 } from "./gpu-parity";
 
@@ -123,9 +124,9 @@ const misc: TestAreaFile = {
 
 test("a mirror inherits optional and soft_fail from its parent unless overridden", () => {
   const soft = parityJobFromStep(kernels, kernels.steps[3]);
-  assert.equal(soft.gating, false);
+  assert.equal(soft.gating, true);
   assert.equal(soft.mirror?.softFail, true);
-  assert.equal(soft.mirror?.gating, false);
+  assert.equal(soft.mirror?.gating, true);
 
   const overridden = parityJobFromStep(misc, misc.steps[0]);
   assert.equal(overridden.optional, true);
@@ -136,7 +137,37 @@ test("a mirror inherits optional and soft_fail from its parent unless overridden
   const plain = parityJobFromStep(kernels, kernels.steps[0]);
   assert.equal(plain.parallelism, 7);
   assert.equal(plain.numDevices, 1);
+  assert.equal(plain.numNodes, 1);
   assert.equal(plain.mirror?.device, "mi300_1");
+});
+
+test("gating depends only on optional, while retaining soft_fail for display", () => {
+  for (const optional of [undefined, false, true]) {
+    for (const softFail of [undefined, false, true]) {
+      const job = parityJobFromStep(kernels, {
+        label: "Required or optional kernels",
+        device: "h100",
+        optional,
+        soft_fail: softFail,
+        mirror: { amd: { device: "mi355_1" } },
+      });
+      assert.equal(job.gating, optional !== true);
+      assert.equal(job.softFail, softFail === true);
+      assert.equal(job.mirror?.gating, optional !== true);
+      assert.equal(job.mirror?.softFail, softFail === true);
+    }
+  }
+
+  const job = parityJobFromStep(kernels, {
+    label: "Mirror flags override parent flags",
+    device: "h100",
+    optional: false,
+    soft_fail: true,
+    mirror: { amd: { device: "mi355_1", optional: true, soft_fail: false } },
+  });
+  assert.equal(job.gating, true);
+  assert.equal(job.mirror?.gating, false);
+  assert.equal(job.mirror?.softFail, false);
 });
 
 test("a mirror block without a label gets the generator's default label", () => {
@@ -159,19 +190,19 @@ test("counts coverage and reports null coverage with no NVIDIA jobs", () => {
 test("computes overall, gating, and per-group parity", () => {
   const snapshot = computeParity([misc, kernels]);
 
-  // 4 NVIDIA jobs in Kernels + 2 in Miscellaneous (LM Eval and the legacy
-  // device-less Regression step); CPU, no_gpu, and unknown are skipped.
-  assert.equal(snapshot.summary.all.nvidiaJobs, 6);
+  // 3 eligible NVIDIA jobs in Kernels + 2 in Miscellaneous. DeepGEMM is
+  // excluded; CPU, no_gpu, and unknown are skipped separately.
+  assert.equal(snapshot.summary.all.nvidiaJobs, 5);
   assert.equal(snapshot.summary.all.mirroredJobs, 3);
-  assert.equal(snapshot.summary.all.coverage, 0.5);
+  assert.equal(snapshot.summary.all.coverage, 3 / 5);
 
-  // Gating: attention (mirrored), deepgemm and Regression (not).
+  // Gating: attention and soft-fail kernels (mirrored), Regression (not).
   assert.equal(snapshot.summary.gating.nvidiaJobs, 3);
-  assert.equal(snapshot.summary.gating.mirroredJobs, 1);
-  assert.equal(snapshot.summary.gating.coverage, 1 / 3);
+  assert.equal(snapshot.summary.gating.mirroredJobs, 2);
+  assert.equal(snapshot.summary.gating.coverage, 2 / 3);
 
-  assert.equal(snapshot.summary.nonGating.nvidiaJobs, 3);
-  assert.equal(snapshot.summary.nonGating.mirroredJobs, 2);
+  assert.equal(snapshot.summary.nonGating.nvidiaJobs, 2);
+  assert.equal(snapshot.summary.nonGating.mirroredJobs, 1);
 
   assert.deepEqual(
     snapshot.groups.map((group) => group.group),
@@ -179,8 +210,13 @@ test("computes overall, gating, and per-group parity", () => {
   );
   const kernelGroup = snapshot.groups[0];
   assert.equal(kernelGroup.file, kernels.path);
-  assert.equal(kernelGroup.all.nvidiaJobs, 4);
+  assert.equal(kernelGroup.all.nvidiaJobs, 3);
   assert.equal(kernelGroup.gating.nvidiaJobs, 2);
+
+  assert.deepEqual(snapshot.excluded, [{
+    job: parityJobFromStep(kernels, kernels.steps[1]),
+    reason: "DeepGEMM-specific job",
+  }]);
 
   assert.equal(snapshot.skipped.cpuJobs, 2);
   assert.deepEqual(snapshot.skipped.unknown, [
@@ -189,4 +225,233 @@ test("computes overall, gating, and per-group parity", () => {
 
   // Jobs are ordered by file path so output is stable across refreshes.
   assert.equal(snapshot.jobs[0].file, kernels.path);
+});
+
+test("excludes job families case-insensitively in gating and all counts", () => {
+  const file: TestAreaFile = {
+    path: ".buildkite/test_areas/compile.yaml",
+    group: "Compile",
+    steps: [
+      { label: ":nvidia: (L4) Distributed FlashInfer NixlConnector PD accuracy", device: "l4" },
+      { label: ":nvidia: (H100) DEEPGEMM Kernels", device: "h100" },
+      { label: ":nvidia: (H100) Fusion E2E TP2 asynctp Config Sweep", device: "h100" },
+      { label: ":nvidia: (B200) AsyncTP Correctness", device: "b200", optional: true },
+      { label: "flashinfer-kernels", soft_fail: true },
+      { label: ":nvidia: (H100) Distributed Compile", device: "h100" },
+    ],
+  };
+  const snapshot = computeParity([file]);
+  assert.equal(snapshot.excluded.length, 3);
+  assert.equal(snapshot.excluded.filter(({ job }) => job.gating).length, 3);
+  assert.equal(snapshot.summary.all.nvidiaJobs, 3);
+  assert.equal(snapshot.summary.gating.nvidiaJobs, 2);
+  assert.deepEqual(snapshot.summary.nonGating, {
+    nvidiaJobs: 1, mirroredJobs: 0, coverage: 0,
+  });
+  assert.deepEqual(snapshot.jobs.map(({ label }) => label), [
+    file.steps[2].label,
+    file.steps[3].label,
+    file.steps[5].label,
+  ]);
+  assert.equal(snapshot.groups[0].all.nvidiaJobs, 3);
+  assert.deepEqual(summarizeForHistory(snapshot), {
+    all: { nvidiaJobs: 3, mirroredJobs: 0, coverage: 0 },
+    gating: { nvidiaJobs: 2, mirroredJobs: 0, coverage: 0 },
+  });
+});
+
+test("retains explicit AMD mirrors even when their NVIDIA labels match exclusions", () => {
+  const file: TestAreaFile = {
+    path: "mirrors.yaml",
+    group: "Mirrors",
+    steps: ["FlashInfer", "DeepGEMM"].map((family) => ({
+      label: `:nvidia: (H100) ${family} Integration`,
+      device: "h100",
+      mirror: { amd: { device: "mi300_1", optional: true } },
+    })),
+  };
+  const snapshot = computeParity([file]);
+  assert.deepEqual(snapshot.excluded, []);
+  assert.deepEqual(snapshot.summary.gating, {
+    nvidiaJobs: 2, mirroredJobs: 2, coverage: 1,
+  });
+  assert.ok(snapshot.jobs.every((job) => job.mirror?.gating === false));
+});
+
+test("retains shared families and matches labels rather than areas, keys or commands", () => {
+  const labels = [
+    ":nvidia: (H100) Distributed Compile",
+    ":nvidia: (H100) Fusion and Compile",
+    ":nvidia: (H100) Fusion Passes",
+    ":nvidia: (H100) MLA Kernel Test",
+    ":nvidia: (H100) DeepSeek V4 Kernels",
+    ":nvidia: (H100) Miscellaneous Kernels",
+    ":nvidia: (H200) Kimi K3",
+    ":nvidia: (H200) Inkling",
+    ":nvidia: (L4) PyTorch Fullgraph CUDAGraph Compatibility",
+    ":nvidia: (H100) AITER Fusion",
+    ":nvidia: (H100) Fault Tolerance Unit Tests",
+    ":nvidia: (H100) NixlConnector PD accuracy",
+    "DeepGEMMish", // A partial word is not the family name.
+    "Hummingbird",
+    "Sparkling Attention",
+    "AsyncTPish",
+  ];
+  const snapshot = computeParity([{
+    path: "flashinfer.yaml",
+    group: "FlashInfer / DeepGEMM / AsyncTP",
+    steps: labels.map((label) => ({
+      label,
+      device: "h100",
+      key: "deepgemm",
+      commands: ["pytest tests/distributed/test_flashinfer_workspace.py"],
+    })),
+  }]);
+  assert.deepEqual(snapshot.excluded, []);
+  assert.deepEqual(snapshot.jobs.map(({ label }) => label), labels);
+  assert.equal(snapshot.summary.all.nvidiaJobs, labels.length);
+});
+
+test("retains all other families and hardware, including future gating Spark jobs", () => {
+  const snapshot = computeParity([{
+    path: "scope.yaml",
+    group: "Mixed",
+    steps: [
+      { label: "LM Eval HUMMING", device: "h100" },
+      { label: "AsyncTP Correctness", device: "h100" },
+      { label: "Spark GPQA", device: "h100" },
+      { label: "GPQA", device: "dgx-spark" },
+      { label: "Generic Kernels", device: "b200-k8s" },
+      { label: "Generic Eval", device: "B200" },
+      { label: ":nvidia: (2xB200) Kernels", device: "h100" },
+      { label: "NIXL_EP transport", device: "h100" },
+      { label: "Fault Tolerance E2E", device: "h100" },
+      { label: ":nvidia: (H100) Fusion E2E TP2 AR-RMS Config Sweep", device: "h100" },
+      { label: ":nvidia: (H100) E2E Fusion Quick", device: "h100" },
+    ],
+  }]);
+  assert.deepEqual(snapshot.excluded, []);
+  assert.deepEqual(snapshot.summary.gating, {
+    nvidiaJobs: 11, mirroredJobs: 0, coverage: 0,
+  });
+  assert.equal(snapshot.groups.length, 1);
+});
+
+test("excludes A100 Batch Invariance while retaining the H200 and B200 gaps", () => {
+  const steps = [
+    { label: ":nvidia: (A100) Batch Invariance", device: "a100", key: "a100" },
+    { label: ":nvidia: (H100) Batch Invariance Shard %N", device: "h100", key: "h100",
+      mirror: { amd: { device: "mi300_1" } } },
+    { label: ":nvidia: (H200 MIG 35GB) Batch Invariance", device: "h200_35gb", key: "h200" },
+    { label: ":nvidia: (B200) Batch Invariance", device: "b200", key: "b200" },
+  ];
+  for (const ordered of [steps, [...steps].reverse()]) {
+    const snapshot = computeParity([{ path: "misc.yaml", group: "Misc", steps: ordered }]);
+    assert.deepEqual(snapshot.jobs.map((job) => job.key), ordered.filter((step) => step.key !== "a100").map((step) => step.key));
+    assert.deepEqual(snapshot.excluded.map(({ job, reason }) => ({ key: job.key, reason })), [
+      { key: "a100", reason: "Batch Invariance AMD coverage is tracked on the H100 job" },
+    ]);
+    assert.deepEqual(summarizeForHistory(snapshot), {
+      all: { nvidiaJobs: 3, mirroredJobs: 1, coverage: 1 / 3 },
+      gating: { nvidiaJobs: 3, mirroredJobs: 1, coverage: 1 / 3 },
+    });
+  }
+});
+
+test("A100 Batch Invariance exception preserves explicit mirrors and other scenarios", () => {
+  const snapshot = computeParity([{
+    path: "misc.yaml",
+    group: "Misc",
+    steps: [
+      { label: ":nvidia: (A100) Batch Invariance", device: "a100",
+        mirror: { amd: { device: "mi300_1" } } },
+      { label: ":nvidia: (A100) Batch Invariance Multimodal", device: "a100" },
+      { label: ":nvidia: (A100) Other Test", device: "a100" },
+    ],
+  }]);
+  assert.deepEqual(snapshot.excluded, []);
+  assert.deepEqual(snapshot.summary.gating, {
+    nvidiaJobs: 3, mirroredJobs: 1, coverage: 1 / 3,
+  });
+});
+
+test("retains distinct topology, scenarios, areas and explicit platform choices", () => {
+  const snapshot = computeParity([
+    { path: "one.yaml", group: "First", steps: [
+      { label: ":nvidia: (H100) Shared Test", device: "h100", mirror: { amd: { device: "mi300_1" } } },
+      { label: ":nvidia: (H200) Shared Test", device: "h200", mirror: { amd: { device: "mi355_1" } } },
+      { label: ":nvidia: (A100) Shared Test", device: "a100", num_devices: 2 },
+      { label: ":nvidia: (A100) Shared Test", device: "a100", num_nodes: 2 },
+      { label: ":nvidia: (A100) Shared Test Large Memory", device: "a100" },
+    ] },
+    { path: "two.yaml", group: "Second", steps: [
+      { label: ":nvidia: (A100) Shared Test", device: "a100" },
+      { label: ":nvidia: (H200) Unmirrored Test", device: "h200" },
+      { label: ":nvidia: (A100) Unmirrored Test", device: "a100" },
+    ] },
+  ]);
+  assert.equal(snapshot.jobs.length, 8);
+  assert.deepEqual(snapshot.excluded, []);
+});
+
+test("retains separately declared steps even when labels, devices and areas match", () => {
+  const snapshot = computeParity([
+    { path: "one.yaml", group: "Same area", steps: [
+      { label: ":nvidia: (H100) Shared", device: "h100", mirror: { amd: { device: "mi300_1" } } },
+      { label: ":nvidia: (H100) Shared", device: "h100" },
+      { label: "Shared", device: undefined },
+    ] },
+    { path: "two.yaml", group: "Same area", steps: [
+      { label: ":nvidia: (A100) Shared", device: "a100" },
+    ] },
+  ]);
+  assert.equal(snapshot.jobs.length, 4);
+  assert.deepEqual(snapshot.excluded, []);
+});
+
+test("an optional mirrored variant cannot hide a required unmirrored B200 group", () => {
+  const snapshot = computeParity([{
+    path: "batch-invariance.yaml",
+    group: "Batch Invariance",
+    steps: [
+      {
+        label: ":nvidia: (H100) Batch Invariance",
+        device: "h100",
+        optional: true,
+        mirror: { amd: { device: "mi300_1", optional: false } },
+      },
+      { label: ":nvidia: (B200) Batch Invariance", device: "b200", optional: false },
+    ],
+  }]);
+  assert.deepEqual(snapshot.excluded, []);
+  assert.deepEqual(snapshot.summary.gating, {
+    nvidiaJobs: 1, mirroredJobs: 0, coverage: 0,
+  });
+  assert.deepEqual(snapshot.summary.nonGating, {
+    nvidiaJobs: 1, mirroredJobs: 1, coverage: 1,
+  });
+  assert.equal(snapshot.jobs.find((job) => job.gating)?.device, "b200");
+});
+
+test("omits areas containing only excluded jobs and preserves vendor accounting", () => {
+  const snapshot = computeParity([{
+    path: "only-excluded.yaml",
+    group: "Implementation tests",
+    steps: [
+      { label: "DeepGEMM Kernels", device: "h100" },
+      { label: "FlashInfer lint", device: "cpu-small" },
+      { label: "AsyncTP AMD", device: "mi300_1" },
+      { label: "FlashInfer other", device: "intel_gpu" },
+      { label: "DeepGEMM unknown", device: "tpu_v6" },
+    ],
+  }]);
+  assert.deepEqual(snapshot.jobs, []);
+  assert.deepEqual(snapshot.groups, []);
+  assert.deepEqual(snapshot.summary.all, countParity([]));
+  assert.deepEqual(snapshot.summary.gating, countParity([]));
+  assert.equal(snapshot.excluded.length, 1);
+  assert.equal(snapshot.skipped.cpuJobs, 1);
+  assert.equal(snapshot.skipped.amdJobs, 1);
+  assert.equal(snapshot.skipped.otherJobs, 1);
+  assert.equal(snapshot.skipped.unknown.length, 1);
 });

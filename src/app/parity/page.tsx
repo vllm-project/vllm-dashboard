@@ -28,7 +28,6 @@ const ParityTrendChart = dynamic(
   },
 );
 
-type Mode = "gating" | "all";
 type JobFilter = "all" | "missing";
 
 const HISTORY_WEEKS = 26;
@@ -172,11 +171,8 @@ function JobRow({ job }: { job: ParityJob }) {
               <JobName name={job.mirror.label} />
             </span>
             <DeviceChip device={job.mirror.device} />
-            {job.gating && !job.mirror.gating && (
-              <Badge tone="warn">
-                {job.mirror.softFail ? "mirror soft fail" : "mirror optional"}
-              </Badge>
-            )}
+            {job.mirror.optional && <Badge tone="warn">mirror optional</Badge>}
+            {job.mirror.softFail && <Badge tone="warn">mirror soft fail</Badge>}
           </p>
         ) : (
           <p className="text-sm text-rose-600 dark:text-rose-400">No AMD mirror</p>
@@ -187,7 +183,6 @@ function JobRow({ job }: { job: ParityJob }) {
 }
 
 export default function ParityPage() {
-  const [mode, setMode] = useState<Mode>("gating");
   const [jobFilter, setJobFilter] = useState<JobFilter>("all");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -207,19 +202,19 @@ export default function ParityPage() {
     { refreshInterval: 60 * 60 * 1000, shouldRetryOnError: false },
   );
 
-  const summary = data?.summary[mode];
+  const summary = data?.summary.gating;
   const groups = useMemo(() => {
     if (!data) return [];
     return data.groups
-      .filter((group) => group[mode].nvidiaJobs > 0)
+      .filter((group) => group.gating.nvidiaJobs > 0)
       .map((group) => {
         const jobs = data.jobs.filter(
-          (job) => job.group === group.group && (mode === "all" || job.gating),
+          (job) => job.group === group.group && job.gating,
         );
         return {
           ...group,
-          counts: group[mode],
-          missing: group[mode].nvidiaJobs - group[mode].mirroredJobs,
+          counts: group.gating,
+          missing: group.gating.nvidiaJobs - group.gating.mirroredJobs,
           jobs:
             jobFilter === "missing" ? jobs.filter((job) => !job.mirror) : jobs,
         };
@@ -230,7 +225,7 @@ export default function ParityPage() {
           (a.counts.coverage ?? 0) - (b.counts.coverage ?? 0) ||
           a.group.localeCompare(b.group),
       );
-  }, [data, mode, jobFilter]);
+  }, [data, jobFilter]);
 
   function toggle(group: string) {
     setExpanded((current) => {
@@ -265,6 +260,7 @@ export default function ParityPage() {
   }
 
   const missing = summary ? summary.nvidiaJobs - summary.mirroredJobs : 0;
+  const excluded = (data.excluded ?? []).filter(({ job }) => job.gating);
 
   return (
     <div className="space-y-6">
@@ -272,7 +268,7 @@ export default function ParityPage() {
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold">Parity</h1>
           <p className="mt-1 max-w-3xl text-sm text-zinc-500 dark:text-zinc-400">
-            NVIDIA test jobs declared in{" "}
+            Gating NVIDIA test jobs declared in{" "}
             <a
               href={`https://github.com/${data.source.repo}/tree/${data.source.commit}/${data.source.directory}`}
               target="_blank"
@@ -281,7 +277,8 @@ export default function ParityPage() {
             >
               {data.source.repo}/{data.source.directory}
             </a>{" "}
-            and whether each declares an AMD mirror. Snapshot of{" "}
+            and whether each declares an AMD mirror. Unmirrored FlashInfer,
+            DeepGEMM and A100 Batch Invariance jobs are excluded. Snapshot of{" "}
             <a
               href={data.source.commitUrl}
               target="_blank"
@@ -293,19 +290,6 @@ export default function ParityPage() {
             on {data.source.ref}, {formatDateTime(data.source.commitDate)}.
           </p>
         </div>
-        <SegmentedControl<Mode>
-          label="Job scope"
-          value={mode}
-          onChange={setMode}
-          options={[
-            {
-              value: "gating",
-              label: "Gating jobs",
-              count: data.summary.gating.nvidiaJobs,
-            },
-            { value: "all", label: "All jobs", count: data.summary.all.nvidiaJobs },
-          ]}
-        />
       </div>
 
       {summary && (
@@ -313,11 +297,7 @@ export default function ParityPage() {
           <StatCard
             label="NVIDIA jobs"
             value={summary.nvidiaJobs}
-            detail={
-              mode === "gating"
-                ? `${data.summary.nonGating.nvidiaJobs} more are optional or soft-fail`
-                : `${data.summary.gating.nvidiaJobs} gate builds`
-            }
+            detail="Gating jobs only"
           />
           <StatCard
             label="With AMD mirror"
@@ -328,11 +308,7 @@ export default function ParityPage() {
             label="AMD coverage"
             value={percent(summary.coverage)}
             color={coverageColor(summary.coverage)}
-            detail={
-              mode === "gating"
-                ? "Share of gating NVIDIA jobs with a mirror"
-                : "Share of all NVIDIA jobs with a mirror"
-            }
+            detail="Share of gating NVIDIA jobs with a mirror"
           />
           <StatCard
             label="Missing mirror"
@@ -347,12 +323,12 @@ export default function ParityPage() {
         <div className="mb-2 flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
           <h2 className="text-sm font-semibold">AMD mirror coverage over time</h2>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            Weekly samples of test_areas on {data.source.ref} for the last{" "}
-            {HISTORY_WEEKS} weeks; the last point is the current snapshot.
+            Weekly gating counts on {data.source.ref} for the last{" "}
+            {HISTORY_WEEKS} weeks, using the same exclusions; the last point is the current snapshot.
           </p>
         </div>
         {history && history.samples.length > 0 ? (
-          <ParityTrendChart samples={history.samples} mode={mode} />
+          <ParityTrendChart samples={history.samples} />
         ) : historyLoading ? (
           <div
             className="flex h-[280px] flex-col items-center justify-center gap-2 text-center"
@@ -408,7 +384,7 @@ export default function ParityPage() {
               value={jobFilter}
               onChange={setJobFilter}
               options={[
-                { value: "all", label: "All jobs" },
+                { value: "all", label: "All gating jobs" },
                 { value: "missing", label: "Missing mirror", count: missing },
               ]}
             />
@@ -479,7 +455,7 @@ export default function ParityPage() {
                         <td colSpan={5} className="p-0">
                           {group.jobs.length === 0 ? (
                             <p className="px-4 py-3 text-sm text-zinc-500 sm:px-6">
-                              Every {mode === "gating" ? "gating " : ""}job in this area has an AMD mirror.
+                              Every gating job in this area has an AMD mirror.
                             </p>
                           ) : (
                             <ul className="divide-y divide-zinc-200/70 dark:divide-zinc-800">
@@ -502,14 +478,37 @@ export default function ParityPage() {
           </table>
         </div>
         <p className="border-t border-zinc-200 px-4 py-3 text-xs text-zinc-500 sm:px-5 dark:border-zinc-800 dark:text-zinc-400">
-          A job gates a build when it is neither <code className="font-mono">optional</code> nor{" "}
-          <code className="font-mono">soft_fail</code>. Mirrors inherit both flags from their
-          NVIDIA job unless the mirror block overrides them. CPU-only steps ({data.skipped.cpuJobs}) are
-          excluded.
+          This view counts a job as gating when <code className="font-mono">optional</code>{" "}
+          is absent or false. <code className="font-mono">soft_fail</code> jobs remain included;
+          their failures do not fail the build. Mirrors inherit both flags unless overridden,
+          and count as declared mirrors regardless of those flags. CPU-only steps ({data.skipped.cpuJobs})
+          are excluded.
           {data.skipped.unknown.length > 0 &&
             ` ${data.skipped.unknown.length} step(s) with an unrecognised device were also excluded.`}
         </p>
       </section>
+
+      {excluded.length > 0 && (
+        <details className="rounded-lg border border-zinc-200 bg-white p-4 text-sm dark:border-zinc-800 dark:bg-zinc-950">
+          <summary className="dashboard-control cursor-pointer font-medium">
+            Excluded from AMD parity ({excluded.length} gating jobs)
+          </summary>
+          <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+            Unmirrored FlashInfer, DeepGEMM and A100 Batch Invariance jobs are excluded. Jobs with a
+            declared AMD mirror are always retained.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {excluded.map(({ job, reason }) => (
+              <li key={`${job.file}:${job.label}`}>
+                <JobName name={job.label} />
+                <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
+                  {job.group} · {reason}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }
