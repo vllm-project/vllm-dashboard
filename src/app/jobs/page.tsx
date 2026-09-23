@@ -1,19 +1,14 @@
 "use client";
 
 import { useState, Fragment } from "react";
-import dynamic from "next/dynamic";
 import useSWR from "swr";
 import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
 import { JobName, jobNameText } from "@/components/job-name";
-import type { JobRun } from "@/components/job-runs-chart";
-
-const JobRunsChart = dynamic(
-  () => import("@/components/job-runs-chart").then((module) => module.JobRunsChart),
-  { loading: () => <div className="flex h-48 items-center justify-center text-zinc-400">Loading chart...</div> },
-);
+import { JobRetryRanking } from "@/components/job-retry-ranking";
+import { JobRunHistory } from "@/components/job-run-history";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -122,6 +117,11 @@ function JobBadges({ name, hasSoftFail }: { name: string; hasSoftFail: boolean }
   );
 }
 
+function SortArrow({ active, asc }: { active: boolean; asc: boolean }) {
+  if (!active) return <span className="ml-1 text-zinc-300 dark:text-zinc-600">↕</span>;
+  return <span className="ml-1">{asc ? "↑" : "↓"}</span>;
+}
+
 function JobAnalysisTab({
   pipeline,
   branch,
@@ -135,7 +135,7 @@ function JobAnalysisTab({
   endDate: string;
   useWindow: boolean;
 }) {
-  const [analysisTab, setAnalysisTab] = useState<"failures" | "duration">("failures");
+  const [analysisTab, setAnalysisTab] = useState<"failures" | "duration" | "retries">("failures");
   const [hideSoftFail, setHideSoftFail] = useState(false);
   const [hideOptional, setHideOptional] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -158,26 +158,10 @@ function JobAnalysisTab({
   }
   const apiUrl = `/api/jobs?${params.toString()}`;
 
-  const { data, error, isLoading } = useSWR<JobsResponse>(apiUrl, fetcher, {
+  const { data, error, isLoading } = useSWR<JobsResponse>(analysisTab === "retries" ? null : apiUrl, fetcher, {
     refreshInterval: 5 * 60 * 1000,
     keepPreviousData: true,
   });
-
-  if (isLoading && !data) {
-    return (
-      <div className="flex h-64 items-center justify-center text-zinc-400">
-        Loading job statistics...
-      </div>
-    );
-  }
-
-  if (error || data?.error) {
-    return (
-      <div className="flex h-64 items-center justify-center text-red-400">
-        Failed to load job data. Check Databricks connection.
-      </div>
-    );
-  }
 
   const { failureRanking = [], durationStats = [] } = data ?? {};
 
@@ -236,32 +220,11 @@ function JobAnalysisTab({
     setPage(0);
   }
 
-  function SortArrow({ active, asc }: { active: boolean; asc: boolean }) {
-    if (!active) return <span className="ml-1 text-zinc-300 dark:text-zinc-600">↕</span>;
-    return <span className="ml-1">{asc ? "↑" : "↓"}</span>;
-  }
-
   const runsParams = new URLSearchParams();
   if (pipeline) runsParams.set("pipeline", pipeline);
   if (branch) runsParams.set("branch", branch);
   if (startDate) runsParams.set("startDate", startDate);
   if (endDate) runsParams.set("endDate", endDate);
-
-  function ExpandedJobRow({ jobName, colSpan }: { jobName: string; colSpan: number }) {
-    const url = `/api/jobs/runs?${runsParams.toString()}&jobName=${encodeURIComponent(jobName)}`;
-    const { data, isLoading } = useSWR<{ runs: JobRun[] }>(url, fetcher);
-    return (
-      <tr>
-        <td colSpan={colSpan} className="bg-zinc-50 px-5 py-4 dark:bg-zinc-900/50">
-          <JobRunsChart
-            runs={data?.runs ?? []}
-            mode={analysisTab}
-            loading={isLoading}
-          />
-        </td>
-      </tr>
-    );
-  }
 
   function toggleExpanded(name: string) {
     setExpandedJob((prev) => (prev === name ? null : name));
@@ -272,6 +235,109 @@ function JobAnalysisTab({
   const totalPages = Math.ceil(totalItems / pageSize);
   const pagedFailures = filteredFailures.slice(page * pageSize, (page + 1) * pageSize);
   const pagedDuration = filteredDuration.slice(page * pageSize, (page + 1) * pageSize);
+
+  const controls = (
+    <div className="flex min-w-0 flex-col gap-3 border-b border-zinc-200 sm:gap-4 xl:flex-row xl:items-end xl:justify-between dark:border-zinc-800">
+      <div className="flex flex-wrap gap-1">
+        <button
+          type="button"
+          aria-pressed={analysisTab === "failures"}
+          onClick={() => { setAnalysisTab("failures"); setPage(0); }}
+          className={`min-h-11 px-3 text-sm font-medium transition-colors active:scale-[0.98] sm:min-h-10 sm:px-4 ${
+            analysisTab === "failures"
+              ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
+              : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+          }`}
+        >
+          Failure Ranking
+        </button>
+        <button
+          type="button"
+          aria-pressed={analysisTab === "duration"}
+          onClick={() => { setAnalysisTab("duration"); setPage(0); }}
+          className={`min-h-11 px-3 text-sm font-medium transition-colors active:scale-[0.98] sm:min-h-10 sm:px-4 ${
+            analysisTab === "duration"
+              ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
+              : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+          }`}
+        >
+          Duration Ranking
+        </button>
+        <button
+          type="button"
+          aria-pressed={analysisTab === "retries"}
+          onClick={() => { setAnalysisTab("retries"); setPage(0); }}
+          className={`min-h-11 px-3 text-sm font-medium transition-colors active:scale-[0.98] sm:min-h-10 sm:px-4 ${
+            analysisTab === "retries"
+              ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
+              : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+          }`}
+        >
+          Retry Ranking
+        </button>
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 pb-2 sm:justify-end sm:pb-1">
+        <input
+          type="text"
+          aria-label="Search jobs"
+          placeholder="Search jobs..."
+          value={searchQuery}
+          onChange={(e) => { setSearchQuery(e.target.value); setPage(0); }}
+          className="h-11 w-full min-w-0 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:ring-1 focus:ring-zinc-400 sm:h-10 sm:w-56 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500 dark:focus:ring-zinc-500"
+        />
+        <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500 sm:min-h-10 dark:text-zinc-400">
+          <input
+            type="checkbox"
+            checked={hideSoftFail}
+            onChange={(e) => { setHideSoftFail(e.target.checked); setPage(0); }}
+            className="rounded border-zinc-300"
+          />
+          Hide soft fail
+        </label>
+        <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500 sm:min-h-10 dark:text-zinc-400">
+          <input
+            type="checkbox"
+            checked={hideOptional}
+            onChange={(e) => { setHideOptional(e.target.checked); setPage(0); }}
+            className="rounded border-zinc-300"
+          />
+          Hide optional
+        </label>
+      </div>
+    </div>
+  );
+
+  if (analysisTab === "retries") {
+    const retryParams = new URLSearchParams(params);
+    retryParams.set("pipeline", pipeline);
+    retryParams.set("branch", branch);
+    return (
+      <JobRetryRanking
+        apiUrl={`/api/jobs/retries?${retryParams.toString()}`}
+        controls={controls}
+        searchQuery={searchQuery}
+        hideSoftFail={hideSoftFail}
+        hideOptional={hideOptional}
+      />
+    );
+  }
+
+  if ((isLoading && !data) || error || data?.error) {
+    return (
+      <div className="space-y-6">
+        {controls}
+        {error || data?.error ? (
+          <div role="alert" className="flex h-64 items-center justify-center text-red-400">
+            Failed to load job data. Check Databricks connection.
+          </div>
+        ) : (
+          <div role="status" className="flex h-64 items-center justify-center text-zinc-400">
+            Loading job statistics...
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -298,57 +364,7 @@ function JobAnalysisTab({
         />
       </div>
 
-      <div className="flex min-w-0 flex-col gap-3 border-b border-zinc-200 sm:flex-row sm:items-end sm:justify-between sm:gap-4 dark:border-zinc-800">
-        <div className="flex gap-1">
-          <button
-            onClick={() => { setAnalysisTab("failures"); setPage(0); }}
-            className={`min-h-11 px-3 text-sm font-medium transition-colors active:scale-[0.98] sm:min-h-10 sm:px-4 ${
-              analysisTab === "failures"
-                ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
-                : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
-            }`}
-          >
-            Failure Ranking
-          </button>
-          <button
-            onClick={() => { setAnalysisTab("duration"); setPage(0); }}
-            className={`min-h-11 px-3 text-sm font-medium transition-colors active:scale-[0.98] sm:min-h-10 sm:px-4 ${
-              analysisTab === "duration"
-                ? "border-b-2 border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
-                : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
-            }`}
-          >
-            Duration Ranking
-          </button>
-        </div>
-        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 pb-2 sm:justify-end sm:pb-1">
-          <input
-            type="text"
-            placeholder="Search jobs..."
-            value={searchQuery}
-            onChange={(e) => { setSearchQuery(e.target.value); setPage(0); }}
-            className="h-11 min-w-0 flex-1 rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 placeholder-zinc-400 focus:outline-none focus:ring-1 focus:ring-zinc-400 sm:h-10 sm:w-48 sm:flex-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500 dark:focus:ring-zinc-500"
-          />
-          <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500 sm:min-h-10 dark:text-zinc-400">
-            <input
-              type="checkbox"
-              checked={hideSoftFail}
-              onChange={(e) => { setHideSoftFail(e.target.checked); setPage(0); }}
-              className="rounded border-zinc-300"
-            />
-            Hide soft fail
-          </label>
-          <label className="flex min-h-11 items-center gap-2 text-xs text-zinc-500 sm:min-h-10 dark:text-zinc-400">
-            <input
-              type="checkbox"
-              checked={hideOptional}
-              onChange={(e) => { setHideOptional(e.target.checked); setPage(0); }}
-              className="rounded border-zinc-300"
-            />
-            Hide optional
-          </label>
-        </div>
-      </div>
+      {controls}
 
       {analysisTab === "failures" && (
         <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
@@ -396,7 +412,11 @@ function JobAnalysisTab({
                       <td className="px-5 py-2.5 text-zinc-500">{row.total_runs}</td>
                     </tr>
                     {expandedJob === row.name && (
-                      <ExpandedJobRow jobName={row.name} colSpan={6} />
+                      <tr>
+                        <td colSpan={6} className="bg-zinc-50 px-5 py-4 dark:bg-zinc-900/50">
+                          <JobRunHistory apiUrl={`/api/jobs/runs?${runsParams.toString()}&jobName=${encodeURIComponent(row.name)}`} mode="failures" />
+                        </td>
+                      </tr>
                     )}
                   </Fragment>
                 ))}
@@ -468,7 +488,11 @@ function JobAnalysisTab({
                       <td className="px-5 py-2.5 text-zinc-500">{row.total_runs}</td>
                     </tr>
                     {expandedJob === row.name && (
-                      <ExpandedJobRow jobName={row.name} colSpan={7} />
+                      <tr>
+                        <td colSpan={7} className="bg-zinc-50 px-5 py-4 dark:bg-zinc-900/50">
+                          <JobRunHistory apiUrl={`/api/jobs/runs?${runsParams.toString()}&jobName=${encodeURIComponent(row.name)}`} mode="duration" />
+                        </td>
+                      </tr>
                     )}
                   </Fragment>
                 ))}
@@ -531,7 +555,7 @@ export default function JobsPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">Jobs</h1>
-        <div className="flex gap-3">
+        <div className="flex min-w-0 flex-wrap gap-3">
           <SearchableSelect
             label="Pipeline"
             value={pipeline}
