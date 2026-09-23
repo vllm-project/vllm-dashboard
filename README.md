@@ -12,7 +12,8 @@ client credentials are needed for dashboard reads.
 ## Pages
 
 - **Builds** — pass/fail rates, durations, and per-job breakdowns for recent pipeline builds.
-- **Jobs** — latest job failures and per-job historical run times.
+- **Jobs** — job failures, historical run times, and retry counts by job,
+  with pipeline, branch, and time-range filtering. See [retry counting](./docs/jobs-retries.md).
 - **Alerts** — Fast CI observations, analyzed Full CI comparisons, and exact
   main-branch job failures that remain open until the same job passes again.
 - **Tests** — Test Engine reliability, execution counts, and duration history.
