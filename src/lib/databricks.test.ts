@@ -75,12 +75,59 @@ test("Databricks responses with a missing statement state are rejected", async (
 
 const incompleteResults = [
   { name: "truncated", manifest: { truncated: true }, result: {} },
-  { name: "multiple chunks", manifest: { total_chunk_count: 2 }, result: {} },
-  { name: "chunk manifest", manifest: { chunks: [{ chunk_index: 0 }, { chunk_index: 1 }] }, result: {} },
-  { name: "next chunk index", manifest: {}, result: { next_chunk_index: 1 } },
-  { name: "next chunk link", manifest: {}, result: { next_chunk_internal_link: "/api/2.0/sql/statements/fixture/result/chunks/1" } },
+  { name: "chunk manifest without links", manifest: { total_chunk_count: 2, total_row_count: 2 }, result: {} },
   { name: "missing rows", manifest: { total_row_count: 2 }, result: {} },
 ];
+
+test("Databricks multi-chunk results follow chunk links", async (t) => {
+  configureWarehouse(t);
+  const urls: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string) => {
+    urls.push(url);
+    if (url.endsWith("/chunks/1")) {
+      return Response.json({
+        chunk_index: 1, data_array: [["job-b"]],
+        next_chunk_internal_link: "/api/2.0/sql/statements/s1/result/chunks/2",
+      });
+    }
+    if (url.endsWith("/chunks/2")) {
+      return Response.json({ chunk_index: 2, data_array: [["job-c"]] });
+    }
+    return Response.json({
+      status: { state: "SUCCEEDED" },
+      manifest: {
+        schema: { columns: [{ name: "job_id" }] },
+        truncated: false, total_chunk_count: 3, total_row_count: 3,
+      },
+      result: {
+        chunk_index: 0, data_array: [["job-a"]],
+        next_chunk_index: 1,
+        next_chunk_internal_link: "/api/2.0/sql/statements/s1/result/chunks/1",
+      },
+    });
+  });
+  const rows = await queryDatabricks<{ job_id: string }>("SELECT job_id FROM jobs");
+  assert.deepEqual(rows.map((row) => row.job_id), ["job-a", "job-b", "job-c"]);
+  assert.deepEqual(urls.slice(1), [
+    "https://warehouse.example/api/2.0/sql/statements/s1/result/chunks/1",
+    "https://warehouse.example/api/2.0/sql/statements/s1/result/chunks/2",
+  ]);
+});
+
+test("Databricks chunk fetch failures are surfaced", async (t) => {
+  configureWarehouse(t);
+  t.mock.method(globalThis, "fetch", async (url: string) => url.includes("/chunks/")
+    ? new Response("gone", { status: 404 })
+    : Response.json({
+      status: { state: "SUCCEEDED" },
+      manifest: { schema: { columns: [{ name: "job_id" }] }, total_row_count: 2 },
+      result: {
+        data_array: [["job-a"]],
+        next_chunk_internal_link: "/api/2.0/sql/statements/s1/result/chunks/1",
+      },
+    }));
+  await assert.rejects(() => queryDatabricks("SELECT job_id FROM jobs"), /chunk fetch failed \(404\)/);
+});
 
 for (const incomplete of incompleteResults) {
   test(`Databricks ${incomplete.name} results cannot be cached as a complete history`, async (t) => {
