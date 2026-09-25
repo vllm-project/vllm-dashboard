@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   isAmdJobName,
-  isOptionalJobName,
   isSoftFailJobName,
   toMainCiJobAlert,
   viewMainCiJobAlerts,
@@ -259,9 +258,7 @@ test("AMD job names match hardware tokens without hitting plain words", () => {
   assert.equal(isAmdJobName("amdgpu driver check"), false);
 });
 
-test("soft-fail and optional job names match their Buildkite labels", () => {
+test("soft-fail job names match their Buildkite labels", () => {
   assert.equal(isSoftFailJobName("Lint (soft-fail)"), true);
   assert.equal(isSoftFailJobName("GPU test"), false);
-  assert.equal(isOptionalJobName("Optional check"), true);
-  assert.equal(isOptionalJobName("GPU test"), false);
 });

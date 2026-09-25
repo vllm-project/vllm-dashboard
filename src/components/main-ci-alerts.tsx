@@ -3,7 +3,6 @@ import { JobName, jobNameText } from "@/components/job-name";
 import { SegmentedControl } from "@/components/segmented-control";
 import {
   isAmdJobName,
-  isOptionalJobName,
   isSoftFailJobName,
   type MainCiAnalysisClassification,
   type MainCiAlertUpdate,
@@ -1239,7 +1238,7 @@ export function MainCIAlerts({
           return false;
         }
         if (hideSoftFail && isSoftFailJobName(alert.jobName)) return false;
-        if (hideOptional && isOptionalJobName(alert.jobName)) return false;
+        if (hideOptional && alert.isOptional) return false;
         if (hideAmd && isAmdJobName(alert.jobName)) return false;
         return true;
       }),
