@@ -4,6 +4,8 @@ export interface DatabricksConfig {
   warehouseId: string;
 }
 
+export class DatabricksIncompleteResultError extends Error {}
+
 function getConfig(): DatabricksConfig {
   const host = process.env.DATABRICKS_HOST;
   const token = process.env.DATABRICKS_TOKEN;
@@ -55,10 +57,42 @@ export async function queryDatabricks<T = Record<string, unknown>>(
       `Query failed: ${data.status.error?.message ?? "unknown error"}`
     );
   }
+  if (data.status?.state !== "SUCCEEDED") {
+    throw new Error(
+      `Databricks query did not complete (state: ${data.status?.state ?? "unknown"})`
+    );
+  }
 
   // Map column names to row values
   const columns: { name: string }[] = data.manifest?.schema?.columns ?? [];
-  const rows: unknown[][] = data.result?.data_array ?? [];
+  const rows: unknown[][] = [...(data.result?.data_array ?? [])];
+
+  // INLINE results larger than one chunk arrive as a linked list of chunks.
+  // Follow it so callers get every row, e.g. the job roster for 50 builds.
+  let nextLink: string | undefined = data.result?.next_chunk_internal_link;
+  while (nextLink) {
+    const chunkResponse = await fetch(`${config.host}${nextLink}`, {
+      headers: { Authorization: `Bearer ${config.token}` },
+    });
+    if (!chunkResponse.ok) {
+      const text = await chunkResponse.text();
+      throw new Error(`Databricks chunk fetch failed (${chunkResponse.status}): ${text}`);
+    }
+    const chunk = await chunkResponse.json();
+    rows.push(...(chunk.data_array ?? []));
+    nextLink = chunk.next_chunk_internal_link;
+  }
+
+  // Never let callers cache a partial result as a complete history. INLINE
+  // disposition truncates past its byte limit, and a chunk list without links
+  // would silently drop rows.
+  if (data.manifest?.truncated === true ||
+      (typeof data.manifest?.total_row_count === "number" &&
+        data.manifest.total_row_count > rows.length)) {
+    throw new DatabricksIncompleteResultError(
+      "Databricks returned an incomplete result. Choose a narrower time range and try again."
+    );
+  }
 
   return rows.map((row) => {
     const obj: Record<string, unknown> = {};

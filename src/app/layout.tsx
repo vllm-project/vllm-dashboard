@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import { Nav } from "@/components/nav";
 import { SectionNav } from "@/components/section-nav";
+import { SiteFooter } from "@/components/site-footer";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -16,8 +17,12 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "vLLM CI Dashboard",
+  title: {
+    default: "vLLM CI Dashboard",
+    template: "%s · vLLM CI",
+  },
   description: "CI/CD pipeline dashboard for vLLM",
+  applicationName: "vLLM CI Dashboard",
 };
 
 export default function RootLayout({
@@ -44,6 +49,7 @@ export default function RootLayout({
           <SectionNav />
           {children}
         </main>
+        <SiteFooter />
         <Analytics />
       </body>
     </html>

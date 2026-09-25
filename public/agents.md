@@ -212,6 +212,7 @@ for a current status check.
 | Fleet GPU / host health | `/api/gpu/latest` for current GPU and host rows; `/api/gpu/history?hostname=HOST&hours=24`; `/api/gpu/agents` for agent mapping |
 | Queue history | `/api/metrics?hours=24&queue=QUEUE`; `/api/metrics/waiting-builds`; `/api/queue` for historical wait analytics |
 | Alerts | `/api/alerts/main-ci`, `/api/alerts/fast-ci`, `/api/alerts/infra` for full details |
+| NVIDIA to AMD gating parity | `/api/parity` for the current snapshot (summary, per test area, every NVIDIA job and its mirror); `/api/parity/history?weeks=26` for weekly samples (4–52); see `docs/gpu-parity.md` |
 | Compute costs | `/api/cost?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD` |
 | Performance | `/api/perf?model=MODEL&device=DEVICE&start=YYYY-MM-DD`; `/api/perf/filters` |
 | Evaluation | `/api/eval?model=MODEL&task=TASK&image=IMAGE`; `/api/eval/filters`; `/api/eval/samples?build_id=ID&task=TASK&workload=WORKLOAD&limit=200` |

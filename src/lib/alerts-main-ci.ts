@@ -68,6 +68,8 @@ export interface MainCiJobAlert {
   alertId: string;
   jobKey: string;
   jobName: string;
+  /** True when the job's pipeline step is marked `optional: true`. */
+  isOptional: boolean;
   status: MainCiAlertStatus;
   openedAt: string;
   firstFailure: MainCiOutcomeRef;
@@ -238,7 +240,10 @@ function toMainCiJobAnalysis(row: MainCiJobAlertRow): MainCiJobAnalysis | null {
   };
 }
 
-export function toMainCiJobAlert(row: MainCiJobAlertRow): MainCiJobAlert {
+export function toMainCiJobAlert(
+  row: MainCiJobAlertRow,
+  isOptional = false,
+): MainCiJobAlert {
   const resolution =
     row.resolved_at !== null &&
     row.resolution_job_id !== null &&
@@ -262,6 +267,7 @@ export function toMainCiJobAlert(row: MainCiJobAlertRow): MainCiJobAlert {
     alertId: String(row.alert_id),
     jobKey: row.job_key,
     jobName: row.job_name,
+    isOptional,
     status: row.status,
     openedAt: row.opened_at.toISOString(),
     firstFailure: outcome(
@@ -315,10 +321,12 @@ export function viewMainCiJobAlerts(
 
 /**
  * Job-category helpers for the hide toggles on the alerts page. The Main CI
- * pipeline runs on Buildkite, where a soft-fail or optional step still alerts
- * when it fails hard enough to be observed; these names let a responder set
- * those aside. Matching is name-based because the alert rows do not carry the
- * Buildkite step's `soft_fail`/`optional` flags.
+ * pipeline runs on Buildkite, where a soft-fail step still alerts when it fails
+ * hard enough to be observed; the name lets a responder set those aside.
+ * Matching is name-based because the alert rows do not carry the Buildkite
+ * step's `soft_fail` flag. Optional steps are flagged server-side from the
+ * pipeline YAML instead (`MainCiJobAlert.isOptional`), since their labels do
+ * not carry an "optional" marker.
  */
 const AMD_JOB_NAME = /(?:^|[\s:([])(?:amd|mi\d{3}|rocm)(?:[\s:)\]_]|$)/i;
 
@@ -328,8 +336,4 @@ export function isAmdJobName(jobName: string): boolean {
 
 export function isSoftFailJobName(jobName: string): boolean {
   return jobName.toLowerCase().includes("soft-fail");
-}
-
-export function isOptionalJobName(jobName: string): boolean {
-  return jobName.toLowerCase().includes("optional");
 }

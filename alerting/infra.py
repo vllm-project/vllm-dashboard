@@ -64,6 +64,7 @@ class InfraAlertType(StrEnum):
     DISK_USAGE = "disk_usage"
     GPU_TEMPERATURE = "gpu_temperature"
     GPU_DEAD_MEMORY = "gpu_dead_memory"
+    GPU_COUNT = "gpu_count"
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,15 @@ class GpuDeadMemoryObservation:
     hostname: str
     gpu_index: int
     dead_proc_mem_mb: float
+    reported_at: datetime
+
+
+@dataclass(frozen=True)
+class GpuCountObservation:
+    """How many distinct GPUs one host reported in the freshness window."""
+
+    hostname: str
+    observed_gpus: int
     reported_at: datetime
 
 
@@ -198,6 +208,10 @@ class InfraSnapshotPort(Protocol):
 
     def gpu_dead_memory(self) -> list[GpuDeadMemoryObservation]:
         """The latest dead-process memory reading per (hostname, gpu_index)."""
+        ...
+
+    def gpu_counts(self) -> list[GpuCountObservation]:
+        """How many distinct GPUs each host reported recently."""
         ...
 
 
@@ -560,6 +574,77 @@ def _plan_gpu_dead_memory(
     )
 
 
+def _plan_gpu_count(
+    *,
+    now: datetime,
+    threshold: InfraThreshold,
+    gpu_counts: list[GpuCountObservation],
+    states: Mapping[tuple[str, str], InfraSubjectState],
+    open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
+) -> InfraScanPlan:
+    out_states: list[InfraSubjectState] = []
+    opened: list[InfraAlertEpisode] = []
+    resolved: list[InfraAlertEpisode] = []
+    for reading in sorted(gpu_counts, key=lambda observation: observation.hostname):
+        subject = f"gpu-count:{reading.hostname}"
+        key = (InfraAlertType.GPU_COUNT.value, subject)
+        state = states.get(
+            key, InfraSubjectState(InfraAlertType.GPU_COUNT.value, subject)
+        )
+        episode = open_episodes.get(key)
+        # The baseline lives in durable subject state and only ratchets up. A
+        # rolling-window baseline would absorb the missing GPU once the window
+        # passed and silently resolve the episode — the exact blindness this
+        # alert exists to remove. Ratcheting also means a host's first scan can
+        # never breach, and genuinely added capacity raises the bar instead.
+        baseline = max(
+            int(state.details.get("baseline_gpus") or 0), reading.observed_gpus
+        )
+        missing = baseline - reading.observed_gpus
+        details = {
+            "hostname": reading.hostname,
+            "observed_gpus": reading.observed_gpus,
+            "baseline_gpus": baseline,
+            "missing_gpus": missing,
+            "threshold_gpus": threshold.threshold_value,
+        }
+        if missing >= threshold.threshold_value:
+            breaches = state.consecutive_breaches + 1
+            out_states.append(
+                replace(state, consecutive_breaches=breaches, details=details)
+            )
+            if breaches >= threshold.consecutive_scans and episode is None:
+                opened.append(
+                    InfraAlertEpisode(
+                        alert_type=InfraAlertType.GPU_COUNT.value,
+                        subject_key=subject,
+                        opened_at=now,
+                        details={
+                            **details,
+                            "consecutive_scans": threshold.consecutive_scans,
+                        },
+                    )
+                )
+            continue
+        out_states.append(replace(state, consecutive_breaches=0, details=details))
+        if episode is not None:
+            resolved.append(
+                replace(
+                    episode,
+                    resolved_at=now,
+                    details={
+                        **episode.details,
+                        "resolution": "gpus_returned",
+                        "observed_gpus": reading.observed_gpus,
+                        "baseline_gpus": baseline,
+                    },
+                )
+            )
+    return InfraScanPlan(
+        states=tuple(out_states), opened=tuple(opened), resolved=tuple(resolved)
+    )
+
+
 def plan_infra_scan(
     *,
     now: datetime,
@@ -569,6 +654,7 @@ def plan_infra_scan(
     disk_mounts: list[DiskMountObservation],
     gpu_temperatures: list[GpuTemperatureObservation],
     gpu_dead_memory: list[GpuDeadMemoryObservation],
+    gpu_counts: list[GpuCountObservation],
     states: Mapping[tuple[str, str], InfraSubjectState],
     open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
 ) -> InfraScanPlan:
@@ -618,6 +704,17 @@ def plan_infra_scan(
                 now=now,
                 threshold=gpu_dead_memory_threshold,
                 gpu_dead_memory=gpu_dead_memory,
+                states=states,
+                open_episodes=open_episodes,
+            )
+        )
+    gpu_count = thresholds.get(InfraAlertType.GPU_COUNT.value)
+    if gpu_count is not None and gpu_count.enabled:
+        plans.append(
+            _plan_gpu_count(
+                now=now,
+                threshold=gpu_count,
+                gpu_counts=gpu_counts,
                 states=states,
                 open_episodes=open_episodes,
             )
@@ -711,6 +808,24 @@ def _render_open(episode: InfraAlertEpisode) -> str:
             f"has {dead_mem} MiB held by dead processes "
             f"(threshold {threshold} MiB, {scans} consecutive scans)"
         )
+    if episode.alert_type == InfraAlertType.GPU_COUNT:
+        hostname = _code(episode.details.get("hostname"))
+        observed = _escape(episode.details.get("observed_gpus"))
+        baseline = _escape(episode.details.get("baseline_gpus"))
+        missing = _escape(episode.details.get("missing_gpus"))
+        scans = _escape(episode.details.get("consecutive_scans"))
+        return "\n".join(
+            [
+                f":rotating_light: *Infra alert* — {hostname} is reporting "
+                f"{observed} of {baseline} GPUs ({missing} missing, "
+                f"{scans} consecutive scans)",
+                (
+                    "The host stays Ready and may still be accepting work. "
+                    "Check `dmesg` for an Xid, and whether the scheduler is "
+                    "still advertising GPU capacity for it."
+                ),
+            ]
+        )
     raise ValueError(f"no open renderer for alert type: {episode.alert_type}")
 
 
@@ -750,6 +865,13 @@ def _render_resolve(episode: InfraAlertEpisode) -> str:
             f":white_check_mark: *Infra resolved* — GPU {gpu_index} on "
             f"{hostname} dead-process memory back below {threshold} MiB "
             f"(now {dead_mem} MiB)"
+        )
+    if episode.alert_type == InfraAlertType.GPU_COUNT:
+        hostname = _code(episode.details.get("hostname"))
+        observed = _escape(episode.details.get("observed_gpus"))
+        return (
+            f":white_check_mark: *Infra resolved* — {hostname} is reporting "
+            f"all {observed} GPUs again"
         )
     raise ValueError(f"no resolve renderer for alert type: {episode.alert_type}")
 
@@ -842,6 +964,7 @@ class InfraScanHandler:
             disk_mounts=self._snapshots.disk_mounts(),
             gpu_temperatures=self._snapshots.gpu_temperatures(),
             gpu_dead_memory=self._snapshots.gpu_dead_memory(),
+            gpu_counts=self._snapshots.gpu_counts(),
             states={
                 (state.alert_type, state.subject_key): state
                 for state in snapshot.states

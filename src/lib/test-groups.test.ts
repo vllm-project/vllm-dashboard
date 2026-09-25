@@ -9,8 +9,10 @@ import {
   type ParametrizedTestRecord,
 } from "./test-groups";
 import {
+  buildOptionalJobMatcher,
   buildTestAreaMapping,
   discoverGroupYamlPaths,
+  isOptionalJob,
 } from "./test-areas";
 
 const mapping = buildTestAreaMapping([
@@ -74,6 +76,71 @@ test("groups a test area that exists only in a branch commit", () => {
       mapping,
     ),
     "Model Runner V2",
+  );
+});
+
+test("optional matcher flags optional steps, their shards, and AMD mirrors", () => {
+  const matcher = buildOptionalJobMatcher([
+    {
+      group: "Models - Multimodal",
+      steps: [
+        {
+          label:
+            ":nvidia: (H200 MIG 35GB) Multimodal Models (Extended Generation 1)",
+          optional: true,
+          amdMirrorLabel:
+            ":amd: (MI300) Multimodal Models (Extended Generation 1)",
+        },
+        {
+          label: ":nvidia: (H200 MIG 35GB) Multimodal Models (Extended Generation 2) Shard %N",
+          optional: true,
+        },
+        {
+          label: ":nvidia: (H200 MIG 18GB) Multimodal Models (Standard) 1: qwen2",
+        },
+      ],
+    },
+  ]);
+
+  // Exact optional label.
+  assert.equal(
+    isOptionalJob(
+      ":nvidia: (H200 MIG 35GB) Multimodal Models (Extended Generation 1)",
+      matcher,
+    ),
+    true,
+  );
+  // AMD mirror of an optional step.
+  assert.equal(
+    isOptionalJob(
+      ":amd: (MI300) Multimodal Models (Extended Generation 1)",
+      matcher,
+    ),
+    true,
+  );
+  // Rendered shard of an optional %N label.
+  assert.equal(
+    isOptionalJob(
+      ":nvidia: (H200 MIG 35GB) Multimodal Models (Extended Generation 2) Shard 2",
+      matcher,
+    ),
+    true,
+  );
+  // Non-optional step in the same area.
+  assert.equal(
+    isOptionalJob(
+      ":nvidia: (H200 MIG 18GB) Multimodal Models (Standard) 1: qwen2",
+      matcher,
+    ),
+    false,
+  );
+  // A %N pattern must not match a different trailing number shape.
+  assert.equal(
+    isOptionalJob(
+      ":nvidia: (H200 MIG 35GB) Multimodal Models (Extended Generation 2) Shard 2 extra",
+      matcher,
+    ),
+    false,
   );
 });
 

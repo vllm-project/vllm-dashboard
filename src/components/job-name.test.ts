@@ -35,6 +35,22 @@ test("a name without shortcodes passes through unchanged", () => {
   assert.deepEqual(splitJobName("lint"), [{ type: "text", text: "lint" }]);
 });
 
+test("native and legacy AMD labels gain an icon without changing label text", () => {
+  for (const name of ["mi325_1: Basic Correctness", "mi355B_4: ROCm Multi-GPU Tests", "AMD: Kernels"]) {
+    const segments = splitJobName(name);
+    assert.equal(segments[0].type === "icon" && segments[0].icon.title, "AMD");
+    assert.equal(jobNameText(name), name);
+  }
+  const marked = splitJobName("AMD: :amd: Kernels");
+  assert.equal(marked.filter((segment) => segment.type === "icon").length, 1);
+});
+
+test("unmarked test names, CPU labels, and group headings do not imply a GPU vendor", () => {
+  for (const name of ["Basic Models Tests (Initialization)", "Models - Basic", "Arm CPU Test", "amdgpu driver check"]) {
+    assert.deepEqual(splitJobName(name), [{ type: "text", text: name }]);
+  }
+});
+
 test("jobNameText strips a leading shortcode and its following space", () => {
   assert.equal(
     jobNameText(":nvidia: (H200) Language Models Shard 3"),

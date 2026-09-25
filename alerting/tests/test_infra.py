@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import subprocess
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -14,6 +15,7 @@ from alerting.fast_ci import ALERTS_SLACK_CHANNEL
 from alerting.infra import (
     RETIREMENT_AGE,
     DiskMountObservation,
+    GpuCountObservation,
     GpuDeadMemoryObservation,
     GpuTemperatureObservation,
     HostReport,
@@ -63,6 +65,7 @@ class FixtureSnapshots:
         self.disks: list[DiskMountObservation] = []
         self.temps: list[GpuTemperatureObservation] = []
         self.dead_mem: list[GpuDeadMemoryObservation] = []
+        self.gpu_totals: list[GpuCountObservation] = []
 
     def infra_thresholds(self) -> list[InfraThreshold]:
         return list(self.threshold_rows)
@@ -91,6 +94,9 @@ class FixtureSnapshots:
 
     def gpu_dead_memory(self) -> list[GpuDeadMemoryObservation]:
         return list(self.dead_mem)
+
+    def gpu_counts(self) -> list[GpuCountObservation]:
+        return list(self.gpu_totals)
 
 
 def threshold(
@@ -683,3 +689,175 @@ def test_infra_alerts_post_to_the_infra_channel_env(
 
     monkeypatch.setenv("SLACK_CI_INFRA_ALERT_CHANNEL", "C-INFRA-1")
     assert slack_channel() == "C-INFRA-1"
+
+
+def gpu_count_reading(
+    hostname: str,
+    observed_gpus: int,
+    reported_at: datetime = START,
+) -> GpuCountObservation:
+    return GpuCountObservation(
+        hostname=hostname,
+        observed_gpus=observed_gpus,
+        reported_at=reported_at,
+    )
+
+
+def test_gpu_count_alerts_when_a_gpu_stops_reporting() -> None:
+    # A GPU can drop out while the host stays Ready with no pressure
+    # condition, so every other infra check passes and the shortfall is
+    # invisible. This is the case the alert exists for.
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(threshold(InfraAlertType.GPU_COUNT, 1, "gpus"))
+    snapshots.gpu_totals = [gpu_count_reading("gpu-node-01", 8)]
+    runtime, store, outbox, slack, clock = runtime_for(FixtureHosts(), snapshots)
+
+    # First scan only records the baseline; a full fleet must never alert.
+    scan(runtime, clock.now())
+    assert store.episodes() == []
+
+    snapshots.gpu_totals = [
+        gpu_count_reading("gpu-node-01", 7, reported_at=clock.now())
+    ]
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    assert store.episodes() == [], "one breaching scan must not open an episode"
+
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    runtime.dispatch_due_notifications()
+
+    [episode] = store.episodes()
+    assert episode.alert_type == "gpu_count"
+    assert episode.subject_key == "gpu-count:gpu-node-01"
+    assert episode.status == "open"
+    text = slack.deliveries[0].payload["text"]
+    assert "gpu-node-01" in text
+    assert "7 of 8 GPUs" in text
+
+    snapshots.gpu_totals = [
+        gpu_count_reading("gpu-node-01", 8, reported_at=clock.now())
+    ]
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    runtime.dispatch_due_notifications()
+
+    assert [episode.status for episode in store.episodes()] == ["resolved"]
+    assert slack.updates[0]["payload"]["text"].endswith("~")
+
+
+def test_gpu_count_baseline_never_decays_while_a_gpu_stays_missing() -> None:
+    # The baseline is carried in durable state precisely so a long outage
+    # cannot be absorbed into a rolling window and silently self-resolve.
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(threshold(InfraAlertType.GPU_COUNT, 1, "gpus"))
+    snapshots.gpu_totals = [gpu_count_reading("gpu-node-01", 8)]
+    runtime, store, outbox, _, clock = runtime_for(FixtureHosts(), snapshots)
+    scan(runtime, clock.now())
+
+    snapshots.gpu_totals = [
+        gpu_count_reading("gpu-node-01", 7, reported_at=clock.now())
+    ]
+    for _ in range(12):
+        clock.advance(minutes=5)
+        scan(runtime, clock.now())
+
+    [episode] = store.episodes()
+    assert episode.status == "open", "episode must stay open while a GPU is absent"
+    assert episode.details["baseline_gpus"] == 8
+
+
+def test_gpu_count_first_sighting_of_a_short_host_never_alerts() -> None:
+    # A host whose first ever report shows 7 GPUs has no baseline to fall
+    # below, so it must not alert; the baseline ratchets up from what it
+    # reports, never down.
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(threshold(InfraAlertType.GPU_COUNT, 1, "gpus"))
+    snapshots.gpu_totals = [gpu_count_reading("gpu-node-02", 7)]
+    runtime, store, outbox, _, clock = runtime_for(FixtureHosts(), snapshots)
+
+    for _ in range(3):
+        scan(runtime, clock.now())
+        clock.advance(minutes=5)
+
+    assert store.episodes() == []
+    assert outbox.count() == 0
+
+
+def test_gpu_count_added_capacity_raises_the_baseline() -> None:
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(threshold(InfraAlertType.GPU_COUNT, 1, "gpus"))
+    snapshots.gpu_totals = [gpu_count_reading("gpu-node-03", 4)]
+    runtime, store, outbox, _, clock = runtime_for(FixtureHosts(), snapshots)
+    scan(runtime, clock.now())
+
+    snapshots.gpu_totals = [gpu_count_reading("gpu-node-03", 8, reported_at=clock.now())]
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+
+    assert store.episodes() == []
+    snapshots.gpu_totals = [gpu_count_reading("gpu-node-03", 7, reported_at=clock.now())]
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+
+    [episode] = store.episodes()
+    assert episode.details["baseline_gpus"] == 8
+    assert episode.details["missing_gpus"] == 1
+
+
+def test_disabled_gpu_count_threshold_suppresses_alerts() -> None:
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(
+        threshold(InfraAlertType.GPU_COUNT, 1, "gpus", enabled=False)
+    )
+    snapshots.gpu_totals = [gpu_count_reading("gpu-node-01", 8)]
+    runtime, store, outbox, _, clock = runtime_for(FixtureHosts(), snapshots)
+    scan(runtime, clock.now())
+    snapshots.gpu_totals = [
+        gpu_count_reading("gpu-node-01", 7, reported_at=clock.now())
+    ]
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+
+    assert store.episodes() == []
+    assert outbox.count() == 0
+
+
+def _newest_migration_defining(constraint: str) -> str:
+    # Constraints are replaced with DROP + ADD, so the highest-numbered
+    # migration that mentions one is the definition in force.
+    root = pathlib.Path(__file__).resolve().parents[2] / "migrations" / "sql"
+    files = sorted(path for path in root.glob("*.sql") if constraint in path.read_text())
+    assert files, f"no migration defines {constraint}"
+    return files[-1].read_text()
+
+
+@pytest.mark.parametrize(
+    "constraint",
+    [
+        "alerting_infra_host_states_alert_type_check",
+        "alerting_infra_alerts_alert_type_check",
+        "alert_thresholds_check",
+    ],
+)
+def test_every_alert_type_is_permitted_by_the_sql_constraints(constraint: str) -> None:
+    # Migration 0023 added an alert type to alert_thresholds but missed the two
+    # infra tables. The first scan after that deploy failed on the host-states
+    # constraint and infra alerting stopped reconciling until 0024 was
+    # hand-applied. A new InfraAlertType that no migration permits is the same
+    # outage, so fail here instead of in production.
+    sql = _newest_migration_defining(constraint)
+    missing = [
+        alert_type.value
+        for alert_type in InfraAlertType
+        if f"'{alert_type.value}'" not in sql
+    ]
+    assert not missing, (
+        f"{constraint} does not permit {missing}; widen it in a new migration"
+    )

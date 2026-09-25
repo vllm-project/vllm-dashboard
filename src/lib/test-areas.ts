@@ -1,9 +1,13 @@
 import yaml from "js-yaml";
 
+import { githubHeaders } from "./github";
+
 export interface TestStep {
   label: string;
   parallelism?: number;
   optional?: boolean;
+  /** AMD mirror label (`mirror.amd.label`), which runs in the same ci pipeline. */
+  amdMirrorLabel?: string;
 }
 
 export interface TestArea {
@@ -15,6 +19,12 @@ export interface TestAreaMapping {
   jobToGroup: Map<string, string>;
   patterns: { regex: RegExp; group: string }[];
   groups: string[];
+}
+
+/** Matches job names belonging to steps marked `optional: true` in the YAML. */
+export interface OptionalJobMatcher {
+  exact: Set<string>;
+  patterns: RegExp[];
 }
 
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour
@@ -40,15 +50,6 @@ interface CiConfig {
 interface CompareFile {
   filename: string;
   status: string;
-}
-
-function githubHeaders(): HeadersInit {
-  const headers: Record<string, string> = {
-    Accept: "application/vnd.github+json",
-  };
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-  if (token) headers.Authorization = `Bearer ${token}`;
-  return headers;
 }
 
 // Fallback labels for cold starts and GitHub outages. Live discovery replaces
@@ -251,10 +252,46 @@ export function buildTestAreaMapping(areas: TestArea[]): TestAreaMapping {
   ]);
 }
 
+function toShardPattern(label: string): RegExp {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^${escaped.replace("%N", "\\d+")}$`);
+}
+
+/**
+ * Collect the names of every step marked `optional: true`, including the AMD
+ * mirror labels that run alongside them in the ci pipeline. `%N` shard labels
+ * become anchored patterns so a rendered shard name matches.
+ */
+export function buildOptionalJobMatcher(areas: TestArea[]): OptionalJobMatcher {
+  const exact = new Set<string>();
+  const patterns: RegExp[] = [];
+  for (const area of areas) {
+    for (const step of area.steps) {
+      if (step.optional !== true) continue;
+      for (const label of [step.label, step.amdMirrorLabel]) {
+        if (!label) continue;
+        if (label.includes("%N")) patterns.push(toShardPattern(label));
+        else exact.add(label);
+      }
+    }
+  }
+  return { exact, patterns };
+}
+
+export function isOptionalJob(
+  jobName: string,
+  matcher: OptionalJobMatcher,
+): boolean {
+  if (matcher.exact.has(jobName)) return true;
+  return matcher.patterns.some((regex) => regex.test(jobName));
+}
+
 // Build static mapping immediately — no async, no network
 const STATIC_MAPPING = buildTestAreaMapping([]);
+const STATIC_OPTIONAL_MATCHER = buildOptionalJobMatcher([]);
 
 let cachedMapping: TestAreaMapping = STATIC_MAPPING;
+let cachedOptionalMatcher: OptionalJobMatcher = STATIC_OPTIONAL_MATCHER;
 let cachedAreas: TestArea[] = [];
 let cacheExpiry = 0;
 let refreshPromise: Promise<void> | null = null;
@@ -268,6 +305,27 @@ function rawUrl(ref: string, path: string): string {
   return `${GITHUB_RAW_BASE}/${encodeURIComponent(ref)}/${encodedPath}`;
 }
 
+function parseTestStep(value: unknown): TestStep | null {
+  if (!value || typeof value !== "object") return null;
+  const step = value as {
+    label?: unknown;
+    optional?: unknown;
+    mirror?: unknown;
+  };
+  if (typeof step.label !== "string") return null;
+  const parsed: TestStep = { label: step.label };
+  if (step.optional === true) parsed.optional = true;
+  const mirror = step.mirror;
+  if (mirror && typeof mirror === "object") {
+    const amd = (mirror as { amd?: unknown }).amd;
+    if (amd && typeof amd === "object") {
+      const amdLabel = (amd as { label?: unknown }).label;
+      if (typeof amdLabel === "string") parsed.amdMirrorLabel = amdLabel;
+    }
+  }
+  return parsed;
+}
+
 function parseTestArea(value: unknown): TestArea | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as { group?: unknown; steps?: unknown };
@@ -276,12 +334,9 @@ function parseTestArea(value: unknown): TestArea | null {
   }
   if (!Array.isArray(candidate.steps)) return null;
 
-  const steps = candidate.steps.filter(
-    (step): step is TestStep =>
-      !!step &&
-      typeof step === "object" &&
-      typeof (step as { label?: unknown }).label === "string",
-  );
+  const steps = candidate.steps
+    .map(parseTestStep)
+    .filter((step): step is TestStep => step !== null);
   if (steps.length === 0) return null;
   return { group: candidate.group, steps };
 }
@@ -420,6 +475,7 @@ function refreshMapping(): Promise<void> {
       const areas = await fetchTestAreas();
       cachedAreas = areas;
       cachedMapping = buildTestAreaMapping(areas);
+      cachedOptionalMatcher = buildOptionalJobMatcher(areas);
       cacheExpiry = Date.now() + CACHE_TTL;
       commitMappings.clear();
     } catch (error) {
@@ -448,6 +504,13 @@ export async function ensureTestAreaMapping(): Promise<TestAreaMapping> {
     await refreshMapping();
   }
   return cachedMapping;
+}
+
+export async function ensureOptionalJobMatcher(): Promise<OptionalJobMatcher> {
+  if (Date.now() >= cacheExpiry) {
+    await refreshMapping();
+  }
+  return cachedOptionalMatcher;
 }
 
 export async function getTestAreaMappingForCommit(

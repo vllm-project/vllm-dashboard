@@ -3,8 +3,9 @@ import type { ReactNode } from "react";
 /**
  * Buildkite job names carry custom emoji shortcodes (":nvidia: ..."), which
  * render as raw text outside Buildkite. Known vendor shortcodes become inline
- * brand icons (SVG paths from simple-icons, CC0); unknown shortcodes are
- * stripped rather than shown literally.
+ * brand icons (SVG paths from simple-icons, CC0); native AMD device prefixes
+ * and historical AMD mirror prefixes also identify the vendor. Unknown
+ * shortcodes are stripped rather than shown literally.
  */
 
 interface BrandIconDef {
@@ -35,9 +36,14 @@ export type JobNameSegment =
   | { type: "text"; text: string }
   | { type: "icon"; icon: BrandIconDef };
 
-/** Split a job name into text and icon segments; unknown shortcodes vanish. */
+/** Preserve raw label text while rendering explicit vendor markers as icons. */
 export function splitJobName(name: string): JobNameSegment[] {
   const segments: JobNameSegment[] = [];
+  // These prefixes explicitly identify AMD hardware even without an emoji.
+  // Unmarked labels (including CPU jobs and group names) do not imply NVIDIA.
+  if (/^(?:AMD:\s|mi\d+[A-Z]?_\d+:)/i.test(name) && !/:amd:/i.test(name)) {
+    segments.push({ type: "icon", icon: BRAND_ICONS.amd });
+  }
   const parts = name.split(/:([a-z0-9_+-]+):/gi);
   let afterIcon = false;
   for (let index = 0; index < parts.length; index++) {
