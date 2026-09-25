@@ -9,8 +9,8 @@ const CDN_CACHE = { maxAge: 600, staleWhileRevalidate: 3_600 };
 
 // Window lengths for the headline force-merge rate cards.
 const RATE_WINDOW_DAYS = [7, 30, 90, 182];
-// Top-author ranking looks back the same six-month window the fetcher keeps
-// refreshing, so the leaderboard cannot shrink when older data ages out.
+// Top-author ranking looks back the same six-month window the ingest
+// backfills, so the leaderboard is comparable from the first full backfill on.
 const AUTHOR_WINDOW_DAYS = 182;
 const TOP_AUTHOR_COUNT = 15;
 const RECENT_COUNT = 30;
@@ -59,16 +59,17 @@ async function loadForceMergeSummary() {
         ORDER BY forced DESC, author
         LIMIT ${TOP_AUTHOR_COUNT}
       `,
-      db<{ pr_number: number; title: string; url: string; author: string | null; merged_at: Date }[]>`
-        SELECT pr_number, title, url, author, merged_at
+      db<{ pr_number: number; title: string; url: string; author: string | null; merged_by: string | null; ci_state: string | null; merged_at: Date }[]>`
+        SELECT pr_number, title, url, author, merged_by, ci_state, merged_at
         FROM force_merge_records
         WHERE force_merged
         ORDER BY merged_at DESC
         LIMIT ${RECENT_COUNT}
       `,
-      db<{ records: number; forced: number; refreshed_at: Date | null }[]>`
+      db<{ records: number; forced: number; first_merged_at: Date | null; refreshed_at: Date | null }[]>`
         SELECT count(*)::int AS records,
                count(*) FILTER (WHERE force_merged)::int AS forced,
+               min(merged_at) AS first_merged_at,
                max(fetched_at) AS refreshed_at
         FROM force_merge_records
       `,
@@ -88,6 +89,7 @@ async function loadForceMergeSummary() {
   const summary = summaryRaw[0] ?? {
     records: 0,
     forced: 0,
+    first_merged_at: null,
     refreshed_at: null,
   };
 
@@ -105,12 +107,15 @@ async function loadForceMergeSummary() {
       title: row.title,
       url: row.url,
       author: row.author,
+      mergedBy: row.merged_by,
+      ciState: row.ci_state,
       mergedAt: row.merged_at.toISOString(),
     })),
     summary: {
       records: summary.records,
       forced: summary.forced,
       authorWindowDays: AUTHOR_WINDOW_DAYS,
+      firstMergedAt: summary.first_merged_at?.toISOString() ?? null,
       refreshedAt: summary.refreshed_at?.toISOString() ?? null,
     },
   };

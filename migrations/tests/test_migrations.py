@@ -75,10 +75,11 @@ def test_expected_tables_are_created() -> None:
 
 
 def test_force_merge_records_are_keyed_by_pr_and_cover_author_ranking() -> None:
-    sql = (MIGRATIONS_DIR / "0025_force_merge_stats.sql").read_text()
+    sql = (MIGRATIONS_DIR / "0028_force_merge_stats.sql").read_text()
 
     assert "CREATE TABLE IF NOT EXISTS force_merge_records" in sql
     assert "pr_number     integer PRIMARY KEY" in sql
+    assert "ci_state      text" in sql
     assert "force_merged  boolean NOT NULL" in sql
     assert "idx_force_merge_records_merged" in sql
     assert (

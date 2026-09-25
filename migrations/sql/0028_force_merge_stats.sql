@@ -1,9 +1,8 @@
--- Force-merge records for merged vllm-project/vllm pull requests, refreshed
--- daily by the fetch-force-merge-stats cron. A force-merge is a merge performed
--- by the `vllm-bot` account: every PR is squash-merged with an identical git
--- committer, so GitHub's mergedBy field is the only reliable signal. Rows are
--- keyed by PR number and upserted over a rolling fetch window, so history
--- accumulates indefinitely instead of rolling off with the window.
+-- Force-merge records for merged vllm-project/vllm pull requests, ingested
+-- hourly by the fetch-force-merge-stats cron. A force-merge is a PR merged
+-- while the `buildkite/ci/pr` status on its head commit was red (failure or
+-- error). ci_state is that status as of the merge (NULL when CI never
+-- reported), which never changes afterwards, so rows accumulate indefinitely.
 CREATE TABLE IF NOT EXISTS force_merge_records (
     pr_number     integer PRIMARY KEY,
     title         text NOT NULL,
@@ -11,6 +10,8 @@ CREATE TABLE IF NOT EXISTS force_merge_records (
     author        text,
     merged_by     text,
     merged_at     timestamptz NOT NULL,
+    head_sha      text,
+    ci_state      text,
     force_merged  boolean NOT NULL,
     fetched_at    timestamptz NOT NULL DEFAULT now()
 );

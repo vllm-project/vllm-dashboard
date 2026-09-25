@@ -1,23 +1,65 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { collectForceMergeRecords } from "@/lib/force-merge-stats";
+import {
+  createGitHubClient,
+  dateRangeChunks,
+  fetchWindowRecords,
+  ingestStartDate,
+  type ForceMergeRecord,
+} from "@/lib/force-merge-stats";
 
 export const maxDuration = 55;
 
-// Rolling window re-fetched daily and upserted by PR number, so the stored
-// history accumulates beyond the window instead of rolling off with it.
-const FETCH_WINDOW_DAYS = 182;
-const UPSERT_BATCH_SIZE = 500;
+// History kept when the table is empty. Later runs resume from the newest
+// stored merge, so a backfill spreads across hourly runs.
+const BACKFILL_DAYS = 182;
+// Stop starting new days after this, leaving headroom under maxDuration for
+// the in-flight day's fetch and upsert.
+const TIME_BUDGET_MS = 30_000;
 
-interface ForceMergeRow {
-  pr_number: number;
-  title: string;
-  url: string;
-  author: string | null;
-  merged_by: string | null;
-  merged_at: string;
-  force_merged: boolean;
-  fetched_at: Date;
+async function upsertRecords(
+  db: ReturnType<typeof getDb>,
+  records: ForceMergeRecord[],
+  fetchedAt: Date,
+): Promise<void> {
+  if (records.length === 0) return;
+  const rows = records.map((record) => ({
+    pr_number: record.prNumber,
+    title: record.title,
+    url: record.url,
+    author: record.author,
+    merged_by: record.mergedBy,
+    merged_at: record.mergedAt,
+    head_sha: record.headSha,
+    ci_state: record.ciState,
+    force_merged: record.forceMerged,
+    fetched_at: fetchedAt,
+  }));
+  await db`
+    INSERT INTO force_merge_records ${db(
+      rows,
+      "pr_number",
+      "title",
+      "url",
+      "author",
+      "merged_by",
+      "merged_at",
+      "head_sha",
+      "ci_state",
+      "force_merged",
+      "fetched_at",
+    )}
+    ON CONFLICT (pr_number) DO UPDATE SET
+      title = EXCLUDED.title,
+      url = EXCLUDED.url,
+      author = EXCLUDED.author,
+      merged_by = EXCLUDED.merged_by,
+      merged_at = EXCLUDED.merged_at,
+      head_sha = EXCLUDED.head_sha,
+      ci_state = EXCLUDED.ci_state,
+      force_merged = EXCLUDED.force_merged,
+      fetched_at = EXCLUDED.fetched_at
+  `;
 }
 
 export async function GET(request: NextRequest) {
@@ -37,58 +79,38 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  const startedAt = Date.now();
   try {
-    const records = await collectForceMergeRecords({
-      token,
-      days: FETCH_WINDOW_DAYS,
-    });
     const db = getDb();
+    const client = createGitHubClient(token);
     const fetchedAt = new Date();
+    const [{ last_merged_at: lastMergedAt }] = await db<
+      { last_merged_at: Date | null }[]
+    >`SELECT max(merged_at) AS last_merged_at FROM force_merge_records`;
 
-    const rows: ForceMergeRow[] = records.map((record) => ({
-      pr_number: record.prNumber,
-      title: record.title,
-      url: record.url,
-      author: record.author,
-      merged_by: record.mergedBy,
-      merged_at: record.mergedAt,
-      force_merged: record.forceMerged,
-      fetched_at: fetchedAt,
-    }));
-
-    let stored = 0;
-    for (let offset = 0; offset < rows.length; offset += UPSERT_BATCH_SIZE) {
-      const batch = rows.slice(offset, offset + UPSERT_BATCH_SIZE);
-      await db`
-        INSERT INTO force_merge_records ${db(
-          batch,
-          "pr_number",
-          "title",
-          "url",
-          "author",
-          "merged_by",
-          "merged_at",
-          "force_merged",
-          "fetched_at",
-        )}
-        ON CONFLICT (pr_number) DO UPDATE SET
-          title = EXCLUDED.title,
-          url = EXCLUDED.url,
-          author = EXCLUDED.author,
-          merged_by = EXCLUDED.merged_by,
-          merged_at = EXCLUDED.merged_at,
-          force_merged = EXCLUDED.force_merged,
-          fetched_at = EXCLUDED.fetched_at
-      `;
-      stored += batch.length;
+    const days = dateRangeChunks(
+      ingestStartDate(lastMergedAt, fetchedAt, BACKFILL_DAYS),
+      fetchedAt,
+    );
+    let fetched = 0;
+    let forced = 0;
+    let daysDone = 0;
+    for (const day of days) {
+      if (daysDone > 0 && Date.now() - startedAt > TIME_BUDGET_MS) break;
+      const records = await fetchWindowRecords(client, day.start, day.end);
+      await upsertRecords(db, records, fetchedAt);
+      fetched += records.length;
+      forced += records.filter((record) => record.forceMerged).length;
+      daysDone++;
     }
 
-    const forced = rows.filter((row) => row.force_merged).length;
+    const isoDate = (date: Date) => date.toISOString().slice(0, 10);
     return NextResponse.json({
-      fetched: rows.length,
+      from: isoDate(days[0].start),
+      through: isoDate(days[daysDone - 1].end),
+      complete: daysDone === days.length,
+      fetched,
       forced,
-      stored,
-      windowDays: FETCH_WINDOW_DAYS,
       fetchedAt: fetchedAt.toISOString(),
     });
   } catch (error) {

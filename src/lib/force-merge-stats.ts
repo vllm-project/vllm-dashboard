@@ -2,21 +2,31 @@
  * Force-merge records for merged vllm-project/vllm pull requests, ported from
  * the standalone vllm-force-merge-stats fetcher.
  *
- * A "force-merge" is a merge performed by the `vllm-bot` account, which lead
- * maintainers use to override CI when a failure is unrelated to the PR. Every
- * PR is squash-merged with an identical git committer, so git history cannot
- * distinguish a force-merge; GitHub's `mergedBy` field is the only signal.
+ * A "force-merge" is a PR merged while its `buildkite/ci/pr` commit status was
+ * red (failure or error) on the PR's head commit. A PR merged while that build
+ * was green, still running, or never triggered is not a force-merge. Who
+ * clicked merge (a maintainer or `vllm-bot`) does not matter.
  *
- * The GitHub search API caps a single query at 1000 results, so the fetch
- * window is chunked by week and each chunk is paginated.
+ * The status must be read as of the merge: a build can finish, fail, or be
+ * rerun after the PR merged. GraphQL only exposes the latest status per
+ * context, so when that status postdates the merge the REST status history is
+ * walked back to the merge instead.
  */
 
-export const FORCE_MERGE_LOGIN = "vllm-bot";
-const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
+export const CI_STATUS_CONTEXT = "buildkite/ci/pr";
+const RED_CI_STATES = new Set(["failure", "error"]);
+const GITHUB_API_URL = "https://api.github.com";
 const REPOSITORY_OWNER = "vllm-project";
 const REPOSITORY_NAME = "vllm";
-const SEARCH_PAGE_SIZE = 100;
-const CHUNK_DAYS = 7;
+// Nested commit status lookups make large pages slow; GitHub aborts GraphQL
+// queries after 10s.
+const SEARCH_PAGE_SIZE = 50;
+// A head commit carries a status per CI job as well as the build-level
+// context, so a rerun after the merge can push the relevant entry several
+// pages deep.
+const STATUS_PAGE_SIZE = 100;
+const MAX_STATUS_PAGES = 20;
+const DAY_MS = 86_400_000;
 
 const MERGED_PR_SEARCH_QUERY = `
 query($q: String!, $cursor: String) {
@@ -31,6 +41,16 @@ query($q: String!, $cursor: String) {
         mergedAt
         author { login }
         mergedBy { login }
+        commits(last: 1) {
+          nodes {
+            commit {
+              oid
+              status {
+                context(name: "${CI_STATUS_CONTEXT}") { state createdAt }
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -43,6 +63,9 @@ export interface ForceMergeRecord {
   author: string | null;
   mergedBy: string | null;
   mergedAt: string;
+  headSha: string | null;
+  /** Lowercase `buildkite/ci/pr` state at merge time; null when none existed. */
+  ciState: string | null;
   forceMerged: boolean;
 }
 
@@ -53,6 +76,16 @@ type SearchNode = {
   mergedAt?: string | null;
   author?: { login?: string | null } | null;
   mergedBy?: { login?: string | null } | null;
+  commits?: {
+    nodes?: Array<{
+      commit?: {
+        oid?: string;
+        status?: {
+          context?: { state?: string; createdAt?: string } | null;
+        } | null;
+      } | null;
+    } | null>;
+  } | null;
 } | null;
 
 interface GraphQLSearchResult {
@@ -61,35 +94,57 @@ interface GraphQLSearchResult {
   nodes: SearchNode[];
 }
 
+export interface CommitStatus {
+  context: string;
+  state: string;
+  created_at: string;
+}
+
 export type GraphQLRunner = (
   query: string,
   variables: Record<string, unknown>,
 ) => Promise<{ data?: Record<string, unknown>; errors?: unknown[] }>;
 
+export interface GitHubClient {
+  graphql: GraphQLRunner;
+  /** One page of a commit's statuses across all contexts, newest first. */
+  commitStatuses: (sha: string, page: number) => Promise<CommitStatus[]>;
+}
+
+function utcMidnight(date: Date): number {
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
 /** Inclusive [start, end] UTC date chunks covering the window, non-overlapping. */
 export function dateRangeChunks(
   start: Date,
   end: Date,
-  stepDays: number = CHUNK_DAYS,
+  stepDays: number = 1,
 ): Array<{ start: Date; end: Date }> {
   const chunks: Array<{ start: Date; end: Date }> = [];
-  const startUtc = Date.UTC(
-    start.getUTCFullYear(),
-    start.getUTCMonth(),
-    start.getUTCDate(),
-  );
-  const endUtc = Date.UTC(
-    end.getUTCFullYear(),
-    end.getUTCMonth(),
-    end.getUTCDate(),
-  );
-  for (let cur = startUtc; cur <= endUtc; cur += stepDays * 86_400_000) {
+  const endUtc = utcMidnight(end);
+  for (let cur = utcMidnight(start); cur <= endUtc; cur += stepDays * DAY_MS) {
     chunks.push({
       start: new Date(cur),
-      end: new Date(Math.min(cur + (stepDays - 1) * 86_400_000, endUtc)),
+      end: new Date(Math.min(cur + (stepDays - 1) * DAY_MS, endUtc)),
     });
   }
   return chunks;
+}
+
+/**
+ * First UTC day to ingest. A merged PR's CI state at merge never changes, so
+ * ingest resumes from the newest stored merge (re-reading the day before it to
+ * cover search-index lag) and only backfills when the table is empty.
+ */
+export function ingestStartDate(
+  lastMergedAt: Date | null,
+  now: Date,
+  backfillDays: number,
+): Date {
+  const floor = utcMidnight(now) - backfillDays * DAY_MS;
+  if (!lastMergedAt) return new Date(floor);
+  return new Date(Math.max(floor, utcMidnight(lastMergedAt) - DAY_MS));
 }
 
 export function searchQueryForWindow(chunkStart: Date, chunkEnd: Date): string {
@@ -98,32 +153,78 @@ export function searchQueryForWindow(chunkStart: Date, chunkEnd: Date): string {
   return `repo:${REPOSITORY_OWNER}/${REPOSITORY_NAME} is:pr is:merged merged:${from}..${to}`;
 }
 
-function toRecord(node: SearchNode): ForceMergeRecord | null {
+/** State of `buildkite/ci/pr` on the head commit at the moment of merge. */
+export async function ciStateAtMerge(
+  client: GitHubClient,
+  headSha: string | null,
+  latest: { state: string; createdAt: string } | null,
+  mergedAt: string,
+): Promise<string | null> {
+  if (!latest) return null;
+  const mergedMs = Date.parse(mergedAt);
+  if (Date.parse(latest.createdAt) <= mergedMs) return latest.state.toLowerCase();
+  if (!headSha) return null;
+
+  for (let page = 1; page <= MAX_STATUS_PAGES; page++) {
+    const statuses = await client.commitStatuses(headSha, page);
+    const atMerge = statuses.find(
+      (status) =>
+        status.context === CI_STATUS_CONTEXT &&
+        Date.parse(status.created_at) <= mergedMs,
+    );
+    if (atMerge) return atMerge.state.toLowerCase();
+    if (statuses.length < STATUS_PAGE_SIZE) break;
+  }
+  return null;
+}
+
+async function toRecord(
+  client: GitHubClient,
+  node: SearchNode,
+): Promise<ForceMergeRecord | null> {
   if (!node || typeof node.number !== "number" || !node.mergedAt) return null;
-  const mergedBy = node.mergedBy?.login ?? null;
+  const commit = node.commits?.nodes?.[0]?.commit ?? null;
+  const headSha = commit?.oid ?? null;
+  const latest = commit?.status?.context;
+  const ciState = await ciStateAtMerge(
+    client,
+    headSha,
+    latest?.state && latest.createdAt
+      ? { state: latest.state, createdAt: latest.createdAt }
+      : null,
+    node.mergedAt,
+  );
   return {
     prNumber: node.number,
     title: node.title ?? "",
     url: node.url ?? "",
     author: node.author?.login ?? null,
-    mergedBy,
+    mergedBy: node.mergedBy?.login ?? null,
     mergedAt: node.mergedAt,
-    forceMerged: mergedBy === FORCE_MERGE_LOGIN,
+    headSha,
+    ciState,
+    forceMerged: ciState !== null && RED_CI_STATES.has(ciState),
   };
 }
 
-/** All merged PRs in one week-sized window, paginated through the search API. */
+/**
+ * All merged PRs in one window, paginated through the search API and
+ * deduplicated by PR number (results can shift between pages).
+ */
 export async function fetchWindowRecords(
-  runner: GraphQLRunner,
+  client: GitHubClient,
   chunkStart: Date,
   chunkEnd: Date,
 ): Promise<ForceMergeRecord[]> {
   const query = searchQueryForWindow(chunkStart, chunkEnd);
-  const records: ForceMergeRecord[] = [];
+  const byNumber = new Map<number, ForceMergeRecord>();
   let cursor: string | null = null;
 
   do {
-    const payload = await runner(MERGED_PR_SEARCH_QUERY, { q: query, cursor });
+    const payload = await client.graphql(MERGED_PR_SEARCH_QUERY, {
+      q: query,
+      cursor,
+    });
     if (payload.errors?.length) {
       throw new Error(`GitHub GraphQL errors: ${JSON.stringify(payload.errors)}`);
     }
@@ -132,69 +233,47 @@ export async function fetchWindowRecords(
       throw new Error(`GitHub GraphQL search returned no data for ${query}`);
     }
     for (const node of search.nodes) {
-      const record = toRecord(node);
-      if (record) records.push(record);
+      const record = await toRecord(client, node);
+      if (record) byNumber.set(record.prNumber, record);
     }
     cursor = search.pageInfo.hasNextPage ? search.pageInfo.endCursor : null;
   } while (cursor);
 
-  return records;
+  return [...byNumber.values()];
 }
 
-/** Merged PRs over the whole window, newest first, deduplicated by PR number. */
-export async function collectForceMergeRecords(options: {
-  token: string;
-  days?: number;
-  now?: Date;
-  runner?: GraphQLRunner;
-}): Promise<ForceMergeRecord[]> {
-  const days = options.days ?? 182;
-  const now = options.now ?? new Date();
-  const windowStart = new Date(
-    Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate() - days,
-    ),
-  );
-  const windowEnd = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-  );
+export function createGitHubClient(token: string): GitHubClient {
+  const headers = {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${token}`,
+    "User-Agent": "vllm-dashboard",
+  };
 
-  const runner: GraphQLRunner =
-    options.runner ??
-    (async (query, variables) => {
-      const response = await fetch(GITHUB_GRAPHQL_URL, {
-        method: "POST",
-        headers: {
-          Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${options.token}`,
-          "Content-Type": "application/json",
-          "User-Agent": "vllm-dashboard",
-        },
-        body: JSON.stringify({ query, variables }),
-        cache: "no-store",
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!response.ok) {
-        throw new Error(
-          `GitHub GraphQL request failed: ${response.status} ${response.statusText}`,
-        );
-      }
-      return (await response.json()) as {
-        data?: Record<string, unknown>;
-        errors?: unknown[];
-      };
+  async function request(url: string, init: RequestInit = {}) {
+    const response = await fetch(url, {
+      ...init,
+      headers: { ...headers, ...init.headers },
+      cache: "no-store",
+      signal: AbortSignal.timeout(15_000),
     });
-
-  const byNumber = new Map<number, ForceMergeRecord>();
-  for (const chunk of dateRangeChunks(windowStart, windowEnd)) {
-    for (const record of await fetchWindowRecords(runner, chunk.start, chunk.end)) {
-      byNumber.set(record.prNumber, record);
+    if (!response.ok) {
+      throw new Error(
+        `GitHub request failed: ${response.status} ${response.statusText} (${url})`,
+      );
     }
+    return response.json();
   }
 
-  return [...byNumber.values()].sort((a, b) =>
-    b.mergedAt.localeCompare(a.mergedAt),
-  );
+  return {
+    graphql: (query, variables) =>
+      request(`${GITHUB_API_URL}/graphql`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, variables }),
+      }),
+    commitStatuses: (sha, page) =>
+      request(
+        `${GITHUB_API_URL}/repos/${REPOSITORY_OWNER}/${REPOSITORY_NAME}/commits/${sha}/statuses?per_page=${STATUS_PAGE_SIZE}&page=${page}`,
+      ),
+  };
 }

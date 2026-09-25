@@ -41,6 +41,8 @@ interface RecentPr {
   title: string;
   url: string;
   author: string | null;
+  mergedBy: string | null;
+  ciState: string | null;
   mergedAt: string;
 }
 
@@ -53,6 +55,7 @@ interface ForceMergeResponse {
     records: number;
     forced: number;
     authorWindowDays: number;
+    firstMergedAt: string | null;
     refreshedAt: string | null;
   };
   error?: string;
@@ -169,27 +172,18 @@ export default function ForceMergesPage() {
           are force-merged, overriding CI.
         </p>
         <p className="mt-3 rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400">
-          A <strong>force-merge</strong> is a merge performed by the{" "}
-          <code>vllm-bot</code> account, which lead maintainers use to override
-          CI when a failure is unrelated to the PR (
-          <a
-            href="https://docs.vllm.ai/en/latest/governance/process/"
-            target="_blank"
-            rel="noopener"
-            className="text-blue-600 hover:underline dark:text-blue-400"
-          >
-            governance docs
-          </a>
-          ). Every PR is squash-merged with an identical git committer, so this
-          is detected via GitHub&apos;s <code>mergedBy</code> field, not git
-          history. The rate is a lower bound: admin merges that bypass failing
-          checks record a human login instead.
+          A <strong>force-merge</strong> is a PR merged while the{" "}
+          <code>buildkite/ci/pr</code> status on its head commit was red
+          (failed or errored), whoever performed the merge. The status is read
+          as of the merge, so a PR merged while a CI rerun was still running,
+          or before CI ever reported, does not count, and a build that fails
+          after the merge does not turn it into one.
         </p>
       </div>
 
       {!hasData && (
         <div className="flex h-40 items-center justify-center text-zinc-400">
-          No force-merge records yet. The daily ingest cron has not run or
+          No force-merge records yet. The hourly ingest cron has not run or
           found no merged PRs.
         </div>
       )}
@@ -308,8 +302,7 @@ export default function ForceMergesPage() {
             </h2>
             <p className="mb-3 text-sm text-zinc-500 dark:text-zinc-400">
               PR <em>authors</em> whose pull requests were force-merged — not
-              who performed the merge (force-merges are always executed by{" "}
-              <code>vllm-bot</code> on a maintainer&apos;s behalf).
+              who performed the merge.
             </p>
             <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
               <div className="h-80">
@@ -365,6 +358,8 @@ export default function ForceMergesPage() {
                     <th className="px-5 py-3 font-medium">PR</th>
                     <th className="px-5 py-3 font-medium">Title</th>
                     <th className="px-5 py-3 font-medium">Author</th>
+                    <th className="px-5 py-3 font-medium">Merged by</th>
+                    <th className="px-5 py-3 font-medium whitespace-nowrap">CI at merge</th>
                     <th className="px-5 py-3 text-right font-medium">
                       Merged
                     </th>
@@ -395,6 +390,12 @@ export default function ForceMergesPage() {
                       <td className="px-5 py-2.5 text-zinc-500 dark:text-zinc-400">
                         {pr.author ?? "—"}
                       </td>
+                      <td className="px-5 py-2.5 text-zinc-500 dark:text-zinc-400">
+                        {pr.mergedBy ?? "—"}
+                      </td>
+                      <td className="px-5 py-2.5 text-red-500 dark:text-red-400">
+                        {pr.ciState ?? "—"}
+                      </td>
                       <td className="px-5 py-2.5 text-right whitespace-nowrap text-zinc-500 dark:text-zinc-400">
                         {dateLabel(pr.mergedAt)}
                       </td>
@@ -403,7 +404,7 @@ export default function ForceMergesPage() {
                   {recent.length === 0 && (
                     <tr>
                       <td
-                        colSpan={4}
+                        colSpan={6}
                         className="px-5 py-8 text-center text-zinc-400"
                       >
                         No force-merged PRs recorded
@@ -417,9 +418,11 @@ export default function ForceMergesPage() {
 
           <p className="text-xs text-zinc-400 dark:text-zinc-500">
             {(summary?.records ?? 0).toLocaleString()} merged PRs analysed
+            {summary?.firstMergedAt &&
+              ` since ${dateLabel(summary.firstMergedAt)}`}
             {summary?.refreshedAt &&
               ` · data refreshed ${dateLabel(summary.refreshedAt)}`}{" "}
-            · detection: mergedBy == &quot;vllm-bot&quot;
+            · detection: buildkite/ci/pr red at merge
           </p>
         </>
       )}
