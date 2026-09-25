@@ -40,6 +40,7 @@ function alert(overrides: Partial<MainCiJobAlert> = {}): MainCiJobAlert {
     alertId: "1",
     jobKey: "step:gpu|name:GPU test",
     jobName: "GPU test",
+    isOptional: false,
     status: "open",
     openedAt: "2026-08-29T08:00:00.000Z",
     firstFailure: {
@@ -363,13 +364,19 @@ test("hide options filter matching job names out of the list", () => {
     alert({ alertId: "1", jobName: "GPU test" }),
     alert({ alertId: "2", jobName: "AMD: MI300X Test" }),
     alert({ alertId: "3", jobName: "Lint (soft-fail)" }),
-    alert({ alertId: "4", jobName: "Optional check" }),
+    // Optional is flagged server-side from the pipeline YAML; the job name
+    // itself carries no "optional" marker.
+    alert({
+      alertId: "4",
+      jobName: "(H200 MIG 35GB) Multimodal Models (Extended Generation 1)",
+      isOptional: true,
+    }),
   ];
 
   const visible = renderToStaticMarkup(createElement(MainCIAlerts, { alerts }));
   assert.match(visible, /AMD: MI300X Test/);
   assert.match(visible, /Lint \(soft-fail\)/);
-  assert.match(visible, /Optional check/);
+  assert.match(visible, /Multimodal Models \(Extended Generation 1\)/);
 
   const hidden = renderToStaticMarkup(
     createElement(MainCIAlerts, {
@@ -382,7 +389,7 @@ test("hide options filter matching job names out of the list", () => {
   assert.match(hidden, /GPU test/);
   assert.doesNotMatch(hidden, /AMD: MI300X Test/);
   assert.doesNotMatch(hidden, /Lint \(soft-fail\)/);
-  assert.doesNotMatch(hidden, /Optional check/);
+  assert.doesNotMatch(hidden, /Multimodal Models \(Extended Generation 1\)/);
 });
 
 test("column sort orders by job, failures, opened, and last failed in either direction", () => {

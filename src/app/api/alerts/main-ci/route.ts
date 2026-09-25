@@ -5,6 +5,10 @@ import {
   type MainCiJobAlertRow,
 } from "@/lib/alerts-main-ci";
 import { hasPostgresErrorCode } from "@/lib/postgres-errors";
+import {
+  ensureOptionalJobMatcher,
+  isOptionalJob,
+} from "@/lib/test-areas";
 
 export const dynamic = "force-dynamic";
 
@@ -65,9 +69,12 @@ export async function GET() {
                COALESCE(a.resolved_at, a.last_failed_at) DESC
       LIMIT ${MAX_ALERTS}
     `;
+    const optionalMatcher = await ensureOptionalJobMatcher();
     return NextResponse.json(
       {
-        alerts: rows.map(toMainCiJobAlert),
+        alerts: rows.map((row) =>
+          toMainCiJobAlert(row, isOptionalJob(row.job_name, optionalMatcher)),
+        ),
         schemaStatus: "ready",
         resolutionEnabled: Boolean(process.env.ALERT_OPERATOR_TOKEN),
       },
