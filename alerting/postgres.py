@@ -1693,6 +1693,13 @@ class PostgresAlertStore:
             ).fetchone()
         return _failure_cache(row[0]) if row is not None else FailureCache.empty()
 
+    def latest_analysis_at(self) -> datetime | None:
+        with self._connection_factory() as connection:
+            row = connection.execute(
+                "SELECT max(analyzed_at) FROM alerting_full_ci_analyses"
+            ).fetchone()
+        return row[0] if row is not None else None
+
     def latest_checkpoint(self) -> CheckpointRef | None:
         # Insertion order is chronological: the imported seed is the first row
         # and each committed analysis appends its own checkpoint.

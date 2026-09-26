@@ -30,7 +30,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -48,6 +48,9 @@ from alerting.ports import (
 )
 
 COMPLETENESS_THRESHOLD = 0.95
+# Full CI runs twice a day, so a day without any committed analysis means at
+# least one run went unreported.
+STALE_ANALYSIS_AFTER = timedelta(hours=24)
 REPORT_CHAR_LIMIT = 2800
 CHECKPOINT_SCHEMA_VERSION = SCHEMA_VERSION
 PACIFIC = ZoneInfo("America/Los_Angeles")
@@ -235,6 +238,10 @@ class AnalyzerStore(Protocol):
 
     def latest_checkpoint(self) -> CheckpointRef | None:
         """The checkpoint referenced by the most recent analysis."""
+        ...
+
+    def latest_analysis_at(self) -> datetime | None:
+        """When the most recent analysis committed, skipped builds included."""
         ...
 
     def prior_condition(
@@ -755,9 +762,36 @@ class FullCIAnalysisHandler:
         # completed analyses durable and the rest pending for the next tick.
         # The runtime completes this command's execution after the handler
         # returns; a crash before that is recovered by idempotent replay.
+        blocked: ComparisonContext | None = None
         for context in self._store.pending_comparisons():
             if not self._analyze(context):
+                blocked = context
                 break
+        self._raise_if_stale(blocked)
+
+    def _raise_if_stale(self, blocked: ComparisonContext | None) -> None:
+        """Fail the tick once no analysis has committed for a day.
+
+        Every tick can complete cleanly while no report goes out — a
+        comparison that never clears the gate, or runs that stop being
+        ingested — and a completed tick alerts nobody. Failing it hands the
+        silence to the unit's OnFailure= Slack notifier, and the next
+        successful tick resolves that message.
+        """
+        latest = self._store.latest_analysis_at()
+        if latest is None or self._clock.now() - latest <= STALE_ANALYSIS_AFTER:
+            return
+        hours = int((self._clock.now() - latest).total_seconds() // 3600)
+        waiting = (
+            f"oldest pending comparison is build #{blocked.current.build_number}, "
+            "still below the completeness gate"
+            if blocked is not None
+            else "no comparison is pending, so no new Full CI run was ingested"
+        )
+        raise AnalyzerError(
+            f"no Full CI analysis committed for {hours}h "
+            f"(last at {latest:%Y-%m-%d %H:%M} UTC); {waiting}"
+        )
 
     def _analyze(self, context: ComparisonContext) -> bool:
         build = self._builds.get_build(context.current.build_number)
@@ -775,7 +809,14 @@ class FullCIAnalysisHandler:
         ]
         jobs = [job for job in all_jobs if NON_NVIDIA_JOB.search(job.name) is None]
         if not _complete_enough(jobs):
-            return False  # newer comparisons cannot overtake this baseline
+            if not build.get("finished_at"):
+                return False  # newer comparisons cannot overtake this baseline
+            # A finished build below the gate can never cross it: it was
+            # canceled, or its jobs cascaded off a failed upstream step.
+            # Waiting on one wedged every newer comparison behind canceled
+            # build #90876 for days, so it is recorded as skipped instead.
+            self._skip(context, build, jobs)
+            return True
 
         cache = self._store.failure_cache_before(context.current.scheduled_at)
         # This run's hard failures, plus any baseline name still awaiting a
@@ -870,6 +911,59 @@ class FullCIAnalysisHandler:
                 now=self._clock.now(),
             )
         return True
+
+    def _skip(
+        self,
+        context: ComparisonContext,
+        build: Mapping[str, Any],
+        jobs: list[FullCIJobOutcome],
+    ) -> None:
+        """Commit a skipped build without running the analyzer.
+
+        A short notice takes the report's place so a skip is never silent.
+        The baseline and checkpoint carry forward unchanged, so the next
+        report compares against the last build that was actually analyzed.
+        """
+        cache = self._store.failure_cache_before(context.current.scheduled_at)
+        checkpoint = self._store.latest_checkpoint()
+        if checkpoint is None:
+            checkpoint = self._checkpoints.upload({})
+        finished = sum(1 for job in jobs if job.state in ("passed", "failed"))
+        baseline = (
+            f"build #{cache.build_number}"
+            if cache.build_number is not None
+            else "the next analyzed build"
+        )
+        text = (
+            f"⚠️ *vLLM Full CI — Build #{build['number']} not analyzed*\n"
+            f"It ended `{build.get('state')}` with {finished} of {len(jobs)} "
+            f"NVIDIA jobs finished, below the {COMPLETENESS_THRESHOLD:.0%} "
+            f"completeness gate. The next report compares against {baseline}. "
+            f"<{build['web_url']}|View build>"
+        )
+        self._store.commit_analysis(
+            analysis=CompletedAnalysis(
+                current_build_id=context.current.build_id,
+                previous_build_id=context.previous_build_id,
+                report_text=text,
+                failure_cache=cache,
+                suspicious_prs=(),
+                conditions=(),
+                checkpoint=checkpoint,
+            ),
+            notifications=(
+                NotificationIntent(
+                    delivery_id=f"full-ci:{context.current.build_id}",
+                    alert_ref=f"full-ci-comparison:{context.current.build_id}",
+                    alert_path=AlertPath.FULL_CI,
+                    delivery_mode=self._delivery_mode,
+                    destination_mode=DestinationMode.BOT_TOKEN,
+                    destination=full_ci_slack_channel(),
+                    payload={"text": text},
+                ),
+            ),
+            now=self._clock.now(),
+        )
 
     def _classify(
         self,

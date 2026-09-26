@@ -789,6 +789,12 @@ class InMemoryAnalyzerStore:
         )
         return self._checkpoints[latest.current_build_id]
 
+    def latest_analysis_at(self) -> datetime | None:
+        return max(
+            (analysis.analyzed_at for analysis in self._analyses.values()),
+            default=None,
+        )
+
     def prior_condition(
         self, job_name: str, *, before: datetime
     ) -> FailureCondition | None:
