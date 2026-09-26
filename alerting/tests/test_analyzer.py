@@ -81,7 +81,12 @@ def build_json(
         "message": "Full CI run - nightly",
         "scheduled_at": scheduled_at.isoformat(),
         "started_at": scheduled_at.isoformat(),
-        "finished_at": (scheduled_at + timedelta(hours=2)).isoformat(),
+        # Buildkite leaves finished_at null until the build is terminal.
+        "finished_at": (
+            None
+            if state in ("scheduled", "running", "failing", "canceling")
+            else (scheduled_at + timedelta(hours=2)).isoformat()
+        ),
         "jobs": [
             {"name": name, "state": job_state, "soft_failed": soft}
             for name, job_state, soft in jobs
@@ -1438,6 +1443,83 @@ def test_incomplete_oldest_comparison_blocks_newer_analysis() -> None:
     assert result.status is ProcessStatus.COMPLETED
     assert harness.store.analyses() == []
     assert harness.runner.runs == 0
+
+
+def test_canceled_build_below_gate_is_skipped_not_left_blocking() -> None:
+    """Canceled #90876 sat at 74% forever and wedged every newer comparison."""
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    run3 = make_run(3, RUN3_AT)
+    harness = Harness(
+        runs=[run1, run2, run3],
+        builds={
+            2: build_json(
+                2,
+                [("Job A", "passed", False), ("Job B", "canceled", False)],
+                scheduled_at=RUN2_AT,
+                state="canceled",
+            ),
+            3: build_json(
+                3,
+                mostly_passing_jobs([("Job A", "failed", False)]),
+                scheduled_at=RUN3_AT,
+            ),
+        },
+    )
+    harness.seed_analysis(run1, failed_tests=("Job A",))
+
+    result = harness.analyze()
+
+    assert result.status is ProcessStatus.COMPLETED
+    assert harness.runner.runs == 1  # only build 3 reaches the analyzer
+    skipped, analyzed = [
+        analysis
+        for analysis in harness.store.analyses()
+        if analysis.current_build_id != run1.build_id
+    ]
+    assert skipped.current_build_id == run2.build_id
+    assert skipped.conditions == ()
+    # Build 2's passing Job A never counts as fixed: the baseline is carried
+    # forward, so build 3 still sees Job A as recurring from build 1.
+    assert skipped.failure_cache.build_number == 1
+    assert skipped.failure_cache.failed_tests == ("Job A",)
+    assert {c.job_name: c.lifecycle for c in analyzed.conditions} == {
+        "Job A": FailureLifecycle.RECURRING
+    }
+    notice = notification_for(harness, run2.build_id).payload["text"]
+    assert "Build #2 not analyzed" in notice
+    assert "`canceled` with 1 of 2 NVIDIA jobs finished" in notice
+    assert "compares against build #1" in notice
+    assert harness.store.pending_comparisons() == []
+
+
+def test_a_day_without_any_analysis_fails_the_tick() -> None:
+    """A tick that completes while nothing reports must still page someone."""
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                [("Job A", "passed", False), ("Job B", "running", False)],
+                scheduled_at=RUN2_AT,
+                state="running",
+            )
+        },
+    )
+    harness.seed_analysis(run1, failed_tests=())
+
+    harness.clock.advance(minutes=23 * 60)
+    assert harness.analyze(target=RUN3_AT).status is ProcessStatus.COMPLETED
+
+    harness.clock.advance(minutes=2 * 60)
+    result = harness.analyze(target=RUN3_AT + timedelta(hours=2))
+
+    assert result.status is ProcessStatus.FAILED
+    assert result.error is not None
+    assert "no Full CI analysis committed for 25h" in result.error
+    assert "oldest pending comparison is build #2" in result.error
 
 
 def test_missed_comparisons_are_analyzed_chronologically() -> None:

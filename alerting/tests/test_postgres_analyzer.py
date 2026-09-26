@@ -227,6 +227,9 @@ class FakePostgresConnection:
             if not candidates:
                 return Result()
             return Result(row=candidates[-1][1:])
+        if statement == "SELECT max(analyzed_at) FROM alerting_full_ci_analyses":
+            analyzed = [analysis[4] for analysis in self.state["analyses"].values()]
+            return Result(row=(max(analyzed, default=None),))
         if statement.startswith("SELECT s3_uri, sha256, schema_version"):
             checkpoints = self.state["checkpoints"]
             if not checkpoints:

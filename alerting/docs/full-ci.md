@@ -56,6 +56,19 @@ same Postgres transaction as the report, classifications, and checkpoint
 reference. The reconciler itself posts nothing; a failure leaves the
 comparison pending for the next tick.
 
+A run stays pending until 95% of its NVIDIA jobs have passed or failed. A
+run that *finishes* below that gate — canceled, or its jobs cascaded off a
+failed upstream step — can never clear it, so it is committed as skipped
+instead: the analyzer does not run, the baseline and checkpoint carry forward
+unchanged, and a short "not analyzed" notice takes the report's place under
+the same delivery ID. Without this, one canceled run blocked every newer
+comparison behind it.
+
+If no analysis (report or skip) has committed for 24 hours, the analyzer
+tick fails with the reason in `alerting_automation_executions.last_error`,
+which triggers the unit's `OnFailure=` Slack notifier; the next successful
+tick resolves that message.
+
 ## Dashboard history
 
 Full CI comparisons and analyses are delivered to Slack only; the
