@@ -22,6 +22,9 @@ client credentials are needed for dashboard reads.
 - **Cost** — compute hours and dollar cost per queue, derived from AWS on-demand pricing.
 - **Performance** — benchmark trends ingested into the warehouse.
 - **Compare** — release-oriented baseline/candidate image deltas across performance and evaluation metrics.
+- **Force-merges** — how often vLLM PRs are merged while `buildkite/ci/pr` is
+  red: rate windows, weekly trend, merge volume, top PR authors, and recent
+  force-merged PRs.
 
 ## Architecture
 
@@ -32,6 +35,7 @@ client credentials are needed for dashboard reads.
   - Buildkite GraphQL API (queue depth, running jobs, connected agents, and current wait distribution) — every 5 minutes
   - Buildkite REST API (main-branch failed-job lifecycle) — every 5 minutes
   - Databricks warehouse (build/job history) — on dashboard requests with short-lived caching
+  - GitHub API (merged PRs and their `buildkite/ci/pr` status at merge) — hourly
   - Queue alerting → Slack — every 15 minutes
 - **Alert production**: The separately deployed Python worker lives in
   [`alerting/`](./alerting). Main CI lifecycle records remain deterministic;
