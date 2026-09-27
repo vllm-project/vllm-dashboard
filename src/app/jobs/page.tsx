@@ -5,7 +5,7 @@ import useSWR from "swr";
 import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
 import { DateRangePicker } from "@/components/date-range-picker";
-import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
+import { isSoftFailJob } from "@/lib/optional-jobs";
 import { JobName, jobNameText } from "@/components/job-name";
 import { JobRetryRanking } from "@/components/job-retry-ranking";
 import { JobRunHistory } from "@/components/job-run-history";
@@ -29,6 +29,7 @@ interface FailureRow {
   passes: string;
   failure_rate: string;
   has_soft_fail: string;
+  is_optional: string;
 }
 
 interface DurationRow {
@@ -38,6 +39,7 @@ interface DurationRow {
   p50_duration: string;
   p90_duration: string;
   max_duration: string;
+  is_optional: string;
 }
 
 interface JobsResponse {
@@ -97,10 +99,9 @@ function DurationBar({ secs, maxSecs }: { secs: number; maxSecs: number }) {
   );
 }
 
-function JobBadges({ name, hasSoftFail }: { name: string; hasSoftFail: boolean }) {
-  const optional = isOptionalJob(name);
+function JobBadges({ name, isOptional, hasSoftFail }: { name: string; isOptional: boolean; hasSoftFail: boolean }) {
   const softFail = isSoftFailJob(name) || hasSoftFail;
-  if (!optional && !softFail) return null;
+  if (!isOptional && !softFail) return null;
   return (
     <span className="ml-2 inline-flex gap-1">
       {softFail && (
@@ -108,7 +109,7 @@ function JobBadges({ name, hasSoftFail }: { name: string; hasSoftFail: boolean }
           soft fail
         </span>
       )}
-      {optional && (
+      {isOptional && (
         <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 dark:bg-purple-900/40 dark:text-purple-400">
           optional
         </span>
@@ -168,7 +169,7 @@ function JobAnalysisTab({
   const filteredFailures = failureRanking
     .filter((row) => {
       if (hideSoftFail && (isSoftFailJob(row.name) || row.has_soft_fail === "1")) return false;
-      if (hideOptional && isOptionalJob(row.name)) return false;
+      if (hideOptional && row.is_optional === "1") return false;
       if (searchQuery && !jobNameText(row.name).toLowerCase().includes(searchQuery.toLowerCase())) return false;
       return true;
     })
@@ -180,7 +181,7 @@ function JobAnalysisTab({
 
   const filteredDuration = durationStats
     .filter((row) => {
-      if (hideOptional && isOptionalJob(row.name)) return false;
+      if (hideOptional && row.is_optional === "1") return false;
       if (searchQuery && !jobNameText(row.name).toLowerCase().includes(searchQuery.toLowerCase())) return false;
       return true;
     })
@@ -398,7 +399,7 @@ function JobAnalysisTab({
                       <td className="px-5 py-2.5 text-zinc-400">{page * pageSize + i + 1}</td>
                       <td className="px-5 py-2.5 font-medium">
                         <JobName name={row.name} />
-                        <JobBadges name={row.name} hasSoftFail={row.has_soft_fail === "1"} />
+                        <JobBadges name={row.name} isOptional={row.is_optional === "1"} hasSoftFail={row.has_soft_fail === "1"} />
                       </td>
                       <td className="px-5 py-2.5">
                         <FailureBar rate={parseFloat(row.failure_rate)} />
@@ -468,7 +469,7 @@ function JobAnalysisTab({
                       <td className="px-5 py-2.5 text-zinc-400">{page * pageSize + i + 1}</td>
                       <td className="px-5 py-2.5 font-medium">
                         <JobName name={row.name} />
-                        <JobBadges name={row.name} hasSoftFail={false} />
+                        <JobBadges name={row.name} isOptional={row.is_optional === "1"} hasSoftFail={false} />
                       </td>
                       <td className="px-5 py-2.5">
                         <DurationBar

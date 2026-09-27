@@ -10,6 +10,7 @@ import {
   queryRetriesFromWarehouse,
   RetryFilterError,
 } from "@/lib/job-retries";
+import { isOptionalJob, peekOptionalJobMatcher } from "@/lib/test-areas";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -28,7 +29,18 @@ export async function GET(request: NextRequest) {
       return { source, retryRanking: rankRetryJobs(rows) };
     });
     timing.describe("cache", status);
-    const response = cachedJson(result, CDN_CACHE);
+    // Flag optional steps from the cached matcher. This route never fetches
+    // test-area data from GitHub; the matcher is warmed by the other jobs and
+    // builds routes, so a cold cache briefly under-reports optional jobs.
+    const optionalMatcher = peekOptionalJobMatcher();
+    const data = {
+      ...result,
+      retryRanking: result.retryRanking.map((row) => ({
+        ...row,
+        is_optional: isOptionalJob(row.name, optionalMatcher),
+      })),
+    };
+    const response = cachedJson(data, CDN_CACHE);
     response.headers.set("Server-Timing", timing.header());
     return response;
   } catch (error) {

@@ -39,7 +39,7 @@ test("retry ranking returns individual job rows without fetching test-area mappi
   });
   const response = await GET(new NextRequest("http://localhost/api/jobs/retries?source=databricks&branch=first-job-request"));
   assert.equal(response.status, 200);
-  assert.deepEqual((await response.json()).retryRanking, [{ name, retries: 2, total_runs: 5, has_soft_fail: false }]);
+  assert.deepEqual((await response.json()).retryRanking, [{ name, retries: 2, total_runs: 5, has_soft_fail: false, is_optional: false }]);
   assert.equal(requestedUrls.length, 1);
   assert.doesNotMatch(response.headers.get("Server-Timing") ?? "", /mapping;/);
 });
@@ -61,7 +61,7 @@ test("retry requests share one query and stable window cache, with source and jo
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
       source: "databricks",
-      retryRanking: [{ name: "Basic Correctness", retries: 2, total_runs: 5, has_soft_fail: false }],
+      retryRanking: [{ name: "Basic Correctness", retries: 2, total_runs: 5, has_soft_fail: false, is_optional: false }],
     });
   }
   assert.match(responses[0].headers.get("Server-Timing") ?? "", /retries;dur=/);

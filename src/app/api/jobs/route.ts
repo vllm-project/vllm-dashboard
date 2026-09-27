@@ -5,6 +5,7 @@ import { ServerTiming } from "@/lib/server-timing";
 import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { queryJobStatsFromOtel } from "@/lib/otel-ci";
+import { ensureOptionalJobMatcher, isOptionalJob } from "@/lib/test-areas";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -130,7 +131,23 @@ export async function GET(request: NextRequest) {
       return { failureRanking, durationStats };
     });
     timing.describe("cache", status);
-    const response = cachedJson(result, CDN_CACHE);
+    // Annotate rows from the pipeline YAML's `optional: true` steps. Done per
+    // request (not cached) so the 1h matcher refresh applies without waiting
+    // for the job-stats cache to expire, and so it covers both data sources.
+    const optionalMatcher = await ensureOptionalJobMatcher();
+    const annotate = (rows: Record<string, unknown>[]) =>
+      rows.map((row) => ({
+        ...row,
+        is_optional:
+          typeof row.name === "string" && isOptionalJob(row.name, optionalMatcher)
+            ? "1"
+            : "0",
+      }));
+    const data = {
+      failureRanking: annotate(result.failureRanking),
+      durationStats: annotate(result.durationStats),
+    };
+    const response = cachedJson(data, CDN_CACHE);
     response.headers.set("Server-Timing", timing.header());
     return response;
   } catch (error) {

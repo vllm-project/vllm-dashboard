@@ -513,6 +513,26 @@ export async function ensureOptionalJobMatcher(): Promise<OptionalJobMatcher> {
   return cachedOptionalMatcher;
 }
 
+export function getOptionalJobMatcher(): OptionalJobMatcher {
+  // Always returns immediately — never blocks on network. Routes that must not
+  // add a GitHub fetch to the request path use this and pick up refreshed
+  // optional steps on a later request.
+  if (Date.now() >= cacheExpiry) {
+    refreshMapping();
+  }
+  return cachedOptionalMatcher;
+}
+
+/**
+ * The currently cached matcher with no side effects. Unlike
+ * `getOptionalJobMatcher`, an expired cache is returned as-is instead of
+ * kicking off a background GitHub refresh — for routes whose contract forbids
+ * touching the network beyond their own backend.
+ */
+export function peekOptionalJobMatcher(): OptionalJobMatcher {
+  return cachedOptionalMatcher;
+}
+
 export async function getTestAreaMappingForCommit(
   commit: string | null | undefined,
   branch: string | null | undefined,

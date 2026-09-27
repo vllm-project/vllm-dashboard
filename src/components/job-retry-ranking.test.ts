@@ -3,11 +3,11 @@ import test from "node:test";
 import { filterRetryJobs, retryHistoryUrl, type RetryJob } from "./job-retry-ranking";
 
 const jobs: RetryJob[] = [
-  { name: ":nvidia: Basic Models", retries: 2, total_runs: 10, has_soft_fail: false },
-  { name: "Ray Dependency Compatibility Check", retries: 4, total_runs: 8, has_soft_fail: false },
-  { name: "Custom Soft Fail", retries: 3, total_runs: 7, has_soft_fail: true },
-  { name: "Distributed Tests (4 GPUs)(A100)", retries: 5, total_runs: 9, has_soft_fail: false },
-  { name: "Basic Correctness", retries: 0, total_runs: 6, has_soft_fail: false },
+  { name: ":nvidia: Basic Models", retries: 2, total_runs: 10, has_soft_fail: false, is_optional: false },
+  { name: "Ray Dependency Compatibility Check", retries: 4, total_runs: 8, has_soft_fail: false, is_optional: false },
+  { name: "Custom Soft Fail", retries: 3, total_runs: 7, has_soft_fail: true, is_optional: false },
+  { name: "Distributed Tests (4 GPUs)(A100)", retries: 5, total_runs: 9, has_soft_fail: false, is_optional: true },
+  { name: "Basic Correctness", retries: 0, total_runs: 6, has_soft_fail: false, is_optional: false },
 ];
 
 const noFilters = { searchQuery: "", hideSoftFail: false, hideOptional: false };
@@ -57,10 +57,10 @@ test("optional and soft-fail exclusions compose with job search", () => {
 
 test("vendor search retains explicit icons, legacy AMD mirrors, and native device prefixes", () => {
   const hardwareJobs: RetryJob[] = [
-    { name: ":amd: (MI355) Kernels", retries: 2, total_runs: 5, has_soft_fail: false },
-    { name: "AMD: Kernel mirror", retries: 3, total_runs: 5, has_soft_fail: false },
-    { name: "mi325_1: Kernel test", retries: 4, total_runs: 5, has_soft_fail: false },
-    { name: ":nvidia: (H100) Kernels", retries: 1, total_runs: 5, has_soft_fail: false },
+    { name: ":amd: (MI355) Kernels", retries: 2, total_runs: 5, has_soft_fail: false, is_optional: false },
+    { name: "AMD: Kernel mirror", retries: 3, total_runs: 5, has_soft_fail: false, is_optional: false },
+    { name: "mi325_1: Kernel test", retries: 4, total_runs: 5, has_soft_fail: false, is_optional: false },
+    { name: ":nvidia: (H100) Kernels", retries: 1, total_runs: 5, has_soft_fail: false, is_optional: false },
   ];
   assert.deepEqual(filterRetryJobs(hardwareJobs, { ...noFilters, searchQuery: "AMD" }), hardwareJobs.slice(0, 3));
   assert.deepEqual(filterRetryJobs(hardwareJobs, { ...noFilters, searchQuery: "nvidia" }), [hardwareJobs[3]]);

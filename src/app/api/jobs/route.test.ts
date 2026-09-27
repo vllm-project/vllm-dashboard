@@ -20,7 +20,13 @@ function configureWarehouse(t: TestContext) {
 }
 
 test("concurrent jobs requests share queries and expose cache/query timings", async (t) => {
-  const fetchMock = t.mock.method(globalThis, "fetch", async () => {
+  const fetchMock = t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0]) => {
+    const url = String(input);
+    if (url.includes("api.github.com")) {
+      // The optional-job matcher refreshes from GitHub once per hour; an empty
+      // tree keeps the static fallback and stays out of the Databricks counts.
+      return Response.json({ tree: [] });
+    }
     await new Promise((resolve) => setTimeout(resolve, 20));
     return Response.json({
       status: { state: "SUCCEEDED" },
@@ -33,12 +39,14 @@ test("concurrent jobs requests share queries and expose cache/query timings", as
   const responses = await Promise.all(
     Array.from({ length: 8 }, () => GET(new NextRequest(url))),
   );
-  assert.equal(fetchMock.mock.callCount(), 2, "one failure query and one duration query for all eight callers");
+  const databricksCalls = () =>
+    fetchMock.mock.calls.filter((call) => !String(call.arguments[0]).includes("api.github.com")).length;
+  assert.equal(databricksCalls(), 2, "one failure query and one duration query for all eight callers");
   for (const response of responses) {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
-      failureRanking: [{ name: "test job" }],
-      durationStats: [{ name: "test job" }],
+      failureRanking: [{ name: "test job", is_optional: "0" }],
+      durationStats: [{ name: "test job", is_optional: "0" }],
     });
     assert.match(response.headers.get("Server-Timing") ?? "", /source;desc="databricks"/);
   }
@@ -48,41 +56,44 @@ test("concurrent jobs requests share queries and expose cache/query timings", as
   const cached = await GET(new NextRequest(url));
   assert.match(cached.headers.get("Server-Timing") ?? "", /cache;desc="HIT"/);
   assert.doesNotMatch(cached.headers.get("Server-Timing") ?? "", /failures;dur=/);
-  assert.equal(fetchMock.mock.callCount(), 2);
+  assert.equal(databricksCalls(), 2);
 
   await GET(new NextRequest(`${url}&pipeline=AMD+CI`));
-  assert.equal(fetchMock.mock.callCount(), 4, "different filters need their own queries");
+  assert.equal(databricksCalls(), 4, "different filters need their own queries");
 
 });
 
 
 test("a relative window uses one stable cache key across resolved dates", async (t) => {
   configureWarehouse(t);
-  const fetchMock = t.mock.method(globalThis, "fetch", async () =>
-    Response.json({
+  const fetchMock = t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0]) => {
+    if (String(input).includes("api.github.com")) return Response.json({ tree: [] });
+    return Response.json({
       status: { state: "SUCCEEDED" },
       manifest: { schema: { columns: [{ name: "name" }] } },
       result: { data_array: [["test job"]] },
-    }),
-  );
+    });
+  });
+  const databricksCalls = () =>
+    fetchMock.mock.calls.filter((call) => !String(call.arguments[0]).includes("api.github.com")).length;
   const url = "http://localhost/api/jobs?source=databricks&branch=window-test&window=14d";
 
   const first = await GET(new NextRequest(url));
   assert.equal(first.status, 200);
   assert.match(first.headers.get("Server-Timing") ?? "", /cache;desc="MISS"/);
-  assert.equal(fetchMock.mock.callCount(), 2);
+  assert.equal(databricksCalls(), 2);
 
   const second = await GET(new NextRequest(url));
   assert.match(second.headers.get("Server-Timing") ?? "", /cache;desc="HIT"/);
-  assert.equal(fetchMock.mock.callCount(), 2, "the stable window key must not requery");
+  assert.equal(databricksCalls(), 2, "the stable window key must not requery");
 
   const custom = await GET(new NextRequest(`${url}&startDate=2026-09-01&endDate=2026-09-08`));
   assert.equal(custom.status, 200);
-  assert.equal(fetchMock.mock.callCount(), 4, "explicit dates use their own key");
+  assert.equal(databricksCalls(), 4, "explicit dates use their own key");
 
   const invalid = await GET(new NextRequest("http://localhost/api/jobs?source=databricks&branch=window-test&window=abc"));
   assert.equal(invalid.status, 200);
-  assert.equal(fetchMock.mock.callCount(), 6, "an invalid window falls back to the no-range key");
+  assert.equal(databricksCalls(), 6, "an invalid window falls back to the no-range key");
 });
 
 test("a partial query failure keeps the fill shared until the other query settles", async (t) => {
@@ -90,12 +101,15 @@ test("a partial query failure keeps the fill shared until the other query settle
   t.mock.method(console, "error", () => {});
   const duration = Promise.withResolvers<void>();
   let fail = true;
-  const fetchMock = t.mock.method(globalThis, "fetch", async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+  const fetchMock = t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(input).includes("api.github.com")) return Response.json({ tree: [] });
     const { statement } = JSON.parse(String(init?.body));
     if (statement.includes("p50_duration")) await duration.promise;
     else if (fail) return Response.json({}, { status: 503 });
     return Response.json({ status: { state: "SUCCEEDED" } });
   });
+  const databricksCalls = () =>
+    fetchMock.mock.calls.filter((call) => !String(call.arguments[0]).includes("api.github.com")).length;
   const url = "http://localhost/api/jobs?source=databricks&branch=partial-failure-test";
   let finished = false;
   const first = GET(new NextRequest(url)).then((response) => {
@@ -107,7 +121,7 @@ test("a partial query failure keeps the fill shared until the other query settle
     assert.equal(finished, false, "do not release the fill while its duration query is still running");
     const follower = GET(new NextRequest(url));
     await setImmediate();
-    assert.equal(fetchMock.mock.callCount(), 2, "a follower must not launch more queries after a partial failure");
+    assert.equal(databricksCalls(), 2, "a follower must not launch more queries after a partial failure");
     duration.resolve();
     const [response, shared] = await Promise.all([first, follower]);
     assert.equal(response.status, 500);
@@ -117,7 +131,7 @@ test("a partial query failure keeps the fill shared until the other query settle
     fail = false;
     const retry = await GET(new NextRequest(url));
     assert.equal(retry.status, 200);
-    assert.equal(fetchMock.mock.callCount(), 4, "a fully settled failure can be retried");
+    assert.equal(databricksCalls(), 4, "a fully settled failure can be retried");
   } finally {
     duration.resolve();
     await first;
