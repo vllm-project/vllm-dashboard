@@ -84,6 +84,7 @@ class FixtureLogs:
 class FixtureGitHub:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.token_expires_at: datetime | None = None
 
     def pull_for_commit(self, commit_sha: str) -> PullRequestRef | None:
         self.calls.append(commit_sha)

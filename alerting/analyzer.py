@@ -28,9 +28,9 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -51,6 +51,8 @@ COMPLETENESS_THRESHOLD = 0.95
 # Full CI runs twice a day, so a day without any committed analysis means at
 # least one run went unreported.
 STALE_ANALYSIS_AFTER = timedelta(hours=24)
+# Warn a week out: long enough to rotate the token before a weekend.
+GITHUB_TOKEN_WARNING = timedelta(days=7)
 REPORT_CHAR_LIMIT = 2800
 CHECKPOINT_SCHEMA_VERSION = SCHEMA_VERSION
 PACIFIC = ZoneInfo("America/Los_Angeles")
@@ -217,8 +219,19 @@ class CheckpointStore(Protocol):
         ...
 
 
+class GitHubUnavailable(RuntimeError):
+    """A GitHub lookup failed for any reason other than "not found"."""
+
+    def __init__(self, summary: str, detail: str = "") -> None:
+        super().__init__(f"{summary}: {detail}" if detail else summary)
+        self.summary = summary
+
+
 class GitHubPort(Protocol):
     """Read-only GitHub lookups used for attribution."""
+
+    token_expires_at: datetime | None
+    """When the token expires, as GitHub reported on the last response."""
 
     def pull_for_commit(self, commit_sha: str) -> PullRequestRef | None: ...
 
@@ -748,6 +761,7 @@ class FullCIAnalysisHandler:
         github: GitHubPort,
         clock: Clock,
         delivery_mode: DeliveryMode = DeliveryMode.LIVE,
+        operator_destination: str | None = None,
     ) -> None:
         self._store = store
         self._builds = builds
@@ -756,6 +770,10 @@ class FullCIAnalysisHandler:
         self._github = github
         self._clock = clock
         self._delivery_mode = delivery_mode
+        # Where GitHub-token warnings go: the same person or channel as the
+        # OnFailure= notifier (ALERTING_FAILURE_SLACK_DESTINATION).
+        self._operator_destination = operator_destination
+        self._github_problem: str | None = None
 
     def __call__(self, command: ScheduledCommand) -> None:
         # Each comparison commits independently, so a crash or failure leaves
@@ -847,7 +865,10 @@ class FullCIAnalysisHandler:
         commit_sha = str(build.get("commit") or context.current.commit_sha)
         with tempfile.TemporaryDirectory(prefix="full-ci-analysis-") as tmp:
             workdir = Path(tmp)
-            commit_pull_request = self._github.pull_for_commit(commit_sha)
+            self._github_problem = None
+            commit_pull_request = self._github_or_none(
+                lambda: self._github.pull_for_commit(commit_sha)
+            )
             summary = _build_summary(
                 build=build,
                 jobs=jobs,
@@ -872,6 +893,12 @@ class FullCIAnalysisHandler:
             )
             conditions = self._classify(context, jobs, cache, outputs)
             checkpoint = self._checkpoints.upload(_read_memory(workdir))
+            report_text = outputs.report_text
+            if self._github_problem is not None:
+                report_text += (
+                    "\n⚠️ PR attribution unavailable this run: "
+                    f"{self._github_problem}"
+                )
             notifications = [
                 NotificationIntent(
                     delivery_id=f"full-ci:{context.current.build_id}",
@@ -880,8 +907,9 @@ class FullCIAnalysisHandler:
                     delivery_mode=self._delivery_mode,
                     destination_mode=DestinationMode.BOT_TOKEN,
                     destination=full_ci_slack_channel(),
-                    payload={"text": outputs.report_text},
-                )
+                    payload={"text": report_text},
+                ),
+                *self._operator_warnings(context),
             ]
             amd_payload = _amd_failure_payload(build, all_jobs)
             if amd_payload is not None:
@@ -900,7 +928,7 @@ class FullCIAnalysisHandler:
                 analysis=CompletedAnalysis(
                     current_build_id=context.current.build_id,
                     previous_build_id=context.previous_build_id,
-                    report_text=outputs.report_text,
+                    report_text=report_text,
                     failure_cache=outputs.cache,
                     suspicious_prs=outputs.suspicious_prs,
                     conditions=conditions,
@@ -911,6 +939,61 @@ class FullCIAnalysisHandler:
                 now=self._clock.now(),
             )
         return True
+
+    def _github_or_none(
+        self, lookup: Callable[[], PullRequestRef | None]
+    ) -> PullRequestRef | None:
+        """PR attribution is supplementary, so a GitHub failure costs it only.
+
+        An expired worker token made every lookup fail with HTTP 401, and
+        because that aborted the whole analysis, no Full CI report went out
+        for a day (2026-09-28). The problem is kept for the report and the
+        operator warning instead.
+        """
+        try:
+            return lookup()
+        except GitHubUnavailable as exc:
+            self._github_problem = exc.summary
+            return None
+
+    def _operator_warnings(
+        self, context: ComparisonContext
+    ) -> list[NotificationIntent]:
+        """DM the operator about a failing or soon-expiring GitHub token."""
+        if not self._operator_destination:
+            return []
+        now = self._clock.now()
+        build_number = context.current.build_number
+        texts: dict[str, str] = {}
+        if self._github_problem is not None:
+            texts[f"github-unavailable:{context.current.build_id}"] = (
+                f":warning: *Full CI report #{build_number} went out without "
+                f"PR attribution*\nGitHub lookup failed: `{self._github_problem}`\n"
+                "On HTTP 401 the worker token has expired or been revoked: "
+                "write a new read-only token to the `vllm-alerting-github-read` "
+                'secret as `{"GITHUB_TOKEN": "…"}`. The next tick loads it.'
+            )
+        expires = self._github.token_expires_at
+        if expires is not None and expires - now <= GITHUB_TOKEN_WARNING:
+            days = max(0, (expires - now).days)
+            texts[f"github-token-expiry:{expires:%Y-%m-%d}:{now:%Y-%m-%d}"] = (
+                ":hourglass_flowing_sand: *The alerting worker's GitHub token "
+                f"expires {expires:%Y-%m-%d %H:%M} UTC* ({days} days)\n"
+                "Replace it in the `vllm-alerting-github-read` secret before "
+                "then, or Full CI reports lose PR attribution."
+            )
+        return [
+            NotificationIntent(
+                delivery_id=delivery_id,
+                alert_ref=f"full-ci-comparison:{context.current.build_id}",
+                alert_path=AlertPath.FULL_CI,
+                delivery_mode=self._delivery_mode,
+                destination_mode=DestinationMode.BOT_TOKEN,
+                destination=self._operator_destination,
+                payload={"text": text},
+            )
+            for delivery_id, text in texts.items()
+        ]
 
     def _skip(
         self,
@@ -1050,7 +1133,10 @@ class FullCIAnalysisHandler:
         self, name: str, prior: FailureCondition | None
     ) -> FailureCondition:
         if prior is not None and prior.culprit_pr is not None:
-            revert = self._github.find_merged_revert(prior.culprit_pr.number)
+            culprit = prior.culprit_pr.number
+            revert = self._github_or_none(
+                lambda: self._github.find_merged_revert(culprit)
+            )
             if revert is not None:
                 return FailureCondition(
                     job_name=name,
@@ -1093,6 +1179,7 @@ class GitHubRestClient:
     def __init__(self, *, token: str, repo: str = "vllm-project/vllm") -> None:
         self._token = token
         self._repo = repo
+        self.token_expires_at: datetime | None = None
 
     def _get_json(self, url: str) -> Any:
         parsed = urllib.parse.urlsplit(url)
@@ -1108,14 +1195,30 @@ class GitHubRestClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
+                self._note_token_expiry(
+                    response.headers.get("github-authentication-token-expiration")
+                )
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None
             body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"GET {parsed.path} failed with HTTP {exc.code}: {body[:1000]}"
+            raise GitHubUnavailable(
+                f"GET {parsed.path} failed with HTTP {exc.code}", body[:1000]
             ) from exc
+        except OSError as exc:  # connection errors and timeouts
+            raise GitHubUnavailable(f"GET {parsed.path} failed: {exc}") from exc
+
+    def _note_token_expiry(self, header: str | None) -> None:
+        """Fine-grained tokens report their expiry on every response, in the
+        form ``2026-12-27 10:58:28 UTC``; other tokens send no header."""
+        if not header:
+            return
+        try:
+            parsed = datetime.strptime(header.strip(), "%Y-%m-%d %H:%M:%S UTC")
+        except ValueError:
+            return
+        self.token_expires_at = parsed.replace(tzinfo=timezone.utc)
 
     def pull_for_commit(self, commit_sha: str) -> PullRequestRef | None:
         payload = self._get_json(

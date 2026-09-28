@@ -2126,6 +2126,7 @@ def build_full_ci_analysis_runtime(
     kimi_reasoning_effort: str = "low",
     kimi_request_timeout_seconds: float = 900.0,
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
+    operator_destination: str | None = None,
 ) -> AlertingRuntime:
     """Wire the production analyzer compatibility adapter into the runtime."""
     from alerting.analyzer import (
@@ -2154,6 +2155,7 @@ def build_full_ci_analysis_runtime(
         github=GitHubRestClient(token=github_token),
         clock=clock,
         delivery_mode=delivery_mode,
+        operator_destination=operator_destination,
     )
     return AlertingRuntime(
         executions=store,

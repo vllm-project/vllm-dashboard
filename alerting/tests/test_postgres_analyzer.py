@@ -347,6 +347,7 @@ class FakeGitHub:
 
     def __init__(self, pull: PullRequestRef | None = None) -> None:
         self.pull = pull
+        self.token_expires_at: datetime | None = None
 
     def pull_for_commit(self, commit_sha: str) -> PullRequestRef | None:
         return self.pull

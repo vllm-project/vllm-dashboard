@@ -44,6 +44,16 @@ in a separate failure-only Slack message.
 - Control plane: S3 `control/full_ci.mode` (`shadow` default / `live` /
   `disabled`) applies to both the reconciler and the analyzer.
 
+## When GitHub fails
+
+PR attribution is supplementary. If a GitHub lookup fails with anything other
+than 404 (an expired or revoked `GITHUB_TOKEN`, a GitHub outage), the report
+still posts, ending with `⚠️ PR attribution unavailable this run: …`, and a
+DM goes to `ALERTING_FAILURE_SLACK_DESTINATION`. The same destination is
+warned once a day during the week before the token expires, from the
+`github-authentication-token-expiration` header GitHub returns on every
+response for fine-grained tokens.
+
 ## What it posts to Slack
 
 The analyzer's NVIDIA-focused report is delivered through the outbox with

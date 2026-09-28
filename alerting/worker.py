@@ -97,6 +97,7 @@ def _runtime(
             slack=_slack(),
             clock=clock,
             delivery_mode=delivery_mode,
+            operator_destination=os.environ.get("ALERTING_FAILURE_SLACK_DESTINATION"),
         )
     if consumer == "main-ci":
         return build_main_ci_runtime(

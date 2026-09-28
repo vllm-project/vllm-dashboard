@@ -23,6 +23,8 @@ from alerting.analyzer import (
     FailureCondition,
     FailureLifecycle,
     FullCIAnalysisHandler,
+    GitHubRestClient,
+    GitHubUnavailable,
     PullRequestRef,
     pack_checkpoint,
     unpack_checkpoint,
@@ -51,6 +53,7 @@ START = datetime(2026, 8, 27, 6, 0, tzinfo=timezone.utc)
 RUN1_AT = START - timedelta(hours=9)
 RUN2_AT = START
 RUN3_AT = START + timedelta(hours=9)
+OPERATOR = "U-OPERATOR"
 
 
 def make_run(build_number: int, scheduled_at: datetime) -> FullCIRun:
@@ -230,12 +233,18 @@ class FakeGitHub:
         self.merged_reverts: dict[int, PullRequestRef] = {}
         self.commit_prs: dict[str, PullRequestRef] = {}
         self.revert_lookups: list[int] = []
+        self.token_expires_at: datetime | None = None
+        self.failure: GitHubUnavailable | None = None
 
     def pull_for_commit(self, commit_sha: str) -> PullRequestRef | None:
+        if self.failure is not None:
+            raise self.failure
         return self.commit_prs.get(commit_sha)
 
     def find_merged_revert(self, pr_number: int) -> PullRequestRef | None:
         self.revert_lookups.append(pr_number)
+        if self.failure is not None:
+            raise self.failure
         return self.merged_reverts.get(pr_number)
 
 
@@ -289,6 +298,7 @@ class Harness:
                     github=self.github,
                     clock=self.clock,
                     delivery_mode=delivery_mode,
+                    operator_destination=OPERATOR,
                 )
             },
         )
@@ -1596,3 +1606,109 @@ def test_checkpoint_packing_is_deterministic() -> None:
     )
     unpacked = unpack_checkpoint(pack_checkpoint(files))
     assert unpacked == {"a.md": b"one", "b.md": b"two"}
+
+
+def _one_failing_build() -> tuple[FullCIRun, Harness]:
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs([("Job A", "failed", False)]),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+    return run2, harness
+
+
+def test_github_failure_still_posts_the_report_and_warns_the_operator() -> None:
+    """An expired worker token failed every lookup with HTTP 401 and, because
+    that aborted the analysis, no report went out for a day (2026-09-28)."""
+    run2, harness = _one_failing_build()
+    harness.github.failure = GitHubUnavailable(
+        "GET /repos/vllm-project/vllm/commits/commit-2/pulls failed with HTTP 401",
+        '{"message": "Bad credentials"}',
+    )
+
+    result = harness.analyze()
+
+    assert result.status is ProcessStatus.COMPLETED
+    report = notification_for(harness, run2.build_id).payload["text"]
+    assert report.endswith(
+        "\n⚠️ PR attribution unavailable this run: GET /repos/vllm-project/vllm/"
+        "commits/commit-2/pulls failed with HTTP 401"
+    )
+    assert harness.store.analyses()[0].report_text == report
+    warning = harness.outbox.get_outbox(f"github-unavailable:{run2.build_id}")
+    assert warning is not None
+    assert warning.destination == OPERATOR
+    assert "Full CI report #2 went out without PR attribution" in warning.payload["text"]
+    assert "HTTP 401" in warning.payload["text"]
+
+
+def test_expiring_github_token_warns_the_operator_a_week_out() -> None:
+    run2, harness = _one_failing_build()
+    harness.github.token_expires_at = harness.clock.now() + timedelta(days=3)
+
+    assert harness.analyze().status is ProcessStatus.COMPLETED
+
+    warnings = [
+        record
+        for record in harness.outbox.records()
+        if record.delivery_id.startswith("github-token-expiry:")
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].destination == OPERATOR
+    assert "(3 days)" in warnings[0].payload["text"]
+    assert "PR attribution unavailable" not in (
+        notification_for(harness, run2.build_id).payload["text"]
+    )
+
+
+def test_healthy_github_token_sends_the_operator_nothing() -> None:
+    _, harness = _one_failing_build()
+    harness.github.token_expires_at = harness.clock.now() + timedelta(days=30)
+
+    assert harness.analyze().status is ProcessStatus.COMPLETED
+
+    assert [record.destination for record in harness.new_notifications()] == [
+        "C0ABTNM9L5U"
+    ]
+
+
+def test_github_client_reports_failures_and_token_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+    import urllib.error
+    import urllib.request
+    from email.message import Message
+
+    headers = Message()
+    headers["github-authentication-token-expiration"] = "2026-12-27 10:58:28 UTC"
+
+    class Response(io.BytesIO):
+        def __init__(self) -> None:
+            super().__init__(b"[]")
+            self.headers = headers
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *_, **__: Response())
+    client = GitHubRestClient(token="t")
+    assert client.pull_for_commit("abc") is None
+    assert client.token_expires_at == datetime(2026, 12, 27, 10, 58, 28, tzinfo=timezone.utc)
+
+    def unauthorized(*_: object, **__: object) -> object:
+        raise urllib.error.HTTPError(
+            "https://api.github.com/x", 401, "Unauthorized", Message(),
+            io.BytesIO(b'{"message": "Bad credentials"}'),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", unauthorized)
+    with pytest.raises(GitHubUnavailable) as raised:
+        client.pull_for_commit("abc")
+    assert raised.value.summary == (
+        "GET /repos/vllm-project/vllm/commits/abc/pulls failed with HTTP 401"
+    )
