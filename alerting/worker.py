@@ -6,6 +6,7 @@ import os
 import sys
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 
 from alerting.commands import ScheduledCommand
 from alerting.ports import Clock, DeliveryMode
@@ -20,6 +21,9 @@ from alerting.postgres import (
 )
 from alerting.runtime import AlertingRuntime, ProcessStatus
 from alerting.slack import SlackDeliveryPort
+
+# Read by deploy/aws/bin/notify-failure; keep the two paths in step.
+FAILURE_DIR = Path("/run/alerting/failures")
 
 
 class SystemClock:
@@ -198,10 +202,36 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
     consumer = args[0]
     clock = SystemClock()
-    runtime = _runtime(consumer, clock, _delivery_mode())
-    result = runtime.process_command(scheduled_command(consumer, clock.now()))
-    runtime.dispatch_due_notifications()
-    return 1 if result.status is ProcessStatus.FAILED else 0
+    try:
+        runtime = _runtime(consumer, clock, _delivery_mode())
+        result = runtime.process_command(scheduled_command(consumer, clock.now()))
+        runtime.dispatch_due_notifications()
+    except Exception as exc:
+        _record_failure(consumer, f"{type(exc).__name__}: {exc}")
+        raise
+    if result.status is ProcessStatus.FAILED:
+        _record_failure(result.idempotency_key, result.error or "unknown error")
+        return 1
+    return 0
+
+
+def _record_failure(run: str, error: str) -> None:
+    """Leave the error where the unit's OnFailure= Slack notifier reads it.
+
+    Worker output is discarded, the notifier cannot read the journal, and it
+    must not need the database, so without this file the Slack message could
+    only say that the unit failed. systemd names each run with INVOCATION_ID
+    and hands the same ID to the notifier, so a later run cannot overwrite
+    the message about this one.
+    """
+    invocation = os.environ.get("INVOCATION_ID")
+    if not invocation:
+        return  # not started by systemd; nothing will read it
+    try:
+        FAILURE_DIR.mkdir(parents=True, exist_ok=True)
+        (FAILURE_DIR / invocation).write_text(f"{run}\n{error[:1500]}\n")
+    except OSError:
+        pass  # the notifier says the error was not recorded
 
 
 if __name__ == "__main__":

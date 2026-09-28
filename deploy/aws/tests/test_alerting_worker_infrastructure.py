@@ -395,23 +395,31 @@ def test_failure_resolver_exits_before_loading_secrets_when_nothing_is_open() ->
     assert script.index(marker) < script.index("SLACK_BOT_TOKEN")
 
 
-def test_failure_notifier_reads_the_failure_from_the_journal() -> None:
-    """Live unit state lies after a fast re-entry.
+def test_failure_notifier_reports_the_failed_run_not_live_state() -> None:
+    """Live unit state lies after a fast re-entry, and the journal is closed.
 
     systemd resets Result and ExecMainStatus when the next timer tick restarts
-    the unit; on 2026-09-16 a scan failed on a Postgres statement timeout and
-    Slack was told "result success, exit 0" because the notifier read live
-    state in the same second the unit restarted. The journal's
-    "Failed with result" / "Main process exited" records are historical.
+    the unit: on 2026-09-16 a scan failed on a Postgres statement timeout and
+    Slack was told "result success, exit 0". The journal fallback never worked
+    either, because the alerting user cannot read the system journal, so every
+    message said "no journal record" and carried no error. systemd's MONITOR_*
+    variables describe the failed run itself, and the worker leaves its error
+    in a file named by the same invocation ID.
     """
     script = read("bin/notify-failure")
 
-    assert "Failed with result" in script
-    assert "code=exited, status=" in script
-    # The live-state fallback stays labeled so post-restart "success" is never
-    # presented as the failure's result.
-    assert "live state" in script
+    assert "MONITOR_SERVICE_RESULT" in script
+    assert "MONITOR_EXIT_STATUS" in script
+    assert "/run/alerting/failures/${MONITOR_INVOCATION_ID" in script
+    assert "systemctl show" not in script
+    assert "journalctl -u \"$unit\"" not in script
     assert "chat.update" in script
+
+
+def test_failure_notifier_and_worker_agree_on_the_error_file() -> None:
+    worker = (AWS_DIR.parents[1] / "alerting" / "worker.py").read_text()
+    assert 'FAILURE_DIR = Path("/run/alerting/failures")' in worker
+    assert "INVOCATION_ID" in worker
 
 
 def test_failure_notifier_never_depends_on_the_database() -> None:
@@ -419,9 +427,11 @@ def test_failure_notifier_never_depends_on_the_database() -> None:
     assert "DATABASE_URL" not in script
     assert "psycopg" not in script
     assert "chat.postMessage" in script
-    # Throttled, because the timers that fail every two minutes during an
-    # outage would otherwise send hundreds of messages.
-    assert "ALERTING_FAILURE_THROTTLE_SECONDS" in script
+    # One message per episode, edited in place, because the timers that fail
+    # every two minutes during an outage would otherwise send hundreds of
+    # messages, and a new post per failure left all but the last unresolved.
+    assert 'payload["ts"] = state["ts"]' in script
+    assert "ALERTING_FAILURE_THROTTLE_SECONDS" not in script
 
 
 def test_failure_notifier_survives_its_own_sandbox() -> None:

@@ -1,6 +1,7 @@
 """Worker entry-point behavior."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -253,3 +254,69 @@ def test_full_ci_analysis_still_uses_shared_kimi_env(
 
     assert captured["kimi_reasoning_effort"] == "high"
     assert captured["kimi_timeout_seconds"] == 900
+
+
+class FailingRuntime(RecordingRuntime):
+    def process_command(self, command: ScheduledCommand) -> ProcessResult:
+        self.commands.append(command)
+        return ProcessResult(
+            command.idempotency_key, ProcessStatus.FAILED, error="HTTP 401: Bad credentials"
+        )
+
+
+def _fixed_worker(
+    monkeypatch: pytest.MonkeyPatch, runtime: RecordingRuntime, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(worker, "_runtime", lambda *_: runtime)
+    monkeypatch.setattr(worker, "FAILURE_DIR", tmp_path / "failures")
+    monkeypatch.setattr(
+        worker.SystemClock,
+        "now",
+        lambda self: datetime(2026, 9, 28, 9, 43, tzinfo=timezone.utc),
+    )
+
+
+def test_failed_run_leaves_its_error_for_the_slack_notifier(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The failure DM said only "exit 1" because nothing carried the error."""
+    _fixed_worker(monkeypatch, FailingRuntime(), tmp_path)
+    monkeypatch.setenv("INVOCATION_ID", "abc123")
+
+    assert worker.main(["full-ci-analyze"]) == 1
+
+    run, error = (tmp_path / "failures" / "abc123").read_text().splitlines()
+    assert run == "full_ci_analyze:2026-09-28T09:43:00.000000+00:00"
+    assert error == "HTTP 401: Bad credentials"
+
+
+def test_crash_outside_the_handler_is_recorded_too(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def broken(*_: object) -> RecordingRuntime:
+        raise RuntimeError("required environment variable is missing: DATABASE_URL")
+
+    _fixed_worker(monkeypatch, RecordingRuntime(), tmp_path)
+    monkeypatch.setattr(worker, "_runtime", broken)
+    monkeypatch.setenv("INVOCATION_ID", "abc123")
+
+    with pytest.raises(RuntimeError):
+        worker.main(["infra"])
+
+    assert (tmp_path / "failures" / "abc123").read_text() == (
+        "infra\nRuntimeError: required environment variable is missing: DATABASE_URL\n"
+    )
+
+
+def test_successful_or_unsupervised_runs_leave_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _fixed_worker(monkeypatch, RecordingRuntime(), tmp_path)
+    monkeypatch.setenv("INVOCATION_ID", "abc123")
+    assert worker.main(["fast-ci"]) == 0
+
+    _fixed_worker(monkeypatch, FailingRuntime(), tmp_path)
+    monkeypatch.delenv("INVOCATION_ID")
+    assert worker.main(["fast-ci"]) == 1
+
+    assert not (tmp_path / "failures").exists()
