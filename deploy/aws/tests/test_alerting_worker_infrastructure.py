@@ -420,6 +420,9 @@ def test_failure_notifier_and_worker_agree_on_the_error_file() -> None:
     worker = (AWS_DIR.parents[1] / "alerting" / "worker.py").read_text()
     assert 'FAILURE_DIR = Path("/run/alerting/failures")' in worker
     assert "INVOCATION_ID" in worker
+    # systemd ages the files out, so a notifier that dies before deleting
+    # them cannot let them pile up in tmpfs.
+    assert "d /run/alerting/failures 0700 alerting alerting 1d" in read("install.sh")
 
 
 def test_failure_notifier_never_depends_on_the_database() -> None:

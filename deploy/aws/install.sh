@@ -35,7 +35,11 @@ printf 'ALERTING_CHECKPOINT_BUCKET=%s\nKIMI_REASONING_EFFORT=%s\nKIMI_MAIN_CI_RE
 chown root:alerting /etc/alerting/secret-arns /etc/alerting/worker.env
 chmod 0440 /etc/alerting/secret-arns /etc/alerting/worker.env
 
-printf 'd /run/alerting 0700 alerting alerting -\n' > /usr/lib/tmpfiles.d/alerting.conf
+# Failed runs leave their error in failures/ for the Slack notifier, which
+# deletes each file once posted. The 1d age lets systemd-tmpfiles-clean.timer
+# prune whatever a broken notifier leaves behind.
+printf 'd /run/alerting 0700 alerting alerting -\nd /run/alerting/failures 0700 alerting alerting 1d\n' \
+  > /usr/lib/tmpfiles.d/alerting.conf
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/alerting.conf
 systemctl daemon-reload
 systemctl start alerting-control.service

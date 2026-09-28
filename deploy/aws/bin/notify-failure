@@ -126,7 +126,6 @@ status=${MONITOR_EXIT_STATUS:-?}
 # The worker writes its error here, named by its INVOCATION_ID, because its
 # output is discarded and this notifier must not need the database.
 failure_file=/run/alerting/failures/${MONITOR_INVOCATION_ID:-none}
-find /run/alerting/failures -type f -mmin +1440 -delete 2>/dev/null || true
 
 # One message per failure episode. While one is open, each further failure
 # edits it with the latest error and a running count instead of posting
