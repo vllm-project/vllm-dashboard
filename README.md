@@ -51,6 +51,57 @@ public queue metrics schema stops at p95, p99 is calculated from the current
 `SCHEDULED` command jobs as `now - runnableAt` using nearest-rank percentiles;
 the same five-minute snapshot feeds the historical chart.
 
+The Queue page's **Traffic & utilization** view offers **All queues** first and
+selects it by default, followed by **CUDA** and **ROCm**. All queues includes
+every queue, including CPU, TPU, utility queues, and queues excluded from the
+CUDA and ROCm groups. All queues and CUDA show each queue's reported P95
+waiting-job age: elapsed time since waiting jobs became runnable. Their history
+lines, heatmap, and rankings compare current, mean, and peak reported P95 and
+waiting-job backlog. These readings describe jobs still waiting; they do not
+measure completed-job queue latency. Percentiles stay separate for each queue.
+
+All queues initially shows the top 20 ranked rows in the activity table, with an
+option to expand it. Its history chart shows up to 10 ranked queues with reported
+historical P95 values to keep the legend readable. Hardware family and individual
+queue filters narrow each group further. CUDA covers nine currently observed
+GPU queues after the exclusions listed in
+[the preview guide](./docs/queue-traffic-preview.md). ROCm applies 16 queue
+exclusions consistently to selectors, traffic, and capacity inventory. Group
+selection uses `group=all` (also the default when absent), `group=cuda`, or
+`group=rocm`; existing `group=amd` traffic links continue to select ROCm.
+
+Current wait values come from the raw snapshot matching the fresh count
+reading's timestamp, because the API's latest percentile fields can carry older
+values. Missing P95 readings stay unavailable, idle observations with no waiting
+jobs remain distinct, and a reported zero is valid. Mean P95 uses only reported
+P95 samples; wait coverage counts buckets with a P95 or a recorded idle state.
+For ranges longer than six hours, the API averages saved P95 values within each
+bucket. Historical means and peaks summarize those reported buckets; they do
+not recompute percentiles from individual jobs.
+
+ROCm utilization is running jobs divided by the configured max-in-flight
+limit in [`queue-capacity.ts`](./src/lib/queue-capacity.ts). Its supplied
+limits cover 12 queues and total 785 concurrent jobs, including DPX at 240 and
+the MI355 4-GPU queue at 42. All configured queue limits total 821 concurrent
+jobs. Combined utilization includes only observed queues with known limits. The
+ROCm heatmap shows average observed utilization, the fraction of recorded
+buckets at or above 90%,
+and observation coverage. All groups preserve missing samples. Historical
+utilization uses current limits and averaged readings, so near-limit share
+describes observed buckets rather than exact time at capacity. The capacity
+reference lists each queue's configured job limit and shows GPU counts by
+hardware family from the configured allocations. The ROCm family cards show
+MI250 at 190 GPUs, MI300 at 375, and MI355 at 440. Normal queues use max-in-flight
+jobs times GPUs per job; DPX contributes 15 nodes × 8 GPUs, independently of its
+240-job limit.
+ROCm history offers **Jobs**, with stacked running/waiting counts and the
+configured limit, and
+**Wait time**, with separate P95 lines for each queue. `chart=wait` selects Wait
+time; legacy `chart=utilization` links also select it. **Queue details** remains
+available for all queues, and existing `?queue=...` links still open it. See
+[the local preview guide](./docs/queue-traffic-preview.md) to render these views
+with public queue data and no database credentials.
+
 ## Local development
 
 ```bash
