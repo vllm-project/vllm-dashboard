@@ -89,24 +89,35 @@ export async function queryLatestTestTimings(
   // The pipeline and branch literals must match the partial index predicate
   // in migration 0029, so they are not parameters. A retried failure keeps its
   // failed job span, so that build is skipped: the baseline only comes from
-  // builds where the step passed outright.
+  // builds where the step passed outright. A passing build whose test spans
+  // were lost in ingestion is skipped too, so the previous build is used
+  // instead of no baseline at all. The test-span check sits outside the
+  // sorted subquery so it runs newest first and stops at the first match.
   const [build] = await sql<{
     build_number: string; commit: string | null; finished_at: Date; job_ids: string[];
   }[]>`
-    SELECT
-      build_number,
-      MAX(span_attributes->>'buildkite.build.commit') AS commit,
-      MAX(end_time) AS finished_at,
-      ARRAY_AGG(job_id ORDER BY job_id) AS job_ids
-    FROM otel_spans
-    WHERE span_name = 'buildkite.job'
-      AND job_type = 'script'
-      AND pipeline_slug = 'ci'
-      AND span_attributes->>'buildkite.build.branch' = 'main'
-      AND step_key = ${stepKey}
-      AND start_time >= NOW() - make_interval(days => ${days})
-    GROUP BY build_number
-    HAVING BOOL_AND(job_state = 'finished' AND job_passed = 'true')
+    SELECT * FROM (
+      SELECT
+        build_number,
+        MAX(span_attributes->>'buildkite.build.commit') AS commit,
+        MAX(end_time) AS finished_at,
+        ARRAY_AGG(job_id ORDER BY job_id) AS job_ids
+      FROM otel_spans
+      WHERE span_name = 'buildkite.job'
+        AND job_type = 'script'
+        AND pipeline_slug = 'ci'
+        AND span_attributes->>'buildkite.build.branch' = 'main'
+        AND step_key = ${stepKey}
+        AND start_time >= NOW() - make_interval(days => ${days})
+      GROUP BY build_number
+      HAVING BOOL_AND(job_state = 'finished' AND job_passed = 'true')
+      ORDER BY build_number DESC
+    ) AS passing
+    WHERE EXISTS (
+      SELECT 1 FROM otel_spans AS t
+      WHERE t.job_id = ANY(passing.job_ids)
+        AND t.span_attributes->>'ci.span.kind' = 'test'
+    )
     ORDER BY build_number DESC
     LIMIT 1
   `;
