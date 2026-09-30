@@ -2,15 +2,28 @@ import postgres from "postgres";
 
 let sql: postgres.Sql;
 
+export function webDatabaseUrl(url: string): string {
+  if (!URL.canParse(url)) return url;
+  const parsed = new URL(url);
+  if (
+    parsed.hostname.endsWith(".pooler.supabase.com") &&
+    (!parsed.port || parsed.port === "5432")
+  ) {
+    parsed.port = "6543";
+    return parsed.toString();
+  }
+  return url;
+}
+
 export function getDb() {
   if (!sql) {
     const url = process.env.DATABASE_URL;
     if (!url) {
       throw new Error("DATABASE_URL is not set");
     }
-    sql = postgres(url, {
+    sql = postgres(webDatabaseUrl(url), {
       ssl: "require",
-      // DATABASE_URL points at Supabase's transaction-mode pooler. Named
+      // Supabase shared-pooler URLs use transaction mode in the web app. Named
       // prepared statements are connection-local and can disappear when the
       // pooler hands a later request to a different backend connection.
       prepare: false,

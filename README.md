@@ -93,6 +93,21 @@ page (Builds) loads, see the [Builds latency guide](./docs/builds-performance.md
 | `CRON_SECRET` | Optional shared secret required by Vercel cron handlers |
 | `WARM_DEFAULTS_BASE_URL` | Optional base URL the `/api/cron/warm-defaults` cache warmer requests; defaults to `https://ci.vllm.ai` |
 
+The web app routes shared Supabase pooler URLs (`*.pooler.supabase.com`) on
+port `5432`, or with no explicit port, to transaction mode on port `6543`.
+Session pooling limits concurrent clients to the backend pool size, which can
+cause telemetry ingestion to return `503` during serverless bursts. The web
+client disables prepared statements and keeps explicit transactions together.
+Direct database URLs and other ports are used as configured. Deploy this change
+to apply it; no Vercel environment edit is required for an existing session URL.
+
+This routing applies only to the web client's `getDb()`. The EC2 alerting worker
+reads its own `DATABASE_URL` from AWS Secrets Manager and needs no configuration
+change for this fix. Its adapter already disables prepared statements and uses
+explicit transactions. Keep migration commands on a direct or session
+connection on port `5432`: the runner needs session advisory locks and session
+settings, and rejects transaction-pooler URLs. See [migrations](./migrations/).
+
 The dashboard assumes a warehouse schema with tables under `vllm_data_warehouse.buildkite.*` (builds, jobs, agent query rules) and `vllm_data_warehouse.default.vllm_perf_data_ingest` for benchmarks. Adapt the queries in `src/app/api/**/route.ts` if your schema differs.
 
 GPU telemetry is written to raw `gpu_snapshots` rows and an incremental
