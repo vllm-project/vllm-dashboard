@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { summarizeFiles, TimingDataError, type TestSpanRow } from "./latest-test-timings";
+import { medianFiles, summarizeFiles, TimingDataError, type TestSpanRow } from "./latest-test-timings";
 
 function row(nodeid: string, duration_ms: number, extra: Partial<TestSpanRow> = {}): TestSpanRow {
   return {
@@ -43,4 +43,25 @@ test("rejects data that could masquerade as a usable baseline", () => {
   ]) {
     assert.throws(() => summarizeFiles(rows), TimingDataError);
   }
+});
+
+test("takes each file's median over the builds it ran in", () => {
+  const build = (ms: number, extra: TestSpanRow[] = []) =>
+    summarizeFiles([row("tests/a.py::one", ms), ...extra]);
+  const files = medianFiles([
+    build(100, [row("tests/new.py::one", 40, { outcome: "skipped" })]),
+    build(300),
+    build(110),
+    build(120, [row("tests/new.py::one", 10)]),
+  ]);
+  assert.deepEqual(files.map((f) => [f.file, f.observedMs, f.passedMs, f.builds, f.timingStatus]), [
+    ["tests/a.py", 115, 115, 4, "passed"],
+    ["tests/new.py", 25, 5, 2, "skip_only"],
+  ]);
+});
+
+test("ignores a run of slow builds that stays a minority", () => {
+  const files = medianFiles([30, 30, 30, 18, 18, 18, 18].map((min) =>
+    summarizeFiles([row("tests/a.py::one", min * 60_000)])));
+  assert.equal(files[0].observedMs, 18 * 60_000);
 });

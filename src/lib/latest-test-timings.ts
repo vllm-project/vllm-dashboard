@@ -1,8 +1,12 @@
 import { getDb } from "@/lib/db";
 
-// Per-file test timings from the newest main build in which every job of one
-// Buildkite step passed. The runtime shard planner reads this as its timing
-// baseline; it must never mistake missing telemetry for fast tests.
+// Per-file test timings for one Buildkite step: the median over the newest
+// main builds in which every job of the step passed. The runtime shard planner
+// reads this as its timing baseline; it must never mistake missing telemetry
+// for fast tests. A median over many builds keeps a short run of slow builds,
+// such as an infra incident, from making the planner over-shard.
+
+export const MEDIAN_BUILDS = 20;
 
 export interface TestSpanRow {
   job_id: string;
@@ -21,6 +25,7 @@ export interface FileTiming {
   cases: number;
   outcomes: Record<string, number>;
   timingStatus: "passed" | "contains_skips" | "skip_only";
+  builds: number;
 }
 
 export interface LatestTestTimings {
@@ -29,7 +34,9 @@ export interface LatestTestTimings {
   commit: string | null;
   finishedAt: string;
   jobIds: string[];
-  measurement: "sum_of_pytest_runtest_spans";
+  buildNumbers: number[];
+  skippedBuilds: { buildNumber: number; reason: string }[];
+  measurement: "median_over_builds_of_summed_pytest_runtest_spans";
   files: FileTiming[];
 }
 
@@ -61,7 +68,7 @@ export function summarizeFiles(rows: TestSpanRow[]): FileTiming[] {
     if (!entry) {
       entry = {
         command: row.command_label, file, observedMs: 0, passedMs: 0,
-        cases: 0, outcomes: {}, timingStatus: "passed",
+        cases: 0, outcomes: {}, timingStatus: "passed", builds: 1,
       };
       files.set(key, entry);
     }
@@ -80,6 +87,40 @@ export function summarizeFiles(rows: TestSpanRow[]): FileTiming[] {
     a.command === b.command ? a.file.localeCompare(b.file) : a.command.localeCompare(b.command));
 }
 
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+/**
+ * Combine summarizeFiles() output from several builds, newest first, into one
+ * entry per command and file. Times are medians over the builds the file ran
+ * in; cases, outcomes and status come from the newest of those builds.
+ */
+export function medianFiles(filesPerBuild: FileTiming[][]): FileTiming[] {
+  const byKey = new Map<string, FileTiming[]>();
+  for (const files of filesPerBuild) {
+    for (const file of files) {
+      const key = JSON.stringify([file.command, file.file]);
+      const entries = byKey.get(key) ?? [];
+      entries.push(file);
+      byKey.set(key, entries);
+    }
+  }
+  const result: FileTiming[] = [];
+  for (const entries of byKey.values()) {
+    result.push({
+      ...entries[0],
+      observedMs: median(entries.map((e) => e.observedMs)),
+      passedMs: median(entries.map((e) => e.passedMs)),
+      builds: entries.length,
+    });
+  }
+  return result.sort((a, b) =>
+    a.command === b.command ? a.file.localeCompare(b.file) : a.command.localeCompare(b.command));
+}
+
 export async function queryLatestTestTimings(
   stepKey: string,
   { days = 14 } = {},
@@ -91,9 +132,9 @@ export async function queryLatestTestTimings(
   // failed job span, so that build is skipped: the baseline only comes from
   // builds where the step passed outright. A passing build whose test spans
   // were lost in ingestion is skipped too, so the previous build is used
-  // instead of no baseline at all. The test-span check sits outside the
-  // sorted subquery so it runs newest first and stops at the first match.
-  const [build] = await sql<{
+  // instead. The test-span check sits outside the sorted subquery so it runs
+  // newest first and stops once enough builds match.
+  const builds = await sql<{
     build_number: string; commit: string | null; finished_at: Date; job_ids: string[];
   }[]>`
     SELECT * FROM (
@@ -119,9 +160,10 @@ export async function queryLatestTestTimings(
         AND t.span_attributes->>'ci.span.kind' = 'test'
     )
     ORDER BY build_number DESC
-    LIMIT 1
+    LIMIT ${MEDIAN_BUILDS}
   `;
-  if (!build) return null;
+  if (builds.length === 0) return null;
+  const jobIds = builds.flatMap((build) => build.job_ids);
   const rows = await sql<TestSpanRow[]>`
     SELECT
       t.job_id,
@@ -135,17 +177,42 @@ export async function queryLatestTestTimings(
       ON c.trace_id = t.trace_id
       AND c.span_id = t.parent_span_id
       AND c.span_attributes->>'ci.span.kind' = 'command'
-    WHERE t.job_id = ANY(${build.job_ids})
+    WHERE t.job_id = ANY(${jobIds})
       AND t.span_attributes->>'ci.span.kind' = 'test'
   `;
-  if (rows.length === 0) return null;
+  const rowsByJob = new Map<string, TestSpanRow[]>();
+  for (const row of rows) {
+    const jobRows = rowsByJob.get(row.job_id) ?? [];
+    jobRows.push(row);
+    rowsByJob.set(row.job_id, jobRows);
+  }
+  // A build whose spans fail validation was partly lost in ingestion. Leave it
+  // out of the median rather than failing the whole baseline, and say so.
+  const used: (typeof builds)[number][] = [];
+  const filesPerBuild: FileTiming[][] = [];
+  const skippedBuilds: { buildNumber: number; reason: string }[] = [];
+  let firstError: TimingDataError | null = null;
+  for (const build of builds) {
+    try {
+      filesPerBuild.push(summarizeFiles(build.job_ids.flatMap((jobId) => rowsByJob.get(jobId) ?? [])));
+      used.push(build);
+    } catch (e) {
+      if (!(e instanceof TimingDataError)) throw e;
+      firstError ??= e;
+      skippedBuilds.push({ buildNumber: Number(build.build_number), reason: e.message });
+    }
+  }
+  if (used.length === 0) throw firstError;
+  const [newest] = used;
   return {
     stepKey,
-    buildNumber: Number(build.build_number),
-    commit: build.commit,
-    finishedAt: new Date(build.finished_at).toISOString(),
-    jobIds: build.job_ids,
-    measurement: "sum_of_pytest_runtest_spans",
-    files: summarizeFiles(rows),
+    buildNumber: Number(newest.build_number),
+    commit: newest.commit,
+    finishedAt: new Date(newest.finished_at).toISOString(),
+    jobIds: used.flatMap((build) => build.job_ids),
+    buildNumbers: used.map((build) => Number(build.build_number)),
+    skippedBuilds,
+    measurement: "median_over_builds_of_summed_pytest_runtest_spans",
+    files: medianFiles(filesPerBuild),
   };
 }

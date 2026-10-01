@@ -5,7 +5,8 @@ import { queryLatestTestTimings, TimingDataError } from "@/lib/latest-test-timin
 export const runtime = "nodejs";
 
 const STEP_KEY = /^[a-zA-Z0-9][a-zA-Z0-9_:.-]{0,199}$/;
-const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
+// A median over 20 builds moves slowly, so an hour-old answer is still current.
+const CDN_CACHE = { maxAge: 3_600, staleWhileRevalidate: 3_600 };
 
 function error(message: string, status: number) {
   return NextResponse.json(
