@@ -10,11 +10,11 @@ const nextConfig: NextConfig = {
         ? [
             {
               source: "/api/metrics",
-              destination: "http://127.0.0.1:3101/api/metrics",
+              destination: "https://ci.vllm.ai/api/metrics",
             },
             {
               source: "/api/queue/jobs",
-              destination: "http://127.0.0.1:3101/api/queue/jobs",
+              destination: "https://ci.vllm.ai/api/queue/jobs",
             },
           ]
         : [],

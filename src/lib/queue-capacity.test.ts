@@ -124,7 +124,7 @@ test("capacity aliases and hardware families are independent of view exclusions"
     ["H100"],
   );
   assert.deepEqual(QUEUE_FAMILIES, [
-    "GPU", "A100", "H100", "H200", "B200", "B300", "GB300", "GH200", "L4",
+    "L4", "A100", "H100", "H200", "B200", "B300", "GB300", "GH200",
     "DGX Spark", "MI250", "AMD CPU", "MI300", "MI355", "Other ROCm", "Other",
   ]);
   assert.deepEqual(
@@ -139,9 +139,13 @@ test("capacity aliases and hardware families are independent of view exclusions"
 
 test("CUDA includes known GPU queues without inferring capacity", () => {
   const included = [
-    "gpu4", "gpu8", "gpu_4_queue", "gpu_8_queue", "B200", "b200-k8s",
+    "gpu1", "gpu4", "gpu8", "gpu_1_queue", "gpu_4_queue", "gpu_8_queue",
+    "B200", "b200-k8s",
     "mithril-h100-pool", "H200", "h200_18gb", "h200_35gb", "l4", "l4-k8s",
     "RedHat-L4-GCP", "dgx-spark",
+    "H100", "moc-a100", "RedHat-H100-Frankfurt", "RedHat-L4",
+    "b300-8", "gb300-slurm", "A100", "a100_queue", "RedHat-A100-WDC",
+    "RedHat-H100-WDC", "gh200_queue", "gh200",
   ].map((queue) => metric(queue));
   const excluded = [
     "cpu_queue_premerge", "arm64_cpu_queue_postmerge", "amd-cpu", "intel-cpu",
@@ -150,9 +154,6 @@ test("CUDA includes known GPU queues without inferring capacity", () => {
     "default-queue", "kickoff", "kube", "packer_build_queue",
     "RedHat-ModelOpt-Util", "amd_mi300_1", "amd_mi355_dpx", "router_rocm",
     "unknown", "gpu_1_queue_cpu", "redhat-cpu-h100", "gpu",
-    "gpu_1_queue", "H100", "moc-a100", "RedHat-H100-Frankfurt", "RedHat-L4",
-    "b300-8", "gb300-slurm", "A100", "a100_queue", "RedHat-A100-WDC",
-    "RedHat-H100-WDC", "gh200_queue", "gpu1", "gh200",
   ].flatMap((queue) => [queue, queue.toUpperCase()]).map((queue) =>
     metric(queue, { jobs_running: 100, jobs_scheduled: 50, p95_wait_secs: 900 }),
   );
@@ -164,6 +165,7 @@ test("CUDA includes known GPU queues without inferring capacity", () => {
   );
   for (const row of included) {
     assert.equal(isCudaQueue(row.queue), true, row.queue);
+    assert.equal(isCudaQueue(row.queue.toUpperCase()), true, row.queue);
     assert.equal(getQueueCapacity(row.queue), null, row.queue);
   }
   for (const row of excluded) {
@@ -171,11 +173,14 @@ test("CUDA includes known GPU queues without inferring capacity", () => {
   }
   assert.deepEqual(
     [...new Set(included.map((row) => queueFamily(row.queue)))],
-    ["GPU", "B200", "H100", "H200", "L4", "DGX Spark"],
+    ["L4", "B200", "H100", "H200", "DGX Spark", "A100", "B300", "GB300", "GH200"],
   );
   assert.deepEqual(CUDA_FAMILIES, [
-    "GPU", "H100", "H200", "B200", "L4", "DGX Spark",
+    "L4", "A100", "H100", "H200", "B200", "B300", "GB300", "GH200", "DGX Spark",
   ]);
+  for (const queue of ["gpu1", "gpu4", "gpu8", "gpu_1_queue", "gpu_4_queue", "gpu_8_queue"]) {
+    assert.equal(queueFamily(queue), "L4", queue);
+  }
   assert.equal(queueFamily("A100"), "A100");
   assert.equal(queueFamily("H100"), "H100");
   assert.equal(queueFamily("gh200_queue"), "GH200");
@@ -193,6 +198,7 @@ test("CUDA includes known GPU queues without inferring capacity", () => {
     history,
     1,
     filterQueues(rows, "cuda").map((row) => row.queue),
+    5,
     Date.parse("2026-09-28T12:00:00Z"),
   );
   assert.ok(activity.every((row) => row.observedBuckets === 0));
@@ -356,24 +362,27 @@ test("history aligns poll drift and never carries missing queue readings forward
       snapshot("amd_mi250_1", "12:15:02"),
       snapshot("amd_mi250_8", "12:15:45"),
     ],
-    1,
+    5,
     ["amd_mi250_1", "amd_mi250_8"],
   );
   assert.equal(history.length, 4);
   assert.equal(history[0].time, Date.parse("2026-09-28T12:00:00Z"));
   assert.deepEqual(
     history.map((point) => point.running),
-    [2, null, null, 2],
+    [2, 1, null, 2],
   );
   assert.deepEqual(
     history.map((point) => point.maxInFlight),
-    [80, null, null, 80],
+    [80, 78, null, 80],
   );
   assert.deepEqual(
     history.map((point) => point.limitUtilization),
-    [2.5, null, null, 2.5],
+    [2.5, (1 / 78) * 100, null, 2.5],
   );
-  assert.equal(history[1].waiting, null);
+  assert.deepEqual(history.map((point) => point.observedQueueCount), [2, 1, 0, 2]);
+  assert.ok(history.every((point) => point.expectedQueueCount === 2));
+  assert.equal(history[1].waiting, 0);
+  assert.equal(history[2].waiting, null);
   assert.equal(history[2].limitUtilization, null);
 });
 
@@ -384,31 +393,66 @@ test("history uses the latest per-queue reading and ignores unselected queues", 
       snapshot("mi250_8", "12:04:02", 2),
       snapshot("gpu_1_queue", "12:10:00", 100),
     ],
-    6,
+    5,
     ["amd_mi250_8", "mi250_8"],
   );
   assert.equal(history.length, 1);
   assert.equal(history[0].running, 2);
   assert.equal(history[0].limitUtilization, 100);
-  assert.deepEqual(buildTrafficHistory([], 6, ["amd_mi250_8"]), []);
+  assert.deepEqual(buildTrafficHistory([], 5, ["amd_mi250_8"]), []);
   assert.deepEqual(
-    buildTrafficHistory([snapshot("amd_mi250_8", "12:00:00")], 6, []),
+    buildTrafficHistory([snapshot("amd_mi250_8", "12:00:00")], 5, []),
     [],
   );
 });
 
-test("history preserves API bucket sizes across supported windows", () => {
-  for (const [hours, stepMinutes] of [
-    [24, 15],
-    [168, 60],
-    [720, 360],
-  ]) {
+test("new, retired, and unobserved queues do not erase available traffic or inflate capacity", () => {
+  const history = buildTrafficHistory(
+    [
+      snapshot("amd_mi250_1", "12:00:00", 39),
+      snapshot("amd_mi355_4", "12:10:00", 21),
+    ],
+    5,
+    ["amd_mi250_1", "amd_mi355_4", "amd_mi300_1"],
+  );
+  assert.deepEqual(history.map((point) => point.running), [39, null, 21]);
+  assert.deepEqual(history.map((point) => point.maxInFlight), [78, null, 42]);
+  assert.deepEqual(history.map((point) => point.limitUtilization), [50, null, 50]);
+  assert.deepEqual(history.map((point) => point.observedQueueCount), [1, 0, 1]);
+  assert.ok(history.every((point) => point.expectedQueueCount === 3));
+});
+
+test("waiting history ignores queues without agents and preserves their running observations", () => {
+  const history = buildTrafficHistory(
+    [
+      {
+        ...snapshot("H200", "12:00:00", 0),
+        agents_total: 0,
+        jobs_scheduled: 999,
+      },
+      { ...snapshot("gpu1", "12:00:00", 2), jobs_scheduled: 3 },
+      {
+        ...snapshot("H200", "12:05:00", 0),
+        agents_total: 0,
+        jobs_scheduled: 999,
+      },
+    ],
+    5,
+    ["H200", "gpu1"],
+  );
+  assert.deepEqual(history.map((point) => point.waiting), [3, null]);
+  assert.deepEqual(history.map((point) => point.running), [2, 0]);
+  assert.deepEqual(history.map((point) => point.observedQueueCount), [2, 1]);
+});
+
+test("history uses explicit API bucket sizes including nonstandard widths", () => {
+  for (const stepMinutes of [5, 15, 30, 60, 360]) {
     const history = buildTrafficHistory(
       [
         snapshot("amd_mi250_8", "00:00:00"),
         snapshot("amd_mi250_8", "12:00:00"),
       ],
-      hours,
+      stepMinutes,
       ["amd_mi250_8"],
     );
     assert.equal(history[1].time - history[0].time, stepMinutes * 60_000);
@@ -427,6 +471,7 @@ test("activity distinguishes idle observations from leading, internal, and trail
     ],
     0.5,
     ["amd_mi250_8"],
+    5,
     Date.parse("2026-09-28T12:25:30Z"),
   );
   assert.deepEqual(
@@ -457,6 +502,7 @@ test("activity normalizes each queue by its own limit and deduplicates aliases",
     ],
     1,
     ["mi250_8", "amd_mi250_8", "amd_mi355_dpx", "unknown"],
+    5,
   );
   assert.deepEqual(
     activity.map((row) => row.queue),
@@ -504,6 +550,7 @@ test("wait activity excludes missing measurements from means and distinguishes i
     ],
     0.5,
     ["H200"],
+    5,
     Date.parse("2026-09-28T12:25:00Z"),
   );
   assert.deepEqual(
@@ -521,6 +568,50 @@ test("wait activity excludes missing measurements from means and distinguishes i
   assert.equal(activity.coveragePercent, (5 / 6) * 100);
 });
 
+test("wait activity excludes no-agent readings from counts, P95, and coverage", () => {
+  const [activity] = buildQueueActivity(
+    [
+      {
+        ...snapshot("H200", "12:00:00"),
+        agents_total: 0,
+        jobs_scheduled: 999,
+        p95_wait_secs: 6000,
+      },
+      {
+        ...snapshot("H200", "12:05:00"),
+        jobs_scheduled: 2,
+        p95_wait_secs: 90,
+      },
+      {
+        ...snapshot("H200", "12:10:00"),
+        agents_total: 0,
+        p95_wait_secs: 0,
+      },
+      snapshot("H200", "12:15:00"),
+    ],
+    0.5,
+    ["H200"],
+    5,
+    Date.parse("2026-09-28T12:25:00Z"),
+  );
+  assert.deepEqual(
+    activity.samples.map((sample) => sample.waiting),
+    [null, 2, null, 0, null, null],
+  );
+  assert.deepEqual(
+    activity.samples.map((sample) => sample.waitP95),
+    [null, 90, null, null, null, null],
+  );
+  assert.equal(activity.averageWaiting, 1);
+  assert.equal(activity.peakWaiting, 2);
+  assert.equal(activity.waitingCoveragePercent, (2 / 6) * 100);
+  assert.equal(activity.averageWaitP95, 90);
+  assert.equal(activity.peakWaitP95, 90);
+  assert.equal(activity.waitObservedBuckets, 1);
+  assert.equal(activity.waitCoveragePercent, (2 / 6) * 100);
+  assert.equal(activity.observedBuckets, 4);
+});
+
 test("activity preserves averaged API values and uses 90 percent of observed buckets", () => {
   const [activity] = buildQueueActivity(
     [
@@ -530,6 +621,7 @@ test("activity preserves averaged API values and uses 90 percent of observed buc
     ],
     24,
     ["amd_mi355_dpx"],
+    15,
   );
   assert.equal(activity.observedBuckets, 3);
   assert.equal(activity.expectedBuckets, 96);
@@ -554,6 +646,7 @@ test("activity uses API bucket widths and ignores observations outside the windo
     [24, 15],
     [168, 60],
     [720, 360],
+    [24, 30],
   ]) {
     const [activity] = buildQueueActivity(
       [
@@ -570,6 +663,7 @@ test("activity uses API bucket widths and ignores observations outside the windo
       ],
       hours,
       ["amd_mi250_8"],
+      stepMinutes,
       Date.parse("2026-09-28T12:00:00Z"),
     );
     assert.equal(
@@ -586,12 +680,16 @@ test("queues without history retain unknown activity and report zero coverage", 
     [],
     1,
     ["amd_mi355_dpx"],
+    5,
     Date.parse("2026-09-28T12:00:00Z"),
   );
   assert.equal(activity.samples.length, 12);
   assert.ok(activity.samples.every((sample) => sample.utilization === null));
   assert.equal(activity.averageUtilization, null);
   assert.equal(activity.averageRunning, null);
+  assert.equal(activity.averageWaiting, null);
+  assert.equal(activity.peakWaiting, null);
+  assert.equal(activity.waitingCoveragePercent, 0);
   assert.ok(activity.samples.every((sample) => sample.waitP95 === null));
   assert.equal(activity.averageWaitP95, null);
   assert.equal(activity.peakWaitP95, null);
@@ -600,8 +698,8 @@ test("queues without history retain unknown activity and report zero coverage", 
   assert.equal(activity.nearLimitPercent, null);
   assert.equal(activity.coveragePercent, 0);
   assert.equal(activity.observedBuckets, 0);
-  const [unanchored] = buildQueueActivity([], 1, ["amd_mi355_dpx"]);
+  const [unanchored] = buildQueueActivity([], 1, ["amd_mi355_dpx"], 5);
   assert.deepEqual(unanchored.samples, []);
   assert.equal(unanchored.expectedBuckets, 0);
-  assert.deepEqual(buildQueueActivity([], 1, []), []);
+  assert.deepEqual(buildQueueActivity([], 1, [], 5), []);
 });

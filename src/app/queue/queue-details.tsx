@@ -8,22 +8,12 @@ import { SearchableSelect } from "@/components/searchable-select";
 import { QueueOverviewChart } from "@/components/queue-overview-chart";
 import { QueueWaitingJobs, useQueueWaitingJobs } from "@/components/queue-waiting-jobs";
 import { effectiveWaiting } from "@/lib/queue-plugins";
+import { fetchJson } from "@/lib/fetch-json";
 import {
   DEFAULT_QUEUE_RANGE_HOURS,
   parseQueueRangeParam,
   pickDefaultQueue,
 } from "@/lib/queue-default";
-
-async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
-  const body = (await response.json()) as T & { error?: string };
-
-  if (!response.ok || body.error) {
-    throw new Error(body.error ?? `Request failed with status ${response.status}`);
-  }
-
-  return body;
-}
 
 interface MetricsSnapshot {
   time_bucket: string;
@@ -129,7 +119,7 @@ export default function QueueContent() {
   // then replace the URL with the busiest queue.
   const needsDefaultQueue = queueParam === null;
   const { data: summaryData, error: summaryError } = useSWR<MetricsResponse>(
-    needsDefaultQueue ? "/api/metrics?hours=1&v=3" : null,
+    needsDefaultQueue ? "/api/metrics?hours=1&latest=1&v=3" : null,
     fetchJson,
   );
 

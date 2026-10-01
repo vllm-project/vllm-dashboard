@@ -2,14 +2,13 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { getQueueView, queueViewHref } from "@/lib/queue-navigation";
 import QueueDetails from "./queue-details";
 import QueueTraffic from "./queue-traffic";
 
 export default function QueueContent() {
   const searchParams = useSearchParams();
-  const view =
-    searchParams.get("view") ??
-    (searchParams.has("queue") ? "details" : "traffic");
+  const view = getQueueView(searchParams);
 
   return (
     <div className="space-y-6">
@@ -22,20 +21,17 @@ export default function QueueContent() {
             ["details", "Queue details"],
             ["traffic", "Traffic & utilization"],
           ] as const
-        ).map(([key, label]) => {
-          const params = new URLSearchParams(searchParams.toString());
-          params.set("view", key);
-          return (
-            <Link
-              key={key}
-              href={`/queue?${params}`}
-              aria-current={view === key ? "page" : undefined}
-              className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${view === key ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950" : "text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}
-            >
-              {label}
-            </Link>
-          );
-        })}
+        ).map(([key, label]) => (
+          <Link
+            key={key}
+            href={queueViewHref(searchParams, key)}
+            prefetch={key === view ? false : undefined}
+            aria-current={view === key ? "page" : undefined}
+            className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${view === key ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950" : "text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"}`}
+          >
+            {label}
+          </Link>
+        ))}
       </nav>
       {view === "details" ? <QueueDetails /> : <QueueTraffic />}
     </div>

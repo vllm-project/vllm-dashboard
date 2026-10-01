@@ -1,3 +1,11 @@
+export function formatQueueWait(seconds: number | null): string {
+  return seconds === null
+    ? "—"
+    : seconds === 0
+      ? "0s"
+      : formatDuration(seconds * 1000);
+}
+
 /**
  * Compact duration for trace timelines: sub-second values keep millisecond
  * precision, short values keep one decimal, and longer values step up to

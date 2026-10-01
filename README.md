@@ -51,9 +51,9 @@ public queue metrics schema stops at p95, p99 is calculated from the current
 `SCHEDULED` command jobs as `now - runnableAt` using nearest-rank percentiles;
 the same five-minute snapshot feeds the historical chart.
 
-The Queue page has **Queue details** and **Traffic & utilization** views. Traffic defaults to **All queues**, with **CUDA** and **ROCm** filters. All queues and CUDA show p95 wait times; ROCm also shows running jobs against configured limits and GPU counts by family.
+The Queue page opens **Queue details** by default. **Traffic & utilization** at `/queue?view=traffic` starts with **All queues**, with **CUDA** and **ROCm** filters. All queues and CUDA default to waiting-job counts, with a P95 view when readings are available. ROCm shows running jobs against configured limits and GPU counts by family.
 
-Queue filters and limits live in [`queue-capacity.ts`](./src/lib/queue-capacity.ts). See the [local preview guide](./docs/queue-traffic-preview.md) for setup and metric definitions.
+Queue filters and limits live in [`queue-capacity.ts`](./src/lib/queue-capacity.ts), including L4 (`gpu_1_queue` and related queues) and GH200 in CUDA. Current summaries use a 20-minute freshness window; history retains partial buckets with coverage and matching capacity denominators. Run `QUEUE_PREVIEW=1 npm run dev` to preview public queue data with one app process. See the [local preview guide](./docs/queue-traffic-preview.md) for setup and metric definitions.
 
 ## Local development
 

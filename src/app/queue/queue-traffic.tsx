@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { SearchableSelect } from "@/components/searchable-select";
 import {
@@ -29,24 +29,22 @@ import {
   type QueueMetric,
 } from "@/lib/queue-capacity";
 import { effectiveWaiting } from "@/lib/queue-plugins";
-import { formatDuration } from "@/lib/format-duration";
+import { formatQueueWait } from "@/lib/format-duration";
+import { fetchJson } from "@/lib/fetch-json";
+import { isQueueMetricFresh, queueBucketMinutes } from "@/lib/queue-metrics";
 
 interface LatestMetric extends QueueMetric {
   polled_at: string;
 }
 interface MetricsResponse {
-  query: { hours: number; queue: string | null };
+  query: { hours: number; queue: string | null; bucketMinutes?: number };
   latest: LatestMetric[];
   snapshots: (QueueMetric & { time_bucket: string })[];
-  previewSource?: string;
   receivedAt: number;
 }
 
 async function fetchMetrics(url: string): Promise<MetricsResponse> {
-  const response = await fetch(url);
-  const body = await response.json();
-  if (!response.ok || body.error)
-    throw new Error(body.error ?? "Could not load queue metrics");
+  const body = await fetchJson<Omit<MetricsResponse, "receivedAt">>(url);
   return { ...body, receivedAt: Date.now() };
 }
 
@@ -65,23 +63,26 @@ const ROCM_RANKS = [
   { value: "nearLimit", label: "Time near limit" },
 ];
 const WAIT_RANKS = [
+  { value: "waiting", label: "Waiting jobs" },
   { value: "average", label: "Average p95 wait" },
   { value: "current", label: "Current p95 wait" },
   { value: "peak", label: "Peak p95 wait" },
+];
+const WAITING_RANKS = [
   { value: "waiting", label: "Waiting jobs" },
+  { value: "average", label: "Average waiting jobs" },
+  { value: "peak", label: "Peak waiting jobs" },
 ];
 const number = (value: number) =>
   value.toLocaleString("en-US", { maximumFractionDigits: 1 });
 const percentage = (value: number | null) =>
   value === null ? "—" : `${number(value)}%`;
-const waitDuration = (seconds: number | null) =>
-  seconds === null ? "—" : seconds === 0 ? "0s" : formatDuration(seconds * 1000);
 const panel =
   "rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950";
 
 export default function QueueTraffic() {
-  const router = useRouter();
   const params = useSearchParams();
+  const search = params.toString();
   const group = ["rocm", "amd"].includes(params.get("group") ?? "")
     ? "rocm"
     : params.get("group") === "cuda"
@@ -94,14 +95,6 @@ export default function QueueTraffic() {
   const hours = RANGES.some((range) => range.hours === requestedHours)
     ? requestedHours
     : 24;
-  const chartMetric =
-    isRocm && ["wait", "utilization"].includes(params.get("chart") ?? "")
-      ? "wait"
-      : "jobs";
-  const ranks = isRocm ? ROCM_RANKS : WAIT_RANKS;
-  const rank = ranks.some((option) => option.value === params.get("rank"))
-    ? params.get("rank")!
-    : "average";
   const [showAll, setShowAll] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -110,35 +103,37 @@ export default function QueueTraffic() {
   }, []);
 
   const current = useSWR<MetricsResponse>(
-    "/api/metrics?hours=1&v=3",
+    hours === 1 && !params.get("queue")
+      ? "/api/metrics?hours=1&v=3"
+      : "/api/metrics?hours=1&latest=1&v=3",
     fetchMetrics,
-    { refreshInterval: 300_000 },
+    { refreshInterval: 300_000, keepPreviousData: true },
   );
-  const allLatest = uniqueQueueReadings(current.data?.latest ?? []).map(
+  const allLatest = useMemo(() => uniqueQueueReadings(current.data?.latest ?? []).map(
     (row) => ({
       ...row,
       queue: canonicalQueue(row.queue),
     }),
-  );
-  const groupQueues = filterQueues(
+  ), [current.data?.latest]);
+  const groupQueues = useMemo(() => filterQueues(
     [...new Set([...allLatest.map((row) => row.queue), ...CONFIGURED_QUEUES])].map(
       (queue) => ({ queue }),
     ),
     group,
-  );
-  const familyOptions = [
+  ), [allLatest, group]);
+  const familyOptions = useMemo(() => [
     ...new Set([
       ...(isAll ? QUEUE_FAMILIES : isRocm ? [] : CUDA_FAMILIES),
       ...groupQueues.map((row) => queueFamily(row.queue)),
     ]),
-  ].sort();
+  ].sort(), [isAll, isRocm, groupQueues]);
   const requestedFamily = params.get("family") as QueueFamily;
   const family = familyOptions.includes(requestedFamily)
     ? requestedFamily
     : "all";
-  const queueOptions = filterQueues(groupQueues, group, family)
+  const queueOptions = useMemo(() => filterQueues(groupQueues, group, family)
     .map((row) => row.queue)
-    .sort();
+    .sort(), [groupQueues, group, family]);
   const requestedQueue = canonicalQueue(params.get("queue") ?? "");
   const queue = filterQueues([{ queue: requestedQueue }], group, family).length
     ? requestedQueue
@@ -149,37 +144,50 @@ export default function QueueTraffic() {
     { refreshInterval: 300_000, keepPreviousData: true },
   );
 
-  function navigate(changes: Record<string, string | null>) {
-    const next = new URLSearchParams(params.toString());
+  const navigate = useCallback((changes: Record<string, string | null>) => {
+    const next = new URLSearchParams(search);
     next.set("view", "traffic");
     for (const [key, value] of Object.entries(changes)) {
       if (value) next.set(key, value);
       else next.delete(key);
     }
-    router.replace(`/queue?${next}`, { scroll: false });
-  }
+    // These filters only affect client data; no server navigation is needed.
+    window.history.replaceState(null, "", `/queue?${next}`);
+  }, [search]);
   function refresh() {
     void Promise.all([current.mutate(), historical.mutate()]);
   }
-  function selectQueue(value: string) {
+  const selectQueue = useCallback((value: string) => {
     navigate({ queue: value });
-  }
+  }, [navigate]);
+  const mutateHistory = historical.mutate;
+  const retryHistory = useCallback(() => { void mutateHistory(); }, [mutateHistory]);
 
-  const selectedRows = filterQueues(allLatest, group, family).filter(
+  const selectedRows = useMemo(() => filterQueues(allLatest, group, family).filter(
     (row) => !queue || row.queue === queue,
-  );
+  ), [allLatest, group, family, queue]);
   const observationTime = Math.max(now, current.data?.receivedAt ?? 0);
-  const freshRows = selectedRows.filter((row) => {
-    const age = observationTime - Date.parse(row.polled_at);
-    return Number.isFinite(age) && age <= 600_000 && age >= -60_000;
-  });
-  const summary = summarizeQueues(freshRows);
+  // Keep chart props stable until a reading actually crosses the freshness limit.
+  const freshness = selectedRows.map((row) =>
+    isQueueMetricFresh(row.polled_at, observationTime) ? "1" : "0",
+  ).join("");
+  const freshRows = useMemo(() => selectedRows.filter((_, index) =>
+    freshness[index] === "1",
+  ), [selectedRows, freshness]);
+  const activeRows = freshRows.filter((row) => row.agents_total > 0);
+  const noAgentRows = freshRows.filter((row) => row.agents_total === 0);
+  const summary = summarizeQueues(isRocm ? freshRows : activeRows);
+  const waitingSummary = summarizeQueues(activeRows);
+  const hasActiveReadings = activeRows.length > 0;
   const hasReadings = freshRows.length > 0;
-  const configured = filterQueues(
+  const noActiveReadingsLabel = hasReadings
+    ? "No connected agents"
+    : "No fresh queue readings";
+  const configured = useMemo(() => filterQueues(
     CONFIGURED_QUEUES.map((queue) => ({ queue })),
     group,
     family,
-  ).filter((row) => !queue || row.queue === queue);
+  ).filter((row) => !queue || row.queue === queue), [group, family, queue]);
   const missing = configured.filter(
     (row) => !freshRows.some((latest) => latest.queue === row.queue),
   );
@@ -190,7 +198,7 @@ export default function QueueTraffic() {
   const historyMatches =
     historical.data?.query.hours === hours &&
     historical.data?.query.queue === (queue || null);
-  const snapshots = historyMatches
+  const snapshots = useMemo(() => historyMatches
     ? filterQueues(
         historical.data!.snapshots.map((row) => ({
           ...row,
@@ -199,42 +207,42 @@ export default function QueueTraffic() {
         group,
         family,
       ).filter((row) => !queue || row.queue === queue)
-    : [];
-  const expectedQueues = [
+    : [], [historyMatches, historical.data, group, family, queue]);
+  const expectedQueues = useMemo(() => [
     ...new Set([
       ...selectedRows.map((row) => row.queue),
       ...configured.map((row) => row.queue),
       ...snapshots.map((row) => row.queue),
     ]),
-  ];
-  const selectableQueues = [
+  ], [selectedRows, configured, snapshots]);
+  const selectableQueues = useMemo(() => [
     ...new Set([
       ...queueOptions,
       ...snapshots.map((row) => row.queue),
       ...(queue ? [queue] : []),
     ]),
-  ].sort();
-  const history = buildTrafficHistory(snapshots, hours, expectedQueues);
-  const freshByQueue = new Map(freshRows.map((row) => [row.queue, row]));
-  // The latest endpoint can backfill percentiles; use the matching raw sample.
-  const waitSamplesByQueue = new Map(
-    uniqueQueueReadings(current.data?.snapshots ?? []).map((row) => [
-      canonicalQueue(row.queue),
-      row,
-    ]),
-  );
-  const activity: ActivityDisplayRow[] = buildQueueActivity(
+  ].sort(), [queueOptions, snapshots, queue]);
+  const bucketMinutes = historyMatches
+    ? historical.data!.query.bucketMinutes ?? queueBucketMinutes(hours)
+    : queueBucketMinutes(hours);
+  const history = useMemo(() => isRocm
+    ? buildTrafficHistory(snapshots, bucketMinutes, expectedQueues)
+    : [], [isRocm, snapshots, bucketMinutes, expectedQueues]);
+  const freshByQueue = useMemo(() => new Map(freshRows.map((row) => [row.queue, row])), [freshRows]);
+  const bucketEnd = Math.floor(now / (bucketMinutes * 60_000)) * bucketMinutes * 60_000;
+  const historicalActivity = useMemo(() => buildQueueActivity(
     snapshots,
     hours,
     expectedQueues,
-    now,
-  ).map((row) => {
+    bucketMinutes,
+    historyMatches ? bucketEnd : undefined,
+  ), [snapshots, hours, expectedQueues, bucketMinutes, bucketEnd, historyMatches]);
+  const activity: ActivityDisplayRow[] = useMemo(() => historicalActivity.map((row) => {
     const latest = freshByQueue.get(row.queue);
     const capacity = getQueueCapacity(row.queue);
-    const currentWaiting = latest
+    const currentWaiting = latest && latest.agents_total > 0
       ? effectiveWaiting(row.queue, latest.jobs_scheduled, latest.jobs_waiting)
       : null;
-    const waitSample = waitSamplesByQueue.get(row.queue);
     return {
       ...row,
       maxInFlight: capacity?.maxInFlight ?? null,
@@ -246,14 +254,26 @@ export default function QueueTraffic() {
       currentWaiting,
       currentWaitP95:
         latest &&
-        (currentWaiting ?? 0) > 0 &&
-        waitSample &&
-        Date.parse(waitSample.time_bucket) === Date.parse(latest.polled_at)
-          ? getQueueWaitP95(waitSample)
+        (currentWaiting ?? 0) > 0
+          ? getQueueWaitP95(latest)
           : null,
     };
-  });
-  const ranked = [...activity].sort((a, b) => {
+  }), [historicalActivity, freshByQueue]);
+  const waitingActivity = useMemo(() => activity.filter(
+    (row) => selectedRows.find((latest) => latest.queue === row.queue)?.agents_total !== 0,
+  ), [activity, selectedRows]);
+  const hasWaitHistory = waitingActivity.some((row) => row.waitObservedBuckets > 0);
+  const chartMetric = params.get("chart") === "wait" && hasWaitHistory
+    ? "wait"
+    : isRocm ? "jobs" : "waiting";
+  const ranks = isRocm
+    ? ROCM_RANKS
+    : chartMetric === "wait" ? WAIT_RANKS : WAITING_RANKS;
+  const rank = ranks.some((option) => option.value === params.get("rank"))
+    ? params.get("rank")!
+    : isRocm || chartMetric === "wait" ? "average" : "waiting";
+  const comparisonActivity = isRocm ? activity : waitingActivity;
+  const ranked = useMemo(() => [...comparisonActivity].sort((a, b) => {
     const field =
       rank === "current"
         ? isRocm
@@ -262,37 +282,38 @@ export default function QueueTraffic() {
         : rank === "waiting"
           ? "currentWaiting"
           : rank === "peak"
-            ? "peakWaitP95"
+            ? chartMetric === "wait" ? "peakWaitP95" : "peakWaiting"
             : rank === "nearLimit"
               ? "nearLimitPercent"
               : isRocm
                 ? "averageUtilization"
-                : "averageWaitP95";
+                : chartMetric === "wait" ? "averageWaitP95" : "averageWaiting";
     return (
       (b[field] ?? -1) - (a[field] ?? -1) ||
       (b.currentWaiting ?? -1) - (a.currentWaiting ?? -1) ||
       a.queue.localeCompare(b.queue)
     );
-  });
-  const averageField = isRocm ? "averageUtilization" : "averageWaitP95";
-  const busiest = [...activity]
+  }), [comparisonActivity, rank, isRocm, chartMetric]);
+  const averageField = isRocm ? "averageUtilization" : "averageWaiting";
+  const busiest = [...comparisonActivity]
     .filter((row) => row[averageField] !== null)
     .sort((a, b) => b[averageField]! - a[averageField]!)[0];
-  const backlog = [...activity]
+  const backlog = [...waitingActivity]
     .filter((row) => (row.currentWaiting ?? 0) > 0)
     .sort((a, b) => b.currentWaiting! - a.currentWaiting!)[0];
-  const longestWait = [...activity]
-    .filter((row) => row.currentWaitP95 !== null)
-    .sort((a, b) => b.currentWaitP95! - a.currentWaitP95!)[0];
-  const unknownWaitCount = activity.filter(
+  const unknownWaitCount = waitingActivity.filter(
     (row) => (row.currentWaiting ?? 0) > 0 && row.currentWaitP95 === null,
   ).length;
-  const highlight = isRocm ? backlog : longestWait ?? backlog;
-  const displayed = showAll ? ranked : ranked.slice(0, 20);
-  const waitChartCandidates = isAll
-    ? ranked.filter((row) => row.waitObservedBuckets > 0)
-    : activity;
-  const waitChartRows = isAll ? waitChartCandidates.slice(0, 10) : activity;
+  const highlight = backlog;
+  const displayed = useMemo(() => showAll ? ranked : ranked.slice(0, 20), [showAll, ranked]);
+  const waitChartCandidates = useMemo(() => (isRocm ? waitingActivity : ranked).filter(
+    (row) => chartMetric === "wait"
+      ? row.waitObservedBuckets > 0
+      : row.waitingCoveragePercent > 0,
+  ), [isRocm, waitingActivity, ranked, chartMetric]);
+  const waitChartRows = useMemo(() => (
+    isAll ? waitChartCandidates.slice(0, 10) : [...waitChartCandidates]
+  ).sort((a, b) => a.queue.localeCompare(b.queue)), [isAll, waitChartCandidates]);
   const selection = queue || (family !== "all" ? family : groupLabel);
   const rangeLabel = RANGES.find((range) => range.hours === hours)!.label;
   const refreshing = current.isValidating || historical.isValidating;
@@ -326,12 +347,6 @@ export default function QueueTraffic() {
           </button>
         </div>
       </header>
-      {(current.data?.previewSource || historical.data?.previewSource) && (
-        <p className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-xs text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300">
-          Local preview · live public Buildkite snapshots via ci.vllm.ai ·
-          refreshes every 5 minutes
-        </p>
-      )}
       <div className={`${panel} flex flex-wrap items-end gap-4 p-4`}>
         <div>
           <span className="mb-1 block text-xs font-medium text-zinc-500">
@@ -432,7 +447,7 @@ export default function QueueTraffic() {
               className="text-xs text-amber-700 dark:text-amber-400"
             >
               {staleCount > 0 &&
-                `${staleCount} readings are over 10 minutes old. `}
+                `${staleCount} readings are outside the 20-minute freshness window. `}
               {missing.length > 0 &&
                 `${missing.length} configured queues have no fresh reading. `}
               Current totals use fresh readings only.
@@ -441,25 +456,23 @@ export default function QueueTraffic() {
           <div className="grid gap-3 md:grid-cols-3">
             <div className={`${panel} p-5`}>
               <h2 className="text-sm font-medium text-zinc-600 dark:text-zinc-300">
-                {isRocm ? "Capacity in use" : "Longest queue wait · p95"}
+                {isRocm ? "Capacity in use" : "Largest queue backlog"}
               </h2>
               <p className="mt-3 text-4xl font-semibold tracking-tight tabular-nums text-violet-600 dark:text-violet-400">
                 {isRocm
                   ? percentage(summary.jobLimitUtilization)
-                  : waitDuration(longestWait?.currentWaitP95 ?? null)}
+                  : hasActiveReadings ? number(backlog?.currentWaiting ?? 0) : "—"}
               </p>
               <p className="mt-2 text-xs text-zinc-500">
                 {isRocm
                   ? summary.knownQueueCount > 0
                     ? `${number(summary.knownRunning)} running / ${number(summary.maxInFlight)} max in flight`
                     : "No fresh readings with configured limits"
-                  : longestWait
-                    ? longestWait.queue
-                    : hasReadings
-                      ? summary.waiting === 0
-                        ? "No jobs waiting"
-                        : "Wait time unavailable for queued jobs"
-                      : "No fresh queue readings"}
+                  : backlog
+                    ? `${backlog.queue} · jobs waiting`
+                    : hasActiveReadings
+                      ? "No jobs waiting"
+                      : noActiveReadingsLabel}
               </p>
               {isRocm ? (
                 <>
@@ -481,7 +494,7 @@ export default function QueueTraffic() {
                 </>
               ) : (
                 <p className="mt-6 text-xs text-zinc-500">
-                  Highest reported p95 among the selected queues.
+                  Most jobs waiting in a queue with connected agents.
                 </p>
               )}
             </div>
@@ -490,19 +503,21 @@ export default function QueueTraffic() {
                 Waiting jobs
               </h2>
               <p
-                className={`mt-3 text-4xl font-semibold tracking-tight tabular-nums ${summary.waiting > 0 ? "text-amber-600 dark:text-amber-400" : "text-zinc-900 dark:text-zinc-100"}`}
+                className={`mt-3 text-4xl font-semibold tracking-tight tabular-nums ${waitingSummary.waiting > 0 ? "text-amber-600 dark:text-amber-400" : "text-zinc-900 dark:text-zinc-100"}`}
               >
-                {hasReadings ? number(summary.waiting) : "—"}
+                {hasActiveReadings ? number(waitingSummary.waiting) : "—"}
               </p>
               <p className="mt-2 text-xs text-zinc-500">
-                {hasReadings
-                  ? `${summary.waitingQueueCount} queues with work waiting`
-                  : "No fresh queue readings"}
+                {hasActiveReadings
+                  ? `${waitingSummary.waitingQueueCount} queues with work waiting`
+                  : noActiveReadingsLabel}
               </p>
               <p className="mt-6 text-xs text-zinc-500">
-                {hasReadings
+                {hasActiveReadings
                   ? `${number(summary.running)} jobs running across this selection.`
-                  : "Waiting is unknown until a reading arrives."}
+                  : hasReadings
+                    ? "Waiting comparisons exclude queues with no agents."
+                    : "Waiting is unknown until a reading arrives."}
               </p>
             </div>
             <div className={`${panel} p-5`}>
@@ -510,18 +525,18 @@ export default function QueueTraffic() {
                 {isRocm ? "Queues near limit" : "Queues with waiting jobs"}
               </h2>
               <p
-                className={`mt-3 text-4xl font-semibold tracking-tight tabular-nums ${(isRocm ? summary.nearLimitQueueCount : summary.waitingQueueCount) > 0 ? "text-amber-600 dark:text-amber-400" : "text-zinc-900 dark:text-zinc-100"}`}
+                className={`mt-3 text-4xl font-semibold tracking-tight tabular-nums ${(isRocm ? summary.nearLimitQueueCount : waitingSummary.waitingQueueCount) > 0 ? "text-amber-600 dark:text-amber-400" : "text-zinc-900 dark:text-zinc-100"}`}
               >
                 {isRocm
                   ? summary.knownQueueCount > 0
                     ? summary.nearLimitQueueCount
                     : "—"
-                  : hasReadings
-                    ? summary.waitingQueueCount
+                  : hasActiveReadings
+                    ? waitingSummary.waitingQueueCount
                     : "—"}
-                {(isRocm ? summary.knownQueueCount > 0 : hasReadings) && (
+                {(isRocm ? summary.knownQueueCount > 0 : hasActiveReadings) && (
                   <span className="ml-2 text-lg font-normal text-zinc-400">
-                    / {isRocm ? summary.knownQueueCount : summary.queueCount}
+                    / {isRocm ? summary.knownQueueCount : waitingSummary.queueCount}
                   </span>
                 )}
               </p>
@@ -548,8 +563,8 @@ export default function QueueTraffic() {
           )}
           {!isRocm && (
             <p className="text-xs text-zinc-500">
-              P95 is the wait age at the 95th percentile of jobs still queued,
-              measured since they became runnable.
+              Waiting-job counts include queues with connected agents. P95 wait
+              age is available only for queues that report it.
               {unknownWaitCount > 0 &&
                 ` ${unknownWaitCount} ${unknownWaitCount === 1 ? "queue has" : "queues have"} waiting jobs but no reported wait time in the latest sample.`}
             </p>
@@ -570,22 +585,18 @@ export default function QueueTraffic() {
               </button>{" "}
               {isRocm ? (
                 <>
-                  has {number(highlight.currentWaiting!)} of {number(summary.waiting)}{" "}
+                  has {number(highlight.currentWaiting!)} of {number(waitingSummary.waiting)}{" "}
                   waiting jobs
                   {highlight.currentUtilization === null
                     ? ". Its max-in-flight limit is not configured."
                     : ` and is using ${percentage(highlight.currentUtilization)} of its ${number(highlight.maxInFlight!)}-job limit.`}
                 </>
-              ) : highlight.currentWaitP95 !== null ? (
-                <>
-                  has the longest reported p95 wait:{" "}
-                  <strong>{waitDuration(highlight.currentWaitP95)}</strong>, with{" "}
-                  {number(highlight.currentWaiting!)} jobs waiting.
-                </>
               ) : (
                 <>
-                  has {number(highlight.currentWaiting!)} jobs waiting; its wait
-                  time is unavailable in the latest sample.
+                  has the largest backlog: <strong>{number(highlight.currentWaiting!)} jobs waiting</strong>.
+                  {highlight.currentWaitP95 !== null
+                    ? ` Its reported p95 wait is ${formatQueueWait(highlight.currentWaitP95)}.`
+                    : " Its wait time is unavailable in the latest sample."}
                 </>
               )}
             </>
@@ -608,15 +619,41 @@ export default function QueueTraffic() {
                 </>
               ) : (
                 <>
-                  had the highest average reported p95 wait over {rangeLabel}:{" "}
-                  <strong>{waitDuration(busiest!.averageWaitP95)}</strong>.
+                  had the highest average backlog over {rangeLabel}:{" "}
+                  <strong>{number(busiest!.averageWaiting!)} waiting jobs</strong>.
                 </>
               )}
-              {(isRocm ? busiest!.coveragePercent : busiest!.waitCoveragePercent) < 90 &&
-                ` History coverage: ${percentage(isRocm ? busiest!.coveragePercent : busiest!.waitCoveragePercent)}.`}
+              {(isRocm ? busiest!.coveragePercent : busiest!.waitingCoveragePercent) < 90 &&
+                ` History coverage: ${percentage(isRocm ? busiest!.coveragePercent : busiest!.waitingCoveragePercent)}.`}
             </>
           )}
         </div>
+      )}
+
+      {noAgentRows.length > 0 && (
+        <details className={`${panel} px-4 py-3 text-sm`}>
+          <summary className="cursor-pointer font-medium text-zinc-600 dark:text-zinc-300">
+            No agents · {noAgentRows.length} queues · {number(summarizeQueues(noAgentRows).waiting)} waiting jobs
+          </summary>
+          <p className="mt-2 text-xs text-zinc-500">
+            These queues have no connected agents and are excluded from waiting comparisons.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {noAgentRows.map((row) => (
+              <li key={row.queue} className="flex flex-wrap justify-between gap-2">
+                <Link
+                  href={`/queue?${new URLSearchParams({ view: "details", queue: row.queue, range: String(hours) })}`}
+                  className="break-all text-violet-600 hover:underline dark:text-violet-400"
+                >
+                  {row.queue}
+                </Link>
+                <span className="text-zinc-500">
+                  {number(effectiveWaiting(row.queue, row.jobs_scheduled, row.jobs_waiting))} waiting
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
 
       <section className={`${panel} min-w-0 p-4 sm:p-5`}>
@@ -625,39 +662,35 @@ export default function QueueTraffic() {
             <h2 className="text-sm font-semibold">
               {isRocm && chartMetric === "jobs"
                 ? "Traffic & capacity over time"
-                : "Queue wait time over time · p95"}
+                : chartMetric === "wait"
+                  ? "Queue wait time over time · p95"
+                  : "Waiting jobs over time"}
             </h2>
             <p className="mt-1 text-xs text-zinc-500">
               {selection} ·{" "}
-              {hours <= 6
-                ? "5-minute samples"
-                : hours <= 24
-                  ? "15-minute averages"
-                  : hours <= 168
-                    ? "Hourly averages"
-                    : "6-hour averages"}
+              {bucketMinutes}-minute {hours <= 6 ? "samples" : "averages"}
             </p>
             {isAll && waitChartCandidates.length > 10 && (
               <p className="mt-1 text-xs text-zinc-500">
-                Showing the top 10 queues with wait history by{" "}
+                Showing the top 10 queues with {chartMetric === "wait" ? "wait-time" : "waiting-job"} history by{" "}
                 {ranks.find((option) => option.value === rank)!.label.toLowerCase()}.
                 Use the filters to focus on a queue or hardware family.
               </p>
             )}
           </div>
-          {isRocm && (
+          {hasWaitHistory && (
             <div className="flex rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
-              {(["jobs", "wait"] as const).map((metric) => (
+              {([isRocm ? "jobs" : "waiting", "wait"] as const).map((metric) => (
                 <button
                   type="button"
                   key={metric}
                   aria-pressed={chartMetric === metric}
                   onClick={() =>
-                    navigate({ chart: metric === "jobs" ? null : metric })
+                    navigate({ chart: metric === "wait" ? metric : null, rank: null })
                   }
                   className={`rounded-md px-3 py-1.5 text-xs font-medium ${chartMetric === metric ? "bg-white shadow-sm dark:bg-zinc-700" : "text-zinc-500"}`}
                 >
-                  {metric === "jobs" ? "Jobs" : "Wait time"}
+                  {metric === "jobs" ? "Jobs" : metric === "waiting" ? "Waiting jobs" : "Wait time"}
                 </button>
               ))}
             </div>
@@ -667,18 +700,18 @@ export default function QueueTraffic() {
           <QueueTrafficHistoryChart
             data={history}
             hours={hours}
-            metric="jobs"
             loading={historyPending}
             error={Boolean(historical.error)}
-            onRetry={() => void historical.mutate()}
+            onRetry={retryHistory}
           />
         ) : (
           <QueueWaitHistoryChart
-            rows={[...waitChartRows].sort((a, b) => a.queue.localeCompare(b.queue))}
+            metric={chartMetric === "wait" ? "wait" : "waiting"}
+            rows={waitChartRows}
             hours={hours}
             loading={historyPending}
             error={Boolean(historical.error)}
-            onRetry={() => void historical.mutate()}
+            onRetry={retryHistory}
           />
         )}
       </section>
@@ -687,13 +720,15 @@ export default function QueueTraffic() {
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-5 py-4 dark:border-zinc-800">
           <div>
             <h2 className="text-sm font-semibold">
-              {isRocm ? "Queue activity" : "Queue wait times"}{" "}
-              <span className="ml-1 text-zinc-400">{activity.length}</span>
+              {isRocm ? "Queue activity" : chartMetric === "wait" ? "Queue wait times" : "Queue backlogs"}{" "}
+              <span className="ml-1 text-zinc-400">{comparisonActivity.length}</span>
             </h2>
             <p className="mt-1 text-xs text-zinc-500">
               {selection} · {isRocm
                 ? "compare sustained load with short spikes over"
-                : "compare sustained waits with short spikes over"}{" "}
+                : chartMetric === "wait"
+                  ? "compare sustained waits with short spikes over"
+                  : "compare waiting jobs over"}{" "}
               {rangeLabel}
             </p>
           </div>
@@ -743,7 +778,7 @@ export default function QueueTraffic() {
             <QueueActivityHeatmap
               rows={displayed}
               hours={hours}
-              metric={isRocm ? "utilization" : "wait"}
+              metric={isRocm ? "utilization" : chartMetric === "wait" ? "wait" : "waiting"}
               onSelectQueue={selectQueue}
             />
           ) : (

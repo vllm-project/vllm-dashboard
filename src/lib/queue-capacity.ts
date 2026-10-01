@@ -2,7 +2,6 @@ import { effectiveWaiting } from "./queue-plugins";
 
 export type AmdHardwareFamily = "MI250" | "MI300" | "MI355" | "AMD CPU";
 export type CudaHardwareFamily =
-  | "GPU"
   | "A100"
   | "H100"
   | "H200"
@@ -129,12 +128,12 @@ export function isAmdQueue(queue: string): boolean {
 
 // Match known CUDA queues explicitly; vendor names alone do not imply GPUs.
 const CUDA_QUEUE_FAMILIES = new Map<string, CudaHardwareFamily>([
-  ["gpu1", "GPU"],
-  ["gpu4", "GPU"],
-  ["gpu8", "GPU"],
-  ["gpu_1_queue", "GPU"],
-  ["gpu_4_queue", "GPU"],
-  ["gpu_8_queue", "GPU"],
+  ["gpu1", "L4"],
+  ["gpu4", "L4"],
+  ["gpu8", "L4"],
+  ["gpu_1_queue", "L4"],
+  ["gpu_4_queue", "L4"],
+  ["gpu_8_queue", "L4"],
   ["a100", "A100"],
   ["a100_queue", "A100"],
   ["moc-a100", "A100"],
@@ -159,37 +158,12 @@ const CUDA_QUEUE_FAMILIES = new Map<string, CudaHardwareFamily>([
   ["dgx-spark", "DGX Spark"],
 ]);
 
-const CUDA_VIEW_EXCLUDED_QUEUES = new Set([
-  "gpu1",
-  "gpu_1_queue",
-  "h100",
-  "moc-a100",
-  "redhat-h100-frankfurt",
-  "redhat-l4",
-  "b300-8",
-  "gb300-slurm",
-  "a100",
-  "a100_queue",
-  "redhat-a100-wdc",
-  "redhat-h100-wdc",
-  "gh200",
-  "gh200_queue",
-]);
-
 export function isCudaQueue(queue: string): boolean {
-  const normalized = queue.toLowerCase();
-  return (
-    CUDA_QUEUE_FAMILIES.has(normalized) &&
-    !CUDA_VIEW_EXCLUDED_QUEUES.has(normalized)
-  );
+  return CUDA_QUEUE_FAMILIES.has(queue.toLowerCase());
 }
 
 export const CUDA_FAMILIES: readonly CudaHardwareFamily[] = [
-  ...new Set(
-    [...CUDA_QUEUE_FAMILIES]
-      .filter(([queue]) => isCudaQueue(queue))
-      .map(([, family]) => family),
-  ),
+  ...new Set(CUDA_QUEUE_FAMILIES.values()),
 ];
 
 export const QUEUE_FAMILIES: readonly QueueFamily[] = [
@@ -281,12 +255,14 @@ export function uniqueQueueReadings<T extends QueueMetric>(
   for (const row of rows) {
     const key = canonicalQueue(row.queue);
     const previous = readings.get(key);
+    if (!previous) {
+      readings.set(key, row);
+      continue;
+    }
     const timestamp = Date.parse(row.polled_at ?? row.time_bucket ?? "") || 0;
-    const previousTimestamp = previous
-      ? Date.parse(previous.polled_at ?? previous.time_bucket ?? "") || 0
-      : 0;
+    const previousTimestamp =
+      Date.parse(previous.polled_at ?? previous.time_bucket ?? "") || 0;
     if (
-      !previous ||
       timestamp > previousTimestamp ||
       (timestamp === previousTimestamp && row.queue === key)
     ) {
@@ -352,22 +328,20 @@ export interface TrafficHistoryPoint {
   waiting: number | null;
   maxInFlight: number | null;
   limitUtilization: number | null;
+  observedQueueCount: number;
+  expectedQueueCount: number;
 }
 
-function historyBucketMs(hours: number): number {
-  const minutes = hours <= 6 ? 5 : hours <= 24 ? 15 : hours <= 168 ? 60 : 360;
-  return minutes * 60_000;
-}
-
-/** Leave incomplete polling buckets empty instead of implying idle capacity. */
+/** Sum observed queues and leave buckets without readings empty. */
 export function buildTrafficHistory(
   rows: readonly (QueueMetric & { time_bucket: string })[],
-  hours: number,
+  bucketMinutes: number,
   expectedQueues: readonly string[],
 ): TrafficHistoryPoint[] {
   const expected = new Set(expectedQueues.map(canonicalQueue));
-  if (expected.size === 0) return [];
-  const bucketMs = historyBucketMs(hours);
+  if (expected.size === 0 || !Number.isFinite(bucketMinutes) || bucketMinutes <= 0)
+    return [];
+  const bucketMs = bucketMinutes * 60_000;
   const buckets = new Map<number, QueueMetric[]>();
   for (const row of rows) {
     if (!expected.has(canonicalQueue(row.queue))) continue;
@@ -384,15 +358,20 @@ export function buildTrafficHistory(
   const result: TrafficHistoryPoint[] = [];
   for (let time = times[0]; time <= times[times.length - 1]; time += bucketMs) {
     const readings = uniqueQueueReadings(buckets.get(time) ?? []);
-    const summary =
-      readings.length === expected.size ? summarizeQueues(readings) : null;
+    const summary = readings.length > 0 ? summarizeQueues(readings) : null;
+    const waitingReadings = readings.filter((row) => row.agents_total > 0);
     result.push({
       time,
       running: summary?.running ?? null,
-      waiting: summary?.waiting ?? null,
+      waiting:
+        waitingReadings.length > 0
+          ? summarizeQueues(waitingReadings).waiting
+          : null,
       maxInFlight:
         summary && summary.maxInFlight > 0 ? summary.maxInFlight : null,
       limitUtilization: summary?.jobLimitUtilization ?? null,
+      observedQueueCount: readings.length,
+      expectedQueueCount: expected.size,
     });
   }
   return result;
@@ -410,6 +389,9 @@ export interface QueueActivityRow {
   queue: string;
   samples: QueueActivitySample[];
   averageRunning: number | null;
+  averageWaiting: number | null;
+  peakWaiting: number | null;
+  waitingCoveragePercent: number;
   /** Mean of this queue's reported bucket P95 values, not an overall percentile. */
   averageWaitP95: number | null;
   peakWaitP95: number | null;
@@ -427,13 +409,20 @@ export function buildQueueActivity(
   rows: readonly (QueueMetric & { time_bucket: string })[],
   hours: number,
   expectedQueues: readonly string[],
+  bucketMinutes: number,
   now?: number,
 ): QueueActivityRow[] {
   const queues = [...new Set(expectedQueues.map(canonicalQueue))];
-  if (queues.length === 0 || !Number.isFinite(hours) || hours <= 0) return [];
+  if (
+    queues.length === 0 ||
+    !Number.isFinite(hours) ||
+    hours <= 0 ||
+    !Number.isFinite(bucketMinutes) ||
+    bucketMinutes <= 0
+  ) return [];
 
   const expected = new Set(queues);
-  const bucketMs = historyBucketMs(hours);
+  const bucketMs = bucketMinutes * 60_000;
   const buckets = new Map<number, QueueMetric[]>();
   let latestTime: number | undefined;
   for (const row of rows) {
@@ -471,6 +460,9 @@ export function buildQueueActivity(
     let runningTotal = 0;
     let utilizationTotal = 0;
     let nearLimitBuckets = 0;
+    let waitingTotal = 0;
+    let peakWaiting: number | null = null;
+    let waitingObservedBuckets = 0;
     let waitTotal = 0;
     let peakWaitP95: number | null = null;
     let waitObservedBuckets = 0;
@@ -482,11 +474,12 @@ export function buildQueueActivity(
         row && capacity
           ? percent(row.jobs_running, capacity.maxInFlight)
           : null;
-      const waiting = row
+      const hasAgents = row !== undefined && row.agents_total > 0;
+      const waiting = hasAgents
         ? effectiveWaiting(queue, row.jobs_scheduled, row.jobs_waiting)
         : null;
       // Historical counts may round to zero while the bucket retains a P95.
-      const waitP95 = row ? getQueueWaitP95(row) : null;
+      const waitP95 = hasAgents ? getQueueWaitP95(row) : null;
       if (row) {
         observedBuckets += 1;
         runningTotal += row.jobs_running;
@@ -494,6 +487,11 @@ export function buildQueueActivity(
       if (utilization !== null) {
         utilizationTotal += utilization;
         if (utilization >= 90) nearLimitBuckets += 1;
+      }
+      if (waiting !== null) {
+        waitingTotal += waiting;
+        peakWaiting = Math.max(peakWaiting ?? 0, waiting);
+        waitingObservedBuckets += 1;
       }
       if (waitP95 !== null) {
         waitTotal += waitP95;
@@ -513,6 +511,10 @@ export function buildQueueActivity(
       queue,
       samples,
       averageRunning: observedBuckets > 0 ? runningTotal / observedBuckets : null,
+      averageWaiting:
+        waitingObservedBuckets > 0 ? waitingTotal / waitingObservedBuckets : null,
+      peakWaiting,
+      waitingCoveragePercent: percent(waitingObservedBuckets, expectedBuckets) ?? 0,
       averageWaitP95:
         waitObservedBuckets > 0 ? waitTotal / waitObservedBuckets : null,
       peakWaitP95,
