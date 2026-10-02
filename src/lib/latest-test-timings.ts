@@ -17,6 +17,11 @@ export interface TestSpanRow {
   duration_ms: number;
 }
 
+export interface TestTiming {
+  nodeid: string;
+  observedMs: number;
+}
+
 export interface FileTiming {
   command: string;
   file: string;
@@ -26,7 +31,12 @@ export interface FileTiming {
   outcomes: Record<string, number>;
   timingStatus: "passed" | "contains_skips" | "skip_only";
   builds: number;
+  tests: TestTiming[];
 }
+
+// A file entry with its tests omitted (when the caller asked for none, or the
+// file's median didn't clear their threshold).
+export type FileTimingResponse = Omit<FileTiming, "tests"> & { tests?: TestTiming[] };
 
 export interface LatestTestTimings {
   stepKey: string;
@@ -68,7 +78,7 @@ export function summarizeFiles(rows: TestSpanRow[]): FileTiming[] {
     if (!entry) {
       entry = {
         command: row.command_label, file, observedMs: 0, passedMs: 0,
-        cases: 0, outcomes: {}, timingStatus: "passed", builds: 1,
+        cases: 0, outcomes: {}, timingStatus: "passed", builds: 1, tests: [],
       };
       files.set(key, entry);
     }
@@ -77,6 +87,10 @@ export function summarizeFiles(rows: TestSpanRow[]): FileTiming[] {
     if (outcome === "passed") entry.passedMs += duration;
     entry.cases += 1;
     entry.outcomes[outcome] = (entry.outcomes[outcome] ?? 0) + 1;
+    // A nodeid is unique within one build (checked above), so each test
+    // contributes exactly one duration here; no outcome filtering, matching
+    // observedMs above, which also counts skips.
+    entry.tests.push({ nodeid, observedMs: duration });
   }
   for (const entry of files.values()) {
     entry.timingStatus = !entry.outcomes.passed
@@ -110,15 +124,48 @@ export function medianFiles(filesPerBuild: FileTiming[][]): FileTiming[] {
   }
   const result: FileTiming[] = [];
   for (const entries of byKey.values()) {
+    // Per-test median, over only the builds that test appeared in (same rule
+    // as the file-level median above: a build missing a test doesn't give it
+    // a 0). Order is first-seen, scanning builds newest first.
+    const byNodeid = new Map<string, number[]>();
+    for (const entry of entries) {
+      for (const t of entry.tests) {
+        const times = byNodeid.get(t.nodeid) ?? [];
+        times.push(t.observedMs);
+        byNodeid.set(t.nodeid, times);
+      }
+    }
+    const tests = [...byNodeid.entries()].map(([nodeid, times]) => ({
+      nodeid, observedMs: median(times),
+    }));
     result.push({
       ...entries[0],
       observedMs: median(entries.map((e) => e.observedMs)),
       passedMs: median(entries.map((e) => e.passedMs)),
       builds: entries.length,
+      tests,
     });
   }
   return result.sort((a, b) =>
     a.command === b.command ? a.file.localeCompare(b.file) : a.command.localeCompare(b.command));
+}
+
+/**
+ * Keep per-test medians only for files whose median observedMs clears
+ * testsOverMs; strip the field from every file when testsOverMs is null (the
+ * query param was absent). The runtime shard planner asks for exactly the
+ * files it might need to split.
+ */
+export function withTestsOverMs(
+  files: FileTiming[],
+  testsOverMs: number | null,
+): FileTimingResponse[] {
+  return files.map((file) => {
+    if (testsOverMs !== null && file.observedMs > testsOverMs) return file;
+    const response: FileTimingResponse = { ...file };
+    delete response.tests;
+    return response;
+  });
 }
 
 export async function queryLatestTestTimings(

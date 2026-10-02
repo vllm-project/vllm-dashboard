@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { medianFiles, summarizeFiles, TimingDataError, type TestSpanRow } from "./latest-test-timings";
+import {
+  medianFiles, summarizeFiles, withTestsOverMs, TimingDataError, type TestSpanRow,
+} from "./latest-test-timings";
 
 function row(nodeid: string, duration_ms: number, extra: Partial<TestSpanRow> = {}): TestSpanRow {
   return {
@@ -64,4 +66,50 @@ test("ignores a run of slow builds that stays a minority", () => {
   const files = medianFiles([30, 30, 30, 18, 18, 18, 18].map((min) =>
     summarizeFiles([row("tests/a.py::one", min * 60_000)])));
   assert.equal(files[0].observedMs, 18 * 60_000);
+});
+
+test("takes each test's median over only the builds it ran in, first-seen order", () => {
+  const build = (ms: number, extra: TestSpanRow[] = []) =>
+    summarizeFiles([row("tests/a.py::one", ms), ...extra]);
+  const [file] = medianFiles([
+    build(100, [row("tests/a.py::two[p]", 40)]),
+    build(300),
+    build(110, [row("tests/a.py::two[p]", 20)]),
+  ]);
+  assert.deepEqual(file.tests, [
+    { nodeid: "tests/a.py::one", observedMs: 110 },
+    { nodeid: "tests/a.py::two[p]", observedMs: 30 },
+  ]);
+});
+
+test("a repeated nodeid within one build is an error, same as a repeated case", () => {
+  assert.throws(
+    () => summarizeFiles([row("tests/t.py::a", 1), row("tests/t.py::a", 2, { job_id: "job-2" })]),
+    TimingDataError,
+  );
+});
+
+test("a test that is always skipped keeps its real duration, not an invented zero", () => {
+  const [file] = medianFiles([
+    summarizeFiles([row("tests/a.py::one", 10), row("tests/a.py::skip", 2, { outcome: "skipped" })]),
+    summarizeFiles([row("tests/a.py::one", 12), row("tests/a.py::skip", 4, { outcome: "skipped" })]),
+  ]);
+  assert.deepEqual(file.tests.find((t) => t.nodeid === "tests/a.py::skip"), {
+    nodeid: "tests/a.py::skip", observedMs: 3,
+  });
+});
+
+test("withTestsOverMs keeps tests only strictly over the threshold", () => {
+  const [file] = medianFiles([summarizeFiles([row("tests/a.py::one", 500)])]);
+  assert.equal(withTestsOverMs([file], 500)[0].tests, undefined, "at the threshold: stripped");
+  assert.deepEqual(withTestsOverMs([file], 499)[0].tests, [{ nodeid: "tests/a.py::one", observedMs: 500 }]);
+});
+
+test("withTestsOverMs strips tests from every file when the param is absent, other fields unchanged", () => {
+  const [file] = medianFiles([summarizeFiles([row("tests/a.py::one", 500)])]);
+  const [response] = withTestsOverMs([file], null);
+  assert.ok(!("tests" in response));
+  const rest: Record<string, unknown> = { ...file };
+  delete rest.tests;
+  assert.deepEqual(response, rest);
 });

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cachedJson } from "@/lib/api-response";
-import { queryLatestTestTimings, TimingDataError } from "@/lib/latest-test-timings";
+import { queryLatestTestTimings, withTestsOverMs, TimingDataError } from "@/lib/latest-test-timings";
 
 export const runtime = "nodejs";
 
@@ -19,15 +19,20 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const stepKey = params.get("stepKey") ?? "";
   const days = Number(params.get("days") ?? 14);
+  const testsOverMsParam = params.get("testsOverMs");
+  const testsOverMs = testsOverMsParam === null ? null : Number(testsOverMsParam);
   if (!STEP_KEY.test(stepKey)) return error("stepKey is required", 400);
   if (!Number.isInteger(days) || days < 1 || days > 30) return error("days must be 1-30", 400);
+  if (testsOverMs !== null && (!Number.isInteger(testsOverMs) || testsOverMs < 0)) {
+    return error("testsOverMs must be a non-negative integer", 400);
+  }
 
   try {
     const timings = await queryLatestTestTimings(stepKey, { days });
     if (!timings) {
       return error(`No main CI build in the last ${days} days where every ${stepKey} job passed with test spans`, 404);
     }
-    return cachedJson(timings, CDN_CACHE);
+    return cachedJson({ ...timings, files: withTestsOverMs(timings.files, testsOverMs) }, CDN_CACHE);
   } catch (e) {
     if (e instanceof TimingDataError) return error(e.message, 422);
     console.error("Latest test timings query failed:", e);
