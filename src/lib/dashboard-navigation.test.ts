@@ -34,7 +34,7 @@ test("Infrastructure owns GPU and Cost routes", () => {
 });
 
 test("standalone destinations do not render a section nav", () => {
-  for (const pathname of ["/perf", "/eval", "/compare"]) {
+  for (const pathname of ["/perf", "/eval", "/compare", "/force-merges"]) {
     assert.equal(sectionForPathname(pathname), undefined);
   }
 });
