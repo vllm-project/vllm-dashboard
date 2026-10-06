@@ -223,31 +223,41 @@ export function resolveGroupsToJobConditions(groups: string[]): { exactNames: st
   return { exactNames, regexPatterns };
 }
 
+/** Summarize one group's jobs into counts and an overall group state. */
+export function summarizeGroupJobs(group: string, jobs: JobInfo[]): GroupStatus {
+  let passed = 0;
+  let failed = 0;
+  let running = 0;
+  let blocked = 0;
+  for (const { state } of jobs) {
+    if (state === "passed") passed++;
+    else if (isFailedJobState(state)) failed++;
+    else if (state === "running" || state === "scheduled" || state === "reserved") running++;
+    else blocked++;
+  }
+
+  let state: GroupStatus["state"];
+  const unblocked = passed + failed + running;
+  if (failed > 0) state = "failed";
+  else if (running > 0) state = "running";
+  else if (unblocked > 0 && passed === unblocked) state = "passed";
+  else state = "blocked";
+
+  return { group, state, passed, failed, running, blocked, total: jobs.length, jobs };
+}
+
 export function aggregateJobsByGroup(
   jobs: { name: string; state: string; web_url?: string }[],
   mapping: TestAreaMapping = getTestAreaMapping(),
 ): GroupStatus[] {
-  const groupMap = new Map<
-    string,
-    { passed: number; failed: number; running: number; blocked: number; total: number; jobs: JobInfo[] }
-  >();
+  const groupMap = new Map<string, JobInfo[]>();
 
   for (const job of jobs) {
     const group = getTestGroup(job.name, mapping);
     if (!group) continue;
 
-    if (!groupMap.has(group)) {
-      groupMap.set(group, { passed: 0, failed: 0, running: 0, blocked: 0, total: 0, jobs: [] });
-    }
-    const g = groupMap.get(group)!;
-    g.total++;
-    g.jobs.push({ name: job.name, state: job.state, web_url: job.web_url });
-
-    const state = job.state;
-    if (state === "passed") g.passed++;
-    else if (isFailedJobState(state)) g.failed++;
-    else if (state === "running" || state === "scheduled" || state === "reserved") g.running++;
-    else g.blocked++;
+    if (!groupMap.has(group)) groupMap.set(group, []);
+    groupMap.get(group)!.push({ name: job.name, state: job.state, web_url: job.web_url });
   }
 
   // Use groups from yaml (sorted alphabetically) for consistent column ordering
@@ -259,15 +269,7 @@ export function aggregateJobsByGroup(
     }
   }
 
-  return orderedGroups.filter((group) => groupMap.has(group)).map((group) => {
-    const g = groupMap.get(group)!;
-    let state: GroupStatus["state"];
-    const unblocked = g.passed + g.failed + g.running;
-    if (g.failed > 0) state = "failed";
-    else if (g.running > 0) state = "running";
-    else if (unblocked > 0 && g.passed === unblocked) state = "passed";
-    else state = "blocked";
-
-    return { group, state, ...g };
-  });
+  return orderedGroups
+    .filter((group) => groupMap.has(group))
+    .map((group) => summarizeGroupJobs(group, groupMap.get(group)!));
 }

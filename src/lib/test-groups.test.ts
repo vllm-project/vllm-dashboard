@@ -6,6 +6,7 @@ import {
   groupParametrizedTests,
   matchesTestQuery,
   stripParametrizedSuffix,
+  summarizeGroupJobs,
   type ParametrizedTestRecord,
 } from "./test-groups";
 import {
@@ -281,4 +282,35 @@ test("matchesTestQuery matches name, scope, file, location and labels", () => {
   assert.equal(matchesTestQuery(test_, "flaky"), true);
   assert.equal(matchesTestQuery(test_, ""), true);
   assert.equal(matchesTestQuery(test_, "unrelated"), false);
+});
+
+test("summarizeGroupJobs derives group state from the given jobs", () => {
+  const failing = summarizeGroupJobs("Models", [
+    { name: "a", state: "passed" },
+    { name: "b", state: "failed" },
+    { name: "c", state: "running" },
+    { name: "d", state: "waiting" },
+  ]);
+  assert.equal(failing.state, "failed");
+  assert.deepEqual(
+    [failing.passed, failing.failed, failing.running, failing.blocked, failing.total],
+    [1, 1, 1, 1, 4],
+  );
+
+  // Dropping the failed job (e.g. a hidden soft-fail job) changes the state.
+  assert.equal(
+    summarizeGroupJobs("Models", [
+      { name: "a", state: "passed" },
+      { name: "c", state: "running" },
+    ]).state,
+    "running",
+  );
+  assert.equal(
+    summarizeGroupJobs("Models", [{ name: "a", state: "passed" }]).state,
+    "passed",
+  );
+  assert.equal(
+    summarizeGroupJobs("Models", [{ name: "d", state: "blocked" }]).state,
+    "blocked",
+  );
 });

@@ -12,7 +12,7 @@ import {
 import useSWR from "swr";
 import { BuildWaterfall } from "@/components/build-waterfall";
 import { JobName, jobNameText, splitJobName } from "@/components/job-name";
-import type { GroupStatus } from "@/lib/test-groups";
+import { summarizeGroupJobs, type GroupStatus } from "@/lib/test-groups";
 import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
 import {
   buildDurationDisplay,
@@ -415,6 +415,7 @@ export function BuildsTable({
     { keepPreviousData: true },
   );
 
+  const isFilteringJobs = Boolean(hideSoftFail || hideOptional);
   const shouldHideJob = (name: string): boolean => {
     if (hideSoftFail && isSoftFailJob(name)) return true;
     if (hideOptional && isOptionalJob(name)) return true;
@@ -424,13 +425,17 @@ export function BuildsTable({
   const allGroups = new Map<string, Set<string>>();
   for (const build of builds) {
     for (const g of build.testGroups ?? []) {
+      const compactJobs = jobsByBuild[build.id]?.[g.group] ?? [];
+      const visibleNames = compactJobs
+        .map(([nameIndex]) => jobNames[nameIndex])
+        .filter((name) => name && !shouldHideJob(name));
+      // Drop a group column entirely when every job in it is hidden.
+      if (isFilteringJobs && compactJobs.length > 0 && visibleNames.length === 0) {
+        continue;
+      }
       if (!allGroups.has(g.group)) allGroups.set(g.group, new Set());
       const jobSet = allGroups.get(g.group)!;
-      const compactJobs = jobsByBuild[build.id]?.[g.group] ?? [];
-      for (const [nameIndex] of compactJobs) {
-        const name = jobNames[nameIndex];
-        if (name && !shouldHideJob(name)) jobSet.add(name);
-      }
+      for (const name of visibleNames) jobSet.add(name);
     }
   }
   const hasGroupFilter = selectedGroups && selectedGroups.size > 0;
@@ -595,28 +600,46 @@ export function BuildsTable({
           </thead>
           <tbody>
             {builds.map((build) => {
-              const groupMap = new Map(
-                (build.testGroups ?? []).map((g) => {
-                  const details =
-                    jobDetails?.jobsByBuild[build.id]?.[g.group] ?? [];
-                  const urlsByName = new Map(
-                    details.map((job) => [job.name, job.web_url]),
-                  );
-                  const failedUrlsByName = new Map(
-                    (g.failedJobs ?? []).map((job) => [job.name, job.web_url]),
-                  );
-                  const jobs = (jobsByBuild[build.id]?.[g.group] ?? [])
-                    .map(([nameIndex, state]) => ({
-                      name: jobNames[nameIndex],
-                      state,
-                      web_url:
-                        urlsByName.get(jobNames[nameIndex]) ??
-                        failedUrlsByName.get(jobNames[nameIndex]),
-                    }))
-                    .filter((job) => Boolean(job.name));
-                  return [g.group, { ...g, jobs }];
-                })
-              );
+              const groupMap = new Map<
+                string,
+                NonNullable<Build["testGroups"]>[number] & {
+                  jobs: GroupStatus["jobs"];
+                }
+              >();
+              for (const g of build.testGroups ?? []) {
+                const details =
+                  jobDetails?.jobsByBuild[build.id]?.[g.group] ?? [];
+                const urlsByName = new Map(
+                  details.map((job) => [job.name, job.web_url]),
+                );
+                const failedUrlsByName = new Map(
+                  (g.failedJobs ?? []).map((job) => [job.name, job.web_url]),
+                );
+                const jobs = (jobsByBuild[build.id]?.[g.group] ?? [])
+                  .map(([nameIndex, state]) => ({
+                    name: jobNames[nameIndex],
+                    state,
+                    web_url:
+                      urlsByName.get(jobNames[nameIndex]) ??
+                      failedUrlsByName.get(jobNames[nameIndex]),
+                  }))
+                  .filter((job) => Boolean(job.name));
+                const visibleJobs = isFilteringJobs
+                  ? jobs.filter((job) => !shouldHideJob(job.name))
+                  : jobs;
+                if (visibleJobs.length === jobs.length) {
+                  groupMap.set(g.group, { ...g, jobs });
+                } else if (visibleJobs.length > 0) {
+                  // Recompute the group cell from the visible jobs so hidden
+                  // soft-fail/optional jobs don't drive its color or counts.
+                  groupMap.set(g.group, {
+                    ...summarizeGroupJobs(g.group, visibleJobs),
+                    failedJobs: (g.failedJobs ?? []).filter(
+                      (job) => !shouldHideJob(job.name),
+                    ),
+                  });
+                }
+              }
               const canShowTrace = Boolean(
                 build.organization_slug &&
                   build.pipeline_slug &&
