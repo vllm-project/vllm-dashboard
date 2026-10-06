@@ -45,8 +45,8 @@ test("concurrent jobs requests share queries and expose cache/query timings", as
   for (const response of responses) {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
-      failureRanking: [{ name: "test job", is_optional: "0" }],
-      durationStats: [{ name: "test job", is_optional: "0" }],
+      failureRanking: [{ name: "test job", is_optional: "0", is_soft_fail: "0" }],
+      durationStats: [{ name: "test job", is_optional: "0", is_soft_fail: "0" }],
     });
     assert.match(response.headers.get("Server-Timing") ?? "", /source;desc="databricks"/);
   }

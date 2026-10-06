@@ -59,6 +59,9 @@ interface BuildGroupsResponse {
     Record<string, Array<[nameIndex: number, state: string]>>
   >;
   startedJobCountsByBuild: Record<string, number>;
+  /** Indexes into jobNames of jobs from `optional` / `soft_fail` YAML steps. */
+  optionalJobs?: number[];
+  softFailJobs?: number[];
   jobOptions: Array<{ name: string; group: string }>;
   error?: string;
 }
@@ -300,6 +303,8 @@ export default function BuildsPage() {
         jobNames={groupData?.jobNames ?? []}
         jobsByBuild={groupData?.jobsByBuild ?? {}}
         startedJobCountsByBuild={groupData?.startedJobCountsByBuild ?? {}}
+        optionalJobs={groupData?.optionalJobs ?? []}
+        softFailJobs={groupData?.softFailJobs ?? []}
         showBranch={!branch}
         hideSoftFail={hideSoftFail}
         hideOptional={hideOptional}

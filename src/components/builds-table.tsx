@@ -13,7 +13,6 @@ import useSWR from "swr";
 import { BuildWaterfall } from "@/components/build-waterfall";
 import { JobName, jobNameText, splitJobName } from "@/components/job-name";
 import { summarizeGroupJobs, type GroupStatus } from "@/lib/test-groups";
-import { isOptionalJob, isSoftFailJob } from "@/lib/optional-jobs";
 import {
   buildDurationDisplay,
   isBuildInProgress,
@@ -289,6 +288,9 @@ interface BuildsTableProps {
   jobNames: string[];
   jobsByBuild: CompactJobsByBuild;
   startedJobCountsByBuild: Record<string, number>;
+  /** Indexes into jobNames of jobs from `optional` / `soft_fail` YAML steps. */
+  optionalJobs: number[];
+  softFailJobs: number[];
   showBranch?: boolean;
   hideSoftFail?: boolean;
   hideOptional?: boolean;
@@ -382,6 +384,8 @@ export function BuildsTable({
   jobNames,
   jobsByBuild,
   startedJobCountsByBuild,
+  optionalJobs,
+  softFailJobs,
   showBranch,
   hideSoftFail,
   hideOptional,
@@ -415,10 +419,18 @@ export function BuildsTable({
     { keepPreviousData: true },
   );
 
+  const optionalJobNames = useMemo(
+    () => new Set(optionalJobs.map((index) => jobNames[index])),
+    [optionalJobs, jobNames],
+  );
+  const softFailJobNames = useMemo(
+    () => new Set(softFailJobs.map((index) => jobNames[index])),
+    [softFailJobs, jobNames],
+  );
   const isFilteringJobs = Boolean(hideSoftFail || hideOptional);
   const shouldHideJob = (name: string): boolean => {
-    if (hideSoftFail && isSoftFailJob(name)) return true;
-    if (hideOptional && isOptionalJob(name)) return true;
+    if (hideSoftFail && softFailJobNames.has(name)) return true;
+    if (hideOptional && optionalJobNames.has(name)) return true;
     return false;
   };
 

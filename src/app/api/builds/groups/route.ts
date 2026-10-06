@@ -8,7 +8,13 @@ import {
   isFailedJobState,
   type GroupStatus,
 } from "@/lib/test-groups";
-import { getTestAreaMappingForCommit } from "@/lib/test-areas";
+import {
+  ensureOptionalJobMatcher,
+  ensureSoftFailJobMatcher,
+  getTestAreaMappingForCommit,
+  isOptionalJob,
+  isSoftFailJob,
+} from "@/lib/test-areas";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { getBuildJobRosterRows } from "@/lib/buildkite-build-jobs";
 import { queryBuildJobsFromOtel } from "@/lib/otel-ci";
@@ -44,6 +50,8 @@ export async function GET(request: NextRequest) {
           jobNames: [],
           jobsByBuild: {},
           startedJobCountsByBuild: {},
+          optionalJobs: [],
+          softFailJobs: [],
           jobOptions: [],
         },
         CDN_CACHE,
@@ -191,11 +199,22 @@ export async function GET(request: NextRequest) {
       });
     }
 
+    // Flag jobs from the pipeline YAML's `optional` and `soft_fail` steps, as
+    // indexes into jobNames, so the table's hide toggles track the YAML.
+    const [optionalMatcher, softFailMatcher] = await Promise.all([
+      ensureOptionalJobMatcher(),
+      ensureSoftFailJobMatcher(),
+    ]);
+    const jobIndexesWhere = (matches: (name: string) => boolean) =>
+      jobNames.flatMap((name, index) => (matches(name) ? [index] : []));
+
     const result = {
       groupsByBuild,
       jobNames,
       jobsByBuild: compactJobsByBuild,
       startedJobCountsByBuild,
+      optionalJobs: jobIndexesWhere((name) => isOptionalJob(name, optionalMatcher)),
+      softFailJobs: jobIndexesWhere((name) => isSoftFailJob(name, softFailMatcher)),
       jobOptions: [...jobToGroup.entries()]
         .map(([name, group]) => ({ name, group }))
         .sort((a, b) => a.name.localeCompare(b.name)),

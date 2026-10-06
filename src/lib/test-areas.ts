@@ -6,8 +6,11 @@ export interface TestStep {
   label: string;
   parallelism?: number;
   optional?: boolean;
+  softFail?: boolean;
   /** AMD mirror label (`mirror.amd.label`), which runs in the same ci pipeline. */
   amdMirrorLabel?: string;
+  /** The AMD mirror's own `soft_fail`; the mirror does not inherit the step's. */
+  amdMirrorSoftFail?: boolean;
 }
 
 export interface TestArea {
@@ -21,11 +24,17 @@ export interface TestAreaMapping {
   groups: string[];
 }
 
-/** Matches job names belonging to steps marked `optional: true` in the YAML. */
-export interface OptionalJobMatcher {
+/** Matches job names belonging to steps that carry a given YAML flag. */
+export interface JobNameMatcher {
   exact: Set<string>;
   patterns: RegExp[];
 }
+
+/** Matches job names belonging to steps marked `optional: true` in the YAML. */
+export type OptionalJobMatcher = JobNameMatcher;
+
+/** Matches job names belonging to steps marked `soft_fail` in the YAML. */
+export type SoftFailJobMatcher = JobNameMatcher;
 
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour
 const COMMIT_CACHE_LIMIT = 100;
@@ -263,12 +272,31 @@ function toShardPattern(label: string): RegExp {
  * become anchored patterns so a rendered shard name matches.
  */
 export function buildOptionalJobMatcher(areas: TestArea[]): OptionalJobMatcher {
+  return buildJobNameMatcher(areas, (step) =>
+    step.optional === true ? [step.label, step.amdMirrorLabel] : [],
+  );
+}
+
+/**
+ * Collect the names of every step marked `soft_fail`. Unlike `optional`, an
+ * AMD mirror only counts when the mirror itself sets `soft_fail`.
+ */
+export function buildSoftFailJobMatcher(areas: TestArea[]): SoftFailJobMatcher {
+  return buildJobNameMatcher(areas, (step) => [
+    step.softFail === true ? step.label : undefined,
+    step.amdMirrorSoftFail === true ? step.amdMirrorLabel : undefined,
+  ]);
+}
+
+function buildJobNameMatcher(
+  areas: TestArea[],
+  labelsFor: (step: TestStep) => Array<string | undefined>,
+): JobNameMatcher {
   const exact = new Set<string>();
   const patterns: RegExp[] = [];
   for (const area of areas) {
     for (const step of area.steps) {
-      if (step.optional !== true) continue;
-      for (const label of [step.label, step.amdMirrorLabel]) {
+      for (const label of labelsFor(step)) {
         if (!label) continue;
         if (label.includes("%N")) patterns.push(toShardPattern(label));
         else exact.add(label);
@@ -278,20 +306,36 @@ export function buildOptionalJobMatcher(areas: TestArea[]): OptionalJobMatcher {
   return { exact, patterns };
 }
 
-export function isOptionalJob(
+export function matchesJobName(
   jobName: string,
-  matcher: OptionalJobMatcher,
+  matcher: JobNameMatcher,
 ): boolean {
   if (matcher.exact.has(jobName)) return true;
   return matcher.patterns.some((regex) => regex.test(jobName));
 }
 
+export function isOptionalJob(
+  jobName: string,
+  matcher: OptionalJobMatcher,
+): boolean {
+  return matchesJobName(jobName, matcher);
+}
+
+export function isSoftFailJob(
+  jobName: string,
+  matcher: SoftFailJobMatcher,
+): boolean {
+  return matchesJobName(jobName, matcher);
+}
+
 // Build static mapping immediately — no async, no network
 const STATIC_MAPPING = buildTestAreaMapping([]);
 const STATIC_OPTIONAL_MATCHER = buildOptionalJobMatcher([]);
+const STATIC_SOFT_FAIL_MATCHER = buildSoftFailJobMatcher([]);
 
 let cachedMapping: TestAreaMapping = STATIC_MAPPING;
 let cachedOptionalMatcher: OptionalJobMatcher = STATIC_OPTIONAL_MATCHER;
+let cachedSoftFailMatcher: SoftFailJobMatcher = STATIC_SOFT_FAIL_MATCHER;
 let cachedAreas: TestArea[] = [];
 let cacheExpiry = 0;
 let refreshPromise: Promise<void> | null = null;
@@ -305,22 +349,33 @@ function rawUrl(ref: string, path: string): string {
   return `${GITHUB_RAW_BASE}/${encodeURIComponent(ref)}/${encodedPath}`;
 }
 
-function parseTestStep(value: unknown): TestStep | null {
+/** Buildkite's `soft_fail` is `true` or a non-empty list of exit statuses. */
+function isSoftFailValue(value: unknown): boolean {
+  return value === true || (Array.isArray(value) && value.length > 0);
+}
+
+export function parseTestStep(value: unknown): TestStep | null {
   if (!value || typeof value !== "object") return null;
   const step = value as {
     label?: unknown;
     optional?: unknown;
+    soft_fail?: unknown;
     mirror?: unknown;
   };
   if (typeof step.label !== "string") return null;
   const parsed: TestStep = { label: step.label };
   if (step.optional === true) parsed.optional = true;
+  if (isSoftFailValue(step.soft_fail)) parsed.softFail = true;
   const mirror = step.mirror;
   if (mirror && typeof mirror === "object") {
     const amd = (mirror as { amd?: unknown }).amd;
     if (amd && typeof amd === "object") {
-      const amdLabel = (amd as { label?: unknown }).label;
+      const { label: amdLabel, soft_fail: amdSoftFail } = amd as {
+        label?: unknown;
+        soft_fail?: unknown;
+      };
       if (typeof amdLabel === "string") parsed.amdMirrorLabel = amdLabel;
+      if (isSoftFailValue(amdSoftFail)) parsed.amdMirrorSoftFail = true;
     }
   }
   return parsed;
@@ -476,6 +531,7 @@ function refreshMapping(): Promise<void> {
       cachedAreas = areas;
       cachedMapping = buildTestAreaMapping(areas);
       cachedOptionalMatcher = buildOptionalJobMatcher(areas);
+      cachedSoftFailMatcher = buildSoftFailJobMatcher(areas);
       cacheExpiry = Date.now() + CACHE_TTL;
       commitMappings.clear();
     } catch (error) {
@@ -513,6 +569,13 @@ export async function ensureOptionalJobMatcher(): Promise<OptionalJobMatcher> {
   return cachedOptionalMatcher;
 }
 
+export async function ensureSoftFailJobMatcher(): Promise<SoftFailJobMatcher> {
+  if (Date.now() >= cacheExpiry) {
+    await refreshMapping();
+  }
+  return cachedSoftFailMatcher;
+}
+
 export function getOptionalJobMatcher(): OptionalJobMatcher {
   // Always returns immediately — never blocks on network. Routes that must not
   // add a GitHub fetch to the request path use this and pick up refreshed
@@ -531,6 +594,11 @@ export function getOptionalJobMatcher(): OptionalJobMatcher {
  */
 export function peekOptionalJobMatcher(): OptionalJobMatcher {
   return cachedOptionalMatcher;
+}
+
+/** The soft-fail counterpart of `peekOptionalJobMatcher`. */
+export function peekSoftFailJobMatcher(): SoftFailJobMatcher {
+  return cachedSoftFailMatcher;
 }
 
 export async function getTestAreaMappingForCommit(
