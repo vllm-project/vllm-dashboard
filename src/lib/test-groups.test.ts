@@ -11,9 +11,12 @@ import {
 } from "./test-groups";
 import {
   buildOptionalJobMatcher,
+  buildSoftFailJobMatcher,
   buildTestAreaMapping,
   discoverGroupYamlPaths,
   isOptionalJob,
+  isSoftFailJob,
+  parseTestStep,
 } from "./test-areas";
 
 const mapping = buildTestAreaMapping([
@@ -143,6 +146,53 @@ test("optional matcher flags optional steps, their shards, and AMD mirrors", () 
     ),
     false,
   );
+});
+
+test("parses soft_fail as true or a non-empty exit status list", () => {
+  assert.equal(parseTestStep({ label: "a", soft_fail: true })?.softFail, true);
+  assert.equal(
+    parseTestStep({ label: "a", soft_fail: [{ exit_status: 1 }] })?.softFail,
+    true,
+  );
+  assert.equal(parseTestStep({ label: "a", soft_fail: false })?.softFail, undefined);
+  assert.equal(parseTestStep({ label: "a", soft_fail: [] })?.softFail, undefined);
+  assert.deepEqual(
+    parseTestStep({
+      label: "a",
+      mirror: { amd: { label: ":amd: a", soft_fail: true } },
+    }),
+    { label: "a", amdMirrorLabel: ":amd: a", amdMirrorSoftFail: true },
+  );
+});
+
+test("soft-fail matcher flags soft_fail steps and shards, not plain AMD mirrors", () => {
+  const matcher = buildSoftFailJobMatcher([
+    {
+      group: "Dependencies",
+      steps: [
+        {
+          label: "Ray Dependency Compatibility Check",
+          softFail: true,
+          amdMirrorLabel: ":amd: Ray Dependency Compatibility Check",
+        },
+        { label: "Plugin Tests Shard %N", softFail: true },
+        {
+          label: "Kernels",
+          amdMirrorLabel: ":amd: Kernels",
+          amdMirrorSoftFail: true,
+        },
+        { label: "Optional Only", optional: true },
+      ],
+    },
+  ]);
+
+  assert.equal(isSoftFailJob("Ray Dependency Compatibility Check", matcher), true);
+  assert.equal(isSoftFailJob("Plugin Tests Shard 3", matcher), true);
+  // The mirror only counts when it sets soft_fail itself.
+  assert.equal(isSoftFailJob(":amd: Ray Dependency Compatibility Check", matcher), false);
+  assert.equal(isSoftFailJob(":amd: Kernels", matcher), true);
+  assert.equal(isSoftFailJob("Kernels", matcher), false);
+  assert.equal(isSoftFailJob("Optional Only", matcher), false);
 });
 
 test("discovers group YAML recursively from every configured job directory", () => {

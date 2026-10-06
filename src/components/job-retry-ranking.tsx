@@ -5,7 +5,6 @@ import useSWR from "swr";
 import { JobName, jobNameText } from "@/components/job-name";
 import { StatCard } from "@/components/stat-card";
 import { JobRunHistory } from "@/components/job-run-history";
-import { isSoftFailJob } from "@/lib/optional-jobs";
 
 export interface RetryJob {
   name: string;
@@ -13,6 +12,7 @@ export interface RetryJob {
   total_runs: number;
   has_soft_fail: boolean;
   is_optional: boolean;
+  is_soft_fail: boolean;
 }
 
 interface RetryResponse {
@@ -43,7 +43,7 @@ export function filterRetryJobs(jobs: RetryJob[], filters: RetryFilters): RetryJ
   const query = filters.searchQuery.trim().toLowerCase();
   return jobs.filter((job) => {
     if (!(job.retries > 0)) return false;
-    if (filters.hideSoftFail && (job.has_soft_fail || isSoftFailJob(job.name))) return false;
+    if (filters.hideSoftFail && (job.has_soft_fail || job.is_soft_fail)) return false;
     if (filters.hideOptional && job.is_optional) return false;
     return searchableJobName(job.name).toLowerCase().includes(query);
   });
@@ -210,7 +210,7 @@ export function JobRetryRanking({
                             <span aria-hidden="true" className="text-zinc-400">{expandedJob === job.name ? "▾" : "▸"}</span>
                             <span><JobName name={job.name} /></span>
                           </button>
-                          {(job.has_soft_fail || isSoftFailJob(job.name)) && (
+                          {(job.has_soft_fail || job.is_soft_fail) && (
                             <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-400">soft fail</span>
                           )}
                           {job.is_optional && (

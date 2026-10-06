@@ -10,7 +10,12 @@ import {
   queryRetriesFromWarehouse,
   RetryFilterError,
 } from "@/lib/job-retries";
-import { isOptionalJob, peekOptionalJobMatcher } from "@/lib/test-areas";
+import {
+  isOptionalJob,
+  isSoftFailJob,
+  peekOptionalJobMatcher,
+  peekSoftFailJobMatcher,
+} from "@/lib/test-areas";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -29,15 +34,17 @@ export async function GET(request: NextRequest) {
       return { source, retryRanking: rankRetryJobs(rows) };
     });
     timing.describe("cache", status);
-    // Flag optional steps from the cached matcher. This route never fetches
-    // test-area data from GitHub; the matcher is warmed by the other jobs and
-    // builds routes, so a cold cache briefly under-reports optional jobs.
+    // Flag optional and soft-fail steps from the cached matchers. This route
+    // never fetches test-area data from GitHub; the matchers are warmed by the
+    // other jobs and builds routes, so a cold cache briefly under-reports them.
     const optionalMatcher = peekOptionalJobMatcher();
+    const softFailMatcher = peekSoftFailJobMatcher();
     const data = {
       ...result,
       retryRanking: result.retryRanking.map((row) => ({
         ...row,
         is_optional: isOptionalJob(row.name, optionalMatcher),
+        is_soft_fail: isSoftFailJob(row.name, softFailMatcher),
       })),
     };
     const response = cachedJson(data, CDN_CACHE);

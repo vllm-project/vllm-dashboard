@@ -5,7 +5,12 @@ import { ServerTiming } from "@/lib/server-timing";
 import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { queryJobStatsFromOtel } from "@/lib/otel-ci";
-import { ensureOptionalJobMatcher, isOptionalJob } from "@/lib/test-areas";
+import {
+  ensureOptionalJobMatcher,
+  ensureSoftFailJobMatcher,
+  isOptionalJob,
+  isSoftFailJob,
+} from "@/lib/test-areas";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -131,18 +136,23 @@ export async function GET(request: NextRequest) {
       return { failureRanking, durationStats };
     });
     timing.describe("cache", status);
-    // Annotate rows from the pipeline YAML's `optional: true` steps. Done per
-    // request (not cached) so the 1h matcher refresh applies without waiting
-    // for the job-stats cache to expire, and so it covers both data sources.
-    const optionalMatcher = await ensureOptionalJobMatcher();
+    // Annotate rows from the pipeline YAML's `optional` and `soft_fail` steps.
+    // Done per request (not cached) so the 1h matcher refresh applies without
+    // waiting for the job-stats cache to expire, and so it covers both data
+    // sources.
+    const [optionalMatcher, softFailMatcher] = await Promise.all([
+      ensureOptionalJobMatcher(),
+      ensureSoftFailJobMatcher(),
+    ]);
     const annotate = (rows: Record<string, unknown>[]) =>
-      rows.map((row) => ({
-        ...row,
-        is_optional:
-          typeof row.name === "string" && isOptionalJob(row.name, optionalMatcher)
-            ? "1"
-            : "0",
-      }));
+      rows.map((row) => {
+        const name = typeof row.name === "string" ? row.name : null;
+        return {
+          ...row,
+          is_optional: name && isOptionalJob(name, optionalMatcher) ? "1" : "0",
+          is_soft_fail: name && isSoftFailJob(name, softFailMatcher) ? "1" : "0",
+        };
+      });
     const data = {
       failureRanking: annotate(result.failureRanking),
       durationStats: annotate(result.durationStats),

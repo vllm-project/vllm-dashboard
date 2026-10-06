@@ -5,7 +5,6 @@ import useSWR from "swr";
 import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
 import { DateRangePicker } from "@/components/date-range-picker";
-import { isSoftFailJob } from "@/lib/optional-jobs";
 import { JobName, jobNameText } from "@/components/job-name";
 import { JobRetryRanking } from "@/components/job-retry-ranking";
 import { JobRunHistory } from "@/components/job-run-history";
@@ -30,6 +29,7 @@ interface FailureRow {
   failure_rate: string;
   has_soft_fail: string;
   is_optional: string;
+  is_soft_fail: string;
 }
 
 interface DurationRow {
@@ -40,6 +40,7 @@ interface DurationRow {
   p90_duration: string;
   max_duration: string;
   is_optional: string;
+  is_soft_fail: string;
 }
 
 interface JobsResponse {
@@ -99,8 +100,7 @@ function DurationBar({ secs, maxSecs }: { secs: number; maxSecs: number }) {
   );
 }
 
-function JobBadges({ name, isOptional, hasSoftFail }: { name: string; isOptional: boolean; hasSoftFail: boolean }) {
-  const softFail = isSoftFailJob(name) || hasSoftFail;
+function JobBadges({ isOptional, softFail }: { isOptional: boolean; softFail: boolean }) {
   if (!isOptional && !softFail) return null;
   return (
     <span className="ml-2 inline-flex gap-1">
@@ -168,7 +168,7 @@ function JobAnalysisTab({
 
   const filteredFailures = failureRanking
     .filter((row) => {
-      if (hideSoftFail && (isSoftFailJob(row.name) || row.has_soft_fail === "1")) return false;
+      if (hideSoftFail && (row.is_soft_fail === "1" || row.has_soft_fail === "1")) return false;
       if (hideOptional && row.is_optional === "1") return false;
       if (searchQuery && !jobNameText(row.name).toLowerCase().includes(searchQuery.toLowerCase())) return false;
       return true;
@@ -399,7 +399,7 @@ function JobAnalysisTab({
                       <td className="px-5 py-2.5 text-zinc-400">{page * pageSize + i + 1}</td>
                       <td className="px-5 py-2.5 font-medium">
                         <JobName name={row.name} />
-                        <JobBadges name={row.name} isOptional={row.is_optional === "1"} hasSoftFail={row.has_soft_fail === "1"} />
+                        <JobBadges isOptional={row.is_optional === "1"} softFail={row.is_soft_fail === "1" || row.has_soft_fail === "1"} />
                       </td>
                       <td className="px-5 py-2.5">
                         <FailureBar rate={parseFloat(row.failure_rate)} />
@@ -469,7 +469,7 @@ function JobAnalysisTab({
                       <td className="px-5 py-2.5 text-zinc-400">{page * pageSize + i + 1}</td>
                       <td className="px-5 py-2.5 font-medium">
                         <JobName name={row.name} />
-                        <JobBadges name={row.name} isOptional={row.is_optional === "1"} hasSoftFail={false} />
+                        <JobBadges isOptional={row.is_optional === "1"} softFail={row.is_soft_fail === "1"} />
                       </td>
                       <td className="px-5 py-2.5">
                         <DurationBar
