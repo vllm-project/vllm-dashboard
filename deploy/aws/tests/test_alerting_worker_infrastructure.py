@@ -94,8 +94,15 @@ def test_full_ci_retry_timer_retries_analyses_hourly_without_overlapping() -> No
     assert "run-worker full-ci-analyze" in service
     assert "run-worker full-ci\n" not in service
     # Skip while the scheduled run is active so retries never duplicate an
-    # in-progress analysis.
-    assert "systemctl is-active --quiet alerting-full-ci.service" in service
+    # in-progress analysis. A oneshot unit is `activating` while it runs, and
+    # the skip must be a condition, not a failure that pages via OnFailure.
+    assert (
+        "ExecCondition=/bin/bash -c '! systemctl show alerting-full-ci.service "
+        "-p ActiveState --value | grep -qxE "
+        '"active|activating|deactivating|reloading"\'' in service
+    )
+    assert "ExecStartPre=" not in service
+    assert "is-active" not in service
     assert "StandardOutput=null" in service
     assert "StandardError=null" in service
     for sensitive_name in ("DATABASE_URL", "TOKEN", "PASSWORD"):

@@ -9,9 +9,12 @@ OnSuccess=alerting-failure-resolve@%n.service
 Type=oneshot
 User=alerting
 Group=alerting
-# Skip while the scheduled twice-daily run is active: its analyze phase
-# already drains pending comparisons, and concurrent runs duplicate LLM work.
-ExecStartPre=/bin/bash -c '! systemctl is-active --quiet alerting-full-ci.service'
+# Skip this tick while the scheduled twice-daily run is still working: its
+# analyze phase already drains pending comparisons, and concurrent runs
+# duplicate LLM work. The next :43 tick checks again. A running oneshot is
+# `activating`, never `active`, so match ActiveState; ExecCondition makes the
+# skip a no-op instead of a failure that fires OnFailure's Slack alert.
+ExecCondition=/bin/bash -c '! systemctl show alerting-full-ci.service -p ActiveState --value | grep -qxE "active|activating|deactivating|reloading"'
 ExecStart=/opt/alerting/bin/run-worker full-ci-analyze
 StandardOutput=null
 StandardError=null
