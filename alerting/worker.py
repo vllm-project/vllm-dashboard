@@ -92,6 +92,7 @@ def _runtime(
             ),
             kimi_model=os.environ.get("KIMI_MODEL", "moonshotai/Kimi-K3"),
             kimi_timeout_seconds=int(os.environ.get("KIMI_TIMEOUT_SECONDS", "3600")),
+            kimi_max_turns=int(os.environ.get("KIMI_MAX_TURNS", "200")),
             kimi_reasoning_effort=os.environ.get("KIMI_REASONING_EFFORT", "low"),
             # Full CI triage calls can legitimately think for several minutes;
             # the default 300s read timeout killed a 24-minute analysis once.

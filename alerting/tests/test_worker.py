@@ -236,6 +236,7 @@ def test_full_ci_analysis_still_uses_shared_kimi_env(
     _set_analysis_environment(monkeypatch)
     monkeypatch.delenv("KIMI_REASONING_EFFORT", raising=False)
     monkeypatch.delenv("KIMI_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("KIMI_MAX_TURNS", raising=False)
     # Main-CI-specific overrides must not affect the Full CI analyzer.
     monkeypatch.setenv("KIMI_MAIN_CI_REASONING_EFFORT", "low")
     monkeypatch.setenv("KIMI_MAIN_CI_TIMEOUT_SECONDS", "300")
@@ -245,15 +246,18 @@ def test_full_ci_analysis_still_uses_shared_kimi_env(
 
     assert captured["kimi_reasoning_effort"] == "low"
     assert captured["kimi_timeout_seconds"] == 3600
+    assert captured["kimi_max_turns"] == 200
 
     monkeypatch.setenv("KIMI_REASONING_EFFORT", "high")
     monkeypatch.setenv("KIMI_TIMEOUT_SECONDS", "900")
+    monkeypatch.setenv("KIMI_MAX_TURNS", "500")
     captured.clear()
 
     worker._runtime("full-ci-analyze", worker.SystemClock(), DeliveryMode.SHADOW)
 
     assert captured["kimi_reasoning_effort"] == "high"
     assert captured["kimi_timeout_seconds"] == 900
+    assert captured["kimi_max_turns"] == 500
 
 
 class FailingRuntime(RecordingRuntime):
