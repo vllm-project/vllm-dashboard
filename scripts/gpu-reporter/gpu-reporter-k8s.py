@@ -71,10 +71,11 @@ DEVICE_ROLE_MAPS = {
         "/dev/shm": "workspace",
     },
     # DGX B200 pool: /dev/md0 = 1.8 TB root (job emptyDir + /mnt/shared
-    # live here), /dev/md127 = 28 TB /raid.
+    # live here), /dev/md127 = 28 TB /raid, /dev/shm = RAM-backed workspace.
     "dgxb200-": {
         "/dev/md0": "system",
         "/dev/md127": "data",
+        "/dev/shm": "workspace",
     },
 }
 

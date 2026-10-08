@@ -6,10 +6,11 @@ reported telemetry. An episode opens only after a breach sustains across the
 configured consecutive scan count and resolves on the first positive
 observation, so every episode produces exactly two Slack messages: open and
 resolve. Unreporting wording always says a host "stopped reporting"; the
-alert never claims a machine is down. Disk usage is keyed by the shared
-(fstype, device) group — not hostname — so a fleet-wide NFS volume pages
-once no matter how many hosts mount it; mounts with role 'other' or a
-per-mount error never alert. GPU temperature and dead-process GPU memory
+alert never claims a machine is down. Disk usage on a network filesystem is
+keyed by the shared (fstype, device) group — not hostname — so a fleet-wide
+NFS volume pages once no matter how many hosts mount it; local disks are keyed
+per host, because device names like /dev/vda1 repeat across hosts. Mounts
+with role 'other' or a per-mount error never alert. GPU temperature and dead-process GPU memory
 (memory still allocated to processes that no longer exist) are keyed per
 host and GPU.
 RAM, load, and network are display-only and never alert.
@@ -57,6 +58,12 @@ RETIREMENT_AGE = timedelta(days=7)
 # Only these mount roles alert on disk usage; 'other' and errored mounts
 # never do. RAM, load, and network are display-only and never alert.
 DISK_ALERT_ROLES = frozenset({"workspace", "images", "data", "system"})
+# Filesystems that one volume can back on many hosts; their disk episodes
+# group across hosts. Every other fstype is a host-local disk whose device
+# name (/dev/vda1, tmpfs) says nothing about which host it is on.
+SHARED_DISK_FSTYPES = frozenset(
+    {"nfs", "nfs4", "cifs", "smb3", "virtiofs", "lustre", "ceph"}
+)
 
 
 class InfraAlertType(StrEnum):
@@ -342,8 +349,11 @@ def _plan_unreporting(
     )
 
 
-def _disk_subject(fstype: str, device: str) -> str:
-    return f"disk:{fstype.lower()}:{device.lower()}"
+def _disk_subject(mount: DiskMountObservation) -> str:
+    fstype, device = mount.fstype.lower(), mount.device.lower()
+    if fstype in SHARED_DISK_FSTYPES:
+        return f"disk:{fstype}:{device}"
+    return f"disk:{mount.hostname.lower()}:{fstype}:{device}"
 
 
 def _plan_disk_usage(
@@ -354,7 +364,8 @@ def _plan_disk_usage(
     states: Mapping[tuple[str, str], InfraSubjectState],
     open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
 ) -> InfraScanPlan:
-    """Plan shared-volume episodes, deduplicated by (fstype, device).
+    """Plan disk episodes: shared volumes by (fstype, device), local disks
+    per host.
 
     A group breaches while any reported mount is at or above the threshold
     and resolves only when every mount in the group drops below it, so an
@@ -372,7 +383,7 @@ def _plan_disk_usage(
             or mount.total_bytes <= 0
         ):
             continue
-        subject = _disk_subject(mount.fstype, mount.device)
+        subject = _disk_subject(mount)
         groups.setdefault(subject, []).append(mount)
     for subject in sorted(groups):
         members = groups[subject]

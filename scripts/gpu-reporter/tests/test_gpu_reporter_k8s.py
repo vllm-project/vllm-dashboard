@@ -149,12 +149,13 @@ def test_dgx_device_roles(reporter_k8s):
     fs_map = {
         "/dev/md0": {"used_bytes": 1, "total_bytes": 1800000000000},
         "/dev/md127": {"used_bytes": 2, "total_bytes": 28000000000000},
+        "/dev/shm": {"used_bytes": 4, "total_bytes": 1082086498304},
         "/dev/sdz9": {"used_bytes": 3, "total_bytes": 500000000},
     }
     disks = reporter_k8s.build_disk_entries("dgxb200-15", fs_map, 1800000000000)
     roles = {d["device"]: d["role"] for d in disks}
     assert roles == {"/dev/md0": "system", "/dev/md127": "data",
-                     "/dev/sdz9": "other"}
+                     "/dev/shm": "workspace", "/dev/sdz9": "other"}
 
 
 def test_unknown_pool_root_falls_back_to_system(reporter_k8s):

@@ -113,6 +113,7 @@ def test_rpc_pipefs_and_zero_capacity_mounts_are_skipped(reporter, monkeypatch):
 def test_h200_mount_role_map(reporter):
     assert reporter.classify_mount("/") == "system"
     assert reporter.classify_mount("/dev/shm") == "workspace"
+    assert reporter.classify_mount("/mnt/local") == "workspace"
     assert reporter.classify_mount("/raid0") == "images"
     assert reporter.classify_mount("/mnt/vllm-ci") == "data"
     assert reporter.classify_mount("/boot/efi") == "other"

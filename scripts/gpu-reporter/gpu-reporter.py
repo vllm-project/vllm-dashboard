@@ -54,14 +54,17 @@ CPU_SAMPLE_INTERVAL = 1.0  # seconds between the two /proc/stat reads
 DISK_STAT_TIMEOUT = float(os.environ.get("GPU_REPORT_DISK_TIMEOUT", "5"))
 COMPUTE_APPS_TIMEOUT = float(os.environ.get("GPU_REPORT_COMPUTE_APPS_TIMEOUT", "10"))
 
-# Per-mount role classification for the H200 CI pool (h200-ci-1..6):
+# Per-mount role classification for the bare-metal H200 pools
+# (h200-ci-*, mithril-h200-*):
 #   /dev/shm     - buildkite build path is /dev/shm/buildkite-agent/builds
+#   /mnt/local   - buildkite build path is /mnt/local/buildkite-agent/builds
 #   /raid0       - docker data-root is /raid0/docker
 #   /mnt/vllm-ci - shared NFS share for datasets/models
 # Unclassified mounts default to "system" for / and "other" (never alerted).
 MOUNT_ROLES = {
     "/": "system",
     "/dev/shm": "workspace",
+    "/mnt/local": "workspace",
     "/raid0": "images",
     "/mnt/vllm-ci": "data",
 }
