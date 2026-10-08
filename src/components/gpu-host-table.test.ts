@@ -137,7 +137,7 @@ test("a host without host metrics shows empty cells and a graceful drill-down", 
   assert.match(markup, /No disk metrics reported/);
 });
 
-test("the disk cell shows the worst alertable mount, never an 'other' mount", () => {
+test("the disk cell shows the worst mount, including an 'other' mount", () => {
   const markup = render(
     [hostRow()],
     [
@@ -161,9 +161,8 @@ test("the disk cell shows the worst alertable mount, never an 'other' mount", ()
     ],
   );
 
-  // 60% (the data mount) drives the cell, not the 99% tmpfs mount.
-  assert.match(markup, />60%</);
-  assert.doesNotMatch(markup, />99%</);
+  // The 99% mount drives the cell even though its role is 'other'.
+  assert.match(markup, />99%</);
 });
 
 test("tmpfs mounts are labeled as RAM-backed in the drill-down", () => {

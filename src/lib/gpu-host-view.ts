@@ -1,5 +1,5 @@
 import type { GpuLatest, HostLatest } from "./gpu-types";
-import type { DiskRole, NormalizedDiskMetric } from "./gpu-report";
+import type { NormalizedDiskMetric } from "./gpu-report";
 
 /** A host is dimmed as Stale once its newest report is this old. */
 export const HOST_STALE_MINUTES = 5;
@@ -104,18 +104,6 @@ export function buildHostRows(
   return [...map.values()].sort((a, b) => a.hostname.localeCompare(b.hostname));
 }
 
-/**
- * Disk roles that can fill up a job and therefore drive alerting and the
- * summary Disk cell. "other" mounts (cgroup, tmpfs snapshots, container
- * plumbing) never drive the cell, and the container-plumbing ones are hidden
- * from the drill-down entirely — see isContainerPlumbingMount.
- */
-export const ALERTABLE_DISK_ROLES: readonly DiskRole[] = [
-  "workspace",
-  "images",
-  "data",
-  "system",
-];
 
 /**
  * Mounts that are container or pod plumbing rather than real host storage:
@@ -152,9 +140,9 @@ export interface WorstDisk {
 }
 
 /**
- * The alertable mount with the highest usage, or null when no alertable
- * mount reported usage. Mounts with a per-mount error (no usage values) and
- * "other" mounts are skipped.
+ * The mount with the highest usage, or null when no mount reported usage.
+ * Every role counts, matching the infra disk alert; mounts with a per-mount
+ * error (no usage values) are skipped.
  */
 export function worstAlertableDisk(
   disks: NormalizedDiskMetric[] | null,
@@ -162,7 +150,6 @@ export function worstAlertableDisk(
   if (!disks) return null;
   let worst: WorstDisk | null = null;
   for (const disk of disks) {
-    if (!ALERTABLE_DISK_ROLES.includes(disk.role)) continue;
     const usedPct = diskUsedPct(disk);
     if (usedPct == null) continue;
     if (!worst || usedPct > worst.usedPct) worst = { disk, usedPct };

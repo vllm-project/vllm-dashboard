@@ -117,12 +117,12 @@ test("worstAlertableDisk picks the fullest alertable mount", () => {
   assert.equal(worst?.usedPct, 90);
 });
 
-test("worstAlertableDisk never lets 'other' mounts drive the cell", () => {
+test("worstAlertableDisk counts 'other' mounts like every other role", () => {
   const worst = worstAlertableDisk([
-    disk({ mount_point: "/dev/shm", fstype: "tmpfs", role: "other", used_bytes: 99 }),
+    disk({ mount_point: "/mnt/local", role: "other", used_bytes: 99 }),
     disk({ mount_point: "/", role: "system", used_bytes: 40 }),
   ]);
-  assert.equal(worst?.disk.mount_point, "/");
+  assert.equal(worst?.disk.mount_point, "/mnt/local");
 });
 
 test("worstAlertableDisk skips error mounts with no usage values", () => {
@@ -139,13 +139,9 @@ test("worstAlertableDisk skips error mounts with no usage values", () => {
   assert.equal(worst?.disk.mount_point, "/");
 });
 
-test("worstAlertableDisk returns null without usable alertable mounts", () => {
+test("worstAlertableDisk returns null without usable mounts", () => {
   assert.equal(worstAlertableDisk(null), null);
   assert.equal(worstAlertableDisk([]), null);
-  assert.equal(
-    worstAlertableDisk([disk({ role: "other", used_bytes: 99 })]),
-    null,
-  );
   assert.equal(
     worstAlertableDisk([
       disk({ used_bytes: null, total_bytes: null, error: "i/o error" }),

@@ -9,8 +9,8 @@ resolve. Unreporting wording always says a host "stopped reporting"; the
 alert never claims a machine is down. Disk usage on a network filesystem is
 keyed by the shared (fstype, device) group — not hostname — so a fleet-wide
 NFS volume pages once no matter how many hosts mount it; local disks are keyed
-per host, because device names like /dev/vda1 repeat across hosts. Mounts
-with role 'other' or a per-mount error never alert. GPU temperature and dead-process GPU memory
+per host, because device names like /dev/vda1 repeat across hosts. Every
+reported mount alerts regardless of role; only a per-mount error skips one. GPU temperature and dead-process GPU memory
 (memory still allocated to processes that no longer exist) are keyed per
 host and GPU.
 RAM, load, and network are display-only and never alert.
@@ -55,9 +55,9 @@ def slack_channel() -> str:
 # A host absent from every expected source and silent for this long is
 # auto-retired: it stops alerting and stays queryable for the dashboard.
 RETIREMENT_AGE = timedelta(days=7)
-# Only these mount roles alert on disk usage; 'other' and errored mounts
-# never do. RAM, load, and network are display-only and never alert.
-DISK_ALERT_ROLES = frozenset({"workspace", "images", "data", "system"})
+# Every reported mount alerts on disk usage whatever its role, so a mount
+# missing from a reporter's role map still pages. RAM, load, and network are
+# display-only and never alert.
 # Filesystems that one volume can back on many hosts; their disk episodes
 # group across hosts. Every other fstype is a host-local disk whose device
 # name (/dev/vda1, tmpfs) says nothing about which host it is on.
@@ -378,8 +378,7 @@ def _plan_disk_usage(
     groups: dict[str, list[DiskMountObservation]] = {}
     for mount in disk_mounts:
         if (
-            mount.role not in DISK_ALERT_ROLES
-            or mount.error is not None
+            mount.error is not None
             or mount.total_bytes <= 0
         ):
             continue

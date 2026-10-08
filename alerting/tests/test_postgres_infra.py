@@ -312,7 +312,6 @@ def test_postgres_disk_group_deduplicates_across_hosts_sharing_a_volume() -> Non
     connection.state["mounts"] = [
         ("h200-ci-1", "/data", "nfs01:/exports/ci", "nfs4", "data", 950, 1000, None, START),
         ("h200-ci-2", "/data", "nfs01:/exports/ci", "nfs4", "data", 960, 1000, None, START),
-        ("h200-ci-1", "/scratch", "/dev/sdb1", "ext4", "other", 990, 1000, None, START),
     ]
     runtime, _ = runtime_for(connection, FixtureHosts(set()))
 
