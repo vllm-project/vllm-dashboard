@@ -25,6 +25,18 @@ test("combined statistics retain distinct failure and passed-duration population
   });
 });
 
+test("duration ranks only runs of a sharded step whose shards all ran", () => {
+  const result = splitOtelJobStats([
+    { name: "sharded", total_runs: 5, failures: 1, passes: 4, timed_passes: 3, failure_rate: "20.0",
+      has_soft_fail: 0, avg_duration: 600, p50_duration: 600, p90_duration: 700, max_duration: 720 },
+    { name: "partial only", total_runs: 1, failures: 0, passes: 1, timed_passes: 0, failure_rate: "0.0",
+      has_soft_fail: 0, avg_duration: null, p50_duration: null, p90_duration: null, max_duration: null },
+  ]);
+  assert.deepEqual(result.durationStats, [
+    { name: "sharded", total_runs: 3, avg_duration: 600, p50_duration: 600, p90_duration: 700, max_duration: 720 },
+  ]);
+});
+
 test("failure rates sort numerically and ties use failure counts", () => {
   const rows = [
     { name: "lower rate", total_runs: 100, failures: 9, passes: 91, failure_rate: "9.0" },

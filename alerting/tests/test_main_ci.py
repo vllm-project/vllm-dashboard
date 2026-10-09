@@ -264,6 +264,59 @@ def test_buildkite_source_keeps_hard_terminal_script_jobs_and_matrix_identity() 
     assert buildkite.calls == [(START - timedelta(minutes=10), START)]
 
 
+def _shard_job(job_id: str, shard: str, state: str, minute: int) -> dict[str, Any]:
+    return {
+        "id": job_id,
+        "name": f"Kernels {shard}",
+        "type": "script",
+        "step_key": "kernels",
+        "state": state,
+        "soft_failed": False,
+        "finished_at": f"2026-08-29T09:{minute:02d}:00Z",
+    }
+
+
+def _shard_build(jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"id": "build-400", "number": 400, "commit": "def456", "jobs": jobs}
+
+
+def _shard_rows(jobs: list[dict[str, Any]]) -> list[MainCIJobObservation]:
+    return BuildkiteMainCISource(
+        RecordingBuildkite([_shard_build(jobs)])
+    ).fetch_observations(start_time=START - timedelta(hours=1), end_time=START)
+
+
+def test_runtime_shards_share_the_step_alert_and_a_shard_pass_cannot_resolve() -> None:
+    rows = _shard_rows(
+        [
+            _shard_job("s2", "shard 2/2", "failed", 50),
+            _shard_job("s1", "shard 1/2", "passed", 55),
+        ]
+    )
+
+    assert [(row.job_id, row.job_key, row.job_name) for row in rows] == [
+        ("s2", "step:kernels|name:Kernels", "Kernels"),
+    ]
+
+
+def test_runtime_shards_report_a_pass_only_once_every_shard_passed() -> None:
+    assert _shard_rows([_shard_job("s1", "shard 1/2", "passed", 50)]) == []
+
+    rows = _shard_rows(
+        [
+            _shard_job("s2", "shard 2/2", "failed", 50),
+            _shard_job("s1", "shard 1/2", "passed", 52),
+            _shard_job("s2-retry", "shard 2/2", "passed", 55),
+        ]
+    )
+
+    assert [(row.job_id, row.failed) for row in rows] == [
+        ("s2", True),
+        ("s1", False),
+        ("s2-retry", False),
+    ]
+
+
 def test_buildkite_client_unions_active_and_recently_finished_builds() -> None:
     client = RecordingRestClient()
     observed_from = START - timedelta(minutes=30)
@@ -614,9 +667,7 @@ def backstop(runtime: AlertingRuntime, target: datetime) -> None:
 
 def open_alert(runtime: AlertingRuntime, source: FixtureSource) -> None:
     source.observations = [
-        observation(
-            build_number=300, state="failed", minutes=-180, job_id="orig"
-        )
+        observation(build_number=300, state="failed", minutes=-180, job_id="orig")
     ]
     reconcile(runtime, START - timedelta(hours=2, minutes=55))
 

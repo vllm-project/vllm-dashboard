@@ -5,6 +5,7 @@ import { ServerTiming } from "@/lib/server-timing";
 import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { queryJobStatsFromOtel } from "@/lib/otel-ci";
+import { SHARD_SUFFIX_SQL, SHARD_TOTAL_SQL } from "@/lib/job-shards";
 import {
   ensureOptionalJobMatcher,
   ensureSoftFailJobMatcher,
@@ -82,46 +83,70 @@ export async function GET(request: NextRequest) {
       const hasDateRange = startDate || endDate;
       const recencyHaving = hasDateRange
         ? ""
-        : "\n          AND MAX(b.created_at) >= CURRENT_DATE - INTERVAL 7 DAY";
+        : "\n          AND MAX(build_created_at) >= CURRENT_DATE - INTERVAL 7 DAY";
 
-      const queries = await Promise.allSettled([
-        timing.measure("failures", queryDatabricks(`
+      // One row per run of a step: a job, or the shards of a runtime-sharded
+      // step in one build (see job-shards.ts). Attempt k of a step is the k-th
+      // attempt of each of its jobs, so a retried shard is another run, as a
+      // retried job is. A run fails if any of its jobs failed; its duration is
+      // its slowest job's (shards wait for agents apart, so first start to
+      // last finish would count queue time), kept only when every shard ran.
+      const stepRuns = `
+        WITH jobs AS (
           SELECT
-            j.name,
-            COUNT(*) AS total_runs,
-            SUM(CASE WHEN j.state IN ('failed', 'failing', 'broken', 'timed_out') THEN 1 ELSE 0 END) AS failures,
-            SUM(CASE WHEN j.state = 'passed' THEN 1 ELSE 0 END) AS passes,
-            ROUND(
-              100.0 * SUM(CASE WHEN j.state IN ('failed', 'failing', 'broken', 'timed_out') THEN 1 ELSE 0 END)
-              / NULLIF(SUM(CASE WHEN j.state IN ('passed', 'failed', 'failing', 'broken', 'timed_out') THEN 1 ELSE 0 END), 0),
-              1
-            ) AS failure_rate,
-            MAX(CASE WHEN j.soft_failed = 'true' THEN 1 ELSE 0 END) AS has_soft_fail
+            b.id AS build_id,
+            b.created_at AS build_created_at,
+            regexp_replace(j.name, '${SHARD_SUFFIX_SQL}', '') AS name,
+            CAST(NULLIF(regexp_extract(j.name, '${SHARD_TOTAL_SQL}', 1), '') AS INT) AS shard_total,
+            j.state,
+            j.soft_failed,
+            j.started_at,
+            j.finished_at,
+            ROW_NUMBER() OVER (PARTITION BY b.id, j.name ORDER BY j.started_at, j.id) AS attempt
           FROM vllm_data_warehouse.buildkite.build_job AS j
           INNER JOIN vllm_data_warehouse.buildkite.build AS b ON j.build_id = b.id
           INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p ON b.pipeline_id = p.id
           WHERE ${where}
             AND j.state IN ('passed', 'failed', 'failing', 'broken', 'timed_out')
-          GROUP BY j.name
-          HAVING SUM(CASE WHEN j.state IN ('failed', 'failing', 'broken', 'timed_out') THEN 1 ELSE 0 END) > 0${recencyHaving}
+        ),
+        step_runs AS (
+          SELECT
+            name,
+            MAX(build_created_at) AS build_created_at,
+            MAX(CASE WHEN state IN ('failed', 'failing', 'broken', 'timed_out') THEN 1 ELSE 0 END) AS failed,
+            MAX(CASE WHEN soft_failed = 'true' THEN 1 ELSE 0 END) AS soft_failed,
+            CASE WHEN COUNT(*) = COALESCE(MAX(shard_total), 1)
+              AND COUNT(started_at) = COUNT(*) AND COUNT(finished_at) = COUNT(*)
+              THEN MAX(TIMESTAMPDIFF(SECOND, started_at, finished_at)) END AS whole_duration
+          FROM jobs
+          GROUP BY build_id, name, attempt
+        )`;
+
+      const queries = await Promise.allSettled([
+        timing.measure("failures", queryDatabricks(`${stepRuns}
+          SELECT
+            name,
+            COUNT(*) AS total_runs,
+            SUM(failed) AS failures,
+            SUM(1 - failed) AS passes,
+            ROUND(100.0 * SUM(failed) / NULLIF(COUNT(*), 0), 1) AS failure_rate,
+            MAX(soft_failed) AS has_soft_fail
+          FROM step_runs
+          GROUP BY name
+          HAVING SUM(failed) > 0${recencyHaving}
           ORDER BY failure_rate DESC, failures DESC
         `)),
-        timing.measure("duration", queryDatabricks(`
+        timing.measure("duration", queryDatabricks(`${stepRuns}
           SELECT
-            j.name,
+            name,
             COUNT(*) AS total_runs,
-            ROUND(AVG(TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at))) AS avg_duration,
-            ROUND(PERCENTILE(TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at), 0.5)) AS p50_duration,
-            ROUND(PERCENTILE(TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at), 0.9)) AS p90_duration,
-            ROUND(MAX(TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at))) AS max_duration
-          FROM vllm_data_warehouse.buildkite.build_job AS j
-          INNER JOIN vllm_data_warehouse.buildkite.build AS b ON j.build_id = b.id
-          INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p ON b.pipeline_id = p.id
-          WHERE ${where}
-            AND j.started_at IS NOT NULL
-            AND j.finished_at IS NOT NULL
-            AND j.state = 'passed'
-          GROUP BY j.name
+            ROUND(AVG(whole_duration)) AS avg_duration,
+            ROUND(PERCENTILE(whole_duration, 0.5)) AS p50_duration,
+            ROUND(PERCENTILE(whole_duration, 0.9)) AS p90_duration,
+            ROUND(MAX(whole_duration)) AS max_duration
+          FROM step_runs
+          WHERE failed = 0 AND whole_duration IS NOT NULL
+          GROUP BY name
           HAVING COUNT(*) > 0${recencyHaving}
           ORDER BY p50_duration DESC
         `)),

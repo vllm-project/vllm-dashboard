@@ -9,6 +9,7 @@ cannot overwrite a newer outcome.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol
@@ -25,6 +26,10 @@ SAFETY_OVERLAP = timedelta(minutes=30)
 SWEEP_LOOKBACK = timedelta(hours=48)
 FAILURE_STATES = frozenset({"failed", "failing", "broken", "timed_out"})
 TRACKED_STATES = FAILURE_STATES | {"passed"}
+# Runtime-sharded steps (`automatic_shard: true`) run as parallel jobs named
+# "<step> shard N/M", and the pipeline generator re-plans which tests each
+# shard runs on every build. A shard is not a stable job, so its step is.
+RUNTIME_SHARD = re.compile(r" shard (\d+)/(\d+)$")
 
 
 @dataclass(frozen=True)
@@ -147,6 +152,8 @@ def build_job_observations(build: dict[str, Any]) -> list[MainCIJobObservation]:
             name_to_step_key[name] = step_key
     build_id = str(build["id"])
     build_number = int(build["number"])
+    shard_totals: dict[str, int] = {}
+    names: dict[str, str] = {}
     build_url = str(build.get("web_url") or "")
     commit_sha = str(build.get("commit") or "")
     observations: list[MainCIJobObservation] = []
@@ -169,14 +176,21 @@ def build_job_observations(build: dict[str, Any]) -> list[MainCIJobObservation]:
         step_key = str(job.get("step_key") or "").strip() or name_to_step_key.get(
             name, ""
         )
+        shard = RUNTIME_SHARD.search(name)
+        step_name = name[: shard.start()] if shard else name
         # Matrix expansions share a configured step key. Include the
         # rendered job name so one matrix cell cannot resolve another.
-        job_key = f"step:{step_key}|name:{name}" if step_key else f"name:{name}"
+        job_key = (
+            f"step:{step_key}|name:{step_name}" if step_key else f"name:{step_name}"
+        )
+        if shard:
+            shard_totals[job_key] = int(shard.group(2))
+            names[job_id] = name
         observations.append(
             MainCIJobObservation(
                 job_key=job_key,
                 job_id=job_id,
-                job_name=name,
+                job_name=step_name,
                 job_url=str(job.get("web_url") or f"{build_url}#{job_id}"),
                 state=state,
                 finished_at=finished_at,
@@ -186,7 +200,40 @@ def build_job_observations(build: dict[str, Any]) -> list[MainCIJobObservation]:
                 commit_sha=commit_sha,
             )
         )
-    return observations
+    return _fold_runtime_shards(observations, shard_totals, names)
+
+
+def _fold_runtime_shards(
+    observations: list[MainCIJobObservation],
+    shard_totals: dict[str, int],
+    names: dict[str, str],
+) -> list[MainCIJobObservation]:
+    """Report a sharded step's outcome in one build, never one shard's.
+
+    One shard passing says nothing about the tests another shard failed, so
+    a shard's pass may not resolve the step's alert. While the latest attempt
+    of any shard has failed, the step's passes are dropped; until every shard
+    has passed, the step has no outcome yet. Once all have, its failures and
+    passes stand as an unsharded job's do, so retried shards resolve.
+    """
+    folded: list[MainCIJobObservation] = []
+    by_key: dict[str, list[MainCIJobObservation]] = {}
+    for observation in observations:
+        if observation.job_key in shard_totals:
+            by_key.setdefault(observation.job_key, []).append(observation)
+        else:
+            folded.append(observation)
+    for job_key, executions in by_key.items():
+        latest: dict[str, MainCIJobObservation] = {}
+        for execution in executions:
+            shard = names[execution.job_id]
+            if shard not in latest or execution.order > latest[shard].order:
+                latest[shard] = execution
+        if any(execution.failed for execution in latest.values()):
+            folded.extend(execution for execution in executions if execution.failed)
+        elif len(latest) >= shard_totals[job_key]:
+            folded.extend(executions)
+    return folded
 
 
 class BuildkiteMainCISource:
@@ -335,9 +382,7 @@ class MainCIBackstopHandler:
                     ref.job_key
                 )
         for build_number in sorted(job_keys_by_build):
-            build = self._builds.get_build(
-                build_number, include_retried_jobs=True
-            )
+            build = self._builds.get_build(build_number, include_retried_jobs=True)
             candidates = build_job_observations(build)
             for job_key in job_keys_by_build[build_number]:
                 executions = [
@@ -346,9 +391,7 @@ class MainCIBackstopHandler:
                     if candidate.job_key == job_key
                 ]
                 if executions:
-                    observations.append(
-                        max(executions, key=lambda item: item.order)
-                    )
+                    observations.append(max(executions, key=lambda item: item.order))
         # The sweep only re-checks known state; it must not advance the
         # poller's scan cursor, or a poller outage covered by the sweep would
         # skip failures that fell into the gap.
