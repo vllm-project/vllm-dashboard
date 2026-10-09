@@ -1,5 +1,6 @@
 import { getDb } from "@/lib/db";
 import { queryDatabricks } from "@/lib/databricks";
+import { SHARD_SUFFIX_SQL } from "@/lib/job-shards";
 
 export interface RetryJobRow {
   name: string;
@@ -129,13 +130,18 @@ function buildOtelRetryAttempts(filters: RetryFilters, jobName?: string) {
   }
   if (filters.startTime) conditions.push(`j.start_time >= ${bind(filters.startTime)}::timestamptz`);
   if (filters.endTime) conditions.push(`j.start_time < ${bind(filters.endTime)}::timestamptz`);
-  if (jobName !== undefined) conditions.push(`j.job_label = ${bind(jobName)}`);
+  if (jobName !== undefined) {
+    // The job, or a runtime shard of the step (see job-shards.ts).
+    const name = bind(jobName);
+    conditions.push(`(j.job_label = ${name} OR (j.job_label LIKE ${name} || ' shard %'
+      AND regexp_replace(j.job_label, '${SHARD_SUFFIX_SQL}', '') = ${name}))`);
+  }
   return {
     parameters,
     statement: `
       WITH selected_attempts AS (
         SELECT DISTINCT ON (j.job_id)
-          j.job_id, j.job_label AS name, j.organization_slug, j.pipeline_slug, j.build_number,
+          j.job_id, regexp_replace(j.job_label, '${SHARD_SUFFIX_SQL}', '') AS name, j.organization_slug, j.pipeline_slug, j.build_number,
           j.span_attributes->>'buildkite.job.retries_count' AS retries_count,
           NULLIF(j.span_attributes->>'buildkite.job.retry_source.job_id', '') AS retry_source,
           j.job_soft_failed = 'true' AS has_soft_fail
@@ -240,14 +246,19 @@ function buildWarehouseRetryAttempts(filters: RetryFilters, jobName?: string) {
   if (filters.branch) conditions.push(`b.branch = ${bind("branch", filters.branch)}`);
   if (filters.startTime) conditions.push(`j.started_at >= CAST(${bind("startTime", filters.startTime)} AS TIMESTAMP)`);
   if (filters.endTime) conditions.push(`j.started_at < CAST(${bind("endTime", filters.endTime)} AS TIMESTAMP)`);
-  if (jobName !== undefined) conditions.push(`j.name = ${bind("jobName", jobName)}`);
+  if (jobName !== undefined) {
+    // The job, or a runtime shard of the step (see job-shards.ts).
+    const name = bind("jobName", jobName);
+    conditions.push(`(j.name = ${name} OR (j.name LIKE CONCAT(${name}, ' shard %')
+      AND regexp_replace(j.name, '${SHARD_SUFFIX_SQL}', '') = ${name}))`);
+  }
   return {
     parameters,
     // retries_count is an ordinal (0, 1, 2...), so count each retry UUID once;
     // summing ordinals overcounts a chain. State never determines retry status.
     statement: `
       WITH attempts AS (
-        SELECT j.id, j.name,
+        SELECT j.id, regexp_replace(j.name, '${SHARD_SUFFIX_SQL}', '') AS name,
           MAX(CASE WHEN COALESCE(j.retries_count, 0) > 0
             OR NULLIF(j.retry_source_job_id, '') IS NOT NULL THEN 1 ELSE 0 END) AS is_retry,
           MAX(CASE WHEN j.soft_failed = 'true' THEN 1 ELSE 0 END) AS has_soft_fail

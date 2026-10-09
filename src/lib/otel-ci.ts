@@ -2,6 +2,7 @@ import { getDb } from "@/lib/db";
 import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { resolveGroupsToJobConditions } from "@/lib/test-groups";
 import type { ServerTiming } from "@/lib/server-timing";
+import { SHARD_SUFFIX_SQL, SHARD_TOTAL_SQL } from "@/lib/job-shards";
 
 // ---------------------------------------------------------------------------
 // Shared types / helpers
@@ -29,7 +30,6 @@ type Sql = ReturnType<typeof getDb>;
 // timed_out. "Failed": finished-and-not-passed, or timed_out.
 const JOB_COMPLETED = `(j.job_state = 'finished' OR j.job_state = 'timed_out')`;
 const JOB_FAILED = `((j.job_state = 'finished' AND j.job_passed = 'false') OR j.job_state = 'timed_out')`;
-const JOB_PASSED = `(j.job_state = 'finished' AND j.job_passed = 'true')`;
 
 // Derived job state label matching the Databricks `state` vocabulary, for
 // display in job listings and run history.
@@ -297,6 +297,8 @@ interface OtelJobStatsRow {
   passes: number;
   failure_rate: string;
   has_soft_fail: number;
+  /** Passed runs with a duration: a sharded run whose shards all ran. */
+  timed_passes?: number;
   avg_duration: number | null;
   p50_duration: number | null;
   p90_duration: number | null;
@@ -313,9 +315,10 @@ export function splitOtelJobStats(rows: OtelJobStatsRow[]): OtelJobStatsResult {
       }))
       .sort((a, b) => Number(b.failure_rate) - Number(a.failure_rate) || b.failures - a.failures),
     durationStats: rows
-      .filter((row) => row.passes > 0)
-      .map(({ name, passes, avg_duration, p50_duration, p90_duration, max_duration }) => ({
-        name, total_runs: passes, avg_duration, p50_duration, p90_duration, max_duration,
+      .map(({ timed_passes, passes, ...row }) => ({ ...row, timed: timed_passes ?? passes }))
+      .filter((row) => row.timed > 0)
+      .map(({ name, timed, avg_duration, p50_duration, p90_duration, max_duration }) => ({
+        name, total_runs: timed, avg_duration, p50_duration, p90_duration, max_duration,
       }))
       .sort((a, b) => Number(b.p50_duration) - Number(a.p50_duration)),
   };
@@ -345,30 +348,56 @@ export async function queryJobStatsFromOtel(
 
   // Both rankings use the same completed jobs. Aggregate once to avoid a
   // second span scan/build join and a second connection on a cold request.
+  // A row is one run of a step: a job, or the shards of a runtime-sharded
+  // step in one build (see job-shards.ts). Attempt k of a step is the k-th
+  // attempt of each of its jobs; a run fails if any of them failed, and its
+  // duration is its slowest job's (shards wait for agents apart, so first
+  // start to last finish would count queue time), kept only when every
+  // shard ran.
   const query = sql<OtelJobStatsRow[]>`
+    WITH jobs AS (
+      SELECT
+        j.build_number,
+        regexp_replace(j.job_label, ${SHARD_SUFFIX_SQL}, '') AS name,
+        substring(j.job_label FROM ${SHARD_TOTAL_SQL})::int AS shard_total,
+        ${sql.unsafe(JOB_FAILED)} AS failed,
+        j.job_soft_failed = 'true' AS soft_failed,
+        j.duration_ms,
+        ROW_NUMBER() OVER (
+          PARTITION BY j.build_number, j.job_label ORDER BY j.start_time, j.job_id
+        ) AS attempt
+      FROM otel_spans AS j
+      INNER JOIN otel_spans AS b ON ${sql.unsafe(BUILD_JOIN)}
+      WHERE ${baseWhere}
+        AND ${sql.unsafe(JOB_COMPLETED)}
+        ${recency}
+    ),
+    step_runs AS (
+      SELECT
+        name,
+        BOOL_OR(failed) AS failed,
+        BOOL_OR(soft_failed) AS soft_failed,
+        CASE WHEN COUNT(*) = COALESCE(MAX(shard_total), 1)
+          THEN MAX(duration_ms) / 1000.0 END AS whole_duration
+      FROM jobs
+      GROUP BY build_number, name, attempt
+    )
     SELECT
-      j.job_label AS name,
+      name,
       COUNT(*)::int AS total_runs,
-      COUNT(*) FILTER (WHERE ${sql.unsafe(JOB_FAILED)})::int AS failures,
-      COUNT(*) FILTER (WHERE ${sql.unsafe(JOB_PASSED)})::int AS passes,
-      ROUND(
-        100.0 * COUNT(*) FILTER (WHERE ${sql.unsafe(JOB_FAILED)})
-        / NULLIF(COUNT(*) FILTER (WHERE ${sql.unsafe(JOB_COMPLETED)}), 0),
-        1
-      ) AS failure_rate,
-      MAX(CASE WHEN j.job_soft_failed = 'true' THEN 1 ELSE 0 END) AS has_soft_fail,
-      ROUND(AVG(j.duration_ms) FILTER (WHERE ${sql.unsafe(JOB_PASSED)}) / 1000.0)::int AS avg_duration,
-      ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY j.duration_ms)
-        FILTER (WHERE ${sql.unsafe(JOB_PASSED)}) / 1000.0)::int AS p50_duration,
-      ROUND(percentile_cont(0.9) WITHIN GROUP (ORDER BY j.duration_ms)
-        FILTER (WHERE ${sql.unsafe(JOB_PASSED)}) / 1000.0)::int AS p90_duration,
-      ROUND(MAX(j.duration_ms) FILTER (WHERE ${sql.unsafe(JOB_PASSED)}) / 1000.0)::int AS max_duration
-    FROM otel_spans AS j
-    INNER JOIN otel_spans AS b ON ${sql.unsafe(BUILD_JOIN)}
-    WHERE ${baseWhere}
-      AND ${sql.unsafe(JOB_COMPLETED)}
-      ${recency}
-    GROUP BY j.job_label
+      COUNT(*) FILTER (WHERE failed)::int AS failures,
+      COUNT(*) FILTER (WHERE NOT failed)::int AS passes,
+      ROUND(100.0 * COUNT(*) FILTER (WHERE failed) / NULLIF(COUNT(*), 0), 1) AS failure_rate,
+      MAX(CASE WHEN soft_failed THEN 1 ELSE 0 END) AS has_soft_fail,
+      COUNT(*) FILTER (WHERE NOT failed AND whole_duration IS NOT NULL)::int AS timed_passes,
+      ROUND(AVG(whole_duration) FILTER (WHERE NOT failed))::int AS avg_duration,
+      ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY whole_duration)
+        FILTER (WHERE NOT failed))::int AS p50_duration,
+      ROUND(percentile_cont(0.9) WITHIN GROUP (ORDER BY whole_duration)
+        FILTER (WHERE NOT failed))::int AS p90_duration,
+      ROUND(MAX(whole_duration) FILTER (WHERE NOT failed))::int AS max_duration
+    FROM step_runs
+    GROUP BY name
   `;
 
   const rows = await (timing ? timing.measure("statistics", query) : query);
@@ -383,26 +412,53 @@ export async function queryJobRunsFromOtel(
   f: CiFilter & { jobName: string },
 ): Promise<Record<string, unknown>[]> {
   const sql: Sql = getDb();
+  // One run per build and attempt: a sharded step's shards (see
+  // job-shards.ts) are one run that links to its first failing shard, else to
+  // shard 1. LIKE only narrows the scan; the exact comparison decides.
   return sql<Record<string, unknown>[]>`
+    WITH jobs AS (
+      SELECT
+        j.job_id,
+        j.job_label,
+        j.build_number,
+        j.span_attributes->>'buildkite.job.web_url' AS web_url,
+        ${sql.unsafe(JOB_STATE_LABEL)} AS state,
+        ${sql.unsafe(JOB_FAILED)} AS failed,
+        j.start_time,
+        j.end_time,
+        j.duration_ms,
+        substring(j.job_label FROM ${SHARD_TOTAL_SQL})::int AS shard_total,
+        b.span_attributes->>'buildkite.build.commit' AS commit_sha,
+        b.start_time AS build_created_at,
+        ROW_NUMBER() OVER (
+          PARTITION BY j.build_number, j.job_label ORDER BY j.start_time, j.job_id
+        ) AS attempt
+      FROM otel_spans AS j
+      INNER JOIN otel_spans AS b ON ${sql.unsafe(BUILD_JOIN)}
+      WHERE j.span_name = 'buildkite.job'
+        AND j.job_type = 'script'
+        AND (j.job_label = ${f.jobName} OR (
+          j.job_label LIKE ${f.jobName + " shard %"}
+          AND regexp_replace(j.job_label, ${SHARD_SUFFIX_SQL}, '') = ${f.jobName}))
+        ${f.pipeline ? sql`AND j.pipeline_slug = ${pipelineNameToSlug(f.pipeline)}` : sql``}
+        ${f.branch ? sql`AND b.span_attributes->>'buildkite.build.branch' = ${f.branch}` : sql``}
+        ${jobDateClauses(sql, f)}
+        AND ${sql.unsafe(JOB_COMPLETED)}
+    )
     SELECT
-      j.job_id,
-      j.span_attributes->>'buildkite.job.web_url' AS web_url,
-      ${sql.unsafe(JOB_STATE_LABEL)} AS state,
-      j.start_time AS started_at,
-      j.end_time AS finished_at,
-      ROUND(j.duration_ms / 1000.0)::int AS duration_secs,
-      b.span_attributes->>'buildkite.build.commit' AS commit_sha,
-      b.start_time AS build_created_at
-    FROM otel_spans AS j
-    INNER JOIN otel_spans AS b ON ${sql.unsafe(BUILD_JOIN)}
-    WHERE j.span_name = 'buildkite.job'
-      AND j.job_type = 'script'
-      AND j.job_label = ${f.jobName}
-      ${f.pipeline ? sql`AND j.pipeline_slug = ${pipelineNameToSlug(f.pipeline)}` : sql``}
-      ${f.branch ? sql`AND b.span_attributes->>'buildkite.build.branch' = ${f.branch}` : sql``}
-      ${jobDateClauses(sql, f)}
-      AND ${sql.unsafe(JOB_COMPLETED)}
-    ORDER BY b.start_time ASC
+      (array_agg(job_id ORDER BY failed DESC, job_label))[1] AS job_id,
+      (array_agg(web_url ORDER BY failed DESC, job_label))[1] AS web_url,
+      (array_agg(state ORDER BY failed DESC, job_label))[1] AS state,
+      MIN(start_time) AS started_at,
+      MAX(end_time) AS finished_at,
+      ROUND(MAX(duration_ms) / 1000.0)::int AS duration_secs,
+      COUNT(*)::int AS jobs,
+      MAX(shard_total) AS shards,
+      MAX(commit_sha) AS commit_sha,
+      MAX(build_created_at) AS build_created_at
+    FROM jobs
+    GROUP BY build_number, attempt
+    ORDER BY MAX(build_created_at) ASC, MIN(start_time) ASC
   `;
 }
 
