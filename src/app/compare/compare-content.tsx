@@ -1382,7 +1382,10 @@ export default function ComparePage() {
   const perfThreshold = Number.isFinite(parseFloat(perfThresholdPct))
     ? Math.max(0, parseFloat(perfThresholdPct))
     : 2;
-  const evalSigmaValue = DEFAULT_EVAL_SIGMA;
+  const evalSigmaParam = parseFloat(searchParams.get("eval_sigma") ?? "");
+  const evalSigmaValue = Number.isFinite(evalSigmaParam) && evalSigmaParam > 0
+    ? evalSigmaParam
+    : DEFAULT_EVAL_SIGMA;
 
   const compareUrl = useMemo(() => {
     if (!baseline || !candidate || baseline === candidate) return null;

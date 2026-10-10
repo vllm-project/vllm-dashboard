@@ -171,6 +171,23 @@ function perfDimension(row: PerfRun): string {
   return `${row.device} - TP ${row.tp} - conc ${row.conc} - ISL ${row.isl} - OSL ${row.osl} - ${row.precision}`;
 }
 
+/**
+ * True when both values look like 0-1 normalized scores (accuracy, F1, etc.).
+ *
+ * Heuristic limitation: a genuinely raw metric whose values happen to fall
+ * in [0, 1] (e.g. a small tokens/sec or stderr) will be mis-classified as
+ * a percentage.  A future improvement could key off metric name/type from
+ * the lm_eval task config instead of value range.
+ */
+export function isNormalized(a: number, b: number): boolean {
+  return a >= 0 && a <= 1 && b >= 0 && b <= 1;
+}
+
+/** Infer display unit from metric values. See isNormalized() for limitations. */
+export function inferUnit(baseline: number, candidate: number): string {
+  return isNormalized(baseline, candidate) ? "score" : "raw";
+}
+
 function evalKey(row: EvalRow, metric: EvalMetric): string {
   return [
     row.model,
@@ -179,6 +196,42 @@ function evalKey(row: EvalRow, metric: EvalMetric): string {
     metric.name,
     metric.filter,
   ].join("|");
+}
+
+export interface ParsedEvalKey {
+  model: string;
+  task: string;
+  nShot: number;
+  metric: string;
+  filter: string;
+}
+
+/**
+ * Inverse of evalKey — recovers structured fields from a |-joined key.
+ * Returns null when the key is malformed so callers can skip rather than
+ * invent an identity.
+ *
+ * Invariant: key components (model, task, n_shot, metric.name, metric.filter)
+ * never contain "|".  evalKey() joins with "|" and parseEvalKey() splits on
+ * it, so a pipe in any component would shift all subsequent fields.  This is
+ * enforced by rejecting keys with != 5 parts.
+ */
+export function parseEvalKey(
+  delta: { key: string; model: string; metric: string },
+): ParsedEvalKey | null {
+  const parts = delta.key.split("|");
+  if (parts.length !== 5) return null;
+  const task = parts[1];
+  const nShot = parseInt(parts[2], 10);
+  const filter = parts[4];
+  if (!task || Number.isNaN(nShot) || filter === undefined) return null;
+  return {
+    model: delta.model,
+    task,
+    nShot,
+    metric: delta.metric,
+    filter,
+  };
 }
 
 function evalDimension(row: EvalRow, metric: EvalMetric): string {
@@ -480,7 +533,7 @@ export function compareEvalRows(
       dimension: evalDimension(baselineRun.row, baselineRun.metric),
       metric: baselineRun.metric.name,
       metricLabel: `${baselineRun.metric.name} (${baselineRun.metric.filter})`,
-      unit: "score",
+      unit: isNormalized(baselineRun.metric.value, candidateRun.metric.value) ? "score" : "raw",
       higherIsBetter: baselineRun.metric.higher_is_better,
       baselineValue: baselineRun.metric.value,
       candidateValue: candidateRun.metric.value,

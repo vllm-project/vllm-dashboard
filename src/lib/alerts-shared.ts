@@ -127,3 +127,58 @@ export function commitUrl(commitSha: string): string {
 export function pullRequestUrl(prNumber: string | null): string | null {
   return prNumber ? `${VLLM_REPO_URL}/pull/${prNumber}` : null;
 }
+
+/** Pacific time helpers shared by queue and eval alert routes. */
+
+export function getPacificTzAbbr(): string {
+  const abbr = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    timeZoneName: "short",
+  })
+    .formatToParts(new Date())
+    .find((p) => p.type === "timeZoneName");
+  return abbr?.value ?? "PT";
+}
+
+export function fmtPacificTime(): string {
+  return new Date().toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: "America/Los_Angeles",
+  });
+}
+
+export function getPacificDateKey(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+export function fmtMetricValue(v: number, unit: string): string {
+  if (unit === "score") return `${(v * 100).toFixed(2)}%`;
+  return v.toFixed(4);
+}
+
+export function fmtMetricDelta(d: number, unit: string): string {
+  const sign = d >= 0 ? "+" : "";
+  if (unit === "score") return `${sign}${(d * 100).toFixed(2)}pp`;
+  return `${sign}${d.toFixed(4)}`;
+}
+
+export function fmtSigma(s: number | null): string {
+  return s !== null ? `${s.toFixed(1)}σ` : "";
+}
+
+/** CSS classes for a regression delta, coloured by whether the change is beneficial. */
+export function evalDeltaColor(
+  delta: number,
+  higherIsBetter: boolean,
+): string {
+  const beneficial = higherIsBetter ? delta : -delta;
+  if (beneficial < 0) return "font-medium text-red-600 dark:text-red-400";
+  return "font-medium text-emerald-600 dark:text-emerald-400";
+}

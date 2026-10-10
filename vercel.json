@@ -17,6 +17,10 @@
       "schedule": "* * * * *"
     },
     {
+      "path": "/api/cron/eval-regression",
+      "schedule": "0 */6 * * *"
+    },
+    {
       "path": "/api/cron/fetch-force-merge-stats",
       "schedule": "17 * * * *"
     }

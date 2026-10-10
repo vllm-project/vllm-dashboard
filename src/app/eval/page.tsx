@@ -5,6 +5,7 @@ import useSWR from "swr";
 import dynamic from "next/dynamic";
 import { SearchableSelect } from "@/components/searchable-select";
 import { StatCard } from "@/components/stat-card";
+import { EvalRegressionBanner } from "@/components/eval-regression-banner";
 import { commitFromImage } from "@/lib/commit-from-image";
 
 const Plot = dynamic(() => import("@/components/plotly-chart"), {
@@ -997,6 +998,8 @@ export default function EvalPage() {
           allLabel="All Images"
         />
       </div>
+
+      <EvalRegressionBanner />
 
       {showInitialLoading && (
         <div className="flex h-64 items-center justify-center gap-3">
