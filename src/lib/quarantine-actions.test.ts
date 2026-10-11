@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Db } from "./operator-actions";
+import type { Db } from "./quarantine-actions";
 import {
   closeIncident,
   confirmIncident,
@@ -17,22 +17,29 @@ function fakeDb(...answers: Record<string, unknown>[][]) {
   return { db, queries };
 }
 
-test("returning an open host closes its record", async () => {
+test("returning a host closes its open pilot record, never a hand cordon", async () => {
   const { db, queries } = fakeDb([{ record_id: "7" }]);
   const result = await returnQuarantine(db, "h200-1", "oncall", "rebooted");
   assert.deepEqual(result, { status: 200, body: { ok: true, recordId: 7 } });
   assert.equal(queries.length, 1);
   assert.match(queries[0], /close_how = 'returned'/);
-  assert.match(queries[0], /state <> 'closed'/);
+  assert.match(queries[0], /state IN \('would', 'live', 'held'\)/);
 });
 
 test("returning a host that is already closed is a 409", async () => {
-  const { db } = fakeDb([], [{ "?column?": 1 }]);
+  const { db } = fakeDb([], [{ manual: false }]);
   assert.equal((await returnQuarantine(db, "h200-1", "k", "r")).status, 409);
 });
 
+test("returning a host cordoned only by hand is a 409 that says to undo it by hand", async () => {
+  const { db } = fakeDb([], [{ manual: true }]);
+  const result = await returnQuarantine(db, "h200-1", "k", "r");
+  assert.equal(result.status, 409);
+  assert.match(String(result.body.error), /by hand/);
+});
+
 test("returning a host with no record is a 404", async () => {
-  const { db } = fakeDb([], []);
+  const { db } = fakeDb([], [{ manual: null }]);
   assert.equal((await returnQuarantine(db, "nope", "k", "r")).status, 404);
 });
 

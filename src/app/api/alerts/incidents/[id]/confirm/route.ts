@@ -1,9 +1,11 @@
-import { fail, operatorPost, textField } from "@/lib/operator-actions";
 import {
   MAX_BY,
   MAX_CAUSE,
   MAX_MATCH,
   confirmIncident,
+  fail,
+  operatorPost,
+  textField,
 } from "@/lib/quarantine-actions";
 
 export const dynamic = "force-dynamic";

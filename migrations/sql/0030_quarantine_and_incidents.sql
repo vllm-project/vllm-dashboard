@@ -7,7 +7,9 @@
 
 -- One row per quarantine of one host. The pause or taint is only the effect of
 -- the record; closing it returns the host. Hand cordons and pauses the pilot
--- did not make are recorded as state = 'manual'.
+-- did not make are recorded as state = 'manual'. Closing overwrites state, so
+-- origin keeps what the row was: the pilot's own ('auto'), a dry-run decision
+-- ('dry_run', state 'would' while open) or a person's cordon ('manual').
 CREATE TABLE IF NOT EXISTS alerting_quarantine_records (
     record_id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     -- Lowercased agent hostname or Kubernetes node name.
@@ -15,13 +17,20 @@ CREATE TABLE IF NOT EXISTS alerting_quarantine_records (
         CHECK (length(btrim(host)) BETWEEN 1 AND 253),
     pool          text NOT NULL
         CHECK (length(btrim(pool)) BETWEEN 1 AND 80),
-    tier          text NOT NULL CHECK (tier IN ('soft', 'hard')),
-    reason        text NOT NULL
+    origin        text NOT NULL CHECK (origin IN ('auto', 'dry_run', 'manual')),
+    -- NULL only for manual rows, which have no tier.
+    tier          text CHECK (tier IN ('soft', 'hard')),
+    -- NULL only for a manual row whose person gave no reason.
+    reason        text
         CHECK (length(btrim(reason)) BETWEEN 1 AND 500),
+    -- Who made a hand cordon or pause, when known; NULL for the pilot's rows.
+    opened_by     text
+        CHECK (opened_by IS NULL OR length(btrim(opened_by)) BETWEEN 1 AND 80),
     signal_detail jsonb NOT NULL DEFAULT '{}'::jsonb
         CHECK (jsonb_typeof(signal_detail) = 'object'),
     state         text NOT NULL
         CHECK (state IN ('would', 'live', 'held', 'manual', 'closed')),
+    -- The fault's own timestamp; for manual rows, when the cordon was seen.
     fault_at      timestamptz NOT NULL,
     -- NULL until the pause or taint takes effect (never set for would/held).
     effective_at  timestamptz,
@@ -40,9 +49,18 @@ CREATE TABLE IF NOT EXISTS alerting_quarantine_records (
             close_reason IS NULL
             OR length(btrim(close_reason)) BETWEEN 1 AND 500
         ),
-    dry_run       boolean NOT NULL DEFAULT false,
     created_at    timestamptz NOT NULL DEFAULT now(),
     updated_at    timestamptz NOT NULL DEFAULT now(),
+    CHECK (
+        state = 'closed'
+        OR origin = CASE state
+            WHEN 'would' THEN 'dry_run'
+            WHEN 'manual' THEN 'manual'
+            ELSE 'auto'
+        END
+    ),
+    CHECK ((tier IS NULL) = (origin = 'manual')),
+    CHECK (reason IS NOT NULL OR origin = 'manual'),
     CHECK (
         (state = 'closed')
         = (closed_at IS NOT NULL AND closed_by IS NOT NULL
@@ -50,9 +68,10 @@ CREATE TABLE IF NOT EXISTS alerting_quarantine_records (
     )
 );
 
--- At most one non-closed record per host.
+-- At most one open pilot record and one open hand record per host: a person
+-- can cordon a host the pilot has already quarantined, and vice versa.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_quarantine_records_one_open_per_host
-    ON alerting_quarantine_records (host)
+    ON alerting_quarantine_records (host, (origin = 'manual'))
     WHERE state <> 'closed';
 
 CREATE INDEX IF NOT EXISTS idx_quarantine_records_host_fault
@@ -165,6 +184,11 @@ DECLARE
         'public.alerting_expected_gpu_exceptions, '
         'public.alerting_incidents, '
         'public.alerting_incident_reruns';
+    protected_sequences constant text :=
+        'public.alerting_quarantine_records_record_id_seq, '
+        'public.alerting_quarantine_reruns_rerun_id_seq, '
+        'public.alerting_incidents_incident_id_seq, '
+        'public.alerting_incident_reruns_rerun_id_seq';
 BEGIN
     FOREACH api_role IN ARRAY ARRAY['anon'::name, 'authenticated'::name]
     LOOP
@@ -172,6 +196,11 @@ BEGIN
             EXECUTE format(
                 'REVOKE ALL PRIVILEGES ON TABLE %s FROM %I',
                 protected_tables,
+                api_role
+            );
+            EXECUTE format(
+                'REVOKE ALL PRIVILEGES ON SEQUENCE %s FROM %I',
+                protected_sequences,
                 api_role
             );
         END IF;

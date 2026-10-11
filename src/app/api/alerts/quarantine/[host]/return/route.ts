@@ -1,12 +1,18 @@
-import { fail, operatorPost, textField } from "@/lib/operator-actions";
-import { MAX_BY, MAX_REASON, returnQuarantine } from "@/lib/quarantine-actions";
+import {
+  MAX_BY,
+  MAX_REASON,
+  fail,
+  operatorPost,
+  returnQuarantine,
+  textField,
+} from "@/lib/quarantine-actions";
 
 export const dynamic = "force-dynamic";
 
 const HOST = /^[a-z0-9][a-z0-9._-]{0,252}$/;
 
 /**
- * Returns a quarantined host: closes its open record with close_how =
+ * Returns a quarantined host: closes its open pilot record with close_how =
  * 'returned'. Hard quarantines lift only this way. Requires the
  * ALERT_OPERATOR_TOKEN bearer credential.
  */
