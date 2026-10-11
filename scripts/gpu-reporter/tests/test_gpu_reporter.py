@@ -157,8 +157,9 @@ def test_nvidia_smi_failure_posts_degraded_payload(reporter, monkeypatch):
     # gpus=[], reporter_status="degraded" and a non-null last_error.
     calls = {}
 
-    def fake_report(gpus, host, status, last_error):
-        calls.update(gpus=gpus, host=host, status=status, last_error=last_error)
+    def fake_report(gpus, host, status, last_error, faults=None):
+        calls.update(gpus=gpus, host=host, status=status, last_error=last_error,
+                     faults=faults)
 
     def boom():
         raise RuntimeError("nvidia-smi failed: not found")
@@ -166,6 +167,9 @@ def test_nvidia_smi_failure_posts_degraded_payload(reporter, monkeypatch):
     monkeypatch.setattr(reporter, "REPORT_URL", "http://dummy")
     monkeypatch.setattr(reporter, "report", fake_report)
     monkeypatch.setattr(reporter, "query_gpus", boom)
+    monkeypatch.setattr(reporter, "query_xids", lambda path: ([], None))
+    monkeypatch.setattr(reporter, "query_mig_slices", lambda: 0)
+    monkeypatch.setattr(reporter, "find_root_owned_slots", lambda: [])
     monkeypatch.setattr(reporter, "collect_host_metrics", lambda: {
         "cpu_util": 1.0, "cpu_count": 8, "ram_used_bytes": 1,
         "ram_total_bytes": 2, "ram_available_bytes": 1, "disks": [],
@@ -177,6 +181,7 @@ def test_nvidia_smi_failure_posts_degraded_payload(reporter, monkeypatch):
     assert calls["last_error"] == "nvidia-smi failed: not found"
     assert calls["gpus"] == []
     assert set(calls["host"]) == HOST_KEYS
+    assert set(calls["faults"]) == {"xids", "mig_slices", "root_owned_slots"}
 
 
 def test_report_payload_top_level_keys(reporter, monkeypatch):
@@ -208,3 +213,233 @@ def test_report_payload_top_level_keys(reporter, monkeypatch):
                          "last_error"}
     assert sent["reporter_status"] == "ok"
     assert sent["last_error"] is None
+
+
+# --- hardware-fault readings -------------------------------------------------
+
+# Captured from a MIG-mode H200 host: remap is [N/A], ECC reads 0.
+FAULT_QUERY_MIG = "\n".join(
+    f"{i}, None, [N/A], 0" for i in range(8)
+)
+FAULT_QUERY_MIXED = "\n".join([
+    "0, None, No, 0",
+    "1, GPU Reset, Yes, 12",
+    "2, [Not Supported], [Not Supported], [Not Supported]",
+    "3, Node Reboot, 1, [N/A]",
+])
+
+NVIDIA_SMI_L_MIG = "\n".join([
+    "GPU 0: NVIDIA H200 (UUID: GPU-8800a3cd-38c6-154e-6fa4-d736a65e5535)",
+    "  MIG 1g.35gb     Device  0: (UUID: MIG-a280c447-dfd8-519d-a151-88ac82b0a056)",
+    "  MIG 1g.35gb     Device  1: (UUID: MIG-495c7ac0-6b37-54e9-8508-47707b9ca404)",
+    "GPU 1: NVIDIA H200 (UUID: GPU-0f026f38-fd99-c806-7633-6f5cf38f5ade)",
+    "  MIG 1g.35gb     Device  0: (UUID: MIG-ead74451-97af-5b6d-9a86-3da61df40ba9)",
+])
+NVIDIA_SMI_L_PLAIN = "\n".join(
+    f"GPU {i}: NVIDIA H200 (UUID: GPU-{i})" for i in range(8)
+)
+
+
+def journal_line(message, usec, cursor):
+    import json
+
+    return json.dumps({
+        "MESSAGE": message,
+        "__REALTIME_TIMESTAMP": str(usec),
+        "__CURSOR": cursor,
+    })
+
+
+JOURNAL_FIXTURE = "\n".join([
+    journal_line("usb 1-1: new high-speed USB device", 1_760_000_000_000_000, "c1"),
+    journal_line("NVRM: Xid (PCI:0000:7f:00): 43, pid=3696418, name=VLLM::EngineCor, "
+                 "channel 0x09000046", 1_760_000_001_500_000, "c2"),
+    journal_line("NVRM: Xid (PCI:0003:00:01): 79, GPU has fallen off the bus.",
+                 1_760_000_002_000_000, "c3"),
+    journal_line("NVRM: Xid (PCI:0000:3b:00): 48", 1_760_000_003_000_000, "c4"),
+    "not json at all",
+    journal_line("eth0: link up", 1_760_000_004_000_000, "c5"),
+])
+
+
+def test_parse_fault_query_mig_remap_is_null_not_false(reporter):
+    faults = reporter.parse_fault_query(FAULT_QUERY_MIG)
+    assert sorted(faults) == list(range(8))
+    assert faults[3] == {
+        "recovery_action": "None",
+        "remapped_rows_failure": None,
+        "ecc_uncorrected": 0,
+    }
+
+
+def test_parse_fault_query_values_and_unreadable_cells(reporter):
+    faults = reporter.parse_fault_query(FAULT_QUERY_MIXED)
+    assert faults[0] == {"recovery_action": "None", "remapped_rows_failure": False,
+                         "ecc_uncorrected": 0}
+    assert faults[1] == {"recovery_action": "GPU Reset", "remapped_rows_failure": True,
+                         "ecc_uncorrected": 12}
+    assert faults[2] == {"recovery_action": None, "remapped_rows_failure": None,
+                         "ecc_uncorrected": None}
+    assert faults[3]["remapped_rows_failure"] is True
+    assert faults[3]["ecc_uncorrected"] is None
+
+
+def test_count_mig_slices(reporter):
+    assert reporter.count_mig_slices(NVIDIA_SMI_L_MIG) == 3
+    assert reporter.count_mig_slices(NVIDIA_SMI_L_PLAIN) == 0
+
+
+def test_parse_xid_events(reporter):
+    xids, last_cursor = reporter.parse_xid_events(JOURNAL_FIXTURE)
+    assert last_cursor == "c5"
+    assert xids == [
+        {"bus_id": "0000:7f:00", "xid": 43,
+         "at": "2025-10-09T08:53:21.500000+00:00",
+         "message": "pid=3696418, name=VLLM::EngineCor, channel 0x09000046"},
+        {"bus_id": "0003:00:01", "xid": 79,
+         "at": "2025-10-09T08:53:22.000000+00:00",
+         "message": "GPU has fallen off the bus."},
+        {"bus_id": "0000:3b:00", "xid": 48,
+         "at": "2025-10-09T08:53:23.000000+00:00", "message": ""},
+    ]
+
+
+def test_parse_xid_events_caps_and_keeps_the_rest_for_next_read(reporter, monkeypatch):
+    monkeypatch.setattr(reporter, "MAX_XIDS_PER_REPORT", 2)
+    xids, last_cursor = reporter.parse_xid_events(JOURNAL_FIXTURE)
+    assert [x["xid"] for x in xids] == [43, 79]
+    # Cursor stops before the third Xid, so --after-cursor resumes at it.
+    assert last_cursor == "c3"
+
+
+def fake_journalctl(monkeypatch, reporter, stdout="", returncode=0):
+    calls = []
+
+    class Result:
+        pass
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        result = Result()
+        result.stdout, result.stderr, result.returncode = stdout, "boom", returncode
+        return result
+
+    monkeypatch.setattr(reporter.subprocess, "run", fake_run)
+    return calls
+
+
+def test_first_run_reads_only_from_now(reporter, monkeypatch, tmp_path):
+    calls = fake_journalctl(monkeypatch, reporter, stdout=JOURNAL_FIXTURE)
+    xids, cursor = reporter.query_xids(str(tmp_path / "journal.cursor"))
+    assert xids == []  # history is never replayed
+    assert cursor == "c5"
+    assert calls[0][-2:] == ["-n", "1"]
+
+
+def test_later_run_resumes_after_saved_cursor(reporter, monkeypatch, tmp_path):
+    path = tmp_path / "state" / "journal.cursor"
+    reporter.write_cursor("c1", str(path))
+    assert reporter.read_cursor(str(path)) == "c1"
+    calls = fake_journalctl(monkeypatch, reporter, stdout=JOURNAL_FIXTURE)
+    xids, cursor = reporter.query_xids(str(path))
+    assert calls[0][-1] == "--after-cursor=c1"
+    assert len(xids) == 3
+    assert cursor == "c5"
+
+
+def test_no_new_log_lines_keeps_the_cursor(reporter, monkeypatch, tmp_path):
+    path = tmp_path / "journal.cursor"
+    reporter.write_cursor("c9", str(path))
+    fake_journalctl(monkeypatch, reporter, stdout="")
+    assert reporter.query_xids(str(path)) == ([], "c9")
+
+
+def test_journalctl_failure_raises_and_leaves_cursor(reporter, monkeypatch, tmp_path):
+    import pytest
+
+    path = tmp_path / "journal.cursor"
+    reporter.write_cursor("c1", str(path))
+    fake_journalctl(monkeypatch, reporter, returncode=1)
+    with pytest.raises(RuntimeError):
+        reporter.query_xids(str(path))
+    assert reporter.read_cursor(str(path)) == "c1"
+
+
+def test_find_root_owned_slots(reporter, tmp_path):
+    import os
+
+    clean = tmp_path / "builds" / "slot-1" / "vllm" / "ci"
+    dirty = tmp_path / "builds" / "slot-2" / "vllm" / "ci"
+    clean.mkdir(parents=True)
+    (dirty / ".runtime-shard").mkdir(parents=True)
+    pattern = str(tmp_path / "builds" / "*" / "vllm" / "ci")
+    # The test user stands in for root; the empty slot has nothing to flag.
+    assert reporter.find_root_owned_slots((pattern,), root_uid=os.getuid()) == [
+        str(dirty)]
+    assert reporter.find_root_owned_slots((pattern,), root_uid=os.getuid() + 1) == []
+    assert reporter.find_root_owned_slots((str(tmp_path / "nope" / "*"),)) == []
+
+
+def run_main(reporter, monkeypatch, tmp_path, post_ok=True, **queries):
+    sent = {}
+
+    def fake_report(gpus, host, status, last_error, faults=None):
+        if not post_ok:
+            raise OSError("down")
+        sent.update(gpus=gpus, faults=faults)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("query failed")
+
+    monkeypatch.setattr(reporter, "REPORT_URL", "http://dummy")
+    monkeypatch.setattr(reporter, "JOURNAL_CURSOR_FILE", str(tmp_path / "journal.cursor"))
+    monkeypatch.setattr(reporter, "report", fake_report)
+    monkeypatch.setattr(reporter, "collect_host_metrics", lambda: {})
+    monkeypatch.setattr(reporter, "query_gpus", lambda: [
+        {"index": 0, "dead_proc_mem_mb": None, "recovery_action": None,
+         "remapped_rows_failure": None, "ecc_uncorrected": None}])
+    monkeypatch.setattr(reporter, "query_dead_proc_memory", lambda: {0: 0.0})
+    monkeypatch.setattr(reporter, "query_fault_fields", queries.get("fault", lambda: {
+        0: {"recovery_action": "None", "remapped_rows_failure": False,
+            "ecc_uncorrected": 0}}))
+    monkeypatch.setattr(reporter, "query_xids", queries.get("xids", boom))
+    monkeypatch.setattr(reporter, "query_mig_slices", queries.get("mig", boom))
+    monkeypatch.setattr(reporter, "find_root_owned_slots", queries.get("slots", boom))
+    try:
+        reporter.main()
+    except SystemExit:
+        pass
+    return sent
+
+
+def test_each_failed_query_reports_null_independently(reporter, monkeypatch, tmp_path):
+    def boom():
+        raise RuntimeError("query failed")
+
+    sent = run_main(reporter, monkeypatch, tmp_path, fault=boom,
+                    mig=lambda: 12)  # xids and slots fail
+    assert sent["faults"] == {"xids": None, "mig_slices": 12, "root_owned_slots": None}
+    gpu = sent["gpus"][0]
+    assert gpu["recovery_action"] is None
+    assert gpu["remapped_rows_failure"] is None
+    assert gpu["ecc_uncorrected"] is None
+
+
+def test_successful_queries_fill_the_payload(reporter, monkeypatch, tmp_path):
+    sent = run_main(reporter, monkeypatch, tmp_path,
+                    xids=lambda path: ([{"bus_id": "0000:7f:00", "xid": 48,
+                                    "at": "2026-10-11T00:00:00.000000+00:00",
+                                    "message": ""}], "c7"),
+                    mig=lambda: 0, slots=lambda: ["/mnt/x/vllm/ci"])
+    assert sent["faults"]["xids"][0]["xid"] == 48
+    assert sent["faults"]["mig_slices"] == 0
+    assert sent["faults"]["root_owned_slots"] == ["/mnt/x/vllm/ci"]
+    assert sent["gpus"][0]["recovery_action"] == "None"
+    assert sent["gpus"][0]["remapped_rows_failure"] is False
+    assert reporter.read_cursor(reporter.JOURNAL_CURSOR_FILE) == "c7"
+
+
+def test_cursor_is_not_saved_when_the_post_fails(reporter, monkeypatch, tmp_path):
+    run_main(reporter, monkeypatch, tmp_path, post_ok=False,
+             xids=lambda path: ([], "c7"), mig=lambda: 0, slots=lambda: [])
+    assert reporter.read_cursor(reporter.JOURNAL_CURSOR_FILE) is None

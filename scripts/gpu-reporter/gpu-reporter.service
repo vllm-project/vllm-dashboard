@@ -8,3 +8,5 @@ Type=oneshot
 EnvironmentFile=/etc/gpu-reporter.env
 ExecStart=/usr/bin/python3 /opt/gpu-reporter/gpu-reporter.py
 TimeoutSec=30
+# Creates /var/lib/gpu-reporter, where the kernel-log cursor lives.
+StateDirectory=gpu-reporter

@@ -9,6 +9,9 @@ const MAX_DISK_COUNT = 64;
 const MAX_NAME_LENGTH = 256;
 const MAX_PATH_LENGTH = 1024;
 const MAX_ERROR_LENGTH = 2048;
+const MAX_XID_COUNT = 500;
+const MAX_XID_MESSAGE_LENGTH = 1024;
+const MAX_ROOT_OWNED_SLOTS = 256;
 const MAX_BYTES_VALUE = Number.MAX_SAFE_INTEGER;
 
 export type ReporterStatus = "ok" | "degraded";
@@ -24,6 +27,16 @@ export interface NormalizedGpuMetric {
   power_draw_w: number | null;
   power_limit_w: number | null;
   dead_proc_mem_mb: number | null;
+  recovery_action: string | null;
+  remapped_rows_failure: boolean | null;
+  ecc_uncorrected: number | null;
+}
+
+export interface NormalizedXidEvent {
+  bus_id: string;
+  xid: number;
+  at: Date;
+  message: string;
 }
 
 export interface NormalizedDiskMetric {
@@ -60,6 +73,12 @@ export interface NormalizedGpuReport {
   reporter_status: ReporterStatus;
   last_error: string | null;
   node_conditions: NormalizedNodeConditions | null;
+  /** null = could not read; [] = read, nothing new. */
+  xids: NormalizedXidEvent[] | null;
+  mig_slices: number | null;
+  root_owned_slots: string[] | null;
+  allocatable_gpus: number | null;
+  capacity_gpus: number | null;
 }
 
 export class GpuReportValidationError extends Error {
@@ -152,6 +171,35 @@ function optionalNumber(
   return numberValue(value, path, options);
 }
 
+function optionalBoolean(value: unknown, path: string): boolean | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "boolean") return invalid(path, "must be a boolean or null");
+  return value;
+}
+
+function xidEvent(value: unknown, index: number): NormalizedXidEvent {
+  const path = `xids[${index}]`;
+  const event = objectValue(value, path);
+  exactKeys(event, ["bus_id", "xid", "at", "message"], path);
+  if (typeof event.message !== "string" || event.message.length > MAX_XID_MESSAGE_LENGTH) {
+    invalid(`${path}.message`, `must be a string of at most ${MAX_XID_MESSAGE_LENGTH} characters`);
+  }
+  // The k8s reporter can't always tie an Xid to a GPU and sends "".
+  if (typeof event.bus_id !== "string" || event.bus_id.length > 64) {
+    invalid(`${path}.bus_id`, "must be a string of at most 64 characters");
+  }
+  const busId = event.bus_id.trim();
+  if (typeof event.at !== "string") invalid(`${path}.at`, "must be an ISO-8601 string");
+  const at = new Date(event.at);
+  if (Number.isNaN(at.getTime())) invalid(`${path}.at`, "must be an ISO-8601 string");
+  return {
+    bus_id: busId,
+    xid: numberValue(event.xid, `${path}.xid`, { min: 0, max: 65_535, integer: true }),
+    at,
+    message: event.message,
+  };
+}
+
 function gpuMetric(value: unknown, index: number): NormalizedGpuMetric {
   const path = `gpus[${index}]`;
   const gpu = objectValue(value, path);
@@ -167,6 +215,9 @@ function gpuMetric(value: unknown, index: number): NormalizedGpuMetric {
       "power_draw_w",
       "power_limit_w",
       "dead_proc_mem_mb",
+      "recovery_action",
+      "remapped_rows_failure",
+      "ecc_uncorrected",
     ],
     path,
   );
@@ -206,6 +257,20 @@ function gpuMetric(value: unknown, index: number): NormalizedGpuMetric {
     dead_proc_mem_mb: optionalNumber(gpu.dead_proc_mem_mb, `${path}.dead_proc_mem_mb`, {
       min: 0,
       max: 1_000_000_000,
+    }),
+    recovery_action: optionalString(
+      gpu.recovery_action,
+      `${path}.recovery_action`,
+      MAX_NAME_LENGTH,
+    ),
+    remapped_rows_failure: optionalBoolean(
+      gpu.remapped_rows_failure,
+      `${path}.remapped_rows_failure`,
+    ),
+    ecc_uncorrected: optionalNumber(gpu.ecc_uncorrected, `${path}.ecc_uncorrected`, {
+      min: 0,
+      max: MAX_BYTES_VALUE,
+      integer: true,
     }),
   };
 }
@@ -356,7 +421,19 @@ export function parseGpuReportPayload(value: unknown): NormalizedGpuReport {
   const report = objectValue(value, "payload");
   exactKeys(
     report,
-    ["hostname", "gpus", "host", "reporter_status", "last_error", "node_conditions"],
+    [
+      "hostname",
+      "gpus",
+      "host",
+      "reporter_status",
+      "last_error",
+      "node_conditions",
+      "xids",
+      "mig_slices",
+      "root_owned_slots",
+      "allocatable_gpus",
+      "capacity_gpus",
+    ],
     "payload",
   );
   const rawHostname = stringValue(report.hostname, "hostname", {
@@ -377,6 +454,29 @@ export function parseGpuReportPayload(value: unknown): NormalizedGpuReport {
   if (reporterStatus !== "ok" && reporterStatus !== "degraded") {
     invalid("reporter_status", "must be 'ok' or 'degraded'");
   }
+  let xids: NormalizedXidEvent[] | null = null;
+  if (report.xids !== undefined && report.xids !== null) {
+    if (!Array.isArray(report.xids) || report.xids.length > MAX_XID_COUNT) {
+      invalid("xids", `must be an array with at most ${MAX_XID_COUNT} entries`);
+    }
+    xids = report.xids.map(xidEvent);
+  }
+  let rootOwnedSlots: string[] | null = null;
+  if (report.root_owned_slots !== undefined && report.root_owned_slots !== null) {
+    if (
+      !Array.isArray(report.root_owned_slots) ||
+      report.root_owned_slots.length > MAX_ROOT_OWNED_SLOTS
+    ) {
+      invalid(
+        "root_owned_slots",
+        `must be an array with at most ${MAX_ROOT_OWNED_SLOTS} entries`,
+      );
+    }
+    rootOwnedSlots = report.root_owned_slots.map((slot, index) =>
+      stringValue(slot, `root_owned_slots[${index}]`, { maxLength: MAX_PATH_LENGTH }),
+    );
+  }
+  const gpuCount = { min: 0, max: 65_536, integer: true };
   const lastError = optionalString(report.last_error, "last_error", MAX_ERROR_LENGTH);
   if (reporterStatus === "degraded" && lastError === null) {
     invalid("last_error", "is required when reporter_status is 'degraded'");
@@ -394,6 +494,11 @@ export function parseGpuReportPayload(value: unknown): NormalizedGpuReport {
       report.node_conditions === undefined || report.node_conditions === null
         ? null
         : nodeConditions(report.node_conditions),
+    xids,
+    mig_slices: optionalNumber(report.mig_slices, "mig_slices", gpuCount),
+    root_owned_slots: rootOwnedSlots,
+    allocatable_gpus: optionalNumber(report.allocatable_gpus, "allocatable_gpus", gpuCount),
+    capacity_gpus: optionalNumber(report.capacity_gpus, "capacity_gpus", gpuCount),
   };
 }
 

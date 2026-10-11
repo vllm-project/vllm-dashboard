@@ -168,3 +168,113 @@ test("request size configuration is bounded", () => {
   assert.equal(gpuReportMaxBytes("0"), DEFAULT_GPU_REPORT_MAX_BYTES);
   assert.equal(gpuReportMaxBytes("999999999"), DEFAULT_GPU_REPORT_MAX_BYTES);
 });
+
+const faultGpu = {
+  ...legacyPayload.gpus[0],
+  recovery_action: "None",
+  remapped_rows_failure: null,
+  ecc_uncorrected: 0,
+};
+const xid = {
+  bus_id: "0000:7f:00",
+  xid: 48,
+  at: "2026-10-11T00:00:00.123456+00:00",
+  message: "",
+};
+
+test("legacy reporters that omit the fault fields normalize them to null", () => {
+  const report = parseGpuReportPayload(legacyPayload);
+  assert.equal(report.gpus[0].recovery_action, null);
+  assert.equal(report.gpus[0].remapped_rows_failure, null);
+  assert.equal(report.gpus[0].ecc_uncorrected, null);
+  assert.equal(report.xids, null);
+  assert.equal(report.mig_slices, null);
+  assert.equal(report.root_owned_slots, null);
+  assert.equal(report.allocatable_gpus, null);
+  assert.equal(report.capacity_gpus, null);
+});
+
+test("accepts the per-GPU and per-host fault fields", () => {
+  const report = parseGpuReportPayload({
+    ...legacyPayload,
+    gpus: [faultGpu, { ...faultGpu, index: 1, remapped_rows_failure: true, ecc_uncorrected: 3 }],
+    xids: [xid],
+    mig_slices: 56,
+    root_owned_slots: ["/mnt/local/buildkite-agent/builds/h200-ci-2-1/vllm/ci"],
+    allocatable_gpus: 7,
+    capacity_gpus: 8,
+  });
+  assert.equal(report.gpus[0].recovery_action, "None");
+  assert.equal(report.gpus[0].remapped_rows_failure, null);
+  assert.equal(report.gpus[1].remapped_rows_failure, true);
+  assert.equal(report.gpus[1].ecc_uncorrected, 3);
+  assert.equal(report.xids?.[0].at.toISOString(), "2026-10-11T00:00:00.123Z");
+  assert.equal(report.xids?.[0].message, "");
+  assert.equal(report.mig_slices, 56);
+  assert.deepEqual(report.root_owned_slots, [
+    "/mnt/local/buildkite-agent/builds/h200-ci-2-1/vllm/ci",
+  ]);
+  assert.equal(report.allocatable_gpus, 7);
+  assert.equal(report.capacity_gpus, 8);
+});
+
+test("an empty xids list is a reading, distinct from a missing one", () => {
+  const read = parseGpuReportPayload({ ...legacyPayload, xids: [], root_owned_slots: [] });
+  assert.deepEqual(read.xids, []);
+  assert.deepEqual(read.root_owned_slots, []);
+  const missing = parseGpuReportPayload({ ...legacyPayload, xids: null, mig_slices: null });
+  assert.equal(missing.xids, null);
+  assert.equal(missing.mig_slices, null);
+});
+
+test("accepts an empty bus_id for Xids that cannot be tied to a GPU", () => {
+  const report = parseGpuReportPayload({ ...legacyPayload, xids: [{ ...xid, bus_id: "" }] });
+  assert.equal(report.xids?.[0].bus_id, "");
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, xids: [{ ...xid, bus_id: null }] }),
+    /xids\[0\]\.bus_id/,
+  );
+});
+
+test("rejects malformed fault fields", () => {
+  const withGpu = (patch: object) => ({
+    ...legacyPayload,
+    gpus: [{ ...legacyPayload.gpus[0], ...patch }],
+  });
+  assert.throws(
+    () => parseGpuReportPayload(withGpu({ remapped_rows_failure: "No" })),
+    /remapped_rows_failure/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload(withGpu({ ecc_uncorrected: -1 })),
+    /ecc_uncorrected/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload(withGpu({ recovery_action: 0 })),
+    /recovery_action/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, xids: [{ ...xid, at: "yesterday" }] }),
+    /xids\[0\]\.at/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, xids: [{ ...xid, xid: "48" }] }),
+    /xids\[0\]\.xid/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, xids: [{ ...xid, extra: 1 }] }),
+    /unsupported field 'extra'/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, xids: Array(501).fill(xid) }),
+    /xids must be an array/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, mig_slices: -1 }),
+    /mig_slices/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, root_owned_slots: "/x" }),
+    /root_owned_slots/,
+  );
+});

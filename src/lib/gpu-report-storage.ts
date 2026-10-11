@@ -27,6 +27,16 @@ export async function storeGpuReport(
     power_draw_w: gpu.power_draw_w,
     power_limit_w: gpu.power_limit_w,
     dead_proc_mem_mb: gpu.dead_proc_mem_mb,
+    recovery_action: gpu.recovery_action,
+    remapped_rows_failure: gpu.remapped_rows_failure,
+    ecc_uncorrected: gpu.ecc_uncorrected,
+  }));
+  const xidEvents = (report.xids ?? []).map((event) => ({
+    hostname: report.hostname,
+    bus_id: event.bus_id,
+    xid: event.xid,
+    at: event.at,
+    message: event.message,
   }));
 
   const rollupsByName = new Map<
@@ -71,6 +81,13 @@ export async function storeGpuReport(
       report.node_conditions == null
         ? null
         : db.json(jsonValue(report.node_conditions)),
+    mig_slices: report.mig_slices,
+    root_owned_slots:
+      report.root_owned_slots == null
+        ? null
+        : db.json(jsonValue(report.root_owned_slots)),
+    allocatable_gpus: report.allocatable_gpus,
+    capacity_gpus: report.capacity_gpus,
   };
   const cpuSampleCount = host?.cpu_util == null ? 0 : 1;
   const ramSampleCount = host?.ram_used_bytes == null ? 0 : 1;
@@ -112,7 +129,23 @@ export async function storeGpuReport(
           "power_draw_w",
           "power_limit_w",
           "dead_proc_mem_mb",
+          "recovery_action",
+          "remapped_rows_failure",
+          "ecc_uncorrected",
         )}
+      `;
+    }
+    if (xidEvents.length > 0) {
+      await tx`
+        INSERT INTO gpu_xid_events ${tx(
+          xidEvents,
+          "hostname",
+          "bus_id",
+          "xid",
+          "at",
+          "message",
+        )}
+        ON CONFLICT (hostname, bus_id, xid, at) DO NOTHING
       `;
     }
     if (rollups.length > 0) {
@@ -146,6 +179,10 @@ export async function storeGpuReport(
         "reporter_status",
         "last_error",
         "node_conditions",
+        "mig_slices",
+        "root_owned_slots",
+        "allocatable_gpus",
+        "capacity_gpus",
       )}
     `;
     await tx`

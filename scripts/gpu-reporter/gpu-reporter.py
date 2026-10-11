@@ -17,16 +17,25 @@ Environment variables:
   GPU_HOSTNAME            - Override hostname (default: system hostname)
   GPU_REPORT_DISK_TIMEOUT - Seconds before a per-mount stat is given up (default: 5)
   GPU_REPORT_COMPUTE_APPS_TIMEOUT - Seconds before the compute-apps query is given up (default: 10)
+  GPU_REPORT_STATE_DIR    - Where the kernel-log cursor is kept (default: /var/lib/gpu-reporter)
 
 The reporter always POSTs, even when nvidia-smi fails: a failed GPU query
 yields an empty "gpus" list with reporter_status="degraded" and last_error
 set, so a sick host doesn't look like a dead one. The process only exits
 non-zero when the POST itself fails (or GPU_REPORT_URL is unset).
+
+Hardware-fault readings (recovery action, row-remap failure, uncorrected ECC,
+Xids, MIG slice count, root-owned checkout slots) each come from their own
+query and fail independently: a failed read is reported as null, never as a
+passing value.
 """
 
 import concurrent.futures
+import datetime
+import glob
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -44,6 +53,12 @@ NVIDIA_SMI_QUERY = (
 )
 NVIDIA_SMI_UUID_QUERY = "index,uuid"
 NVIDIA_SMI_COMPUTE_APPS_QUERY = "gpu_uuid,pid,used_memory"
+# Separate from NVIDIA_SMI_QUERY: one field an older driver rejects would make
+# nvidia-smi fail the whole query and take every metric with it.
+NVIDIA_SMI_FAULT_QUERY = (
+    "index,gpu_recovery_action,remapped_rows.failure,"
+    "ecc.errors.uncorrected.volatile.total"
+)
 
 PROC_STAT = "/proc/stat"
 PROC_MEMINFO = "/proc/meminfo"
@@ -53,6 +68,16 @@ PROC_ROOT = "/proc"
 CPU_SAMPLE_INTERVAL = 1.0  # seconds between the two /proc/stat reads
 DISK_STAT_TIMEOUT = float(os.environ.get("GPU_REPORT_DISK_TIMEOUT", "5"))
 COMPUTE_APPS_TIMEOUT = float(os.environ.get("GPU_REPORT_COMPUTE_APPS_TIMEOUT", "10"))
+FAULT_QUERY_TIMEOUT = 5  # nvidia-smi -L, fault query and journalctl; the unit's TimeoutSec is 30
+STATE_DIR = os.environ.get("GPU_REPORT_STATE_DIR", "/var/lib/gpu-reporter")
+JOURNAL_CURSOR_FILE = os.path.join(STATE_DIR, "journal.cursor")
+MAX_XIDS_PER_REPORT = 200  # the ingestion contract allows 500
+MAX_XID_MESSAGE = 512
+CHECKOUT_GLOBS = (
+    "/mnt/local/buildkite-agent/builds/*/vllm/ci",
+    "/dev/shm/buildkite-agent/builds/*/vllm/ci",
+)
+XID_RE = re.compile(r"NVRM: Xid \(PCI:([0-9A-Fa-f:.]+)\): (\d+)(?:,\s*(.*))?$")
 
 # Per-mount role classification for the bare-metal H200 pools
 # (h200-ci-*, mithril-h200-*):
@@ -115,6 +140,9 @@ def query_gpus():
             "power_draw_w": safe_float(parts[6]),
             "power_limit_w": safe_float(parts[7]),
             "dead_proc_mem_mb": None,  # filled in by main(); null = unknown
+            "recovery_action": None,  # filled in by main(); null = unknown
+            "remapped_rows_failure": None,
+            "ecc_uncorrected": None,
         })
     if not gpus:
         raise RuntimeError("no GPUs found in nvidia-smi output")
@@ -182,6 +210,168 @@ def query_dead_proc_memory():
         if not _pid_alive(pid):
             dead_mb[index_of_uuid[gpu_uuid]] += mem_mb
     return dead_mb
+
+
+def _smi_field(value):
+    """nvidia-smi cell -> str, or None for [N/A], [Not Supported] and blanks."""
+    value = value.strip()
+    if not value or (value.startswith("[") and value.endswith("]")):
+        return None
+    return value
+
+
+def parse_fault_query(text):
+    """Parse the NVIDIA_SMI_FAULT_QUERY csv -> {index: {field: value|None}}.
+
+    MIG hosts return [N/A] for the row-remap field; that and any other
+    unreadable cell becomes None, never False/0.
+    """
+    faults = {}
+    for line in text.strip().split("\n"):
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 4:
+            continue
+        failure = (_smi_field(parts[2]) or "").lower()
+        ecc = _smi_field(parts[3])
+        faults[int(parts[0])] = {
+            "recovery_action": _smi_field(parts[1]),
+            "remapped_rows_failure": (
+                True if failure in ("yes", "1", "true")
+                else False if failure in ("no", "0", "false")
+                else None
+            ),
+            "ecc_uncorrected": int(ecc) if ecc is not None and ecc.isdigit() else None,
+        }
+    return faults
+
+
+def query_fault_fields():
+    result = subprocess.run(
+        [
+            "nvidia-smi",
+            f"--query-gpu={NVIDIA_SMI_FAULT_QUERY}",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=FAULT_QUERY_TIMEOUT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"nvidia-smi fault query failed: {result.stderr.strip()}")
+    return parse_fault_query(result.stdout)
+
+
+def count_mig_slices(text):
+    """Count MIG devices in `nvidia-smi -L` output (0 on a non-MIG host)."""
+    return sum(1 for line in text.splitlines() if line.strip().startswith("MIG "))
+
+
+def query_mig_slices():
+    result = subprocess.run(
+        ["nvidia-smi", "-L"],
+        capture_output=True,
+        text=True,
+        timeout=FAULT_QUERY_TIMEOUT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"nvidia-smi -L failed: {result.stderr.strip()}")
+    return count_mig_slices(result.stdout)
+
+
+def parse_xid_events(journal_json):
+    """Parse `journalctl -k -o json` output -> (xids, last_cursor).
+
+    xids holds every NVRM Xid line as {bus_id, xid, at, message}. last_cursor
+    is the cursor of the last entry consumed: if more than MAX_XIDS_PER_REPORT
+    Xids are pending, it stops at the last one reported so the rest go out in
+    the next report instead of being dropped.
+    """
+    xids = []
+    last_cursor = None
+    for line in journal_json.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        message = entry.get("MESSAGE")
+        match = XID_RE.search(message) if isinstance(message, str) else None
+        if match:
+            if len(xids) == MAX_XIDS_PER_REPORT:
+                break
+            at = datetime.datetime.fromtimestamp(
+                int(entry["__REALTIME_TIMESTAMP"]) / 1e6, tz=datetime.timezone.utc
+            )
+            xids.append({
+                "bus_id": match.group(1),
+                "xid": int(match.group(2)),
+                "at": at.isoformat(timespec="microseconds"),
+                "message": (match.group(3) or "")[:MAX_XID_MESSAGE],
+            })
+        last_cursor = entry.get("__CURSOR", last_cursor)
+    return xids, last_cursor
+
+
+def read_cursor(path=JOURNAL_CURSOR_FILE):
+    try:
+        with open(path) as f:
+            return f.read().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def write_cursor(cursor, path=JOURNAL_CURSOR_FILE):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        f.write(cursor)
+    os.replace(tmp, path)
+
+
+def _journalctl(*args):
+    result = subprocess.run(
+        ["journalctl", "-k", "--no-pager", "-o", "json", *args],
+        capture_output=True,
+        text=True,
+        timeout=FAULT_QUERY_TIMEOUT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"journalctl failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def query_xids(cursor_path=JOURNAL_CURSOR_FILE):
+    """Xids logged since the last successful report -> (xids, new_cursor).
+
+    The first run (no cursor yet) only records where the kernel log ends, so
+    the whole history is never replayed; it returns no Xids. The caller saves
+    new_cursor after the POST succeeds, so a failed POST resends the same
+    Xids; the dashboard drops duplicates.
+    """
+    cursor = read_cursor(cursor_path)
+    if cursor is None:
+        _, last_cursor = parse_xid_events(_journalctl("-n", "1"))
+        return [], last_cursor
+    xids, last_cursor = parse_xid_events(_journalctl(f"--after-cursor={cursor}"))
+    return xids, last_cursor or cursor
+
+
+def find_root_owned_slots(patterns=CHECKOUT_GLOBS, root_uid=0):
+    """Checkout dirs holding at least one root-owned top-level entry.
+
+    Job containers run as root, so a directory created in the bind-mounted
+    checkout comes out root:root and the agent can't delete it. Raises on an
+    unreadable checkout; the caller reports null rather than an empty list.
+    """
+    slots = []
+    for pattern in patterns:
+        for checkout in sorted(glob.glob(pattern)):
+            try:
+                with os.scandir(checkout) as entries:
+                    if any(e.stat(follow_symlinks=False).st_uid == root_uid for e in entries):
+                        slots.append(checkout)
+            except FileNotFoundError:
+                continue  # slot was cleaned up mid-scan
+    return slots
 
 
 def parse_cpu_stat(text):
@@ -309,13 +499,14 @@ def collect_host_metrics():
     }
 
 
-def report(gpus, host, status, last_error):
+def report(gpus, host, status, last_error, faults=None):
     payload = json.dumps({
         "hostname": HOSTNAME,
         "gpus": gpus,
         "host": host,
         "reporter_status": status,
         "last_error": last_error,
+        **(faults or {}),
     }).encode()
 
     headers = {"Content-Type": "application/json"}
@@ -360,11 +551,43 @@ def main():
             for gpu in gpus:
                 gpu["dead_proc_mem_mb"] = dead_mb.get(gpu["index"], 0.0)
 
+        # Fault readings: each is its own query and degrades to null alone.
+        try:
+            fault_fields = query_fault_fields()
+        except Exception as e:
+            print(f"GPU fault query failed: {e}", file=sys.stderr)
+        else:
+            for gpu in gpus:
+                gpu.update(fault_fields.get(gpu["index"], {}))
+
+    faults = {"xids": None, "mig_slices": None, "root_owned_slots": None}
+    new_cursor = None
     try:
-        report(gpus, host, status, last_error)
+        faults["xids"], new_cursor = query_xids(JOURNAL_CURSOR_FILE)
+    except Exception as e:
+        print(f"kernel log Xid query failed: {e}", file=sys.stderr)
+    try:
+        faults["mig_slices"] = query_mig_slices()
+    except Exception as e:
+        print(f"MIG slice query failed: {e}", file=sys.stderr)
+    try:
+        faults["root_owned_slots"] = find_root_owned_slots()
+    except Exception as e:
+        print(f"root-owned checkout scan failed: {e}", file=sys.stderr)
+
+    try:
+        report(gpus, host, status, last_error, faults)
     except Exception as e:
         print(f"POST to dashboard failed: {e}", file=sys.stderr)
         sys.exit(1)
+
+    if new_cursor:
+        try:
+            write_cursor(new_cursor, JOURNAL_CURSOR_FILE)
+        except OSError as e:
+            # Not fatal: the next report resends these Xids and the dashboard
+            # drops the duplicates.
+            print(f"could not save journal cursor: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

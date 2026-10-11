@@ -106,3 +106,27 @@ test("GPU report route returns a validation error for malformed JSON", async () 
     restore();
   }
 });
+
+test("GPU report route rejects malformed fault fields before storing", async () => {
+  const restore = preserveGpuEnvironment();
+  try {
+    process.env.GPU_REPORT_SECRET = "secret";
+    delete process.env.GPU_REPORT_MAX_BYTES;
+    const response = await POST(
+      request(
+        JSON.stringify({
+          hostname: "h200-ci-2",
+          gpus: [],
+          reporter_status: "degraded",
+          last_error: "nvidia-smi failed",
+          xids: [{ bus_id: "0000:7f:00", xid: "48", at: "2026-10-11T00:00:00Z", message: "" }],
+        }),
+        { authorization: "Bearer secret" },
+      ),
+    );
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).detail, /xids\[0\]\.xid/);
+  } finally {
+    restore();
+  }
+});
