@@ -40,6 +40,24 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list"]
 ---
+# Driver signals from the NVIDIA device-plugin pods, limited to this namespace:
+#   pods/exec - `kubectl exec ... nvidia-smi` (recovery action, row remap, ECC).
+#               create is the grant; get is also listed because kubectl >= 1.30
+#               opens exec over a websocket (a GET) before falling back.
+#   pods/log  - Xid events from the device-plugin log (`kubectl logs`)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gpu-reporter-device-plugin
+  namespace: gpu-operator
+rules:
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
 # Read node inventories and kubelet endpoints:
 #   nodes         - enumerate nodes (expected-host set, exporter-pod mapping)
 #   nodes/stats   - kubelet stats/summary (CPU/RAM, root filesystem)
@@ -65,6 +83,20 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: gpu-reporter
+subjects:
+  - kind: ServiceAccount
+    name: gpu-reporter
+    namespace: gpu-operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gpu-reporter-device-plugin
+  namespace: gpu-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gpu-reporter-device-plugin
 subjects:
   - kind: ServiceAccount
     name: gpu-reporter

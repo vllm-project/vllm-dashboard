@@ -17,7 +17,8 @@ DISK_KEYS = {
 }
 PAYLOAD_KEYS = {
     "hostname", "gpus", "host", "reporter_status", "last_error",
-    "node_conditions",
+    "node_conditions", "xids", "allocatable_gpus", "capacity_gpus",
+    "mig_slices", "root_owned_slots",
 }
 
 CADVISOR_FIXTURE = "\n".join([
@@ -338,3 +339,221 @@ def test_main_reports_nodes_first_and_warns_on_skew(reporter_k8s, monkeypatch,
     err = capsys.readouterr().err
     assert "no DCGM exporter pod" in err
     assert "stale-1" in err  # exporter pod on a non-GPU node is loud
+
+
+# --- driver signals (exec nvidia-smi + device-plugin log) -------------------
+
+# Real device-plugin log lines (`kubectl logs --timestamps`): a B200 node's
+# 2026-09-18 Xid 79 / 145 burst (with its UUID-bearing XidCriticalError
+# lines), and H100 Skipping lines (no GPU identity).
+PLUGIN_LOG_FIXTURE = "\n".join([
+    "2026-09-18T04:25:00.405995263-07:00 I0918 11:25:00.402432       1 health.go:143] Processing event {Device:{Handle:0x725d24c3fc38} EventType:8 EventData:79 GpuInstanceId:4294967295 ComputeInstanceId:4294967295}",
+    "2026-09-18T04:25:00.406803332-07:00 I0918 11:25:00.405750       1 health.go:169] XidCriticalError: Xid=79 on Device=GPU-5b8ce787-9ffb-1d47-b5f0-456403d01ab9; marking device as unhealthy.",
+    "2026-09-18T04:25:00.406810680-07:00 I0918 11:25:00.406688       1 health.go:143] Processing event {Device:{Handle:0x725d24b032b8} EventType:8 EventData:145 GpuInstanceId:4294967295 ComputeInstanceId:4294967295}",
+    "2026-09-18T04:25:00.406812197-07:00 I0918 11:25:00.406705       1 health.go:169] XidCriticalError: Xid=145 on Device=GPU-73c76589-ffdf-8d5a-f5b0-02b05953e240; marking device as unhealthy.",
+    "2026-09-23T02:35:57.360474753Z I0923 02:35:57.360303       1 health.go:139] Skipping event {Device:{Handle:0x768f4a22e158} EventType:8 EventData:43 GpuInstanceId:4294967295 ComputeInstanceId:4294967295}",
+    "I0928 23:13:29.028243       1 health.go:139] unstamped line is ignored",
+    "2026-09-28T23:13:29.028442214Z I0928 23:13:29.028243       1 server.go:1 some other message",
+])
+UUID_TO_BUS = {
+    "GPU-5b8ce787-9ffb-1d47-b5f0-456403d01ab9": "00000000:C3:00.0",
+}
+
+# nvidia-smi --query-gpu=SMI_FIELDS --format=csv,noheader. The shape and the
+# [N/A] spelling follow nvidia-smi docs; row 1 is a MIG-style host where
+# remapped rows are not readable.
+SMI_FIXTURE = "\n".join([
+    "0, 00000000:1B:00.0, None, No, 0, GPU-aaaa",
+    "1, 00000000:43:00.0, Node Reboot Required, Yes, 3, GPU-bbbb",
+    "2, 00000000:52:00.0, [N/A], [N/A], [N/A], GPU-cccc",
+    "garbage line",
+])
+
+
+def test_parse_smi_gpus(reporter_k8s):
+    gpus = reporter_k8s.parse_smi_gpus(SMI_FIXTURE)
+    assert sorted(gpus) == [0, 1, 2]
+    assert gpus[0] == {
+        "bus_id": "00000000:1B:00.0", "recovery_action": "None",
+        "remapped_rows_failure": False, "ecc_uncorrected": 0,
+        "uuid": "GPU-aaaa",
+    }
+    assert gpus[1]["recovery_action"] == "Node Reboot Required"
+    assert gpus[1]["remapped_rows_failure"] is True
+    assert gpus[1]["ecc_uncorrected"] == 3
+    # [N/A] is a missing reading, never a passing value.
+    assert gpus[2]["recovery_action"] is None
+    assert gpus[2]["remapped_rows_failure"] is None
+    assert gpus[2]["ecc_uncorrected"] is None
+
+
+def test_parse_smi_accepts_numeric_failure_flag(reporter_k8s):
+    gpus = reporter_k8s.parse_smi_gpus(
+        "0, 00000000:1B:00.0, None, 1, 0, GPU-a\n"
+        "1, 00000000:43:00.0, None, 0, 0, GPU-b")
+    assert gpus[0]["remapped_rows_failure"] is True
+    assert gpus[1]["remapped_rows_failure"] is False
+
+
+def test_parse_plugin_log_xids(reporter_k8s):
+    xids, last = reporter_k8s.parse_plugin_log(PLUGIN_LOG_FIXTURE,
+                                               UUID_TO_BUS)
+    assert [x["xid"] for x in xids] == [79, 145, 43]
+    assert set(xids[0]) == {"bus_id", "xid", "at", "message"}
+    # UUID on the following XidCriticalError line resolves to a bus id.
+    assert xids[0]["bus_id"] == "00000000:C3:00.0"
+    # Unknown UUID and Skipping events carry no identity.
+    assert xids[1]["bus_id"] == ""
+    assert xids[2]["bus_id"] == ""
+    # Times are normalised to UTC (-07:00 offset -> +7h).
+    assert xids[0]["at"] == "2026-09-18T11:25:00.405995+00:00"
+    assert xids[2]["at"] == "2026-09-23T02:35:57.360474+00:00"
+    assert xids[0]["message"].startswith("Processing event")
+    assert last.isoformat().startswith("2026-09-23T02:35:57.360474")
+
+
+def test_parse_plugin_log_empty(reporter_k8s):
+    assert reporter_k8s.parse_plugin_log("") == ([], None)
+
+
+def test_read_xids_advances_cursor_past_last_event(reporter_k8s,
+                                                   monkeypatch):
+    seen = {}
+
+    def fake_kubectl(*args, timeout=10):
+        seen["args"] = args
+        return PLUGIN_LOG_FIXTURE
+
+    monkeypatch.setattr(reporter_k8s, "kubectl", fake_kubectl)
+    xids, nxt = reporter_k8s.read_xids("pod-1", "2026-09-01T00:00:00+00:00",
+                                       UUID_TO_BUS)
+    assert len(xids) == 3
+    assert "--since-time" in seen["args"]
+    assert "2026-09-01T00:00:00+00:00" in seen["args"]
+    assert nxt == "2026-09-23T02:35:57.360475+00:00"
+    # No new events: cursor stays put.
+    monkeypatch.setattr(reporter_k8s, "kubectl", lambda *a, timeout=10: "")
+    assert reporter_k8s.read_xids("pod-1", nxt, {}) == ([], nxt)
+
+
+def test_driver_fields_from_node_status(reporter_k8s):
+    node = make_node("gpu-node-1")
+    node["status"]["capacity"]["nvidia.com/gpu"] = "8"
+    node["status"]["allocatable"] = {"nvidia.com/gpu": "5"}
+    fields = reporter_k8s.driver_fields(node)
+    assert fields == {
+        "xids": None, "allocatable_gpus": 5, "capacity_gpus": 8,
+        "mig_slices": None, "root_owned_slots": None,
+    }
+    # No allocatable entry is a missing reading, not 0.
+    assert reporter_k8s.driver_fields(
+        make_node("n"))["allocatable_gpus"] is None
+
+
+DCGM_TWO_GPU = DCGM_FIXTURE + DCGM_FIXTURE.replace('gpu="0"', 'gpu="1"')
+
+
+def _patch_driver_reads(reporter_k8s, monkeypatch, smi=SMI_FIXTURE,
+                        log=PLUGIN_LOG_FIXTURE):
+    def fake_kubectl(*args, timeout=10):
+        if args[0] == "exec":
+            if smi is None:
+                raise RuntimeError("kubectl exec failed: Forbidden")
+            return smi
+        if args[0] == "logs":
+            if log is None:
+                raise RuntimeError("kubectl logs failed: Forbidden")
+            return log
+        return CADVISOR_FIXTURE
+
+    monkeypatch.setattr(reporter_k8s, "kubectl", fake_kubectl)
+    monkeypatch.setattr(reporter_k8s, "fetch_stats_summary",
+                        lambda name: STATS_SUMMARY_FIXTURE)
+    monkeypatch.setattr(reporter_k8s, "scrape_dcgm",
+                        lambda pod_ip: DCGM_TWO_GPU)
+
+
+def test_process_node_merges_driver_readings(reporter_k8s, monkeypatch):
+    _patch_driver_reads(reporter_k8s, monkeypatch)
+    state = {reporter_k8s.XID_STATE_KEY: {
+        "inf-4x8h100-1": "2026-09-01T00:00:00+00:00"}}
+    payload = reporter_k8s.process_node(
+        make_node("inf-4x8h100-1"), "192.168.3.81", state, time.time(),
+        "plugin-pod")
+    assert payload["reporter_status"] == "ok"
+    g0, g1 = payload["gpus"]
+    assert g0["recovery_action"] == "None"
+    assert g0["remapped_rows_failure"] is False
+    assert g0["ecc_uncorrected"] == 0
+    assert g1["recovery_action"] == "Node Reboot Required"
+    assert g1["remapped_rows_failure"] is True
+    assert [x["xid"] for x in payload["xids"]] == [79, 145, 43]
+    assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] > \
+        "2026-09-23"
+
+
+def test_process_node_first_run_starts_cursor_at_now(reporter_k8s,
+                                                     monkeypatch):
+    _patch_driver_reads(reporter_k8s, monkeypatch, log=None)
+    state = {}
+    payload = reporter_k8s.process_node(
+        make_node("inf-4x8h100-1"), "192.168.3.81", state, 1788387174.0,
+        "plugin-pod")
+    assert payload["xids"] == []
+    assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"].startswith(
+        "2026-09-02T")
+
+
+def test_process_node_failed_reads_are_null_not_degraded(reporter_k8s,
+                                                         monkeypatch):
+    _patch_driver_reads(reporter_k8s, monkeypatch, smi=None, log=None)
+    state = {reporter_k8s.XID_STATE_KEY: {
+        "inf-4x8h100-1": "2026-09-01T00:00:00+00:00"}}
+    payload = reporter_k8s.process_node(
+        make_node("inf-4x8h100-1"), "192.168.3.81", state, time.time(),
+        "plugin-pod")
+    assert payload["reporter_status"] == "ok"
+    assert payload["xids"] is None
+    for g in payload["gpus"]:
+        assert g["recovery_action"] is None
+        assert g["remapped_rows_failure"] is None
+        assert g["ecc_uncorrected"] is None
+    # A failed log read leaves the cursor so the next run covers the gap.
+    assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] == \
+        "2026-09-01T00:00:00+00:00"
+
+
+def test_process_node_without_plugin_pod_reports_null(reporter_k8s,
+                                                      monkeypatch):
+    _patch_driver_reads(reporter_k8s, monkeypatch)
+    payload = reporter_k8s.process_node(
+        make_node("inf-4x8h100-1"), "192.168.3.81", {}, time.time())
+    assert payload["xids"] is None
+    assert all(g["recovery_action"] is None for g in payload["gpus"])
+
+
+def test_main_keeps_log_cursor_when_post_fails(reporter_k8s, monkeypatch,
+                                               tmp_path):
+    _patch_driver_reads(reporter_k8s, monkeypatch)
+    state_file = tmp_path / "state.json"
+    since = "2026-09-01T00:00:00+00:00"
+    state_file.write_text('{"_xid_since": {"inf-4x8h100-1": "%s"}}' % since)
+    monkeypatch.setattr(reporter_k8s, "REPORT_URL", "http://dummy")
+    monkeypatch.setattr(reporter_k8s, "DISK_STATE_FILE", str(state_file))
+    monkeypatch.setattr(reporter_k8s, "get_nodes",
+                        lambda: [make_node("inf-4x8h100-1")])
+    monkeypatch.setattr(reporter_k8s, "get_pod_ips",
+                        lambda: {"inf-4x8h100-1": "192.168.3.81"})
+    monkeypatch.setattr(reporter_k8s, "get_plugin_pods",
+                        lambda: {"inf-4x8h100-1": "plugin-pod"})
+
+    def failing_report(payload):
+        raise OSError("down")
+
+    monkeypatch.setattr(reporter_k8s, "report", failing_report)
+    try:
+        reporter_k8s.main()
+    except SystemExit:
+        pass
+    saved = reporter_k8s.load_disk_state(str(state_file))
+    assert saved[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] == since
