@@ -58,15 +58,21 @@ DCGM_PORT = os.environ.get("DCGM_EXPORTER_PORT", "9400")
 PLUGIN_LABEL = os.environ.get("DEVICE_PLUGIN_LABEL",
                               "app=nvidia-device-plugin-daemonset")
 PLUGIN_CONTAINER = "nvidia-device-plugin"
-# uuid is not a reported field: it maps the plugin log's "Device=GPU-<uuid>"
-# lines (the only log lines that name a GPU) onto a bus id.
-SMI_FIELDS = ("index,pci.bus_id,gpu_recovery_action,remapped_rows.failure,"
-              "ecc.errors.uncorrected.volatile.total,uuid")
+# Readings are keyed by uuid: it joins them to DCGM's UUID label and maps the
+# plugin log's "Device=GPU-<uuid>" lines (the only ones naming a GPU) to a bus id.
+SMI_FIELDS = ("uuid,pci.bus_id,gpu_recovery_action,remapped_rows.failure,"
+              "ecc.errors.uncorrected.volatile.total")
+# Same cap as gpu-reporter.py (ingest rejects a report with more than 500);
+# the rest go out on the next run.
+MAX_XIDS_PER_REPORT = 200
 # Per-node "read the plugin log since" timestamps live in the disk state
 # file under this key (no node can be named like this).
 XID_STATE_KEY = "_xid_since"
 
 KUBECTL_TIMEOUT = 10  # per-call seconds; one slow node must not kill the run
+# exec / logs into the device-plugin pod take well under a second; a short
+# bound keeps a hung node from eating the 30 s cadence.
+DRIVER_READ_TIMEOUT = 5
 GPU_RESOURCE = "nvidia.com/gpu"
 
 DISK_SCRAPE_INTERVAL = int(os.environ.get("GPU_REPORT_DISK_INTERVAL", "300"))
@@ -174,11 +180,11 @@ def node_conditions(node):
     }
 
 
-def get_pod_ips():
-    """DCGM exporter pods as {node name: pod IP}."""
+def pods_by_node(label, field):
+    """Pods in DCGM_NS matching `label` as {node name: pod `field`}."""
     out = kubectl(
-        "get", "pods", "-n", DCGM_NS, "-l", DCGM_LABEL, "-o",
-        "jsonpath={range .items[*]}{.status.podIP} {.spec.nodeName}{'\\n'}{end}",
+        "get", "pods", "-n", DCGM_NS, "-l", label, "-o",
+        "jsonpath={range .items[*]}{" + field + "} {.spec.nodeName}{'\\n'}{end}",
         timeout=15,
     )
     pods = {}
@@ -187,21 +193,16 @@ def get_pod_ips():
         if len(parts) == 2:
             pods[parts[1]] = parts[0]
     return pods
+
+
+def get_pod_ips():
+    """DCGM exporter pods as {node name: pod IP}."""
+    return pods_by_node(DCGM_LABEL, ".status.podIP")
 
 
 def get_plugin_pods():
     """Device-plugin pods as {node name: pod name}."""
-    out = kubectl(
-        "get", "pods", "-n", DCGM_NS, "-l", PLUGIN_LABEL, "-o",
-        "jsonpath={range .items[*]}{.metadata.name} {.spec.nodeName}{'\\n'}{end}",
-        timeout=15,
-    )
-    pods = {}
-    for line in out.strip().split("\n"):
-        parts = line.strip().split()
-        if len(parts) == 2:
-            pods[parts[1]] = parts[0]
-    return pods
+    return pods_by_node(PLUGIN_LABEL, ".metadata.name")
 
 
 def _smi_text(v):
@@ -221,18 +222,17 @@ def _smi_int(v):
 
 
 def parse_smi_gpus(text):
-    """nvidia-smi --query-gpu=SMI_FIELDS csv -> {index: reading}."""
+    """nvidia-smi --query-gpu=SMI_FIELDS csv -> {uuid: reading}."""
     gpus = {}
     for line in text.strip().splitlines():
         cols = [c.strip() for c in line.split(",")]
-        if len(cols) != 6 or not cols[0].isdigit():
+        if len(cols) != 5 or not cols[0].startswith("GPU-"):
             continue
-        gpus[int(cols[0])] = {
+        gpus[cols[0]] = {
             "bus_id": _smi_text(cols[1]),
             "recovery_action": _smi_text(cols[2]),
             "remapped_rows_failure": _smi_bool(cols[3]),
             "ecc_uncorrected": _smi_int(cols[4]),
-            "uuid": _smi_text(cols[5]),
         }
     return gpus
 
@@ -241,6 +241,7 @@ def read_smi(pod):
     return parse_smi_gpus(kubectl(
         "exec", "-n", DCGM_NS, pod, "-c", PLUGIN_CONTAINER, "--",
         "nvidia-smi", f"--query-gpu={SMI_FIELDS}", "--format=csv,noheader",
+        timeout=DRIVER_READ_TIMEOUT,
     ))
 
 
@@ -264,10 +265,11 @@ def parse_log_time(s):
     return dt.astimezone(timezone.utc)
 
 
-def parse_plugin_log(text, uuid_to_bus=None):
+def parse_plugin_log(text, since, uuid_to_bus=None):
     """Device-plugin log -> (xids, last event time or None).
 
-    Every Processing/Skipping event becomes an xid entry. The log names a GPU
+    Every Processing/Skipping event at or after `since` (aware datetime)
+    becomes an xid entry, at most MAX_XIDS_PER_REPORT. The log names a GPU
     only on the XidCriticalError line that follows a Processing event, so
     bus_id is that GPU's bus id when known and "" otherwise (Skipping events
     carry only an in-process device handle).
@@ -277,11 +279,13 @@ def parse_plugin_log(text, uuid_to_bus=None):
     for line in text.splitlines():
         m = LOG_LINE_RE.match(line)
         at = m and parse_log_time(m.group(1))
-        if not at:
+        if not at or at < since:
             continue
         msg = m.group(2)
         ev = XID_EVENT_RE.match(msg)
         if ev:
+            if len(xids) == MAX_XIDS_PER_REPORT:
+                break
             xids.append({"bus_id": "", "xid": int(ev.group(1)),
                          "at": at.isoformat(timespec="microseconds"),
                          "message": msg})
@@ -296,11 +300,13 @@ def parse_plugin_log(text, uuid_to_bus=None):
 def read_xids(pod, since, uuid_to_bus):
     """Xids logged since `since` (ISO) -> (xids, next since)."""
     text = kubectl("logs", "-n", DCGM_NS, pod, "-c", PLUGIN_CONTAINER,
-                   "--timestamps", "--since-time", since, timeout=20)
-    xids, last = parse_plugin_log(text, uuid_to_bus)
+                   "--timestamps", "--since-time", since,
+                   timeout=DRIVER_READ_TIMEOUT)
+    # The API server truncates --since-time to whole seconds, so lines
+    # already sent come back; parse_plugin_log drops those before `since`.
+    xids, last = parse_plugin_log(text, parse_log_time(since), uuid_to_bus)
     if last is None:
         return xids, since
-    # +1us: --since-time is inclusive, so this skips the last line we have.
     return xids, (last + timedelta(microseconds=1)).isoformat(
         timespec="microseconds")
 
@@ -341,6 +347,7 @@ def parse_metrics(text):
         if key not in gpus:
             gpus[key] = {
                 "index": gpu_idx,
+                "uuid": labels.get("UUID"),
                 "name": model,
                 "fb_used": 0,
                 "fb_free": 0,
@@ -369,6 +376,8 @@ def parse_metrics(text):
         total = gpu["fb_used"] + gpu["fb_free"] + gpu["fb_reserved"]
         entry = {
             "index": gpu["index"],
+            # Joins the nvidia-smi readings; process_node pops it before POST.
+            "uuid": gpu["uuid"],
             "name": gpu["name"] or None,
             "gpu_util": gpu["gpu_util"] or 0,
             "mem_used_mb": gpu["fb_used"],
@@ -629,13 +638,12 @@ def process_node(node, pod_ip, disk_state, now, plugin_pod=None):
             try:
                 payload["xids"], since_map[name] = read_xids(
                     plugin_pod, since,
-                    {g["uuid"]: g["bus_id"] for g in smi.values()
-                     if g["uuid"] and g["bus_id"]})
+                    {u: g["bus_id"] for u, g in smi.items() if g["bus_id"]})
             except Exception as e:
                 print(f"  WARNING: device-plugin log read on {name} failed: "
                       f"{e}", file=sys.stderr)
     for gpu in payload["gpus"]:
-        reading = smi.get(gpu["index"], {})
+        reading = smi.get(gpu.pop("uuid"), {})
         gpu["recovery_action"] = reading.get("recovery_action")
         gpu["remapped_rows_failure"] = reading.get("remapped_rows_failure")
         gpu["ecc_uncorrected"] = reading.get("ecc_uncorrected")

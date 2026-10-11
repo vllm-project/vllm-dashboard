@@ -6,6 +6,7 @@ shapes on the node error paths.
 """
 
 import time
+from datetime import datetime, timezone
 
 HOST_KEYS = {
     "cpu_util", "cpu_count", "ram_used_bytes",
@@ -38,12 +39,12 @@ CADVISOR_FIXTURE = "\n".join([
 ])
 
 DCGM_FIXTURE = (
-    'DCGM_FI_DEV_GPU_UTIL{gpu="0",modelName="NVIDIA H100 80GB HBM3",Hostname="inf-4x8h100-1"} 55\n'
-    'DCGM_FI_DEV_FB_USED{gpu="0",modelName="NVIDIA H100 80GB HBM3",Hostname="inf-4x8h100-1"} 1000\n'
-    'DCGM_FI_DEV_FB_FREE{gpu="0",modelName="NVIDIA H100 80GB HBM3",Hostname="inf-4x8h100-1"} 80000\n'
-    'DCGM_FI_DEV_FB_RESERVED{gpu="0",modelName="NVIDIA H100 80GB HBM3",Hostname="inf-4x8h100-1"} 480\n'
-    'DCGM_FI_DEV_GPU_TEMP{gpu="0",modelName="NVIDIA H100 80GB HBM3",Hostname="inf-4x8h100-1"} 42\n'
-    'DCGM_FI_DEV_POWER_USAGE{gpu="0",modelName="NVIDIA H100 80GB HBM3",Hostname="inf-4x8h100-1"} 305.5\n'
+    'DCGM_FI_DEV_GPU_UTIL{gpu="0",UUID="GPU-aaaa",modelName="NVIDIA H100 80GB HBM3",Hostname="inf-4x8h100-1"} 55\n'
+    'DCGM_FI_DEV_FB_USED{gpu="0",UUID="GPU-aaaa",modelName="NVIDIA H100 80GB HBM3",Hostname="inf-4x8h100-1"} 1000\n'
+    'DCGM_FI_DEV_FB_FREE{gpu="0",UUID="GPU-aaaa",modelName="NVIDIA H100 80GB HBM3",Hostname="inf-4x8h100-1"} 80000\n'
+    'DCGM_FI_DEV_FB_RESERVED{gpu="0",UUID="GPU-aaaa",modelName="NVIDIA H100 80GB HBM3",Hostname="inf-4x8h100-1"} 480\n'
+    'DCGM_FI_DEV_GPU_TEMP{gpu="0",UUID="GPU-aaaa",modelName="NVIDIA H100 80GB HBM3",Hostname="inf-4x8h100-1"} 42\n'
+    'DCGM_FI_DEV_POWER_USAGE{gpu="0",UUID="GPU-aaaa",modelName="NVIDIA H100 80GB HBM3",Hostname="inf-4x8h100-1"} 305.5\n'
 )
 
 STATS_SUMMARY_FIXTURE = {"node": {
@@ -102,6 +103,7 @@ def test_parse_dcgm_metrics_shape(reporter_k8s):
     gpu = by_host["inf-4x8h100-1"][0]
     assert gpu == {
         "index": 0,
+        "uuid": "GPU-aaaa",
         "name": "NVIDIA H100 80GB HBM3",
         "gpu_util": 55.0,
         "mem_used_mb": 1000.0,
@@ -363,40 +365,40 @@ UUID_TO_BUS = {
 # [N/A] spelling follow nvidia-smi docs; row 1 is a MIG-style host where
 # remapped rows are not readable.
 SMI_FIXTURE = "\n".join([
-    "0, 00000000:1B:00.0, None, No, 0, GPU-aaaa",
-    "1, 00000000:43:00.0, Node Reboot Required, Yes, 3, GPU-bbbb",
-    "2, 00000000:52:00.0, [N/A], [N/A], [N/A], GPU-cccc",
+    "GPU-aaaa, 00000000:1B:00.0, None, No, 0",
+    "GPU-bbbb, 00000000:43:00.0, Node Reboot Required, Yes, 3",
+    "GPU-cccc, 00000000:52:00.0, [N/A], [N/A], [N/A]",
     "garbage line",
 ])
+EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 def test_parse_smi_gpus(reporter_k8s):
     gpus = reporter_k8s.parse_smi_gpus(SMI_FIXTURE)
-    assert sorted(gpus) == [0, 1, 2]
-    assert gpus[0] == {
+    assert sorted(gpus) == ["GPU-aaaa", "GPU-bbbb", "GPU-cccc"]
+    assert gpus["GPU-aaaa"] == {
         "bus_id": "00000000:1B:00.0", "recovery_action": "None",
         "remapped_rows_failure": False, "ecc_uncorrected": 0,
-        "uuid": "GPU-aaaa",
     }
-    assert gpus[1]["recovery_action"] == "Node Reboot Required"
-    assert gpus[1]["remapped_rows_failure"] is True
-    assert gpus[1]["ecc_uncorrected"] == 3
+    assert gpus["GPU-bbbb"]["recovery_action"] == "Node Reboot Required"
+    assert gpus["GPU-bbbb"]["remapped_rows_failure"] is True
+    assert gpus["GPU-bbbb"]["ecc_uncorrected"] == 3
     # [N/A] is a missing reading, never a passing value.
-    assert gpus[2]["recovery_action"] is None
-    assert gpus[2]["remapped_rows_failure"] is None
-    assert gpus[2]["ecc_uncorrected"] is None
+    assert gpus["GPU-cccc"]["recovery_action"] is None
+    assert gpus["GPU-cccc"]["remapped_rows_failure"] is None
+    assert gpus["GPU-cccc"]["ecc_uncorrected"] is None
 
 
 def test_parse_smi_accepts_numeric_failure_flag(reporter_k8s):
     gpus = reporter_k8s.parse_smi_gpus(
-        "0, 00000000:1B:00.0, None, 1, 0, GPU-a\n"
-        "1, 00000000:43:00.0, None, 0, 0, GPU-b")
-    assert gpus[0]["remapped_rows_failure"] is True
-    assert gpus[1]["remapped_rows_failure"] is False
+        "GPU-a, 00000000:1B:00.0, None, 1, 0\n"
+        "GPU-b, 00000000:43:00.0, None, 0, 0")
+    assert gpus["GPU-a"]["remapped_rows_failure"] is True
+    assert gpus["GPU-b"]["remapped_rows_failure"] is False
 
 
 def test_parse_plugin_log_xids(reporter_k8s):
-    xids, last = reporter_k8s.parse_plugin_log(PLUGIN_LOG_FIXTURE,
+    xids, last = reporter_k8s.parse_plugin_log(PLUGIN_LOG_FIXTURE, EPOCH,
                                                UUID_TO_BUS)
     assert [x["xid"] for x in xids] == [79, 145, 43]
     assert set(xids[0]) == {"bus_id", "xid", "at", "message"}
@@ -413,7 +415,17 @@ def test_parse_plugin_log_xids(reporter_k8s):
 
 
 def test_parse_plugin_log_empty(reporter_k8s):
-    assert reporter_k8s.parse_plugin_log("") == ([], None)
+    assert reporter_k8s.parse_plugin_log("", EPOCH) == ([], None)
+
+
+def test_parse_plugin_log_caps_events(reporter_k8s, monkeypatch):
+    monkeypatch.setattr(reporter_k8s, "MAX_XIDS_PER_REPORT", 1)
+    xids, last = reporter_k8s.parse_plugin_log(PLUGIN_LOG_FIXTURE, EPOCH,
+                                               UUID_TO_BUS)
+    # The capped event still gets its XidCriticalError bus id, and the
+    # cursor stops at it so the rest go out next run.
+    assert [(x["xid"], x["bus_id"]) for x in xids] == [(79, "00000000:C3:00.0")]
+    assert last.isoformat().startswith("2026-09-18T11:25:00.405995")
 
 
 def test_read_xids_advances_cursor_past_last_event(reporter_k8s,
@@ -431,8 +443,10 @@ def test_read_xids_advances_cursor_past_last_event(reporter_k8s,
     assert "--since-time" in seen["args"]
     assert "2026-09-01T00:00:00+00:00" in seen["args"]
     assert nxt == "2026-09-23T02:35:57.360475+00:00"
-    # No new events: cursor stays put.
-    monkeypatch.setattr(reporter_k8s, "kubectl", lambda *a, timeout=10: "")
+    # The API server truncates --since-time to the second, so the last
+    # event comes back on the next read; it must not be sent again.
+    monkeypatch.setattr(reporter_k8s, "kubectl",
+                        lambda *a, timeout=10: PLUGIN_LOG_FIXTURE)
     assert reporter_k8s.read_xids("pod-1", nxt, {}) == ([], nxt)
 
 
@@ -450,7 +464,9 @@ def test_driver_fields_from_node_status(reporter_k8s):
         make_node("n"))["allocatable_gpus"] is None
 
 
-DCGM_TWO_GPU = DCGM_FIXTURE + DCGM_FIXTURE.replace('gpu="0"', 'gpu="1"')
+# gpu 1 carries smi's first uuid, so a join by index would mix them up.
+DCGM_TWO_GPU = (DCGM_FIXTURE.replace("GPU-aaaa", "GPU-bbbb")
+                + DCGM_FIXTURE.replace('gpu="0"', 'gpu="1"'))
 
 
 def _patch_driver_reads(reporter_k8s, monkeypatch, smi=SMI_FIXTURE,
@@ -482,11 +498,12 @@ def test_process_node_merges_driver_readings(reporter_k8s, monkeypatch):
         "plugin-pod")
     assert payload["reporter_status"] == "ok"
     g0, g1 = payload["gpus"]
-    assert g0["recovery_action"] == "None"
-    assert g0["remapped_rows_failure"] is False
-    assert g0["ecc_uncorrected"] == 0
-    assert g1["recovery_action"] == "Node Reboot Required"
-    assert g1["remapped_rows_failure"] is True
+    assert "uuid" not in g0  # join key only, not a reported field
+    assert g0["recovery_action"] == "Node Reboot Required"
+    assert g0["remapped_rows_failure"] is True
+    assert g1["recovery_action"] == "None"
+    assert g1["remapped_rows_failure"] is False
+    assert g1["ecc_uncorrected"] == 0
     assert [x["xid"] for x in payload["xids"]] == [79, 145, 43]
     assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] > \
         "2026-09-23"

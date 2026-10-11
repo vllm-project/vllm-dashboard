@@ -29,7 +29,13 @@ metadata:
     kubernetes.io/service-account.name: gpu-reporter
 type: kubernetes.io/service-account-token
 ---
-# List DCGM exporter pods in this namespace (pod IP -> node mapping).
+# Pods in this namespace only:
+#   pods      - list DCGM exporter / device-plugin pods (pod -> node mapping)
+#   pods/exec - `kubectl exec ... nvidia-smi` in the device-plugin pod
+#               (recovery action, row remap, ECC). kubectl >= 1.30 opens exec
+#               over a websocket, a GET (needs get); the SPDY fallback and the
+#               AuthorizePodWebsocketUpgradeCreatePermission gate need create.
+#   pods/log  - Xid events from the device-plugin log (`kubectl logs`)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -39,18 +45,6 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
----
-# Driver signals from the NVIDIA device-plugin pods, limited to this namespace:
-#   pods/exec - `kubectl exec ... nvidia-smi` (recovery action, row remap, ECC).
-#               create is the grant; get is also listed because kubectl >= 1.30
-#               opens exec over a websocket (a GET) before falling back.
-#   pods/log  - Xid events from the device-plugin log (`kubectl logs`)
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: gpu-reporter-device-plugin
-  namespace: gpu-operator
-rules:
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["get", "create"]
@@ -83,20 +77,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: gpu-reporter
-subjects:
-  - kind: ServiceAccount
-    name: gpu-reporter
-    namespace: gpu-operator
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: gpu-reporter-device-plugin
-  namespace: gpu-operator
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: gpu-reporter-device-plugin
 subjects:
   - kind: ServiceAccount
     name: gpu-reporter
