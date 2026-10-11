@@ -276,6 +276,25 @@ def test_infra_schema_preserves_one_open_episode_per_subject_and_widens_path() -
         assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
 
 
+def test_quarantine_and_incident_schema_keeps_one_open_row_and_is_server_only() -> None:
+    sql = (MIGRATIONS_DIR / "0030_quarantine_and_incidents.sql").read_text()
+
+    tables = (
+        "alerting_quarantine_records",
+        "alerting_quarantine_reruns",
+        "alerting_expected_gpu_exceptions",
+        "alerting_incidents",
+        "alerting_incident_reruns",
+    )
+    for table in tables:
+        assert f"CREATE TABLE IF NOT EXISTS {table}" in sql
+        assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
+    assert "ON alerting_quarantine_records (host)\n    WHERE state <> 'closed'" in sql
+    assert "ON alerting_incidents (scope)\n    WHERE state IN ('suspected', 'confirmed')" in sql
+    assert "state         text NOT NULL\n        CHECK (state IN ('would', 'live', 'held', 'manual', 'closed'))" in sql
+    assert "'suspected', 'confirmed', 'closed', 'self_closed'" in sql
+
+
 def test_supabase_api_roles_cannot_access_server_only_tables() -> None:
     sql = (MIGRATIONS_DIR / "0009_secure_supabase_api_access.sql").read_text()
 
