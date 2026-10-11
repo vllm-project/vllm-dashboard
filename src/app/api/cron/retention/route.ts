@@ -35,6 +35,10 @@ export async function GET(request: NextRequest) {
       DELETE FROM host_snapshots
       WHERE reported_at < NOW() - INTERVAL '30 days'
     `;
+    const xidDeleted = await db`
+      DELETE FROM gpu_xid_events
+      WHERE at < NOW() - INTERVAL '30 days'
+    `;
     const agentDeleted = await db`
       DELETE FROM buildkite_agent_snapshots
       WHERE polled_at < NOW() - INTERVAL '30 days'
@@ -45,6 +49,7 @@ export async function GET(request: NextRequest) {
       jobGpuSampleBatchesDeleted: jobGpuDeleted.count,
       gpuSnapshotsDeleted: gpuDeleted.count,
       hostSnapshotsDeleted: hostDeleted.count,
+      xidEventsDeleted: xidDeleted.count,
       agentSnapshotsDeleted: agentDeleted.count,
     });
   } catch (error) {

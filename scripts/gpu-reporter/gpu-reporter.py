@@ -72,6 +72,9 @@ FAULT_QUERY_TIMEOUT = 5  # nvidia-smi -L, fault query and journalctl; the unit's
 STATE_DIR = os.environ.get("GPU_REPORT_STATE_DIR", "/var/lib/gpu-reporter")
 JOURNAL_CURSOR_FILE = os.path.join(STATE_DIR, "journal.cursor")
 MAX_XIDS_PER_REPORT = 200  # the ingestion contract allows 500
+# Kernel-log entries read per report. A long backlog (reporter stopped for
+# days) catches up over several reports instead of timing out every time.
+JOURNAL_READ_LIMIT = 10000
 MAX_XID_MESSAGE = 512
 CHECKOUT_GLOBS = (
     "/mnt/local/buildkite-agent/builds/*/vllm/ci",
@@ -212,6 +215,9 @@ def query_dead_proc_memory():
     return dead_mb
 
 
+SMI_BOOL = {"yes": True, "1": True, "true": True, "no": False, "0": False, "false": False}
+
+
 def _smi_field(value):
     """nvidia-smi cell -> str, or None for [N/A], [Not Supported] and blanks."""
     value = value.strip()
@@ -231,15 +237,10 @@ def parse_fault_query(text):
         parts = [p.strip() for p in line.split(",")]
         if len(parts) < 4:
             continue
-        failure = (_smi_field(parts[2]) or "").lower()
         ecc = _smi_field(parts[3])
         faults[int(parts[0])] = {
             "recovery_action": _smi_field(parts[1]),
-            "remapped_rows_failure": (
-                True if failure in ("yes", "1", "true")
-                else False if failure in ("no", "0", "false")
-                else None
-            ),
+            "remapped_rows_failure": SMI_BOOL.get(parts[2].lower()),
             "ecc_uncorrected": int(ecc) if ecc is not None and ecc.isdigit() else None,
         }
     return faults
@@ -329,7 +330,9 @@ def write_cursor(cursor, path=JOURNAL_CURSOR_FILE):
 
 def _journalctl(*args):
     result = subprocess.run(
-        ["journalctl", "-k", "--no-pager", "-o", "json", *args],
+        # _TRANSPORT=kernel rather than -k: -k implies -b, which would skip
+        # Xids logged between the last report and a reboot.
+        ["journalctl", "_TRANSPORT=kernel", "--no-pager", "-o", "json", *args],
         capture_output=True,
         text=True,
         timeout=FAULT_QUERY_TIMEOUT,
@@ -343,16 +346,19 @@ def query_xids(cursor_path=JOURNAL_CURSOR_FILE):
     """Xids logged since the last successful report -> (xids, new_cursor).
 
     The first run (no cursor yet) only records where the kernel log ends, so
-    the whole history is never replayed; it returns no Xids. The caller saves
-    new_cursor after the POST succeeds, so a failed POST resends the same
-    Xids; the dashboard drops duplicates.
+    the whole history is never replayed; it returns no Xids. new_cursor is
+    None when nothing new was read. The caller saves it after the POST
+    succeeds, so a failed POST resends the same Xids; the dashboard drops
+    duplicates.
     """
     cursor = read_cursor(cursor_path)
     if cursor is None:
         _, last_cursor = parse_xid_events(_journalctl("-n", "1"))
         return [], last_cursor
-    xids, last_cursor = parse_xid_events(_journalctl(f"--after-cursor={cursor}"))
-    return xids, last_cursor or cursor
+    # With --after-cursor, -n +N means the oldest N entries after it.
+    return parse_xid_events(
+        _journalctl(f"--after-cursor={cursor}", "-n", f"+{JOURNAL_READ_LIMIT}")
+    )
 
 
 def find_root_owned_slots(patterns=CHECKOUT_GLOBS, root_uid=0):
@@ -527,6 +533,7 @@ def main():
         sys.exit(1)
 
     host = collect_host_metrics()
+    faults = {"xids": None, "mig_slices": None, "root_owned_slots": None}
 
     try:
         gpus = query_gpus()
@@ -560,16 +567,20 @@ def main():
             for gpu in gpus:
                 gpu.update(fault_fields.get(gpu["index"], {}))
 
-    faults = {"xids": None, "mig_slices": None, "root_owned_slots": None}
+        # Skipped when nvidia-smi already failed: a hung driver would cost
+        # another timeout for a reading that can't be trusted.
+        try:
+            faults["mig_slices"] = query_mig_slices()
+        except Exception as e:
+            print(f"MIG slice query failed: {e}", file=sys.stderr)
+
+    # Xids are read even when nvidia-smi fails: Xid 79 (fallen off the bus)
+    # is exactly when it does.
     new_cursor = None
     try:
         faults["xids"], new_cursor = query_xids(JOURNAL_CURSOR_FILE)
     except Exception as e:
         print(f"kernel log Xid query failed: {e}", file=sys.stderr)
-    try:
-        faults["mig_slices"] = query_mig_slices()
-    except Exception as e:
-        print(f"MIG slice query failed: {e}", file=sys.stderr)
     try:
         faults["root_owned_slots"] = find_root_owned_slots()
     except Exception as e:

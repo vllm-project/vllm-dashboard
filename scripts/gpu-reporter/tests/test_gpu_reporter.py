@@ -181,7 +181,8 @@ def test_nvidia_smi_failure_posts_degraded_payload(reporter, monkeypatch):
     assert calls["last_error"] == "nvidia-smi failed: not found"
     assert calls["gpus"] == []
     assert set(calls["host"]) == HOST_KEYS
-    assert set(calls["faults"]) == {"xids", "mig_slices", "root_owned_slots"}
+    # nvidia-smi -L is skipped once nvidia-smi has failed; Xids still flow.
+    assert calls["faults"] == {"xids": [], "mig_slices": None, "root_owned_slots": []}
 
 
 def test_report_payload_top_level_keys(reporter, monkeypatch):
@@ -342,16 +343,16 @@ def test_later_run_resumes_after_saved_cursor(reporter, monkeypatch, tmp_path):
     assert reporter.read_cursor(str(path)) == "c1"
     calls = fake_journalctl(monkeypatch, reporter, stdout=JOURNAL_FIXTURE)
     xids, cursor = reporter.query_xids(str(path))
-    assert calls[0][-1] == "--after-cursor=c1"
+    assert calls[0][-3:] == ["--after-cursor=c1", "-n", "+10000"]
     assert len(xids) == 3
     assert cursor == "c5"
 
 
-def test_no_new_log_lines_keeps_the_cursor(reporter, monkeypatch, tmp_path):
+def test_no_new_log_lines_leaves_nothing_to_save(reporter, monkeypatch, tmp_path):
     path = tmp_path / "journal.cursor"
     reporter.write_cursor("c9", str(path))
     fake_journalctl(monkeypatch, reporter, stdout="")
-    assert reporter.query_xids(str(path)) == ([], "c9")
+    assert reporter.query_xids(str(path)) == ([], None)
 
 
 def test_journalctl_failure_raises_and_leaves_cursor(reporter, monkeypatch, tmp_path):
