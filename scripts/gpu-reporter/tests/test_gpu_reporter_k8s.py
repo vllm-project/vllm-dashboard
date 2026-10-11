@@ -345,20 +345,20 @@ def test_main_reports_nodes_first_and_warns_on_skew(reporter_k8s, monkeypatch,
 
 # --- driver signals (exec nvidia-smi + device-plugin log) -------------------
 
-# Real device-plugin log lines (`kubectl logs --timestamps`): a B200 node's
-# 2026-09-18 Xid 79 / 145 burst (with its UUID-bearing XidCriticalError
+# Device-plugin log lines in the real `kubectl logs --timestamps` format: an
+# Xid 79 / 145 pair (with its UUID-bearing XidCriticalError
 # lines), and H100 Skipping lines (no GPU identity).
 PLUGIN_LOG_FIXTURE = "\n".join([
-    "2026-09-18T04:25:00.405995263-07:00 I0918 11:25:00.402432       1 health.go:143] Processing event {Device:{Handle:0x725d24c3fc38} EventType:8 EventData:79 GpuInstanceId:4294967295 ComputeInstanceId:4294967295}",
-    "2026-09-18T04:25:00.406803332-07:00 I0918 11:25:00.405750       1 health.go:169] XidCriticalError: Xid=79 on Device=GPU-5b8ce787-9ffb-1d47-b5f0-456403d01ab9; marking device as unhealthy.",
-    "2026-09-18T04:25:00.406810680-07:00 I0918 11:25:00.406688       1 health.go:143] Processing event {Device:{Handle:0x725d24b032b8} EventType:8 EventData:145 GpuInstanceId:4294967295 ComputeInstanceId:4294967295}",
-    "2026-09-18T04:25:00.406812197-07:00 I0918 11:25:00.406705       1 health.go:169] XidCriticalError: Xid=145 on Device=GPU-73c76589-ffdf-8d5a-f5b0-02b05953e240; marking device as unhealthy.",
+    "2026-01-05T04:25:00.405995263-07:00 I0105 11:25:00.402432       1 health.go:143] Processing event {Device:{Handle:0x725d24c3fc38} EventType:8 EventData:79 GpuInstanceId:4294967295 ComputeInstanceId:4294967295}",
+    "2026-01-05T04:25:00.406803332-07:00 I0105 11:25:00.405750       1 health.go:169] XidCriticalError: Xid=79 on Device=GPU-11111111-2222-3333-4444-555555555555; marking device as unhealthy.",
+    "2026-01-05T04:25:00.406810680-07:00 I0105 11:25:00.406688       1 health.go:143] Processing event {Device:{Handle:0x725d24b032b8} EventType:8 EventData:145 GpuInstanceId:4294967295 ComputeInstanceId:4294967295}",
+    "2026-01-05T04:25:00.406812197-07:00 I0105 11:25:00.406705       1 health.go:169] XidCriticalError: Xid=145 on Device=GPU-66666666-7777-8888-9999-000000000000; marking device as unhealthy.",
     "2026-09-23T02:35:57.360474753Z I0923 02:35:57.360303       1 health.go:139] Skipping event {Device:{Handle:0x768f4a22e158} EventType:8 EventData:43 GpuInstanceId:4294967295 ComputeInstanceId:4294967295}",
     "I0928 23:13:29.028243       1 health.go:139] unstamped line is ignored",
     "2026-09-28T23:13:29.028442214Z I0928 23:13:29.028243       1 server.go:1 some other message",
 ])
 UUID_TO_BUS = {
-    "GPU-5b8ce787-9ffb-1d47-b5f0-456403d01ab9": "00000000:C3:00.0",
+    "GPU-11111111-2222-3333-4444-555555555555": "00000000:C3:00.0",
 }
 
 # nvidia-smi --query-gpu=SMI_FIELDS --format=csv,noheader. The shape and the
@@ -408,7 +408,7 @@ def test_parse_plugin_log_xids(reporter_k8s):
     assert xids[1]["bus_id"] == ""
     assert xids[2]["bus_id"] == ""
     # Times are normalised to UTC (-07:00 offset -> +7h).
-    assert xids[0]["at"] == "2026-09-18T11:25:00.405995+00:00"
+    assert xids[0]["at"] == "2026-01-05T11:25:00.405995+00:00"
     assert xids[2]["at"] == "2026-09-23T02:35:57.360474+00:00"
     assert xids[0]["message"].startswith("Processing event")
     assert last.isoformat().startswith("2026-09-23T02:35:57.360474")
@@ -425,7 +425,7 @@ def test_parse_plugin_log_caps_events(reporter_k8s, monkeypatch):
     # The capped event still gets its XidCriticalError bus id, and the
     # cursor stops at it so the rest go out next run.
     assert [(x["xid"], x["bus_id"]) for x in xids] == [(79, "00000000:C3:00.0")]
-    assert last.isoformat().startswith("2026-09-18T11:25:00.405995")
+    assert last.isoformat().startswith("2026-01-05T11:25:00.405995")
 
 
 def test_read_xids_advances_cursor_past_last_event(reporter_k8s,
@@ -437,11 +437,11 @@ def test_read_xids_advances_cursor_past_last_event(reporter_k8s,
         return PLUGIN_LOG_FIXTURE
 
     monkeypatch.setattr(reporter_k8s, "kubectl", fake_kubectl)
-    xids, nxt = reporter_k8s.read_xids("pod-1", "2026-09-01T00:00:00+00:00",
+    xids, nxt = reporter_k8s.read_xids("pod-1", "2026-01-01T00:00:00+00:00",
                                        UUID_TO_BUS)
     assert len(xids) == 3
     assert "--since-time" in seen["args"]
-    assert "2026-09-01T00:00:00+00:00" in seen["args"]
+    assert "2026-01-01T00:00:00+00:00" in seen["args"]
     assert nxt == "2026-09-23T02:35:57.360475+00:00"
     # The API server truncates --since-time to the second, so the last
     # event comes back on the next read; it must not be sent again.
@@ -492,7 +492,7 @@ def _patch_driver_reads(reporter_k8s, monkeypatch, smi=SMI_FIXTURE,
 def test_process_node_merges_driver_readings(reporter_k8s, monkeypatch):
     _patch_driver_reads(reporter_k8s, monkeypatch)
     state = {reporter_k8s.XID_STATE_KEY: {
-        "inf-4x8h100-1": "2026-09-01T00:00:00+00:00"}}
+        "inf-4x8h100-1": "2026-01-01T00:00:00+00:00"}}
     payload = reporter_k8s.process_node(
         make_node("inf-4x8h100-1"), "192.168.3.81", state, time.time(),
         "plugin-pod")
@@ -525,7 +525,7 @@ def test_process_node_failed_reads_are_null_not_degraded(reporter_k8s,
                                                          monkeypatch):
     _patch_driver_reads(reporter_k8s, monkeypatch, smi=None, log=None)
     state = {reporter_k8s.XID_STATE_KEY: {
-        "inf-4x8h100-1": "2026-09-01T00:00:00+00:00"}}
+        "inf-4x8h100-1": "2026-01-01T00:00:00+00:00"}}
     payload = reporter_k8s.process_node(
         make_node("inf-4x8h100-1"), "192.168.3.81", state, time.time(),
         "plugin-pod")
@@ -537,7 +537,7 @@ def test_process_node_failed_reads_are_null_not_degraded(reporter_k8s,
         assert g["ecc_uncorrected"] is None
     # A failed log read leaves the cursor so the next run covers the gap.
     assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] == \
-        "2026-09-01T00:00:00+00:00"
+        "2026-01-01T00:00:00+00:00"
 
 
 def test_process_node_without_plugin_pod_reports_null(reporter_k8s,
@@ -553,7 +553,7 @@ def test_main_keeps_log_cursor_when_post_fails(reporter_k8s, monkeypatch,
                                                tmp_path):
     _patch_driver_reads(reporter_k8s, monkeypatch)
     state_file = tmp_path / "state.json"
-    since = "2026-09-01T00:00:00+00:00"
+    since = "2026-01-01T00:00:00+00:00"
     state_file.write_text('{"_xid_since": {"inf-4x8h100-1": "%s"}}' % since)
     monkeypatch.setattr(reporter_k8s, "REPORT_URL", "http://dummy")
     monkeypatch.setattr(reporter_k8s, "DISK_STATE_FILE", str(state_file))
