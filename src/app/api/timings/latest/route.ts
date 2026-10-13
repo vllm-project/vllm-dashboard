@@ -5,6 +5,7 @@ import { queryLatestTestTimings, withTestsOverMs, TimingDataError } from "@/lib/
 export const runtime = "nodejs";
 
 const STEP_KEY = /^[a-zA-Z0-9][a-zA-Z0-9_:.-]{0,199}$/;
+const QUEUE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
 // A median over 20 builds moves slowly, so an hour-old answer is still current.
 const CDN_CACHE = { maxAge: 3_600, staleWhileRevalidate: 3_600 };
 
@@ -19,18 +20,20 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const stepKey = params.get("stepKey") ?? "";
   const days = Number(params.get("days") ?? 14);
+  const queue = params.get("queue");
   const testsOverMsParam = params.get("testsOverMs");
   const testsOverMs = testsOverMsParam === null ? null : Number(testsOverMsParam);
   if (!STEP_KEY.test(stepKey)) return error("stepKey is required", 400);
+  if (queue !== null && !QUEUE.test(queue)) return error("queue is invalid", 400);
   if (!Number.isInteger(days) || days < 1 || days > 30) return error("days must be 1-30", 400);
   if (testsOverMs !== null && (!Number.isInteger(testsOverMs) || testsOverMs < 0)) {
     return error("testsOverMs must be a non-negative integer", 400);
   }
 
   try {
-    const timings = await queryLatestTestTimings(stepKey, { days });
+    const timings = await queryLatestTestTimings(stepKey, { days, queue });
     if (!timings) {
-      return error(`No main CI build in the last ${days} days where every ${stepKey} job passed with test spans`, 404);
+      return error(`No main CI build in the last ${days} days where every ${stepKey} job${queue === null ? "" : ` on queue ${queue}`} passed with test spans`, 404);
     }
     return cachedJson({ ...timings, files: withTestsOverMs(timings.files, testsOverMs) }, CDN_CACHE);
   } catch (e) {

@@ -170,7 +170,7 @@ export function withTestsOverMs(
 
 export async function queryLatestTestTimings(
   stepKey: string,
-  { days = 14 } = {},
+  { days = 14, queue = null }: { days?: number; queue?: string | null } = {},
 ): Promise<LatestTestTimings | null> {
   const sql = getDb();
   // Main-branch CI runs only: PR and other branches never feed the baseline.
@@ -180,7 +180,8 @@ export async function queryLatestTestTimings(
   // builds where the step passed outright. A passing build whose test spans
   // were lost in ingestion is skipped too, so the previous build is used
   // instead. The test-span check sits outside the sorted subquery so it runs
-  // newest first and stops once enough builds match.
+  // newest first and stops once enough builds match. A queue keeps only builds
+  // whose job ran on it, so a device change doesn't mix two queues' runs.
   const builds = await sql<{
     build_number: string; commit: string | null; finished_at: Date; job_ids: string[];
   }[]>`
@@ -195,7 +196,7 @@ export async function queryLatestTestTimings(
         AND job_type = 'script'
         AND pipeline_slug = 'ci'
         AND span_attributes->>'buildkite.build.branch' = 'main'
-        AND step_key = ${stepKey}
+        AND step_key = ${stepKey}${queue === null ? sql`` : sql` AND agent_queue = ${queue}`}
         AND start_time >= NOW() - make_interval(days => ${days})
       GROUP BY build_number
       HAVING BOOL_AND(job_state = 'finished' AND job_passed = 'true')
