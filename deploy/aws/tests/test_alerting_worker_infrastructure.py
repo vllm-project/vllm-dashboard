@@ -469,3 +469,26 @@ def test_failure_notifier_can_write_its_runtime_directory() -> None:
     unit = read("systemd/alerting-failure-notify@.service")
     assert "ProtectSystem=strict" in unit
     assert "ReadWritePaths=/run/alerting" in unit
+
+
+def test_secret_renderer_skips_a_bad_key_instead_of_refusing_the_secret() -> None:
+    """On 2026-10-12 a key saved as `BUILDKITE_WRITE_TOKEN,` made the renderer
+    reject the whole secret, so every unit failed and the failure notifier,
+    which loads the same secret, could not report it for 27 hours.
+    """
+    import json
+    import subprocess
+    import sys
+
+    secret = {"SLACK_BOT_TOKEN": "xoxb-1", "BUILDKITE_WRITE_TOKEN,": "bkua_x", "NESTED": {"a": 1}}
+    result = subprocess.run(
+        [sys.executable, str(AWS_DIR / "bin/render-secret-env")],
+        input=json.dumps({"SecretString": json.dumps(secret)}),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout == "SLACK_BOT_TOKEN=xoxb-1\n"
+    assert "bkua_x" not in result.stderr
+    assert "BUILDKITE_WRITE_TOKEN," not in result.stderr
+    assert "skipping NESTED" in result.stderr
