@@ -396,12 +396,21 @@ function parseTestArea(value: unknown): TestArea | null {
   return { group: candidate.group, steps };
 }
 
+/**
+ * Parse a Buildkite YAML file the way the pipeline generator (PyYAML) does: a
+ * duplicated key keeps its last value instead of failing the whole file. One
+ * strict-parse failure would otherwise drop the live mapping for every group.
+ */
+export function parseBuildkiteYaml(text: string): unknown {
+  return yaml.load(text, { json: true });
+}
+
 async function fetchYaml(ref: string, path: string): Promise<unknown> {
   const response = await fetch(rawUrl(ref, path));
   if (!response.ok) {
     throw new Error(`GitHub raw error for ${path}: ${response.status}`);
   }
-  return yaml.load(await response.text());
+  return parseBuildkiteYaml(await response.text());
 }
 
 async function fetchAreas(

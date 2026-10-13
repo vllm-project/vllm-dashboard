@@ -16,6 +16,7 @@ import {
   discoverGroupYamlPaths,
   isOptionalJob,
   isSoftFailJob,
+  parseBuildkiteYaml,
   parseTestStep,
 } from "./test-areas";
 
@@ -363,4 +364,11 @@ test("summarizeGroupJobs derives group state from the given jobs", () => {
     summarizeGroupJobs("Models", [{ name: "d", state: "blocked" }]).state,
     "blocked",
   );
+});
+
+test("parseBuildkiteYaml keeps the last value of a duplicated key like PyYAML", () => {
+  const parsed = parseBuildkiteYaml(
+    "group: Attention\nsteps:\n- label: A\n  commands:\n  - first\n  commands:\n  - second\n",
+  ) as { steps: { commands: string[] }[] };
+  assert.deepEqual(parsed.steps[0].commands, ["second"]);
 });

@@ -1,7 +1,6 @@
-import yaml from "js-yaml";
-
 import { getOrLoadCached } from "./api-cache";
 import { GITHUB_API_BASE, githubHeaders, githubRawUrl } from "./github";
+import { parseBuildkiteYaml } from "./test-areas";
 import {
   computeParity,
   parseTestAreaFile,
@@ -167,7 +166,7 @@ async function loadBlob(
         false,
       );
     }
-    const document = yaml.load(await response.text());
+    const document = parseBuildkiteYaml(await response.text());
     blobCache.set(blobSha, document);
     if (blobCache.size > BLOB_CACHE_LIMIT) {
       const oldest = blobCache.keys().next().value;
