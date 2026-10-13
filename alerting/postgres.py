@@ -1214,10 +1214,12 @@ class PostgresAlertStore:
                        hostname, gpu_index, temperature_c, reported_at
                 FROM gpu_snapshots
                 -- Stale readings must not sustain temperature breaches (a
-                -- silent host is the unreporting alert's job), and the
-                -- bound keeps the scan off 8M+ rows of history.
+                -- silent host is the unreporting alert's job). The bound is
+                -- 15 minutes, as in gpu_counts: two days was ~1M rows sorted
+                -- on disk every scan and blew the statement timeout under
+                -- load.
                 WHERE temperature_c IS NOT NULL
-                  AND reported_at >= now() - interval '2 days'
+                  AND reported_at >= now() - interval '15 minutes'
                 ORDER BY hostname, gpu_index, reported_at DESC
                 """
             ).fetchall()
@@ -1239,10 +1241,10 @@ class PostgresAlertStore:
                        hostname, gpu_index, dead_proc_mem_mb, reported_at
                 FROM gpu_snapshots
                 -- Stale readings must not sustain breaches (a silent host is
-                -- the unreporting alert's job), and the bound keeps the scan
-                -- off 8M+ rows of history.
+                -- the unreporting alert's job). 15 minutes for the same
+                -- reason as gpu_temperatures.
                 WHERE dead_proc_mem_mb IS NOT NULL
-                  AND reported_at >= now() - interval '2 days'
+                  AND reported_at >= now() - interval '15 minutes'
                 ORDER BY hostname, gpu_index, reported_at DESC
                 """
             ).fetchall()
