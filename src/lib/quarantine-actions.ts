@@ -21,32 +21,56 @@ export const fail = (status: number, error: string): ActionResult => ({
  * read. `run` validates the JSON object and writes the record; it receives
  * `getDb` unevaluated so that validation failures never touch the database.
  */
-export async function operatorPost(
+export function operatorPost(
   request: Request,
   label: string,
+  run: (body: Record<string, unknown>, db: () => Db) => Promise<ActionResult>,
+): Promise<NextResponse> {
+  return securedCall(request, label, "ALERT_OPERATOR_TOKEN", "operator token", run);
+}
+
+/**
+ * The same shell for the quarantine actuators on the control planes and
+ * bare-metal hosts, which authenticate with the GPU reporters' existing
+ * GPU_REPORT_SECRET, as /api/gpu/report does. A GET has no body; `run`
+ * receives an empty object.
+ */
+export function actuatorCall(
+  request: Request,
+  label: string,
+  run: (body: Record<string, unknown>, db: () => Db) => Promise<ActionResult>,
+): Promise<NextResponse> {
+  return securedCall(request, label, "GPU_REPORT_SECRET", "reporter secret", run);
+}
+
+async function securedCall(
+  request: Request,
+  label: string,
+  secretEnv: string,
+  secretName: string,
   run: (body: Record<string, unknown>, db: () => Db) => Promise<ActionResult>,
 ): Promise<NextResponse> {
   const respond = ({ status, body }: ActionResult) =>
     NextResponse.json(body, { status, headers: noStore });
 
-  const operatorToken = process.env.ALERT_OPERATOR_TOKEN;
-  if (!operatorToken) {
+  const secret = process.env[secretEnv];
+  if (!secret) {
     return respond(fail(503, `${label} is not configured on this dashboard.`));
   }
-  if (!bearerTokenMatches(request.headers.get("authorization"), operatorToken)) {
-    return respond(
-      fail(401, `${label} requires the configured operator token.`),
-    );
+  if (!bearerTokenMatches(request.headers.get("authorization"), secret)) {
+    return respond(fail(401, `${label} requires the configured ${secretName}.`));
   }
 
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch {
-    return respond(fail(400, "Request body must be JSON."));
-  }
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return respond(fail(400, "Request body must be a JSON object."));
+  let body: unknown = {};
+  if (request.method !== "GET") {
+    try {
+      body = await request.json();
+    } catch {
+      return respond(fail(400, "Request body must be JSON."));
+    }
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      return respond(fail(400, "Request body must be a JSON object."));
+    }
   }
 
   try {
@@ -128,6 +152,81 @@ export async function resolveQuarantine(
     return fail(409, "This quarantine is already being resolved.");
   }
   return fail(409, "This host has no open quarantine; it is already resolved.");
+}
+
+/** Episode stages an actuator acts on; it only logs 'would'. */
+const ACTUATED_STAGES = ["would", "quarantining", "quarantined", "resolving"];
+
+/**
+ * The hosts one cluster's actuator should have out (quarantining,
+ * quarantined) or bring back (resolving), plus dry-run ones it only logs.
+ */
+export async function desiredQuarantines(
+  db: Db,
+  cluster: string,
+): Promise<ActionResult> {
+  const rows = await db<
+    { host: string; alert_id: string; stage: string; reason: string | null }[]
+  >`
+    SELECT subject_key AS host, alert_id, details->>'stage' AS stage,
+           details->>'reason' AS reason
+    FROM alerting_infra_alerts
+    WHERE alert_type = 'quarantine'
+      AND status = 'open'
+      AND details->>'cluster' = ${cluster}
+      AND details->>'stage' IN ${db(ACTUATED_STAGES)}
+    ORDER BY subject_key
+  `;
+  return {
+    status: 200,
+    body: {
+      nodes: rows.map((row) => ({
+        host: row.host,
+        alertId: Number(row.alert_id),
+        stage: row.stage,
+        reason: row.reason,
+      })),
+    },
+  };
+}
+
+export const ACTUATOR_STATES = ["out", "drained", "returned"] as const;
+export type ActuatorState = (typeof ACTUATOR_STATES)[number];
+
+/**
+ * Records what the actuator did to a host on its open quarantine episode. It
+ * never changes the stage: the worker reads the report on its next scan. A
+ * report for an episode other than the host's open one (a stale alertId) is
+ * a 409; a host with no open quarantine is a 404.
+ */
+export async function recordActuatorState(
+  db: Db,
+  host: string,
+  alertId: number,
+  state: ActuatorState,
+  observed: Record<string, unknown> | null,
+): Promise<ActionResult> {
+  const updated = await db`
+    UPDATE alerting_infra_alerts
+    SET details = details || jsonb_build_object(
+          'actuator_state', ${state}::text,
+          'actuator_state_at', now(),
+          'actuator_observed', ${observed === null ? null : db.json(observed as never)}::jsonb
+        ),
+        updated_at = now()
+    WHERE alert_type = 'quarantine'
+      AND subject_key = ${host}
+      AND status = 'open'
+      AND alert_id = ${alertId}
+    RETURNING alert_id
+  `;
+  if (updated.length > 0) return { status: 200, body: { ok: true } };
+  const open = await db`
+    SELECT alert_id FROM alerting_infra_alerts
+    WHERE alert_type = 'quarantine' AND subject_key = ${host} AND status = 'open'
+  `;
+  if (open.length === 0) return fail(404, "This host has no open quarantine.");
+  return fail(409, "alertId is not this host's open quarantine.");
 }
 
 /** Moves a suspected incident to confirmed, recording cause and match. */

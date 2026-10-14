@@ -4,7 +4,9 @@
  * Infra alerts are per-subject breach episodes written by the alerting worker:
  * a host that stopped reporting, a shared (fstype, device) disk group over its
  * usage threshold, or one GPU on one host over its temperature threshold.
- * Unlike Main CI there is nothing to resolve by hand — an episode closes when
+ * A quarantine is one more episode type, keyed by host, whose stage lives in
+ * its details and which only a person resolves (see quarantine-actions).
+ * Apart from that there is nothing to resolve by hand — an episode closes when
  * the worker observes the breach clear, and a host absent from every expected
  * source for seven days is auto-retired instead. Unreporting wording always
  * says a host "stopped reporting"; the view never claims a machine is down.
@@ -12,7 +14,13 @@
 
 import { formatAlertDateTime, withinAlertWindow } from "./alerts-shared";
 
-export type InfraAlertType = "unreporting" | "disk_usage" | "gpu_temperature";
+export type InfraAlertType =
+  | "unreporting"
+  | "disk_usage"
+  | "gpu_temperature"
+  | "gpu_dead_memory"
+  | "gpu_count"
+  | "quarantine";
 
 export type InfraAlertStatus = "open" | "resolved";
 
@@ -38,6 +46,9 @@ export const INFRA_ALERT_TYPE_LABELS: Record<InfraAlertType, string> = {
   unreporting: "Stopped reporting",
   disk_usage: "Disk",
   gpu_temperature: "GPU temperature",
+  gpu_dead_memory: "GPU dead-process memory",
+  gpu_count: "GPU count",
+  quarantine: "Quarantine",
 };
 
 export interface InfraAlertEpisodeView extends InfraAlertEpisode {
@@ -151,11 +162,47 @@ function summarizeGpuTemperature(episode: InfraAlertEpisode): string {
   return `${heat}${limit}${scansSuffix(details)}.`;
 }
 
+const QUARANTINE_STAGES: Record<string, string> = {
+  would: "Dry run: would quarantine",
+  held: "Held by a safety limit",
+  quarantining: "Quarantining once running jobs finish",
+  quarantined: "Quarantined",
+  resolving: "Resolving: returning to service",
+  resolved: "Back in service",
+};
+
+function summarizeQuarantine(episode: InfraAlertEpisode): string {
+  const { details } = episode;
+  if (details.resolution === "decision_cleared") {
+    return "Dry run closed: the trigger stopped firing.";
+  }
+  const stage = stringDetail(details, "stage") ?? "unknown";
+  const reason = stringDetail(details, "reason");
+  const by = stringDetail(details, "resolved_by");
+  // The actuator explains what it would not do, e.g. leave a person's own
+  // cordon in place while resolving.
+  const observed = details.actuator_observed;
+  const note =
+    typeof observed === "object" && observed !== null
+      ? stringDetail(observed as Record<string, unknown>, "note")
+      : null;
+  return [
+    `${QUARANTINE_STAGES[stage] ?? `Stage ${stage}`}${reason ? `: ${reason}` : ""}.`,
+    by ? `Resolved by ${by}.` : "",
+    note ? `Actuator: ${note}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 /** The one-line reading of an episode's details, per alert type and status. */
 export function summarizeInfraEpisode(episode: InfraAlertEpisode): string {
   if (episode.alertType === "unreporting") return summarizeUnreporting(episode);
   if (episode.alertType === "disk_usage") return summarizeDiskUsage(episode);
-  return summarizeGpuTemperature(episode);
+  if (episode.alertType === "gpu_temperature") return summarizeGpuTemperature(episode);
+  if (episode.alertType === "quarantine") return summarizeQuarantine(episode);
+  // GPU dead-process memory and GPU count: the label says what it is.
+  return episode.status === "resolved" ? "Cleared." : episode.subjectKey;
 }
 
 /**

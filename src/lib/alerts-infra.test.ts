@@ -271,3 +271,28 @@ test("a resolved GPU temperature episode reads as back below its threshold", () 
 
   assert.match(summary, /GPU 3 back below 85°C \(now 71°C\)/);
 });
+
+test("quarantine episodes read their stage, reason, resolver and actuator note", () => {
+  assert.equal(INFRA_ALERT_TYPE_LABELS.quarantine, "Quarantine");
+  const quarantine = (details: Record<string, unknown>, status: "open" | "resolved" = "open") =>
+    summarizeInfraEpisode(
+      episode({ alertType: "quarantine", subjectKey: "gpu-node-7", status, details }),
+    );
+  assert.equal(
+    quarantine({ stage: "quarantined", reason: "Xid 79" }),
+    "Quarantined: Xid 79.",
+  );
+  assert.equal(
+    quarantine({
+      stage: "resolving",
+      reason: "Xid 79",
+      resolved_by: "oncall",
+      actuator_observed: { cordoned: true, tainted: false, note: "left a person's cordon" },
+    }),
+    "Resolving: returning to service: Xid 79. Resolved by oncall. Actuator: left a person's cordon",
+  );
+  assert.equal(
+    quarantine({ stage: "resolved", resolution: "decision_cleared" }, "resolved"),
+    "Dry run closed: the trigger stopped firing.",
+  );
+});
