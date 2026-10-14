@@ -1,5 +1,5 @@
 [Unit]
-Description=Apply vLLM CI quarantine decisions to this cluster's nodes
+Description=Apply vLLM CI quarantine decisions to the nodes of this cluster
 
 [Service]
 Type=oneshot
