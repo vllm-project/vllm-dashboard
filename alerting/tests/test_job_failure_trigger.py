@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from alerting.infra import QuarantineDecision
 from alerting.job_failure_trigger import (
     FinishedJob,
     dry_run_decisions,
@@ -11,7 +12,7 @@ from alerting.job_failure_trigger import (
 )
 
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
-CLUSTER = "h200-bare-metal"
+CLUSTER = "h200"
 
 
 def job(host: str, build: int, state: str, minute: int) -> FinishedJob:
@@ -129,9 +130,9 @@ def test_finished_jobs_maps_hosts_and_drops_agentless_jobs() -> None:
     ]
     mapped = finished_jobs(builds)
     assert [(j.host, j.cluster, j.pool) for j in mapped] == [
-        ("gpu-host-c", "h200-bare-metal", "h200_35gb"),
-        ("k8s-node-1", "h100-k8s", "mithril-h100-pool"),
-        ("k8s-node-2", "b200-k8s", "b200-k8s"),
+        ("gpu-host-c", "h200", "h200_35gb"),
+        ("k8s-node-1", "h100", "mithril-h100-pool"),
+        ("k8s-node-2", "b200", "b200-k8s"),
     ]
 
 
@@ -164,9 +165,10 @@ def test_dry_run_decisions_from_buildkite_builds() -> None:
     [decision] = dry_run_decisions(FakeBuildkite(), now=T0 + timedelta(hours=1))
     assert (decision.host, decision.cluster, decision.pool) == (
         "gpu-host-a",
-        "h200-bare-metal",
+        "h200",
         "h200_18gb",
     )
-    assert decision.reason == "job_failure_streak"
+    assert decision.reason == "last 10 jobs failed across 3 builds"
+    assert isinstance(decision, QuarantineDecision)
     assert decision.evidence["builds"] == [1, 2, 3]
     assert decision.evidence["failed_jobs"] == 10

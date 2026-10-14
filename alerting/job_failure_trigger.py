@@ -17,22 +17,24 @@ The trigger only produces decisions. Nothing here pauses or taints a host.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
+from alerting.infra import QuarantineDecision
+
 # Buildkite queue -> cluster. The cluster groups hosts that share a failure
-# domain for the guards; the queue is the pool a quarantine is counted in.
+# domain for the guards, and is the name its actuator asks the dashboard for
+# (QuarantineDecision); the queue is the pool a quarantine is counted in.
 PILOT_QUEUES = {
-    "h200_35gb": "h200-bare-metal",
-    "h200_18gb": "h200-bare-metal",
-    "H200": "h200-bare-metal",
-    "mithril-h100-pool": "h100-k8s",
-    "b200-k8s": "b200-k8s",
+    "h200_35gb": "h200",
+    "h200_18gb": "h200",
+    "H200": "h200",
+    "mithril-h100-pool": "h100",
+    "b200-k8s": "b200",
 }
 FAILED_STATES = frozenset({"failed", "timed_out"})
 COUNTED_STATES = FAILED_STATES | {"passed"}
-REASON = "job_failure_streak"
 
 
 @dataclass(frozen=True)
@@ -57,16 +59,6 @@ class Trip:
     pool: str
     jobs: tuple[FinishedJob, ...]
     pool_failure_rate: float
-
-
-# ponytail: local stand-in; the shared QuarantineDecision lands in another PR.
-@dataclass(frozen=True)
-class QuarantineDecision:
-    host: str
-    cluster: str
-    pool: str
-    reason: str
-    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 def failure_streak_trips(
@@ -170,7 +162,10 @@ def decisions(trips: list[Trip]) -> list[QuarantineDecision]:
             host=trip.host,
             cluster=trip.cluster,
             pool=trip.pool,
-            reason=REASON,
+            reason=(
+                f"last {len(trip.jobs)} jobs failed across "
+                f"{len({job.build_number for job in trip.jobs})} builds"
+            ),
             evidence={
                 "failed_jobs": len(trip.jobs),
                 "builds": sorted({job.build_number for job in trip.jobs}),
