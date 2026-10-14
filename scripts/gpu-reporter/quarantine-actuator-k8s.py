@@ -6,15 +6,17 @@ Runs on the control plane every minute. Pulls the desired quarantine set for
 this cluster from the dashboard and reconciles each node:
 
   quarantining / quarantined
-      kubectl cordon + taint vllm.ci/quarantine=<reason>:NoSchedule (both).
+      Cordon + taint vllm.ci/quarantine=<reason>:NoSchedule (both). The
+      cordon and its ownership annotation vllm.ci/quarantine-cordoned=true
+      go in one patch guarded by the node's resourceVersion.
       Neither evicts running pods. Posts "out" once both are present and
       "drained" once no pod in namespace buildkite on the node is Running or
       Pending. A quarantined node that lost the cordon or our taint (by hand)
       gets both back and the post carries reapplied: true.
   resolving
-      Removes our taint. Uncordons only if we cordoned: take_out marks its own
-      cordon with the annotation vllm.ci/quarantine-cordoned=true, and resolve
-      uncordons and drops that annotation only when it is present. A cordon
+      Removes our taint. Uncordons only if we cordoned, that is when the
+      annotation is present, lifting the cordon and the annotation in one
+      guarded patch. A cordon
       without it (a person's, made before or after ours) stays in place; the
       post is still "returned" (our quarantine is undone) with a note.
   would
@@ -139,14 +141,27 @@ class Actuator:
                   file=sys.stderr)
             self.ok = False
 
+    def set_cordon(self, node, on):
+        """Cordon and mark the cordon ours (on), or lift both, in one patch.
+
+        One write, so a failure can't leave a cordon without the mark that
+        lets resolve lift it. The resourceVersion guard makes the API server
+        reject the patch if the node changed since we read it, such as a
+        person cordoning it in between, so a cordon that isn't ours is never
+        marked as ours.
+        """
+        body = {"metadata": {"annotations": {CORDON_MARK: "true" if on else None},
+                             "resourceVersion": node["metadata"]["resourceVersion"]},
+                "spec": {"unschedulable": True if on else None}}
+        self.write("patch", "node", node["metadata"]["name"], "--type", "merge",
+                   "-p", json.dumps(body, sort_keys=True))
+
     def take_out(self, node, want):
         name = node["metadata"]["name"]
         cordoned = bool(node["spec"].get("unschedulable"))
         tainted = our_taint(node) is not None
         if not cordoned:
-            self.write("cordon", name)
-            self.write("annotate", "--overwrite", "node", name,
-                       f"{CORDON_MARK}=true")
+            self.set_cordon(node, on=True)
         if not tainted:
             self.write("taint", "nodes", name,
                        f"{TAINT_KEY}={taint_value(want['reason'])}:NoSchedule")
@@ -167,10 +182,12 @@ class Actuator:
         cordoned = bool(node["spec"].get("unschedulable"))
         if our_taint(node) is not None:
             self.write("taint", "nodes", name, f"{TAINT_KEY}:NoSchedule-")
+            # The taint write bumped resourceVersion; reread before the
+            # guarded patch.
+            if not self.dry_run:
+                node = json.loads(kubectl("get", "node", name, "-o", "json"))
         if CORDON_MARK in (node["metadata"].get("annotations") or {}):
-            if cordoned:
-                self.write("uncordon", name)
-            self.write("annotate", "node", name, f"{CORDON_MARK}-")
+            self.set_cordon(node, on=False)
             cordoned = False
         observed = {"cordoned": cordoned, "tainted": False}
         if cordoned:

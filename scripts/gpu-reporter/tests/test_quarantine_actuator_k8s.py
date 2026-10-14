@@ -21,41 +21,61 @@ class FakeKube:
         self.nodes = nodes  # name -> {"unschedulable": bool, "taints": [...]}
         self.pods = pods or {}  # name -> [phase, ...] in namespace buildkite
         self.writes = []
+        self.rv = {n: 1 for n in nodes}  # resourceVersion, bumped per write
+        self.fail = set()  # verbs that raise, to test partial failures
+
+    def node_json(self, n):
+        s = self.nodes[n]
+        return {"metadata": {"name": n, "resourceVersion": str(self.rv[n]),
+                             "annotations": dict(s.get("annotations", {}))},
+                "spec": {"unschedulable": s["unschedulable"],
+                         "taints": list(s["taints"])}}
 
     def __call__(self, *args):
         if args[:2] == ("get", "nodes"):
-            return json.dumps({"items": [
-                {"metadata": {"name": n,
-                              "annotations": dict(s.get("annotations", {}))},
-                 "spec": {"unschedulable": s["unschedulable"],
-                          "taints": list(s["taints"])}}
-                for n, s in self.nodes.items()]})
+            return json.dumps({"items": [self.node_json(n)
+                                         for n in self.nodes]})
+        if args[:2] == ("get", "node"):
+            return json.dumps(self.node_json(args[2]))
         if args[:2] == ("get", "pods"):
             assert args[2:4] == ("-n", "buildkite")
             node = args[5].split("=", 1)[1]
             return json.dumps({"items": [
                 {"status": {"phase": p}} for p in self.pods.get(node, [])]})
-        self.writes.append(args)
         verb = args[0]
-        node = args[{"taint": 2, "annotate": -2}.get(verb, -1)]
+        if verb in self.fail:
+            raise RuntimeError(f"kubectl {verb} failed: injected")
+        self.writes.append(args)
+        node = args[2]  # patch node <n> / taint nodes <n>
         s = self.nodes[node]
         ann = s.setdefault("annotations", {})
-        if verb == "cordon":
-            s["unschedulable"] = True
-        elif verb == "uncordon":
-            s["unschedulable"] = False
-        elif verb == "annotate" and args[-1].endswith("-"):
-            ann.pop(args[-1][:-1], None)
-        elif verb == "annotate":
-            k, v = args[-1].split("=", 1)
-            ann[k] = v
+        if verb == "patch":
+            body = json.loads(args[-1])
+            if body["metadata"]["resourceVersion"] != str(self.rv[node]):
+                self.writes.pop()
+                raise RuntimeError("kubectl patch node failed: Conflict")
+            s["unschedulable"] = bool(body["spec"]["unschedulable"])
+            for k, v in body["metadata"]["annotations"].items():
+                if v is None:
+                    ann.pop(k, None)
+                else:
+                    ann[k] = v
         elif verb == "taint" and args[3].endswith("-"):
             s["taints"] = [t for t in s["taints"] if t["key"] != KEY]
         elif verb == "taint":
             k, rest = args[3].split("=", 1)
             v, effect = rest.rsplit(":", 1)
             s["taints"].append({"key": k, "value": v, "effect": effect})
+        self.rv[node] += 1
         return ""
+
+
+def cordon_patch(name, rv, on):
+    """The one write that cordons and marks (on) or uncordons and unmarks."""
+    return ("patch", "node", name, "--type", "merge", "-p", json.dumps({
+        "metadata": {"annotations": {MARK: "true" if on else None},
+                     "resourceVersion": str(rv)},
+        "spec": {"unschedulable": True if on else None}}, sort_keys=True))
 
 
 class FakeDashboard:
@@ -106,8 +126,7 @@ def test_apply_cordons_and_taints_then_posts_out(run):
     dash = FakeDashboard([want("n1", "quarantining")])
     assert run(kube, dash) == 0
     assert kube.writes == [
-        ("cordon", "n1"),
-        ("annotate", "--overwrite", "node", "n1", f"{MARK}=true"),
+        cordon_patch("n1", 1, on=True),
         ("taint", "nodes", "n1",
          f"{KEY}=Xid-79-GPU-fell-off-the-bus:NoSchedule"),
     ]
@@ -134,8 +153,7 @@ def test_resolve_with_our_taint_returns_node(run):
     dash = FakeDashboard([want("n1", "resolving")])
     assert run(kube, dash) == 0
     assert kube.writes == [("taint", "nodes", "n1", f"{KEY}:NoSchedule-"),
-                           ("uncordon", "n1"),
-                           ("annotate", "node", "n1", f"{MARK}-")]
+                           cordon_patch("n1", 2, on=False)]
     assert kube.nodes["n1"] == node(other=["gpu=bad"])
     assert dash.posts[0][1]["state"] == "returned"
 
@@ -173,11 +191,10 @@ def test_resolve_already_schedulable_posts_returned(run):
 
 @pytest.mark.parametrize("before", [node(False, True), node(True, False)])
 def test_drift_reapplies_and_flags(run, before):
-    expected_writes = 1 if before["unschedulable"] else 2  # + annotate
     kube = FakeKube({"n1": before})
     dash = FakeDashboard([want("n1", "quarantined")])
     assert run(kube, dash) == 0
-    assert len(kube.writes) == expected_writes
+    assert len(kube.writes) == 1  # the lost cordon or the lost taint
     assert kube.nodes["n1"]["unschedulable"]
     assert run.mod.our_taint({"spec": kube.nodes["n1"]})
     assert dash.posts[0][1]["observed"]["reapplied"] is True
@@ -199,8 +216,8 @@ def test_dry_run_changes_nothing(run, capsys):
     assert run(kube, dash, "--dry-run") == 0
     assert kube.writes == [] and dash.posts == []
     out = capsys.readouterr().out
-    assert "DRY RUN: kubectl cordon n1" in out
-    assert "DRY RUN: kubectl uncordon n2" in out
+    assert "DRY RUN: kubectl patch node n1" in out
+    assert "DRY RUN: kubectl patch node n2" in out
 
 
 def test_endpoint_down_changes_nothing_and_fails(run):
@@ -227,7 +244,7 @@ def test_slow_nodes_do_not_hold_up_a_new_quarantine(run):
     class Kube(FakeKube):
         def __call__(self, *args):
             out = super().__call__(*args)
-            if args == ("cordon", "n3"):
+            if args[:3] == ("patch", "node", "n3"):
                 n3_cordoned.set()
             return out
 
@@ -246,8 +263,61 @@ def test_slow_nodes_do_not_hold_up_a_new_quarantine(run):
     assert waited == {"n1": True, "n2": True}
     # Each node's own steps keep their order.
     assert [w for w in kube.writes if "n3" in w] == [
-        ("cordon", "n3"),
-        ("annotate", "--overwrite", "node", "n3", f"{MARK}=true"),
+        cordon_patch("n3", 1, on=True),
         ("taint", "nodes", "n3",
          f"{KEY}=Xid-79-GPU-fell-off-the-bus:NoSchedule"),
     ]
+
+
+def test_failed_cordon_patch_leaves_nothing_half_done(run):
+    # The cordon and our mark are one write: when it fails neither lands,
+    # and the next run applies both.
+    kube = FakeKube({"n1": node()})
+    kube.fail = {"patch"}
+    dash = FakeDashboard([want("n1", "quarantining")])
+    assert run(kube, dash) == 1
+    assert kube.nodes["n1"] == node()
+    kube.fail = set()
+    assert run(kube, dash) == 0
+    assert kube.nodes["n1"]["unschedulable"] is True
+    assert kube.nodes["n1"]["annotations"] == {MARK: "true"}
+
+
+def test_taint_failure_after_cordon_still_resolves_cleanly(run):
+    # Cordoned and marked, but the taint failed: the next run adds the taint,
+    # and resolve still knows the cordon is ours and lifts it.
+    kube = FakeKube({"n1": node()})
+    kube.fail = {"taint"}
+    dash = FakeDashboard([want("n1", "quarantining")])
+    assert run(kube, dash) == 1
+    kube.fail = set()
+    assert run(kube, dash) == 0
+    assert any(t["key"] == KEY for t in kube.nodes["n1"]["taints"])
+    resolve = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, resolve) == 0
+    assert kube.nodes["n1"] == node()
+    assert "note" not in resolve.posts[0][1]["observed"]
+
+
+def test_cordon_by_a_person_mid_run_is_never_marked_ours(run):
+    # The node changes after the actuator read it (a person cordons it):
+    # the guarded patch is rejected, and the next run sees a cordon that
+    # isn't ours and leaves the mark off.
+    kube = FakeKube({"n1": node()})
+    real = kube.__call__
+
+    def racing(*args):
+        if args[0] == "patch":
+            kube.nodes["n1"]["unschedulable"] = True
+            kube.rv["n1"] += 1
+        return real(*args)
+
+    dash = FakeDashboard([want("n1", "quarantining")])
+    assert run(racing, dash) == 1
+    assert kube.nodes["n1"]["annotations"] == {}
+    assert run(kube, dash) == 0
+    assert kube.nodes["n1"]["annotations"] == {}
+    resolve = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, resolve) == 0
+    assert kube.nodes["n1"]["unschedulable"] is True  # the person's cordon
+    assert "pre-existing cordon" in resolve.posts[0][1]["observed"]["note"]
