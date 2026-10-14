@@ -21,18 +21,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
-from alerting.infra import QuarantineDecision
+from alerting.infra import PILOT_QUEUES, QuarantineDecision
 
-# Buildkite queue -> cluster. The cluster groups hosts that share a failure
-# domain for the guards, and is the name its actuator asks the dashboard for
-# (QuarantineDecision); the queue is the pool a quarantine is counted in.
-PILOT_QUEUES = {
-    "h200_35gb": "h200",
-    "h200_18gb": "h200",
-    "H200": "h200",
-    "mithril-h100-pool": "h100",
-    "b200-k8s": "b200",
-}
 FAILED_STATES = frozenset({"failed", "timed_out"})
 COUNTED_STATES = FAILED_STATES | {"passed"}
 

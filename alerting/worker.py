@@ -152,6 +152,9 @@ def _runtime(
             clock=clock,
             delivery_mode=delivery_mode,
             quarantine_live=_quarantine_live(),
+            # Optional like the kubeconfigs: unset skips the job-failure
+            # trigger, and its fetch failing never fails the scan.
+            buildkite_token=os.environ.get("BUILDKITE_TOKEN"),
         )
     if consumer == "main-ci-analyze":
         return build_main_ci_analysis_runtime(

@@ -115,6 +115,16 @@ class FakePostgresConnection:
             return Result(rows=list(self.state["recent_hosts"]))
         if statement.startswith("WITH RECURSIVE latest AS ("):
             return Result(rows=list(self.state["mounts"]))
+        if statement.startswith(
+            (
+                "SELECT DISTINCT ON (hostname, gpu_index) hostname, gpu_index, "
+                "recovery_action",
+                "SELECT DISTINCT ON (hostname) hostname, gpu_query_hung",
+                "SELECT hostname, bus_id, xid, at FROM gpu_xid_events",
+                "SELECT DISTINCT hostname, queue FROM buildkite_agent_snapshots",
+            )
+        ):
+            return Result(rows=[])  # trigger-rule readings: none reported
         if statement.startswith("SELECT DISTINCT ON (hostname, gpu_index)"):
             return Result(rows=list(self.state["temps"]))
         if statement.startswith("SELECT hostname, count(DISTINCT gpu_index)"):

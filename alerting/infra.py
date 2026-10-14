@@ -18,6 +18,8 @@ RAM, load, and network are display-only and never alert.
 The same scan also runs the quarantine sequence (see plan_quarantine): a
 quarantine is one more episode type, keyed by lowercased host, whose stage in
 details moves would | quarantining -> quarantined -> resolving -> resolved.
+Its decisions come from the trigger rules over the same telemetry (see
+plan_trigger_rules) and from the job-failure trigger.
 """
 
 from __future__ import annotations
@@ -26,8 +28,10 @@ import hashlib
 import html
 import json
 import subprocess
+import sys
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Protocol
@@ -136,6 +140,42 @@ class GpuCountObservation:
 
 
 @dataclass(frozen=True)
+class GpuFaultObservation:
+    """One GPU's latest driver fault reading from gpu_snapshots.
+
+    None means the reporter could not read the value, never a passing one:
+    MIG hosts report remapped_rows_failure as None.
+    """
+
+    hostname: str
+    gpu_index: int
+    recovery_action: str | None
+    remapped_rows_failure: bool | None
+    reported_at: datetime
+
+
+@dataclass(frozen=True)
+class HostFaultObservation:
+    """A host's latest host_snapshots fault readings; None means not read."""
+
+    hostname: str
+    gpu_query_hung: bool | None
+    network_probes: list[dict[str, Any]] | None
+    root_owned_slots: list[str] | None
+    reported_at: datetime
+
+
+@dataclass(frozen=True)
+class XidEvent:
+    """One kernel-log Xid from gpu_xid_events; bus_id is '' when unknown."""
+
+    hostname: str
+    bus_id: str
+    xid: int
+    at: datetime
+
+
+@dataclass(frozen=True)
 class InfraSubjectState:
     """Durable per-subject scan state carried between scans."""
 
@@ -177,6 +217,7 @@ class QuarantineDecision:
     pool: str
     reason: str
     evidence: dict[str, Any] = field(default_factory=dict)
+    hardware: bool = False
 
 
 @dataclass(frozen=True)
@@ -250,6 +291,24 @@ class InfraSnapshotPort(Protocol):
 
     def gpu_counts(self) -> list[GpuCountObservation]:
         """How many distinct GPUs each host reported recently."""
+        ...
+
+    def gpu_faults(self) -> list[GpuFaultObservation]:
+        """The latest driver fault reading per (hostname, gpu_index)."""
+        ...
+
+    def host_faults(self) -> list[HostFaultObservation]:
+        """The latest host fault reading per hostname."""
+        ...
+
+    def xid_events(
+        self, *, hostnames: Iterable[str], since: datetime
+    ) -> list[XidEvent]:
+        """Trigger-rule Xids (TRIGGER_XIDS) on these hosts since `since`."""
+        ...
+
+    def agent_queues(self) -> list[tuple[str, str]]:
+        """(hostname, queue) for every recently connected Buildkite agent."""
         ...
 
 
@@ -686,6 +745,349 @@ def _plan_gpu_count(
     )
 
 
+# Buildkite queue -> cluster for the quarantine pilot. The cluster is what the
+# pool's actuator asks the dashboard for (QuarantineDecision) and groups the
+# hosts that share a failure domain for the job-failure guards; the queue is
+# the pool a quarantine is counted in.
+PILOT_QUEUES = {
+    "h200_35gb": "h200",
+    "h200_18gb": "h200",
+    "H200": "h200",
+    "mithril-h100-pool": "h100",
+    "b200-k8s": "b200",
+}
+# Kubernetes node-name prefix -> the queue its CI pods serve. Bare-metal hosts
+# follow no naming scheme, so their queue comes from the agents on them.
+K8S_NODE_QUEUES = {"inf-4x8h100-": "mithril-h100-pool", "dgxb200-": "b200-k8s"}
+
+# Reporters post every 30 s; an older reading than two intervals is missing.
+READING_MAX_AGE = timedelta(seconds=60)
+# Host faults need this many consecutive scans that each fail a fresh reading.
+HOST_FAULT_CHECKS = 2
+# GPU hardware Xids from NVIDIA's Xid catalog. First-sight ones trip on one
+# event; repeat ones on XID_REPEATS of the same Xid on one GPU in XID_WINDOW.
+FIRST_SIGHT_XIDS = frozenset({48, 54, 64, 79, 110, 140, 143, 157, 171, 172})
+# NVLink 5 errors, B200 only. The design wants only those whose decoded
+# message says fatal hardware, but the device-plugin feed carries no decoded
+# severity, so every one counts.
+B200_FIRST_SIGHT_XIDS = frozenset(range(144, 151))
+REPEAT_XIDS = frozenset({46, 62, 74, 95, 109, 119, 120, 136, 158})
+TRIGGER_XIDS = FIRST_SIGHT_XIDS | B200_FIRST_SIGHT_XIDS | REPEAT_XIDS
+XID_WINDOW = timedelta(hours=24)
+XID_REPEATS = 3
+
+
+def pilot_pools(
+    hosts: Iterable[str], agent_queues: Iterable[tuple[str, str]]
+) -> dict[str, tuple[str, str]]:
+    """host -> (cluster, pool) for every known pilot host.
+
+    Kubernetes nodes map by name; a bare-metal host maps to the H200 queue its
+    connected agents serve (Buildkite may report an FQDN, the reporter the
+    short name). Hosts in no pilot pool are left out and never quarantined.
+    """
+    pools: dict[str, tuple[str, str]] = {}
+    for hostname, queue in sorted(agent_queues):
+        if PILOT_QUEUES.get(queue) == "h200":
+            short = hostname.strip().lower().split(".", 1)[0]
+            pools.setdefault(short, ("h200", queue))
+    for hostname in hosts:
+        for prefix, queue in K8S_NODE_QUEUES.items():
+            if hostname.startswith(prefix):
+                pools[hostname] = (PILOT_QUEUES[queue], queue)
+    return pools
+
+
+def plan_trigger_rules(
+    *,
+    now: datetime,
+    pools: Mapping[str, tuple[str, str]],
+    thresholds: Mapping[str, InfraThreshold],
+    gpu_faults: list[GpuFaultObservation],
+    host_faults: list[HostFaultObservation],
+    xid_events: list[XidEvent],
+    disk_mounts: list[DiskMountObservation],
+    gpu_dead_memory: list[GpuDeadMemoryObservation],
+    gpu_counts: list[GpuCountObservation],
+    states: Mapping[tuple[str, str], InfraSubjectState],
+    open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
+) -> tuple[list[QuarantineDecision], list[InfraSubjectState]]:
+    """Evaluate the quarantine trigger rules (design §4.2) for one scan.
+
+    GPU hardware faults trip on first sight: one fresh reading, or one Xid
+    in the last day. Host faults trip on HOST_FAULT_CHECKS consecutive scans
+    that each see the fault on a fresh reading no earlier scan used; a missing
+    or reused reading neither advances nor resets the streak, kept per host
+    and rule in subject state. Hardware decisions come first, so they win
+    when one host trips several rules.
+    """
+    kind = InfraAlertType.QUARANTINE.value
+    hardware: list[QuarantineDecision] = []
+    host_fault: list[QuarantineDecision] = []
+    out_states: list[InfraSubjectState] = []
+
+    def fresh(reported_at: datetime) -> bool:
+        return now - reported_at <= READING_MAX_AGE
+
+    def decide(host: str, rule: str, reason: str, **evidence: Any) -> None:
+        cluster, pool = pools[host]
+        is_hardware = rule in ("recovery_action", "remapped_rows", "xid", "xid_repeat")
+        (hardware if is_hardware else host_fault).append(
+            QuarantineDecision(
+                host=host,
+                cluster=cluster,
+                pool=pool,
+                reason=reason,
+                evidence={"rule": rule, **evidence},
+                hardware=is_hardware,
+            )
+        )
+
+    def check(host: str, rule: str, failing: bool | None, at: datetime | None) -> bool:
+        """Advance one host-fault streak; True when it trips this scan."""
+        key = (kind, f"rule:{rule}:{host}")
+        state = states.get(key, InfraSubjectState(*key))
+        used = state.last_reported_at
+        if failing is None or at is None or not fresh(at) or (used and at <= used):
+            return False
+        if not failing:
+            if state.consecutive_breaches:
+                out_states.append(
+                    replace(state, consecutive_breaches=0, last_reported_at=at)
+                )
+            return False
+        streak = state.consecutive_breaches + 1
+        out_states.append(
+            replace(state, consecutive_breaches=streak, last_reported_at=at)
+        )
+        return streak >= HOST_FAULT_CHECKS
+
+    for fault in sorted(gpu_faults, key=lambda r: (r.hostname, r.gpu_index)):
+        if fault.hostname not in pools or not fresh(fault.reported_at):
+            continue
+        read_at = fault.reported_at.isoformat()
+        if fault.recovery_action not in (None, "None"):
+            decide(
+                fault.hostname,
+                "recovery_action",
+                f"the driver asks for recovery ({fault.recovery_action}) "
+                f"on GPU {fault.gpu_index}",
+                gpu_index=fault.gpu_index,
+                recovery_action=fault.recovery_action,
+                reading_at=read_at,
+            )
+        if fault.remapped_rows_failure is True:
+            decide(
+                fault.hostname,
+                "remapped_rows",
+                f"GPU {fault.gpu_index} has run out of spare memory rows",
+                gpu_index=fault.gpu_index,
+                reading_at=read_at,
+            )
+
+    # Xids stay within XID_WINDOW for a day, so a resolved host would trip
+    # again on the Xid it was resolved for. A resolve covers every Xid up to
+    # the scan that saw it 'resolving'; only newer ones count after that.
+    floors: dict[str, datetime] = {}
+    for host in pools:
+        key = (kind, f"rule:xid:{host}")
+        state = states.get(key, InfraSubjectState(*key))
+        episode = open_episodes.get((kind, host))
+        if episode is not None and episode.details.get("stage") == "resolving":
+            out_states.append(replace(state, last_reported_at=now))
+            floors[host] = now
+        elif state.last_reported_at is not None:
+            floors[host] = state.last_reported_at
+    repeats: dict[tuple[str, str, int], list[XidEvent]] = defaultdict(list)
+    for event in sorted(xid_events, key=lambda e: (e.hostname, e.at)):
+        host = event.hostname
+        floor = floors.get(host)
+        if (
+            host not in pools
+            or now - event.at > XID_WINDOW
+            or (floor is not None and event.at <= floor)
+        ):
+            continue
+        gpu = event.bus_id or "unknown"
+        if event.xid in FIRST_SIGHT_XIDS or (
+            event.xid in B200_FIRST_SIGHT_XIDS and pools[host][0] == "b200"
+        ):
+            decide(
+                host,
+                "xid",
+                f"Xid {event.xid} on GPU {gpu}",
+                xid=event.xid,
+                bus_id=event.bus_id,
+                at=event.at.isoformat(),
+            )
+        elif event.xid in REPEAT_XIDS:
+            repeats[(host, event.bus_id, event.xid)].append(event)
+    for (host, bus_id, xid), events in sorted(repeats.items()):
+        if len(events) >= XID_REPEATS:
+            decide(
+                host,
+                "xid_repeat",
+                f"Xid {xid} {len(events)} times on GPU {bus_id or 'unknown'} in 24 h",
+                xid=xid,
+                bus_id=bus_id,
+                count=len(events),
+                first_at=events[0].at.isoformat(),
+                last_at=events[-1].at.isoformat(),
+            )
+
+    latest = {reading.hostname: reading for reading in host_faults}
+
+    def probes_failing(host: str) -> bool | None:
+        """True when every network probe failed, None when not read."""
+        reading = latest.get(host)
+        if reading is None or not fresh(reading.reported_at):
+            return None
+        probes = [p for p in reading.network_probes or [] if isinstance(p, dict)]
+        if not probes:
+            return None
+        return not any(probe.get("ok") is True for probe in probes)
+
+    disk = thresholds.get(InfraAlertType.DISK_USAGE.value)
+    dead = thresholds.get(InfraAlertType.GPU_DEAD_MEMORY.value)
+    count = thresholds.get(InfraAlertType.GPU_COUNT.value)
+    checks = HOST_FAULT_CHECKS
+    for host in sorted(pools):
+        cluster, pool = pools[host]
+        reading = latest.get(host)
+        if reading is not None and check(
+            host, "gpu_hang", reading.gpu_query_hung, reading.reported_at
+        ):
+            decide(
+                host,
+                "gpu_hang",
+                f"the GPU query hung on {checks} consecutive checks",
+                reading_at=reading.reported_at.isoformat(),
+            )
+
+        # A host whose probes all fail is at fault only while most of its
+        # pool still reaches out; otherwise it is a shared incident.
+        failing = probes_failing(host)
+        if failing:
+            peers = [
+                result
+                for other, (_, other_pool) in pools.items()
+                if other != host and other_pool == pool
+                for result in [probes_failing(other)]
+                if result is not None
+            ]
+            if 2 * peers.count(False) <= len(peers):
+                failing = None
+        if reading is not None and check(host, "network", failing, reading.reported_at):
+            decide(
+                host,
+                "network",
+                "every network probe failed on "
+                f"{checks} consecutive checks while most of the pool passed",
+                probes=len(reading.network_probes or []),
+                reading_at=reading.reported_at.isoformat(),
+            )
+
+        if disk is not None and disk.enabled:
+            # A shared volume filling up is every mounting host's problem,
+            # not this host's; the disk alert pages for it once.
+            mounts = [
+                mount
+                for mount in disk_mounts
+                if mount.hostname == host
+                and mount.error is None
+                and mount.total_bytes > 0
+                and mount.fstype.lower() not in SHARED_DISK_FSTYPES
+            ]
+            full = [m for m in mounts if m.used_percent >= disk.threshold_value]
+            at = max((m.reported_at for m in mounts), default=None)
+            if check(host, "disk", bool(full) if mounts else None, at) and at:
+                worst = max(full, key=lambda m: m.used_percent)
+                decide(
+                    host,
+                    "disk",
+                    f"disk {worst.mount_point} at {worst.used_percent:.0f}% "
+                    f"used on {checks} consecutive checks",
+                    mount_point=worst.mount_point,
+                    used_percent=round(worst.used_percent, 1),
+                    threshold_percent=disk.threshold_value,
+                    reading_at=at.isoformat(),
+                )
+
+        if dead is not None and dead.enabled:
+            gpus = [
+                r
+                for r in gpu_dead_memory
+                if r.hostname == host and fresh(r.reported_at)
+            ]
+            held = [r for r in gpus if r.dead_proc_mem_mb >= dead.threshold_value]
+            at = max((r.reported_at for r in gpus), default=None)
+            if check(host, "dead_memory", bool(held) if gpus else None, at) and at:
+                worst_gpu = max(held, key=lambda r: r.dead_proc_mem_mb)
+                decide(
+                    host,
+                    "dead_memory",
+                    f"{worst_gpu.dead_proc_mem_mb:.0f} MiB held by dead "
+                    f"processes on GPU {worst_gpu.gpu_index} on {checks} "
+                    "consecutive checks",
+                    gpu_index=worst_gpu.gpu_index,
+                    dead_proc_mem_mb=worst_gpu.dead_proc_mem_mb,
+                    threshold_mib=dead.threshold_value,
+                    reading_at=at.isoformat(),
+                )
+
+        if cluster != "h200":
+            continue
+        # Bare metal only: Kubernetes nodes have no checkout slots, and a
+        # node short of GPUs only goes into the daily summary.
+        if reading is not None:
+            slots = reading.root_owned_slots
+            if check(
+                host,
+                "root_owned",
+                bool(slots) if slots is not None else None,
+                reading.reported_at,
+            ):
+                decide(
+                    host,
+                    "root_owned",
+                    f"root-owned files in {len(slots or [])} checkout slot(s) "
+                    f"on {checks} consecutive checks",
+                    slots=len(slots or []),
+                    reading_at=reading.reported_at.isoformat(),
+                )
+        observed = next((r for r in gpu_counts if r.hostname == host), None)
+        if count is not None and count.enabled and observed is not None:
+            # The same ratcheting baseline the GPU-count alert keeps.
+            previous = states.get((InfraAlertType.GPU_COUNT.value, f"gpu-count:{host}"))
+            baseline = max(
+                int(previous.details.get("baseline_gpus") or 0) if previous else 0,
+                observed.observed_gpus,
+            )
+            missing = baseline - observed.observed_gpus
+            if check(
+                host,
+                "gpu_count",
+                missing >= count.threshold_value,
+                observed.reported_at,
+            ):
+                decide(
+                    host,
+                    "gpu_count",
+                    f"{observed.observed_gpus} of {baseline} GPUs usable on "
+                    f"{checks} consecutive checks",
+                    observed_gpus=observed.observed_gpus,
+                    baseline_gpus=baseline,
+                    reading_at=observed.reported_at.isoformat(),
+                )
+    return [*hardware, *host_fault], out_states
+
+
+# The job-failure trigger reads a day of builds from Buildkite on every
+# refresh, so it runs at most this often; the scan caches its decisions in
+# this quarantine subject state in between.
+JOB_FAILURE_REFRESH = timedelta(minutes=15)
+JOB_FAILURE_CACHE_KEY = "trigger:job_failure"
+
 # A dry-run ('would') quarantine closes itself, without a post, once its
 # decision has been absent this many consecutive scans.
 DRY_RUN_EXPIRY_SCANS = 2
@@ -842,21 +1244,40 @@ def plan_infra_scan(
     open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
     quarantine_decisions: Iterable[QuarantineDecision] = (),
     quarantine_live: bool = False,
+    pools: Mapping[str, tuple[str, str]] | None = None,
+    gpu_faults: list[GpuFaultObservation] | None = None,
+    host_faults: list[HostFaultObservation] | None = None,
+    xid_events: list[XidEvent] | None = None,
 ) -> InfraScanPlan:
     """Decide state upserts and episode transitions for one scan.
 
     Disabled threshold rows suppress their alert type entirely. The
     quarantine sequence always runs, so an open episode keeps advancing on
-    actuator reports even when no decision names its host.
+    actuator reports even when no decision names its host. Its decisions are
+    the trigger rules' first, then `quarantine_decisions`.
     """
+    rule_decisions, rule_states = plan_trigger_rules(
+        now=now,
+        pools=pools or {},
+        thresholds=thresholds,
+        gpu_faults=gpu_faults or [],
+        host_faults=host_faults or [],
+        xid_events=xid_events or [],
+        disk_mounts=disk_mounts,
+        gpu_dead_memory=gpu_dead_memory,
+        gpu_counts=gpu_counts,
+        states=states,
+        open_episodes=open_episodes,
+    )
     plans: list[InfraScanPlan] = [
+        InfraScanPlan(states=tuple(rule_states)),
         plan_quarantine(
             now=now,
             live=quarantine_live,
-            decisions=quarantine_decisions,
+            decisions=[*rule_decisions, *quarantine_decisions],
             states=states,
             open_episodes=open_episodes,
-        )
+        ),
     ]
     unreporting = thresholds.get(InfraAlertType.UNREPORTING.value)
     if unreporting is not None and unreporting.enabled:
@@ -1209,6 +1630,9 @@ class InfraScanHandler:
         clock: Clock,
         delivery_mode: DeliveryMode = DeliveryMode.LIVE,
         quarantine_decisions: Callable[[], Iterable[QuarantineDecision]] = tuple,
+        job_failure_decisions: (
+            Callable[[datetime], Iterable[QuarantineDecision]] | None
+        ) = None,
         quarantine_live: bool = False,
     ) -> None:
         self._hosts = hosts
@@ -1216,10 +1640,47 @@ class InfraScanHandler:
         self._store = store
         self._clock = clock
         self._delivery_mode = delivery_mode
-        # The trigger rules (a later change) supply decisions; until then the
-        # source is empty and the sequence only advances existing episodes.
+        # Decisions beyond the reading-based trigger rules, which the scan
+        # evaluates itself. The job-failure trigger reads Buildkite, so it is
+        # cached (see _job_failures).
         self._quarantine_decisions = quarantine_decisions
+        self._job_failure_decisions = job_failure_decisions
         self._quarantine_live = quarantine_live
+
+    def _job_failures(
+        self, now: datetime, states: Mapping[tuple[str, str], InfraSubjectState]
+    ) -> tuple[list[QuarantineDecision], tuple[InfraSubjectState, ...]]:
+        """The job-failure trigger's decisions, refreshed every
+        JOB_FAILURE_REFRESH and cached in subject state between scans (each
+        scan is its own process). A failed fetch yields no decisions and
+        retries next scan; it never fails the scan."""
+        if self._job_failure_decisions is None:
+            return [], ()
+        key = (InfraAlertType.QUARANTINE.value, JOB_FAILURE_CACHE_KEY)
+        cached = states.get(key)
+        if (
+            cached is not None
+            and cached.last_reported_at is not None
+            and now - cached.last_reported_at < JOB_FAILURE_REFRESH
+        ):
+            return [
+                QuarantineDecision(**item) for item in cached.details["decisions"]
+            ], ()
+        try:
+            decisions = list(self._job_failure_decisions(now))
+        except Exception as exc:
+            print(
+                f"job-failure trigger skipped: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return [], ()
+        return decisions, (
+            InfraSubjectState(
+                *key,
+                last_reported_at=now,
+                details={"decisions": [asdict(item) for item in decisions]},
+            ),
+        )
 
     def __call__(self, command: ScheduledCommand) -> HandlerCompletion:
         now = command.target_time
@@ -1233,6 +1694,17 @@ class InfraScanHandler:
             if hostname.strip()
         ) | self._snapshots.recent_gpu_hosts(since=now - RETIREMENT_AGE)
         snapshot = self._store.infra_state()
+        states = {
+            (state.alert_type, state.subject_key): state for state in snapshot.states
+        }
+        gpu_faults = self._snapshots.gpu_faults()
+        host_faults = self._snapshots.host_faults()
+        pools = pilot_pools(
+            {fault.hostname for fault in gpu_faults}
+            | {reading.hostname for reading in host_faults},
+            self._snapshots.agent_queues(),
+        )
+        job_failures, cache = self._job_failures(now, states)
         plan = plan_infra_scan(
             now=now,
             thresholds={
@@ -1248,17 +1720,21 @@ class InfraScanHandler:
             gpu_temperatures=self._snapshots.gpu_temperatures(),
             gpu_dead_memory=self._snapshots.gpu_dead_memory(),
             gpu_counts=self._snapshots.gpu_counts(),
-            states={
-                (state.alert_type, state.subject_key): state
-                for state in snapshot.states
-            },
+            states=states,
             open_episodes={
                 (episode.alert_type, episode.subject_key): episode
                 for episode in snapshot.open_episodes
             },
-            quarantine_decisions=self._quarantine_decisions(),
+            quarantine_decisions=[*job_failures, *self._quarantine_decisions()],
             quarantine_live=self._quarantine_live,
+            pools=pools,
+            gpu_faults=gpu_faults,
+            host_faults=host_faults,
+            xid_events=self._snapshots.xid_events(
+                hostnames=sorted(pools), since=now - XID_WINDOW
+            ),
         )
+        plan = replace(plan, states=plan.states + cache)
         self._store.commit_infra_scan(
             command=command,
             plan=plan,

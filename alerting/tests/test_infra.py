@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import pathlib
 import subprocess
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -18,7 +19,9 @@ from alerting.infra import (
     DiskMountObservation,
     GpuCountObservation,
     GpuDeadMemoryObservation,
+    GpuFaultObservation,
     GpuTemperatureObservation,
+    HostFaultObservation,
     HostReport,
     InfraAlertType,
     InfraScanHandler,
@@ -26,6 +29,7 @@ from alerting.infra import (
     KubectlNodesSource,
     QuarantineDecision,
     UnionExpectedHostSource,
+    XidEvent,
 )
 from alerting.memory import (
     FixedClock,
@@ -67,6 +71,10 @@ class FixtureSnapshots:
         self.temps: list[GpuTemperatureObservation] = []
         self.dead_mem: list[GpuDeadMemoryObservation] = []
         self.gpu_totals: list[GpuCountObservation] = []
+        self.faults: list[GpuFaultObservation] = []
+        self.host_fault_rows: list[HostFaultObservation] = []
+        self.xids: list[XidEvent] = []
+        self.agents: list[tuple[str, str]] = []
 
     def infra_thresholds(self) -> list[InfraThreshold]:
         return list(self.threshold_rows)
@@ -98,6 +106,21 @@ class FixtureSnapshots:
 
     def gpu_counts(self) -> list[GpuCountObservation]:
         return list(self.gpu_totals)
+
+    def gpu_faults(self) -> list[GpuFaultObservation]:
+        return list(self.faults)
+
+    def host_faults(self) -> list[HostFaultObservation]:
+        return list(self.host_fault_rows)
+
+    def xid_events(
+        self, *, hostnames: Iterable[str], since: datetime
+    ) -> list[XidEvent]:
+        wanted = set(hostnames)
+        return [e for e in self.xids if e.hostname in wanted and e.at >= since]
+
+    def agent_queues(self) -> list[tuple[str, str]]:
+        return list(self.agents)
 
 
 def threshold(
@@ -1165,3 +1188,92 @@ def test_actuator_not_confirming_posts_once_per_stage() -> None:
     for _ in range(3):
         scan_and_post(runtime, clock)
     assert len(slack.deliveries) == 4
+
+
+def job_failure_runtime(
+    fetch: Any,
+) -> tuple[AlertingRuntime, InMemoryInfraStore, RecordingSlackPort, FixedClock]:
+    clock = FixedClock(START)
+    executions = InMemoryAutomationExecutionStore()
+    outbox = InMemoryOutboxStore()
+    slack = RecordingSlackPort()
+    store = InMemoryInfraStore(executions=executions, outbox=outbox)
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows = []
+    runtime = AlertingRuntime(
+        executions=executions,
+        outbox=outbox,
+        slack=slack,
+        clock=clock,
+        handlers={
+            "infra_scan": InfraScanHandler(
+                hosts=FixtureHosts(),
+                snapshots=snapshots,
+                store=store,
+                clock=clock,
+                job_failure_decisions=fetch,
+            )
+        },
+        alert_path=None,
+    )
+    return runtime, store, slack, clock
+
+
+def test_job_failure_trigger_runs_every_15_minutes_and_its_decisions_hold() -> None:
+    fetched: list[datetime] = []
+
+    def fetch(now: datetime) -> list[QuarantineDecision]:
+        fetched.append(now)
+        return [quarantine_decision()]
+
+    runtime, store, slack, clock = job_failure_runtime(fetch)
+    for _ in range(4):
+        scan_and_post(runtime, clock)
+
+    assert fetched == [START + timedelta(minutes=5), START + timedelta(minutes=20)]
+    [episode] = store.open_episodes()
+    assert episode.details["stage"] == "would"
+    assert episode.details["evidence"] == {"xid": 79, "gpu": 3}
+    assert len(slack.deliveries) == 1
+
+
+def test_a_failed_job_failure_fetch_yields_nothing_and_retries_next_scan(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[datetime] = []
+
+    def fetch(now: datetime) -> list[QuarantineDecision]:
+        calls.append(now)
+        if len(calls) == 1:
+            raise RuntimeError("GET /builds failed with HTTP 502")
+        return [quarantine_decision()]
+
+    runtime, store, slack, clock = job_failure_runtime(fetch)
+    scan_and_post(runtime, clock)
+    assert store.open_episodes() == []
+    assert "job-failure trigger skipped: RuntimeError" in capsys.readouterr().err
+
+    scan_and_post(runtime, clock)
+    assert len(calls) == 2
+    assert store.open_episodes()[0].details["stage"] == "would"
+
+
+def test_a_trigger_rule_opens_a_dry_run_quarantine_with_its_pool() -> None:
+    runtime, store, slack, clock = quarantine_runtime([])
+    snapshots = runtime._handlers["infra_scan"]._snapshots  # type: ignore[attr-defined]
+    snapshots.faults = [
+        GpuFaultObservation("dgxb200-test", 0, "None", None, START),
+    ]
+    snapshots.xids = [XidEvent("dgxb200-test", "", 79, START - timedelta(hours=1))]
+
+    scan_and_post(runtime, clock)
+
+    [episode] = store.open_episodes()
+    assert episode.subject_key == "dgxb200-test"
+    assert episode.details["stage"] == "would"
+    assert (episode.details["cluster"], episode.details["pool"]) == (
+        "b200",
+        "b200-k8s",
+    )
+    text = slack.deliveries[-1].payload["text"]
+    assert text.endswith("would quarantine `dgxb200-test`: Xid 79 on GPU unknown")

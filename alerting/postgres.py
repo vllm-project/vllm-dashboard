@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -37,7 +37,9 @@ from alerting.infra import (
     DiskMountObservation,
     GpuCountObservation,
     GpuDeadMemoryObservation,
+    GpuFaultObservation,
     GpuTemperatureObservation,
+    HostFaultObservation,
     HostReport,
     InfraAlertEpisode,
     InfraNotificationFactory,
@@ -45,7 +47,10 @@ from alerting.infra import (
     InfraStateSnapshot,
     InfraSubjectState,
     InfraThreshold,
+    QuarantineDecision,
     QuarantineStageChange,
+    TRIGGER_XIDS,
+    XidEvent,
 )
 from alerting.main_ci import (
     MainCIJobObservation,
@@ -1339,6 +1344,93 @@ class PostgresAlertStore:
             for row in rows
         ]
 
+    def gpu_faults(self) -> list[GpuFaultObservation]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT ON (hostname, gpu_index)
+                       hostname, gpu_index, recovery_action,
+                       remapped_rows_failure, reported_at
+                FROM gpu_snapshots
+                -- Only a fresh reading can trip a rule (READING_MAX_AGE);
+                -- the bound keeps the scan on the newest rows, as in
+                -- gpu_counts.
+                WHERE reported_at >= now() - interval '10 minutes'
+                ORDER BY hostname, gpu_index, reported_at DESC
+                """
+            ).fetchall()
+        return [
+            GpuFaultObservation(
+                hostname=str(row[0]),
+                gpu_index=int(row[1]),
+                recovery_action=str(row[2]) if row[2] is not None else None,
+                remapped_rows_failure=bool(row[3]) if row[3] is not None else None,
+                reported_at=row[4],
+            )
+            for row in rows
+        ]
+
+    def host_faults(self) -> list[HostFaultObservation]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT ON (hostname)
+                       hostname, gpu_query_hung, network_probes,
+                       root_owned_slots, reported_at
+                FROM host_snapshots
+                -- Bounded for the same reason as gpu_faults.
+                WHERE reported_at >= now() - interval '10 minutes'
+                ORDER BY hostname, reported_at DESC
+                """
+            ).fetchall()
+        return [
+            HostFaultObservation(
+                hostname=str(row[0]),
+                gpu_query_hung=bool(row[1]) if row[1] is not None else None,
+                network_probes=list(row[2]) if row[2] is not None else None,
+                root_owned_slots=(
+                    [str(slot) for slot in row[3]] if row[3] is not None else None
+                ),
+                reported_at=row[4],
+            )
+            for row in rows
+        ]
+
+    def xid_events(
+        self, *, hostnames: Iterable[str], since: datetime
+    ) -> list[XidEvent]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT hostname, bus_id, xid, at
+                FROM gpu_xid_events
+                -- idx_gpu_xid_events_host_at: one range per pilot host.
+                WHERE hostname = ANY(%s) AND at >= %s AND xid = ANY(%s)
+                ORDER BY hostname, at
+                """,
+                (list(hostnames), since, sorted(TRIGGER_XIDS)),
+            ).fetchall()
+        return [
+            XidEvent(
+                hostname=str(row[0]), bus_id=str(row[1]), xid=int(row[2]), at=row[3]
+            )
+            for row in rows
+        ]
+
+    def agent_queues(self) -> list[tuple[str, str]]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT hostname, queue
+                FROM buildkite_agent_snapshots, unnest(queues) AS queue
+                -- The dashboard's poll-metrics cron samples connected agents
+                -- every five minutes; three polls ride out one failure.
+                WHERE polled_at >= now() - interval '15 minutes'
+                  AND hostname IS NOT NULL
+                """
+            ).fetchall()
+        return [(str(row[0]), str(row[1])) for row in rows]
+
     def infra_state(self) -> InfraStateSnapshot:
         with self._connection_factory() as connection:
             state_rows = connection.execute(
@@ -2112,8 +2204,10 @@ def build_infra_runtime(
     clock: Clock,
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
     quarantine_live: bool = False,
+    buildkite_token: str | None = None,
 ) -> AlertingRuntime:
-    """Wire the infra health scan: optional kubectl nodes + Postgres.
+    """Wire the infra health scan: optional kubectl nodes + Postgres, and the
+    job-failure quarantine trigger when a Buildkite token is set.
 
     The expected-hosts roster is reporter-derived (see InfraScanHandler):
     the Buildkite gpu-queue agents list was dropped because the fleet's
@@ -2130,12 +2224,23 @@ def build_infra_runtime(
     hosts = UnionExpectedHostSource(
         [*(KubectlNodesSource(kubeconfig=path) for path in kubeconfigs)]
     )
+    job_failure_decisions = None
+    if buildkite_token:
+        from alerting.full_ci import BuildkiteRestClient
+        from alerting.job_failure_trigger import dry_run_decisions
+
+        buildkite = BuildkiteRestClient(token=buildkite_token)
+
+        def job_failure_decisions(now: datetime) -> list[QuarantineDecision]:
+            return dry_run_decisions(buildkite, now=now)
+
     handler = InfraScanHandler(
         hosts=hosts,
         snapshots=store,
         store=store,
         clock=clock,
         delivery_mode=delivery_mode,
+        job_failure_decisions=job_failure_decisions,
         quarantine_live=quarantine_live,
     )
     return AlertingRuntime(

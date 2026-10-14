@@ -130,6 +130,7 @@ def test_infra_runtime_passes_kubeconfigs_and_delivery_mode(
     monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/alerting")
     monkeypatch.setenv("GPU_REPORTER_KUBECONFIG_H100", "/run/alerting/h100.conf")
     monkeypatch.setenv("GPU_REPORTER_KUBECONFIG_DGX", "/run/alerting/dgx.conf")
+    monkeypatch.setenv("BUILDKITE_TOKEN", "bk-token")
     monkeypatch.setattr(worker, "build_infra_runtime", fake_build)
 
     worker._runtime("infra", worker.SystemClock(), DeliveryMode.SHADOW)
@@ -139,6 +140,7 @@ def test_infra_runtime_passes_kubeconfigs_and_delivery_mode(
         "/run/alerting/dgx.conf",
     ]
     assert captured["delivery_mode"] is DeliveryMode.SHADOW
+    assert captured["buildkite_token"] == "bk-token"
 
 
 def test_infra_runtime_skips_kubectl_sources_without_kubeconfigs(
@@ -153,6 +155,7 @@ def test_infra_runtime_skips_kubectl_sources_without_kubeconfigs(
     monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/alerting")
     monkeypatch.delenv("GPU_REPORTER_KUBECONFIG_H100", raising=False)
     monkeypatch.delenv("GPU_REPORTER_KUBECONFIG_DGX", raising=False)
+    monkeypatch.delenv("BUILDKITE_TOKEN", raising=False)
     monkeypatch.setattr(worker, "build_infra_runtime", fake_build)
 
     worker._runtime("infra", worker.SystemClock(), DeliveryMode.SHADOW)
@@ -160,6 +163,8 @@ def test_infra_runtime_skips_kubectl_sources_without_kubeconfigs(
     # No kubectl sources: the worker's egress SG cannot reach the cluster
     # API servers, so kubeconfigs are optional and unset means "skip".
     assert captured["kubeconfigs"] == []
+    # Likewise the job-failure trigger: no token, no trigger.
+    assert captured["buildkite_token"] is None
 
 
 def _set_analysis_environment(monkeypatch: pytest.MonkeyPatch) -> None:
