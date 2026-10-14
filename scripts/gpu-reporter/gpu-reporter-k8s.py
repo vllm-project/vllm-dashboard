@@ -344,10 +344,14 @@ def read_network_probes(pod):
     ))
 
 
-def start_pod_reads(pod):
-    """Start one node's execs; process_node waits on the futures."""
-    return {"smi": POD_READS.submit(read_smi, pod),
-            "network": POD_READS.submit(read_network_probes, pod)}
+def start_pod_reads(pod, since=None):
+    """Start one node's execs and, once it has a cursor, its log read;
+    process_node waits on the futures."""
+    reads = {"smi": POD_READS.submit(read_smi, pod),
+             "network": POD_READS.submit(read_network_probes, pod)}
+    if since is not None:
+        reads["log"] = POD_READS.submit(read_plugin_log, pod, since)
+    return reads
 
 
 # `kubectl logs --timestamps` line:
@@ -371,30 +375,34 @@ def parse_log_time(s):
 
 
 def parse_plugin_log(text, since, uuid_to_bus=None):
-    """Device-plugin log -> (xids, last event time or None).
+    """Device-plugin log -> (xids, time of the last line consumed or None).
 
     Every Processing/Skipping event at or after `since` (aware datetime)
     becomes an xid entry, at most MAX_XIDS_PER_REPORT. The log names a GPU
     only on the XidCriticalError line that follows a Processing event, so
     bus_id is that GPU's bus id when known and "" otherwise (Skipping events
     carry only an in-process device handle).
+
+    Every stamped line read moves the returned time, so a quiet log isn't
+    re-read from the last Xid every run. Past the cap it stops at the last
+    Xid sent, so the rest go out next run.
     """
     uuid_to_bus = uuid_to_bus or {}
     xids, last = [], None
     for line in text.splitlines():
-        m = LOG_LINE_RE.match(line)
-        at = m and parse_log_time(m.group(1))
+        at = parse_log_time(line.split(" ", 1)[0])
         if not at or at < since:
             continue
-        msg = m.group(2)
+        m = LOG_LINE_RE.match(line)
+        msg = m.group(2) if m else ""
         ev = XID_EVENT_RE.match(msg)
+        if ev and len(xids) == MAX_XIDS_PER_REPORT:
+            break
+        last = at
         if ev:
-            if len(xids) == MAX_XIDS_PER_REPORT:
-                break
             xids.append({"bus_id": "", "xid": int(ev.group(1)),
                          "at": at.isoformat(timespec="microseconds"),
                          "message": msg})
-            last = at
             continue
         crit = XID_CRITICAL_RE.match(msg)
         if crit and xids and xids[-1]["xid"] == int(crit.group(1)):
@@ -402,11 +410,15 @@ def parse_plugin_log(text, since, uuid_to_bus=None):
     return xids, last
 
 
-def read_xids(pod, since, uuid_to_bus):
-    """Xids logged since `since` (ISO) -> (xids, next since)."""
-    text = kubectl("logs", "-n", DCGM_NS, pod, "-c", PLUGIN_CONTAINER,
+def read_plugin_log(pod, since):
+    """The device-plugin log since `since` (ISO), with timestamps."""
+    return kubectl("logs", "-n", DCGM_NS, pod, "-c", PLUGIN_CONTAINER,
                    "--timestamps", "--since-time", since,
                    timeout=DRIVER_READ_TIMEOUT)
+
+
+def xids_since(text, since, uuid_to_bus):
+    """Log read from `since` (ISO) -> (xids, next since)."""
     # The API server truncates --since-time to whole seconds, so lines
     # already sent come back; parse_plugin_log drops those before `since`.
     xids, last = parse_plugin_log(text, parse_log_time(since), uuid_to_bus)
@@ -735,7 +747,9 @@ def process_node(node, pod_ip, disk_state, now, plugin_pod=None, reads=None):
         print(f"  WARNING: node {name} has no device-plugin pod; driver "
               f"readings missing", file=sys.stderr)
     else:
-        reads = reads or start_pod_reads(plugin_pod)
+        since_map = disk_state.setdefault(XID_STATE_KEY, {})
+        since = since_map.get(name)
+        reads = reads or start_pod_reads(plugin_pod, since)
         try:
             smi, payload["gpu_query_hung"], payload["gpu_query_error"] = \
                 reads["smi"].result()
@@ -747,8 +761,6 @@ def process_node(node, pod_ip, disk_state, now, plugin_pod=None, reads=None):
         except Exception as e:
             print(f"  WARNING: network probe exec on {name} failed: {e}",
                   file=sys.stderr)
-        since_map = disk_state.setdefault(XID_STATE_KEY, {})
-        since = since_map.get(name)
         if since is None:
             # First run: start from now, nothing to read yet.
             since_map[name] = datetime.fromtimestamp(
@@ -756,8 +768,8 @@ def process_node(node, pod_ip, disk_state, now, plugin_pod=None, reads=None):
             payload["xids"] = []
         else:
             try:
-                payload["xids"], since_map[name] = read_xids(
-                    plugin_pod, since,
+                payload["xids"], since_map[name] = xids_since(
+                    reads["log"].result(), since,
                     {u: g["bus_id"] for u, g in smi.items() if g["bus_id"]})
             except Exception as e:
                 print(f"  WARNING: device-plugin log read on {name} failed: "
@@ -850,12 +862,15 @@ def main():
               file=sys.stderr)
         plugin_pods = {}
 
-    reads = {name: start_pod_reads(pod) for name, pod in plugin_pods.items()
-             if name in gpu_node_names}
-
     state_path = resolve_state_path()
     disk_state = load_disk_state(state_path)
     now = time.time()
+
+    # Every node's execs and log read start now, on POD_READS' bounded
+    # workers, so slow nodes overlap instead of adding up in the loop.
+    since_map = disk_state.get(XID_STATE_KEY, {})
+    reads = {name: start_pod_reads(pod, since_map.get(name))
+             for name, pod in plugin_pods.items() if name in gpu_node_names}
 
     reported = 0
     for node in gpu_nodes:

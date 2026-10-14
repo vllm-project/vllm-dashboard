@@ -412,7 +412,8 @@ def test_parse_plugin_log_xids(reporter_k8s):
     assert xids[0]["at"] == "2026-01-05T11:25:00.405995+00:00"
     assert xids[2]["at"] == "2026-09-23T02:35:57.360474+00:00"
     assert xids[0]["message"].startswith("Processing event")
-    assert last.isoformat().startswith("2026-09-23T02:35:57.360474")
+    # The cursor moves past every stamped line read, not just Xids.
+    assert last.isoformat().startswith("2026-09-28T23:13:29.028442")
 
 
 def test_parse_plugin_log_empty(reporter_k8s):
@@ -424,12 +425,13 @@ def test_parse_plugin_log_caps_events(reporter_k8s, monkeypatch):
     xids, last = reporter_k8s.parse_plugin_log(PLUGIN_LOG_FIXTURE, EPOCH,
                                                UUID_TO_BUS)
     # The capped event still gets its XidCriticalError bus id, and the
-    # cursor stops at it so the rest go out next run.
+    # cursor stops after that line, before the next Xid, so the rest go out
+    # next run.
     assert [(x["xid"], x["bus_id"]) for x in xids] == [(79, "00000000:C3:00.0")]
-    assert last.isoformat().startswith("2026-01-05T11:25:00.405995")
+    assert last.isoformat().startswith("2026-01-05T11:25:00.406803")
 
 
-def test_read_xids_advances_cursor_past_last_event(reporter_k8s,
+def test_xids_since_advances_cursor_past_last_line(reporter_k8s,
                                                    monkeypatch):
     seen = {}
 
@@ -438,17 +440,39 @@ def test_read_xids_advances_cursor_past_last_event(reporter_k8s,
         return PLUGIN_LOG_FIXTURE
 
     monkeypatch.setattr(reporter_k8s, "kubectl", fake_kubectl)
-    xids, nxt = reporter_k8s.read_xids("pod-1", "2026-01-01T00:00:00+00:00",
-                                       UUID_TO_BUS)
+    since = "2026-01-01T00:00:00+00:00"
+    text = reporter_k8s.read_plugin_log("pod-1", since)
+    assert "--since-time" in seen["args"] and since in seen["args"]
+    xids, nxt = reporter_k8s.xids_since(text, since, UUID_TO_BUS)
     assert len(xids) == 3
-    assert "--since-time" in seen["args"]
-    assert "2026-01-01T00:00:00+00:00" in seen["args"]
-    assert nxt == "2026-09-23T02:35:57.360475+00:00"
+    assert nxt == "2026-09-28T23:13:29.028443+00:00"
     # The API server truncates --since-time to the second, so the last
-    # event comes back on the next read; it must not be sent again.
-    monkeypatch.setattr(reporter_k8s, "kubectl",
-                        lambda *a, timeout=10: PLUGIN_LOG_FIXTURE)
-    assert reporter_k8s.read_xids("pod-1", nxt, {}) == ([], nxt)
+    # lines come back on the next read; they must not be sent again.
+    assert reporter_k8s.xids_since(PLUGIN_LOG_FIXTURE, nxt, {}) == ([], nxt)
+
+
+def test_quiet_log_still_moves_the_cursor(reporter_k8s):
+    # No Xids at all: the next read must start after these lines, not
+    # re-download everything since the last Xid.
+    quiet = "\n".join(
+        f"2026-10-01T00:00:{s:02d}.000000Z I1001 00:00:{s:02d}.0 1 "
+        f"server.go:1] heartbeat" for s in range(5))
+    xids, nxt = reporter_k8s.xids_since(
+        quiet, "2026-10-01T00:00:00+00:00", {})
+    assert xids == []
+    assert nxt == "2026-10-01T00:00:04.000001+00:00"
+
+
+def test_capped_log_cursor_stops_at_the_last_sent_xid(reporter_k8s,
+                                                      monkeypatch):
+    monkeypatch.setattr(reporter_k8s, "MAX_XIDS_PER_REPORT", 1)
+    xids, nxt = reporter_k8s.xids_since(
+        PLUGIN_LOG_FIXTURE, "2026-01-01T00:00:00+00:00", UUID_TO_BUS)
+    assert [x["xid"] for x in xids] == [79]
+    assert nxt == "2026-01-05T11:25:00.406804+00:00"
+    # Next run picks up the unsent Xid 145.
+    rest, _ = reporter_k8s.xids_since(PLUGIN_LOG_FIXTURE, nxt, UUID_TO_BUS)
+    assert [x["xid"] for x in rest] == [145]
 
 
 def test_driver_fields_from_node_status(reporter_k8s):
@@ -661,7 +685,7 @@ def test_main_starts_every_nodes_execs_before_the_node_loop(
         reporter_k8s, monkeypatch, tmp_path):
     started = []
     monkeypatch.setattr(reporter_k8s, "start_pod_reads",
-                        lambda pod: started.append(pod) or {})
+                        lambda pod, since=None: started.append(pod) or {})
     seen = {}
 
     def fake_process_node(node, pod_ip, state, now, plugin_pod=None,
@@ -682,3 +706,24 @@ def test_main_starts_every_nodes_execs_before_the_node_loop(
     monkeypatch.setattr(reporter_k8s, "report", lambda payload: None)
     reporter_k8s.main()
     assert seen["inf-4x8h100-1"] == ["pod-1", "pod-2"]
+
+
+def test_log_fetch_starts_with_the_other_pod_reads(reporter_k8s,
+                                                   monkeypatch):
+    calls = []
+
+    def fake_kubectl(*args, timeout=10):
+        calls.append(args[0])
+        return ""
+
+    monkeypatch.setattr(reporter_k8s, "kubectl", fake_kubectl)
+    reads = reporter_k8s.start_pod_reads("pod-1", "2026-10-01T00:00:00+00:00")
+    assert set(reads) == {"smi", "network", "log"}
+    for future in reads.values():
+        try:
+            future.result()
+        except Exception:
+            pass
+    assert "logs" in calls
+    # First run: no cursor yet, so nothing to fetch.
+    assert "log" not in reporter_k8s.start_pod_reads("pod-1", None)
