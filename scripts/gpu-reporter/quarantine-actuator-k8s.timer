@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the vLLM CI quarantine actuator (K8s) every minute
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+
+[Install]
+WantedBy=timers.target

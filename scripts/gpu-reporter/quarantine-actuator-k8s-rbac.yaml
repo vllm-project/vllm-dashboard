@@ -1,0 +1,86 @@
+# RBAC for the quarantine actuator (quarantine-actuator-k8s.py), the tainter.
+# Separate from the reader (gpu-reporter-k8s-rbac.yaml): only this identity
+# can change nodes. Known limit: `nodes patch` can't be narrowed to our taint
+# or to spec.unschedulable; accepted for the pilot.
+#
+# Apply once per cluster, then mint a kubeconfig for the ServiceAccount and
+# install it on the control plane that runs quarantine-actuator-k8s.timer as
+# /etc/gpu-reporter/quarantine-actuator-k8s.kubeconfig, owned by root, mode
+# 0600 (it holds a token that can cordon every node). Never use
+# /etc/kubernetes/admin.conf.
+#
+#   kubectl apply -f quarantine-actuator-k8s-rbac.yaml
+#   TOKEN=$(kubectl -n gpu-operator get secret quarantine-actuator-token \
+#     -o jsonpath='{.data.token}' | base64 -d)
+#   KC=/etc/gpu-reporter/quarantine-actuator-k8s.kubeconfig
+#   sudo install -m 0600 -o root -g root /dev/null "$KC"
+#   sudo kubectl --kubeconfig "$KC" config set-cluster <cluster> \
+#     --server=https://<api-server>:6443 \
+#     --certificate-authority=/etc/kubernetes/pki/ca.crt --embed-certs=true
+#   sudo kubectl --kubeconfig "$KC" config set-credentials quarantine-actuator --token="$TOKEN"
+#   sudo kubectl --kubeconfig "$KC" config set-context quarantine-actuator \
+#     --cluster=<cluster> --user=quarantine-actuator
+#   sudo kubectl --kubeconfig "$KC" config use-context quarantine-actuator
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: quarantine-actuator
+  namespace: gpu-operator
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: quarantine-actuator-token
+  namespace: gpu-operator
+  annotations:
+    kubernetes.io/service-account.name: quarantine-actuator
+type: kubernetes.io/service-account-token
+---
+# nodes get/list - read cordon and taints; patch - cordon/uncordon
+# (spec.unschedulable) and add/remove the vllm.ci/quarantine taint.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: quarantine-actuator
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: quarantine-actuator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: quarantine-actuator
+subjects:
+  - kind: ServiceAccount
+    name: quarantine-actuator
+    namespace: gpu-operator
+---
+# CI job pods on a quarantined node ("drained" once none is Running/Pending).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: quarantine-actuator
+  namespace: buildkite
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: quarantine-actuator
+  namespace: buildkite
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: quarantine-actuator
+subjects:
+  - kind: ServiceAccount
+    name: quarantine-actuator
+    namespace: gpu-operator

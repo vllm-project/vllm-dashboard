@@ -1,0 +1,17 @@
+[Unit]
+Description=Apply vLLM CI quarantine decisions to this cluster's nodes
+
+[Service]
+Type=oneshot
+# Same env file as gpu-reporter-k8s.service (GPU_REPORT_URL, GPU_REPORT_SECRET),
+# plus QUARANTINE_CLUSTER. The secret must never be written into this unit.
+EnvironmentFile=/etc/gpu-reporter/gpu-reporter-k8s.env
+# Kubeconfig for the quarantine-actuator ServiceAccount, root-only 0600
+# (see quarantine-actuator-k8s-rbac.yaml). Do NOT use /etc/kubernetes/admin.conf.
+Environment=KUBECONFIG=/etc/gpu-reporter/quarantine-actuator-k8s.kubeconfig
+# Roll out with --dry-run first; drop it once the logged commands look right.
+ExecStart=/usr/bin/python3 /opt/gpu-reporter/quarantine-actuator-k8s.py --dry-run
+TimeoutSec=120
+
+[Install]
+WantedBy=multi-user.target
