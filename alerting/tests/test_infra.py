@@ -1013,7 +1013,11 @@ def test_live_quarantine_runs_the_whole_sequence_on_actuator_reports() -> None:
     # The operator resolve endpoint moves it to resolving; it stays there
     # until the actuator reports 'returned'.
     store.update_details(
-        "quarantine", "gpu-node-7", stage="resolving", resolved_by="oncall"
+        "quarantine",
+        "gpu-node-7",
+        stage="resolving",
+        resolved_by="oncall",
+        resolve_requested_at=clock.now().isoformat(),
     )
     scan_and_post(runtime, clock)
     assert store.open_episodes()[0].details["stage"] == "resolving"
@@ -1119,3 +1123,39 @@ def test_quarantine_posts_never_say_how_to_resolve(stage: str) -> None:
     ).lower()
     for hint in ("/api/", "bearer", "token", "curl", "/resolve"):
         assert hint not in text
+
+
+def test_actuator_not_confirming_posts_once_per_stage() -> None:
+    decisions = [quarantine_decision()]
+    runtime, store, slack, clock = quarantine_runtime(decisions, live=True)
+    scan_and_post(runtime, clock)  # quarantining, no 'out' yet
+    scan_and_post(runtime, clock)
+    assert len(slack.deliveries) == 1
+
+    scan_and_post(runtime, clock)  # 10 min after the command
+    assert "has not confirmed taking out `gpu-node-7`" in (
+        slack.deliveries[-1].payload["text"]
+    )
+    for _ in range(3):
+        scan_and_post(runtime, clock)
+    assert len(slack.deliveries) == 2
+    assert store.open_episodes()[0].details["stage"] == "quarantining"
+
+    # A late 'drained' still advances, and resolve gets its own timer.
+    store.update_details("quarantine", "gpu-node-7", actuator_state="drained")
+    scan_and_post(runtime, clock)
+    assert store.open_episodes()[0].details["stage"] == "quarantined"
+    store.update_details(
+        "quarantine",
+        "gpu-node-7",
+        stage="resolving",
+        resolved_by="oncall",
+        resolve_requested_at=clock.now().isoformat(),
+    )
+    scan_and_post(runtime, clock)
+    scan_and_post(runtime, clock)
+    assert "has not confirmed returning" in slack.deliveries[-1].payload["text"]
+    assert len(slack.deliveries) == 4
+    for _ in range(3):
+        scan_and_post(runtime, clock)
+    assert len(slack.deliveries) == 4

@@ -205,6 +205,9 @@ class QuarantineStageChange:
     from_stage: str
     patch: dict[str, Any]
     silent: bool = False
+    # Set for a post about the episode rather than a move to its next stage;
+    # only "actuator_stuck" so far.
+    notice: str | None = None
 
 
 @dataclass(frozen=True)
@@ -698,6 +701,26 @@ def _plan_gpu_count(
 # decision has been absent this many consecutive scans.
 DRY_RUN_EXPIRY_SCANS = 2
 
+# The actuators run every minute; one that has not confirmed a quarantine
+# ('out') or a resolve ('returned') this long after the command is stuck, and
+# the host may be half out. Posted once per stage.
+ACTUATOR_CONFIRM_TIMEOUT = timedelta(minutes=10)
+
+
+def _actuator_stuck(
+    episode: InfraAlertEpisode, stage: Any, actuator: Any, now: datetime
+) -> bool:
+    if episode.details.get("actuator_stuck") == stage:
+        return False
+    if stage == "quarantining" and actuator not in ("out", "drained"):
+        since = episode.details.get("commanded_at")
+    elif stage == "resolving" and actuator != "returned":
+        since = episode.details.get("resolve_requested_at")
+    else:
+        return False
+    started = datetime.fromisoformat(str(since)) if since else episode.opened_at
+    return now - started >= ACTUATOR_CONFIRM_TIMEOUT
+
 
 def _stage_change(
     episode: InfraAlertEpisode,
@@ -804,6 +827,9 @@ def plan_quarantine(
             changes.append(
                 _stage_change(episode, {"stage": "resolved"}, resolved_at=now)
             )
+        elif episode is not None and _actuator_stuck(episode, stage, actuator, now):
+            change = _stage_change(episode, {"actuator_stuck": stage})
+            changes.append(replace(change, notice="actuator_stuck"))
         if next_absent != absent:
             out_states.append(
                 replace(state, details={**state.details, "absent_scans": next_absent})
@@ -957,6 +983,20 @@ def _render_quarantine(episode: InfraAlertEpisode) -> str:
             f"(resolved by {by})" + (f"; {_escape(note)}" if note else "")
         )
     raise ValueError(f"no quarantine renderer for stage: {stage}")
+
+
+def _render_actuator_stuck(episode: InfraAlertEpisode) -> str:
+    host = _code(episode.subject_key)
+    if episode.details.get("stage") == "resolving":
+        doing = "has not confirmed returning"
+    else:
+        doing = "has not confirmed taking out"
+    minutes = int(ACTUATOR_CONFIRM_TIMEOUT.total_seconds() // 60)
+    return (
+        f":warning: *Quarantine* — the actuator {doing} {host} after "
+        f"{minutes} min; the host may be half out. Check the actuator on its "
+        "cluster or host."
+    )
 
 
 def _render_open(episode: InfraAlertEpisode) -> str:
@@ -1146,8 +1186,13 @@ def infra_notifications(
         *(
             _intent(
                 change.episode,
-                verb=str(change.episode.details["stage"]),
-                text=_render_quarantine(change.episode),
+                verb=str(change.episode.details["stage"])
+                + (f":{change.notice}" if change.notice else ""),
+                text=(
+                    _render_actuator_stuck(change.episode)
+                    if change.notice == "actuator_stuck"
+                    else _render_quarantine(change.episode)
+                ),
                 delivery_mode=delivery_mode,
             )
             for change in plan.stage_changes
