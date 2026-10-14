@@ -49,6 +49,7 @@ from alerting.main_ci import (
     MainCIJobObservation,
     MainCILatestBuildRef,
     MainCIOpenAlertRef,
+    image_build_notice,
     ordered_unique_observations,
 )
 from alerting.main_ci_analysis import MainCIAnalysisTarget, MainCIJobAnalysis
@@ -57,6 +58,7 @@ from alerting.ports import (
     ClaimOutcome,
     AutomationExecution,
     AutomationExecutionStatus,
+    DeliveryMode,
     NotificationIntent,
     NotificationIntentRecord,
     OutboxStatus,
@@ -459,8 +461,14 @@ class InMemoryFullCIStore:
 class InMemoryMainCIStore:
     """Atomic in-memory model of Main CI current state and alert episodes."""
 
-    def __init__(self, *, executions: InMemoryAutomationExecutionStore) -> None:
+    def __init__(
+        self,
+        *,
+        executions: InMemoryAutomationExecutionStore,
+        outbox: InMemoryOutboxStore,
+    ) -> None:
         self._executions = executions
+        self._outbox = outbox
         self._cursor: datetime | None = None
         self._states: dict[str, MainCIJobObservation] = {}
         self._alerts: list[MainCIJobAlert] = []
@@ -476,8 +484,10 @@ class InMemoryMainCIStore:
         observations: list[MainCIJobObservation],
         scanned_through: datetime,
         now: datetime,
+        delivery_mode: DeliveryMode,
     ) -> None:
         execution_snapshot = self._executions._snapshot()
+        outbox_snapshot = dict(self._outbox._records)
         cursor_snapshot = self._cursor
         states_snapshot = dict(self._states)
         alerts_snapshot = list(self._alerts)
@@ -489,6 +499,7 @@ class InMemoryMainCIStore:
                     continue
                 self._states[observation.job_key] = observation
                 active_index = self._active.get(observation.job_key)
+                episode: MainCIJobAlert | None = None
                 if observation.failed:
                     if active_index is None:
                         alert = MainCIJobAlert(
@@ -504,14 +515,15 @@ class InMemoryMainCIStore:
                         self._active[observation.job_key] = len(self._alerts) - 1
                     else:
                         active = self._alerts[active_index]
-                        self._alerts[active_index] = replace(
+                        episode = replace(
                             active,
                             job_name=observation.job_name,
                             last_failure=observation,
                             failure_count=active.failure_count + 1,
                         )
+                        self._alerts[active_index] = episode
                 elif active_index is not None:
-                    active = self._alerts[active_index]
+                    active = episode = self._alerts[active_index]
                     self._alerts[active_index] = replace(
                         active,
                         job_name=observation.job_name,
@@ -519,11 +531,28 @@ class InMemoryMainCIStore:
                         resolution=observation,
                     )
                     del self._active[observation.job_key]
+                notice = (
+                    None
+                    if episode is None
+                    else image_build_notice(
+                        alert_id=episode.alert_id,
+                        job_key=episode.job_key,
+                        job_name=observation.job_name,
+                        first_failure_build_number=episode.first_failure.build_number,
+                        first_failure_build_url=episode.first_failure.build_url,
+                        last_failure_build_number=episode.last_failure.build_number,
+                        observation=observation,
+                        delivery_mode=delivery_mode,
+                    )
+                )
+                if notice is not None:
+                    self._outbox.enqueue(notice, now=now)
             if self._cursor is None or scanned_through > self._cursor:
                 self._cursor = scanned_through
             self._executions.complete(command.idempotency_key, now=now)
         except Exception:
             self._executions._restore(execution_snapshot)
+            self._outbox._records = outbox_snapshot
             self._cursor = cursor_snapshot
             self._states = states_snapshot
             self._alerts = alerts_snapshot

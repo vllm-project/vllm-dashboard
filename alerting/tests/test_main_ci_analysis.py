@@ -29,6 +29,7 @@ from alerting.memory import (
     InMemoryOutboxStore,
     RecordingSlackPort,
 )
+from alerting.ports import DeliveryMode
 from alerting.runtime import AlertingRuntime, ProcessStatus
 
 START = datetime(2026, 8, 29, 10, 0, tzinfo=timezone.utc)
@@ -156,6 +157,7 @@ def seed_alert(
         ],
         scanned_through=START + timedelta(minutes=minutes + 1),
         now=START,
+        delivery_mode=DeliveryMode.SHADOW,
     )
 
 
@@ -169,7 +171,7 @@ def fixture() -> tuple[
 ]:
     clock = FixedClock(START)
     executions = InMemoryAutomationExecutionStore()
-    main_ci = InMemoryMainCIStore(executions=executions)
+    main_ci = InMemoryMainCIStore(executions=executions, outbox=InMemoryOutboxStore())
     store = InMemoryMainCIAnalysisStore(main_ci=main_ci)
     logs = FixtureLogs()
     runner = FixtureRunner()

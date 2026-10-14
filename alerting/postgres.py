@@ -51,6 +51,7 @@ from alerting.main_ci import (
     MainCIJobObservation,
     MainCILatestBuildRef,
     MainCIOpenAlertRef,
+    image_build_notice,
     ordered_unique_observations,
 )
 from alerting.main_ci_analysis import (
@@ -839,6 +840,31 @@ class PostgresAlertStore:
             processed_build_ids=frozenset(row[0] for row in rows),
         )
 
+    def _enqueue_image_build_notice(
+        self,
+        connection: Any,
+        *,
+        alert_id: int,
+        first_failure_build_number: int,
+        first_failure_build_url: str,
+        last_failure_build_number: int,
+        observation: MainCIJobObservation,
+        delivery_mode: DeliveryMode,
+        now: datetime,
+    ) -> None:
+        notice = image_build_notice(
+            alert_id=alert_id,
+            job_key=observation.job_key,
+            job_name=observation.job_name,
+            first_failure_build_number=first_failure_build_number,
+            first_failure_build_url=first_failure_build_url,
+            last_failure_build_number=last_failure_build_number,
+            observation=observation,
+            delivery_mode=delivery_mode,
+        )
+        if notice is not None:
+            self._enqueue(connection, notice, next_attempt_at=now)
+
     def main_ci_scan_cursor(self) -> datetime | None:
         with self._connection_factory() as connection:
             row = connection.execute(
@@ -857,6 +883,7 @@ class PostgresAlertStore:
         observations: list[MainCIJobObservation],
         scanned_through: datetime,
         now: datetime,
+        delivery_mode: DeliveryMode,
     ) -> None:
         with self._connection_factory() as connection:
             with connection.transaction():
@@ -934,7 +961,8 @@ class PostgresAlertStore:
                                 failure_count = failure_count + 1,
                                 updated_at = %s
                             WHERE job_key = %s AND status = 'open'
-                            RETURNING alert_id
+                            RETURNING alert_id, first_failure_build_number,
+                                      first_failure_build_url
                             """,
                             (
                                 observation.job_name,
@@ -950,7 +978,18 @@ class PostgresAlertStore:
                                 observation.job_key,
                             ),
                         ).fetchone()
-                        if updated is None:
+                        if updated is not None:
+                            self._enqueue_image_build_notice(
+                                connection,
+                                alert_id=updated[0],
+                                first_failure_build_number=updated[1],
+                                first_failure_build_url=updated[2],
+                                last_failure_build_number=observation.build_number,
+                                observation=observation,
+                                delivery_mode=delivery_mode,
+                                now=now,
+                            )
+                        else:
                             connection.execute(
                                 """
                                 INSERT INTO alerting_main_ci_job_alerts (
@@ -997,7 +1036,7 @@ class PostgresAlertStore:
                                 ),
                             )
                     else:
-                        connection.execute(
+                        resolved = connection.execute(
                             """
                             UPDATE alerting_main_ci_job_alerts
                             SET status = 'resolved', resolved_at = %s,
@@ -1009,6 +1048,9 @@ class PostgresAlertStore:
                                 resolution_commit_sha = %s,
                                 updated_at = %s
                             WHERE job_key = %s AND status = 'open'
+                            RETURNING alert_id, first_failure_build_number,
+                                      first_failure_build_url,
+                                      last_failure_build_number
                             """,
                             (
                                 observation.finished_at,
@@ -1021,7 +1063,18 @@ class PostgresAlertStore:
                                 now,
                                 observation.job_key,
                             ),
-                        )
+                        ).fetchone()
+                        if resolved is not None:
+                            self._enqueue_image_build_notice(
+                                connection,
+                                alert_id=resolved[0],
+                                first_failure_build_number=resolved[1],
+                                first_failure_build_url=resolved[2],
+                                last_failure_build_number=resolved[3],
+                                observation=observation,
+                                delivery_mode=delivery_mode,
+                                now=now,
+                            )
 
                 connection.execute(
                     """
@@ -2001,6 +2054,7 @@ def build_main_ci_runtime(
     buildkite_token: str,
     slack: SlackPort,
     clock: Clock,
+    delivery_mode: DeliveryMode,
 ) -> AlertingRuntime:
     """Wire Main CI exact-job lifecycle reconciliation into the runtime."""
     from alerting.full_ci import BuildkiteRestClient
@@ -2008,7 +2062,9 @@ def build_main_ci_runtime(
 
     store = PostgresAlertStore.from_database_url(database_url)
     source = BuildkiteMainCISource(BuildkiteRestClient(token=buildkite_token))
-    handler = MainCIReconciliationHandler(source=source, store=store, clock=clock)
+    handler = MainCIReconciliationHandler(
+        source=source, store=store, clock=clock, delivery_mode=delivery_mode
+    )
     return AlertingRuntime(
         executions=store,
         outbox=store,
@@ -2025,6 +2081,7 @@ def build_main_ci_backstop_runtime(
     buildkite_token: str,
     slack: SlackPort,
     clock: Clock,
+    delivery_mode: DeliveryMode,
 ) -> AlertingRuntime:
     """Wire the hourly Main CI retry-resolution backstop into the runtime."""
     from alerting.full_ci import BuildkiteRestClient
@@ -2035,6 +2092,7 @@ def build_main_ci_backstop_runtime(
         builds=BuildkiteRestClient(token=buildkite_token),
         store=store,
         clock=clock,
+        delivery_mode=delivery_mode,
     )
     return AlertingRuntime(
         executions=store,

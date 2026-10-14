@@ -1,5 +1,6 @@
 """Main CI failed-job alert lifecycle through the scheduled-command seam."""
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -23,6 +24,7 @@ from alerting.memory import (
     InMemoryOutboxStore,
     RecordingSlackPort,
 )
+from alerting.ports import DeliveryMode
 from alerting.runtime import AlertingRuntime, ProcessStatus
 
 START = datetime(2026, 8, 29, 10, 0, tzinfo=timezone.utc)
@@ -99,10 +101,11 @@ def runtime_for(
 ) -> tuple[AlertingRuntime, InMemoryMainCIStore, FixedClock]:
     clock = FixedClock(START)
     executions = InMemoryAutomationExecutionStore()
-    store = InMemoryMainCIStore(executions=executions)
+    outbox = InMemoryOutboxStore()
+    store = InMemoryMainCIStore(executions=executions, outbox=outbox)
     runtime = AlertingRuntime(
         executions=executions,
-        outbox=InMemoryOutboxStore(),
+        outbox=outbox,
         slack=RecordingSlackPort(),
         clock=clock,
         handlers={
@@ -110,6 +113,7 @@ def runtime_for(
                 source=source,
                 store=store,
                 clock=clock,
+                delivery_mode=DeliveryMode.LIVE,
             )
         },
     )
@@ -405,10 +409,11 @@ def source_runtime_for(
 ) -> tuple[AlertingRuntime, InMemoryMainCIStore, FixedClock]:
     clock = FixedClock(START)
     executions = InMemoryAutomationExecutionStore()
-    store = InMemoryMainCIStore(executions=executions)
+    outbox = InMemoryOutboxStore()
+    store = InMemoryMainCIStore(executions=executions, outbox=outbox)
     runtime = AlertingRuntime(
         executions=executions,
-        outbox=InMemoryOutboxStore(),
+        outbox=outbox,
         slack=RecordingSlackPort(),
         clock=clock,
         handlers={
@@ -416,6 +421,7 @@ def source_runtime_for(
                 source=BuildkiteMainCISource(buildkite),
                 store=store,
                 clock=clock,
+                delivery_mode=DeliveryMode.LIVE,
             )
         },
     )
@@ -640,18 +646,25 @@ def combined_runtime_for(
 ) -> tuple[AlertingRuntime, InMemoryMainCIStore, FixedClock]:
     clock = FixedClock(START)
     executions = InMemoryAutomationExecutionStore()
-    store = InMemoryMainCIStore(executions=executions)
+    outbox = InMemoryOutboxStore()
+    store = InMemoryMainCIStore(executions=executions, outbox=outbox)
     runtime = AlertingRuntime(
         executions=executions,
-        outbox=InMemoryOutboxStore(),
+        outbox=outbox,
         slack=RecordingSlackPort(),
         clock=clock,
         handlers={
             "main_ci_reconcile": MainCIReconciliationHandler(
-                source=source, store=store, clock=clock
+                source=source,
+                store=store,
+                clock=clock,
+                delivery_mode=DeliveryMode.LIVE,
             ),
             "main_ci_backstop": MainCIBackstopHandler(
-                builds=builds, store=store, clock=clock
+                builds=builds,
+                store=store,
+                clock=clock,
+                delivery_mode=DeliveryMode.LIVE,
             ),
         },
     )
@@ -1022,3 +1035,267 @@ def test_buildkite_client_fetches_every_branch_when_branch_is_none() -> None:
     for query in client.queries:
         assert "branch" not in query
         assert query["include_retried_jobs"] == "true"
+
+
+IMAGE_KEY = "step:image-build|name::docker: Build image"
+
+
+def image_runtime_for(
+    delivery_mode: DeliveryMode = DeliveryMode.LIVE,
+) -> tuple[
+    AlertingRuntime,
+    FixtureSource,
+    InMemoryOutboxStore,
+    InMemoryAutomationExecutionStore,
+]:
+    clock = FixedClock(START)
+    executions = InMemoryAutomationExecutionStore()
+    outbox = InMemoryOutboxStore()
+    store = InMemoryMainCIStore(executions=executions, outbox=outbox)
+    source = FixtureSource()
+    runtime = AlertingRuntime(
+        executions=executions,
+        outbox=outbox,
+        slack=RecordingSlackPort(),
+        clock=clock,
+        handlers={
+            "main_ci_reconcile": MainCIReconciliationHandler(
+                source=source, store=store, clock=clock, delivery_mode=delivery_mode
+            )
+        },
+    )
+    return runtime, source, outbox, executions
+
+
+def image_build(
+    build_number: int, state: str, minutes: int, job_key: str = IMAGE_KEY
+) -> MainCIJobObservation:
+    return observation(
+        build_number=build_number,
+        state=state,
+        minutes=minutes,
+        job_key=job_key,
+        job_name=":docker: Build image",
+    )
+
+
+def posts(outbox: InMemoryOutboxStore) -> list[tuple[str, str, str, str]]:
+    return [
+        (
+            record.delivery_id,
+            record.delivery_mode.value,
+            record.destination,
+            record.payload["text"],
+        )
+        for record in outbox.records()
+    ]
+
+
+def test_image_build_red_on_two_main_builds_posts_once_then_green_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SLACK_CI_FAST_FAILURE_ALERT_CHANNEL", "CFAST")
+    runtime, source, outbox, _ = image_runtime_for()
+
+    source.observations = [
+        image_build(94919, "failed", 1),
+        # A retry inside the same build is still one red build.
+        replace(image_build(94919, "failed", 2), job_id="job-94919-retry"),
+    ]
+    reconcile(runtime, START + timedelta(minutes=3))
+    assert posts(outbox) == []
+
+    source.observations.append(image_build(94920, "failed", 4))
+    reconcile(runtime, START + timedelta(minutes=5))
+    source.observations.append(image_build(94924, "timed_out", 6))
+    reconcile(runtime, START + timedelta(minutes=7))
+    source.observations.append(image_build(94949, "passed", 8))
+    reconcile(runtime, START + timedelta(minutes=9))
+
+    failing_body = (
+        "*:docker: Build image* red since"
+        " <https://buildkite.com/vllm/ci/builds/94919|#94919> with no pass since,"
+        " latest <https://buildkite.com/vllm/ci/builds/94920#job-94920-failed|#94920>."
+        " Jobs that use this image cannot run until it is fixed."
+    )
+    green_body = (
+        "*:docker: Build image* passed again in"
+        " <https://buildkite.com/vllm/ci/builds/94949#job-94949-passed|#94949>."
+    )
+    assert posts(outbox) == [
+        (
+            "main-ci:image-build:1:failing",
+            "live",
+            "CFAST",
+            f":rotating_light: Image build failing on main: {failing_body}",
+        ),
+        (
+            "main-ci:image-build:1:green",
+            "live",
+            "CFAST",
+            f":white_check_mark: Image build green again on main: {green_body}",
+        ),
+    ]
+    assert [record.payload["blocks"] for record in outbox.records()] == [
+        [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": ":rotating_light: Image build failing on main",
+                    "emoji": True,
+                },
+            },
+            {"type": "section", "text": {"type": "mrkdwn", "text": failing_body}},
+        ],
+        [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": ":white_check_mark: Image build green again on main",
+                    "emoji": True,
+                },
+            },
+            {"type": "section", "text": {"type": "mrkdwn", "text": green_body}},
+        ],
+    ]
+
+
+def test_image_build_red_on_one_build_then_green_posts_nothing() -> None:
+    runtime, source, outbox, _ = image_runtime_for()
+    source.observations = [
+        image_build(100, "failed", 1),
+        image_build(101, "passed", 2),
+    ]
+    reconcile(runtime, START + timedelta(minutes=3))
+    assert posts(outbox) == []
+
+
+@pytest.mark.parametrize(
+    "job_key",
+    [
+        "step:image-build-cpu|name::docker: Build CPU image",
+        "step:arm64-image-build|name::docker: Build arm64 image",
+    ],
+)
+def test_cpu_and_arm64_image_builds_are_watched(job_key: str) -> None:
+    runtime, source, outbox, _ = image_runtime_for()
+    source.observations = [
+        image_build(100, "failed", 1, job_key),
+        image_build(101, "failed", 2, job_key),
+    ]
+    reconcile(runtime, START + timedelta(minutes=3))
+    assert [record.delivery_id for record in outbox.records()] == [
+        "main-ci:image-build:1:failing"
+    ]
+
+
+@pytest.mark.parametrize(
+    "job_key",
+    [
+        "step:gpu-test|name:GPU correctness",
+        "step:image-build-amd|name:AMD: :docker: build test image and artifacts",
+        "step:image-build-smoke-test|name::docker: :smoking: Non-root smoke tests",
+        "name:image-build",
+    ],
+)
+def test_other_jobs_never_post(job_key: str) -> None:
+    runtime, source, outbox, _ = image_runtime_for()
+    source.observations = [
+        image_build(100, "failed", 1, job_key),
+        image_build(101, "failed", 2, job_key),
+        image_build(102, "passed", 3, job_key),
+    ]
+    reconcile(runtime, START + timedelta(minutes=4))
+    assert outbox.records() == []
+
+
+def test_image_build_posts_follow_the_main_ci_delivery_mode() -> None:
+    runtime, source, outbox, _ = image_runtime_for(DeliveryMode.SHADOW)
+    source.observations = [
+        image_build(100, "failed", 1),
+        image_build(101, "failed", 2),
+        image_build(102, "passed", 3),
+    ]
+    reconcile(runtime, START + timedelta(minutes=4))
+    assert [record.delivery_mode for record in outbox.records()] == [
+        DeliveryMode.SHADOW,
+        DeliveryMode.SHADOW,
+    ]
+
+
+def test_a_failed_commit_takes_its_image_build_post_back() -> None:
+    runtime, source, outbox, executions = image_runtime_for()
+    source.observations = [image_build(100, "failed", 1)]
+    reconcile(runtime, START + timedelta(minutes=2))
+
+    source.observations.append(image_build(101, "failed", 3))
+    executions.fail_next_complete()
+    result = runtime.process_command(
+        ScheduledCommand(
+            command_type="main_ci_reconcile",
+            target_time=START + timedelta(minutes=4),
+        )
+    )
+    assert result.status is ProcessStatus.FAILED
+    assert outbox.records() == []
+
+    reconcile(runtime, START + timedelta(minutes=5))
+    assert [record.delivery_id for record in outbox.records()] == [
+        "main-ci:image-build:1:failing"
+    ]
+
+
+def image_build_dict(number: int, state: str, minutes: int) -> dict[str, Any]:
+    url = f"https://buildkite.com/vllm/ci/builds/{number}"
+    finished = (START + timedelta(minutes=minutes)).isoformat()
+    return {
+        "id": f"build-{number}",
+        "number": number,
+        "web_url": url,
+        "commit": f"commit-{number}",
+        "jobs": [
+            {
+                "id": f"job-{number}",
+                "type": "script",
+                "name": ":docker: Build image",
+                "step_key": "image-build",
+                "state": state,
+                "finished_at": finished,
+                "web_url": f"{url}#job-{number}",
+            }
+        ],
+    }
+
+
+def test_backstop_posts_image_build_failures_in_the_main_ci_delivery_mode() -> None:
+    clock = FixedClock(START)
+    executions = InMemoryAutomationExecutionStore()
+    outbox = InMemoryOutboxStore()
+    store = InMemoryMainCIStore(executions=executions, outbox=outbox)
+    builds = FixtureBuilds({})
+    builds.sweep_builds = [
+        image_build_dict(100, "failed", -20),
+        image_build_dict(101, "failed", -10),
+    ]
+    runtime = AlertingRuntime(
+        executions=executions,
+        outbox=outbox,
+        slack=RecordingSlackPort(),
+        clock=clock,
+        handlers={
+            "main_ci_backstop": MainCIBackstopHandler(
+                builds=builds,
+                store=store,
+                clock=clock,
+                delivery_mode=DeliveryMode.SHADOW,
+            )
+        },
+    )
+
+    backstop(runtime, START)
+
+    assert [
+        (record.delivery_id, record.delivery_mode) for record in outbox.records()
+    ] == [("main-ci:image-build:1:failing", DeliveryMode.SHADOW)]

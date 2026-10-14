@@ -15,7 +15,14 @@ from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from alerting.commands import ScheduledCommand
-from alerting.ports import Clock
+from alerting.fast_ci import _slack_escape, _slack_link, slack_channel
+from alerting.ports import (
+    AlertPath,
+    Clock,
+    DeliveryMode,
+    DestinationMode,
+    NotificationIntent,
+)
 from alerting.runtime import HandlerCompletion
 
 INITIAL_LOOKBACK = timedelta(days=1)
@@ -30,6 +37,11 @@ TRACKED_STATES = FAILURE_STATES | {"passed"}
 # "<step> shard N/M", and the pipeline generator re-plans which tests each
 # shard runs on every build. A shard is not a stable job, so its step is.
 RUNTIME_SHARD = re.compile(r" shard (\d+)/(\d+)$")
+# Image builds the other jobs wait on. When one is red on two main builds with
+# no pass between (a retry in the same build is still one build), the Fast CI
+# channel gets one post, and one more when it passes again. One red build
+# alone may be a registry or network blip, so it stays dashboard-only.
+IMAGE_BUILD_STEPS = frozenset({"image-build", "image-build-cpu", "arm64-image-build"})
 
 
 @dataclass(frozen=True)
@@ -95,6 +107,67 @@ class MainCIJobAlert:
     @property
     def status(self) -> str:
         return "resolved" if self.resolved_at is not None else "open"
+
+
+def image_build_notice(
+    *,
+    alert_id: int,
+    job_key: str,
+    job_name: str,
+    first_failure_build_number: int,
+    first_failure_build_url: str,
+    last_failure_build_number: int,
+    observation: MainCIJobObservation,
+    delivery_mode: DeliveryMode,
+) -> NotificationIntent | None:
+    """The Slack post an image-build episode owes once `observation` applied.
+
+    Called with the episode as it stands after a failure, or as it stood
+    before the pass that resolves it. The delivery id is per episode and
+    kind, so refreshing failures enqueue nothing new.
+    """
+    step = job_key.removeprefix("step:").split("|", 1)[0]
+    if (
+        not job_key.startswith("step:")
+        or step not in IMAGE_BUILD_STEPS
+        or first_failure_build_number == last_failure_build_number
+    ):
+        return None
+    name = _slack_escape(job_name)
+    build = _slack_link(observation.job_url, f"#{observation.build_number}")
+    if observation.failed:
+        kind = "failing"
+        heading = ":rotating_light: Image build failing on main"
+        first = _slack_link(first_failure_build_url, f"#{first_failure_build_number}")
+        body = (
+            f"*{name}* red since {first} with no pass since, latest {build}."
+            " Jobs that use this image cannot run until it is fixed."
+        )
+    else:
+        kind = "green"
+        heading = ":white_check_mark: Image build green again on main"
+        body = f"*{name}* passed again in {build}."
+    delivery_id = f"main-ci:image-build:{alert_id}:{kind}"
+    return NotificationIntent(
+        delivery_id=delivery_id,
+        alert_ref=delivery_id,
+        alert_path=AlertPath.MAIN_CI,
+        delivery_mode=delivery_mode,
+        destination_mode=DestinationMode.BOT_TOKEN,
+        destination=slack_channel(),
+        # All alert paths share one channel; the header block is what tells
+        # this post apart. `text` is the notification and fallback copy.
+        payload={
+            "text": f"{heading}: {body}",
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": heading, "emoji": True},
+                },
+                {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+            ],
+        },
+    )
 
 
 def ordered_unique_observations(
@@ -303,8 +376,10 @@ class MainCIStore(Protocol):
         observations: list[MainCIJobObservation],
         scanned_through: datetime,
         now: datetime,
+        delivery_mode: DeliveryMode,
     ) -> None:
-        """Atomically reconcile outcomes, advance the cursor, and complete."""
+        """Atomically reconcile outcomes, enqueue image-build posts, advance
+        the cursor, and complete."""
         ...
 
 
@@ -356,10 +431,12 @@ class MainCIBackstopHandler:
         builds: MainCIBackstopBuildPort,
         store: MainCIBackstopStore,
         clock: Clock,
+        delivery_mode: DeliveryMode,
     ) -> None:
         self._builds = builds
         self._store = store
         self._clock = clock
+        self._delivery_mode = delivery_mode
 
     def __call__(self, command: ScheduledCommand) -> HandlerCompletion:
         sweep_builds = self._builds.list_job_builds(
@@ -401,6 +478,7 @@ class MainCIBackstopHandler:
             observations=observations,
             scanned_through=cursor if cursor is not None else command.target_time,
             now=self._clock.now(),
+            delivery_mode=self._delivery_mode,
         )
         return HandlerCompletion.TRANSACTIONAL
 
@@ -409,11 +487,17 @@ class MainCIReconciliationHandler:
     """Poll a cursor window and reconcile exact job alert lifecycles."""
 
     def __init__(
-        self, *, source: MainCISource, store: MainCIStore, clock: Clock
+        self,
+        *,
+        source: MainCISource,
+        store: MainCIStore,
+        clock: Clock,
+        delivery_mode: DeliveryMode,
     ) -> None:
         self._source = source
         self._store = store
         self._clock = clock
+        self._delivery_mode = delivery_mode
 
     def __call__(self, command: ScheduledCommand) -> HandlerCompletion:
         cursor = self._store.main_ci_scan_cursor()
@@ -432,5 +516,6 @@ class MainCIReconciliationHandler:
             observations=observations,
             scanned_through=command.target_time,
             now=self._clock.now(),
+            delivery_mode=self._delivery_mode,
         )
         return HandlerCompletion.TRANSACTIONAL

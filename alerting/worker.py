@@ -119,6 +119,7 @@ def _runtime(
             buildkite_token=_required_environment("BUILDKITE_TOKEN"),
             slack=_slack(),
             clock=clock,
+            delivery_mode=delivery_mode,
         )
     if consumer == "main-ci-backstop":
         return build_main_ci_backstop_runtime(
@@ -126,6 +127,7 @@ def _runtime(
             buildkite_token=_required_environment("BUILDKITE_TOKEN"),
             slack=_slack(),
             clock=clock,
+            delivery_mode=delivery_mode,
         )
     if consumer == "infra":
         # kubectl node-list sources are optional: the worker's security group
