@@ -20,6 +20,7 @@ PAYLOAD_KEYS = {
     "hostname", "gpus", "host", "reporter_status", "last_error",
     "node_conditions", "xids", "allocatable_gpus", "capacity_gpus",
     "mig_slices", "root_owned_slots",
+    "gpu_query_hung", "gpu_query_error", "network_probes",
 }
 
 CADVISOR_FIXTURE = "\n".join([
@@ -458,6 +459,8 @@ def test_driver_fields_from_node_status(reporter_k8s):
     assert fields == {
         "xids": None, "allocatable_gpus": 5, "capacity_gpus": 8,
         "mig_slices": None, "root_owned_slots": None,
+        "gpu_query_hung": None, "gpu_query_error": None,
+        "network_probes": None,
     }
     # No allocatable entry is a missing reading, not 0.
     assert reporter_k8s.driver_fields(
@@ -469,10 +472,24 @@ DCGM_TWO_GPU = (DCGM_FIXTURE.replace("GPU-aaaa", "GPU-bbbb")
                 + DCGM_FIXTURE.replace('gpu="0"', 'gpu="1"'))
 
 
+# PROBE_SCRIPT output captured from an H100 device-plugin pod.
+PROBE_OUTPUT = "\n".join([
+    "github 0 660  ",
+    "registry 1 5180 wget: server returned error: HTTP/1.1 401 Unauthorized ",
+    "pypi 0 5260 ",
+])
+
+
 def _patch_driver_reads(reporter_k8s, monkeypatch, smi=SMI_FIXTURE,
-                        log=PLUGIN_LOG_FIXTURE):
+                        log=PLUGIN_LOG_FIXTURE, probes=PROBE_OUTPUT):
     def fake_kubectl(*args, timeout=10):
+        if args[0] == "exec" and "sh" in args:
+            if probes is None:
+                raise RuntimeError("kubectl exec failed: Forbidden")
+            return probes
         if args[0] == "exec":
+            if isinstance(smi, Exception):
+                raise smi
             if smi is None:
                 raise RuntimeError("kubectl exec failed: Forbidden")
             return smi
@@ -505,6 +522,9 @@ def test_process_node_merges_driver_readings(reporter_k8s, monkeypatch):
     assert g1["remapped_rows_failure"] is False
     assert g1["ecc_uncorrected"] == 0
     assert [x["xid"] for x in payload["xids"]] == [79, 145, 43]
+    assert payload["gpu_query_hung"] is False
+    assert payload["gpu_query_error"] is None
+    assert [p["ok"] for p in payload["network_probes"]] == [True] * 3
     assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] > \
         "2026-09-23"
 
@@ -523,7 +543,8 @@ def test_process_node_first_run_starts_cursor_at_now(reporter_k8s,
 
 def test_process_node_failed_reads_are_null_not_degraded(reporter_k8s,
                                                          monkeypatch):
-    _patch_driver_reads(reporter_k8s, monkeypatch, smi=None, log=None)
+    _patch_driver_reads(reporter_k8s, monkeypatch, smi=None, log=None,
+                        probes=None)
     state = {reporter_k8s.XID_STATE_KEY: {
         "inf-4x8h100-1": "2026-01-01T00:00:00+00:00"}}
     payload = reporter_k8s.process_node(
@@ -531,6 +552,9 @@ def test_process_node_failed_reads_are_null_not_degraded(reporter_k8s,
         "plugin-pod")
     assert payload["reporter_status"] == "ok"
     assert payload["xids"] is None
+    # An exec kubectl refused is no reading, not a hang or a dead network.
+    assert payload["gpu_query_hung"] is None
+    assert payload["network_probes"] is None
     for g in payload["gpus"]:
         assert g["recovery_action"] is None
         assert g["remapped_rows_failure"] is None
@@ -574,3 +598,87 @@ def test_main_keeps_log_cursor_when_post_fails(reporter_k8s, monkeypatch,
         pass
     saved = reporter_k8s.load_disk_state(str(state_file))
     assert saved[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] == since
+
+
+# --- GPU hang and network probes ----------------------------------------------
+def test_nvidia_smi_error_inside_the_pod_is_a_hang(reporter_k8s, monkeypatch):
+    _patch_driver_reads(reporter_k8s, monkeypatch, smi=RuntimeError(
+        "kubectl exec -n failed: command terminated with exit code 15"))
+    payload = reporter_k8s.process_node(
+        make_node("inf-4x8h100-1"), "192.168.3.81", {}, time.time(),
+        "plugin-pod")
+    assert payload["gpu_query_hung"] is True
+    assert "exit code 15" in payload["gpu_query_error"]
+    assert all(g["recovery_action"] is None for g in payload["gpus"])
+
+
+def test_nvidia_smi_exec_past_the_hang_timeout_is_a_hang(reporter_k8s,
+                                                         monkeypatch):
+    import subprocess
+
+    def hung(cmd, **kwargs):
+        assert kwargs["timeout"] == reporter_k8s.GPU_HANG_TIMEOUT
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(reporter_k8s.subprocess, "run", hung)
+    assert reporter_k8s.read_smi("plugin-pod") == (
+        {}, True, "nvidia-smi exec did not return in 30 s")
+
+
+def test_parse_probe_output(reporter_k8s):
+    assert reporter_k8s.parse_probe_output(PROBE_OUTPUT) == [
+        {"target": "github", "ok": True, "error": None, "latency_ms": 660},
+        {"target": "registry", "ok": True, "error": None, "latency_ms": 5180},
+        {"target": "pypi", "ok": True, "error": None, "latency_ms": 5260},
+    ]
+    down = "\n".join([
+        "pypi 1 10 wget: can't connect to remote host (1.2.3.4): "
+        "Connection refused ",
+        "github 1 5010 wget: bad address 'github.com' ",
+        "registry 143 11000  ",
+    ])
+    assert [(p["target"], p["ok"], p["error"], p["latency_ms"])
+            for p in reporter_k8s.parse_probe_output(down)] == [
+        ("github", False, "dns", None),
+        ("registry", False, "timeout", None),
+        ("pypi", False, "connect", None),
+    ]
+
+
+def test_probe_output_without_every_target_is_no_reading(reporter_k8s):
+    import pytest
+
+    with pytest.raises(RuntimeError, match="registry"):
+        reporter_k8s.parse_probe_output("github 0 1 \npypi 0 1 ")
+    # A plugin image without wget can't say anything about the network.
+    with pytest.raises(RuntimeError, match="missing"):
+        reporter_k8s.parse_probe_output("\n".join(
+            f"{t} 127 0 sh: wget: not found" for t, _ in
+            reporter_k8s.NETWORK_PROBES))
+
+
+def test_main_starts_every_nodes_execs_before_the_node_loop(
+        reporter_k8s, monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(reporter_k8s, "start_pod_reads",
+                        lambda pod: started.append(pod) or {})
+    seen = {}
+
+    def fake_process_node(node, pod_ip, state, now, plugin_pod=None,
+                          reads=None):
+        seen[node["metadata"]["name"]] = list(started)
+        return {"hostname": node["metadata"]["name"],
+                "reporter_status": "ok"}
+
+    monkeypatch.setattr(reporter_k8s, "REPORT_URL", "http://dummy")
+    monkeypatch.setattr(reporter_k8s, "DISK_STATE_FILE",
+                        str(tmp_path / "state.json"))
+    monkeypatch.setattr(reporter_k8s, "get_nodes", lambda: [
+        make_node("inf-4x8h100-1"), make_node("inf-4x8h100-2")])
+    monkeypatch.setattr(reporter_k8s, "get_pod_ips", lambda: {})
+    monkeypatch.setattr(reporter_k8s, "get_plugin_pods", lambda: {
+        "inf-4x8h100-1": "pod-1", "inf-4x8h100-2": "pod-2"})
+    monkeypatch.setattr(reporter_k8s, "process_node", fake_process_node)
+    monkeypatch.setattr(reporter_k8s, "report", lambda payload: None)
+    reporter_k8s.main()
+    assert seen["inf-4x8h100-1"] == ["pod-1", "pod-2"]

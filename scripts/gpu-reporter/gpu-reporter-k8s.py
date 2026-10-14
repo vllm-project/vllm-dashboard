@@ -18,6 +18,12 @@ Driver fault signals come from each node's NVIDIA device-plugin pod:
 ECC) and the pod log since the last read (Xid events). Each reading fails
 independently to null; null means "missing reading", never a passing value.
 
+The same nvidia-smi exec is the GPU-hang check: nvidia-smi erroring or the
+exec not returning within GPU_HANG_TIMEOUT is gpu_query_hung=true, an
+explicit failing value. A second exec probes NETWORK_PROBES with the plugin
+image's busybox wget. Both execs start for every node at once, before the
+per-node loop, so a hung node costs the run one timeout, not one per node.
+
 Disk scraping runs on a 5-minute cadence, not every 30s tick, because
 cAdvisor payloads are 1.4-2.1 MB per node; between scrapes the cached
 readings from the state file are reused.
@@ -41,9 +47,11 @@ Environment variables:
                               falls back to /tmp when not writable)
 """
 
+import concurrent.futures
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -70,10 +78,26 @@ MAX_XIDS_PER_REPORT = 200
 XID_STATE_KEY = "_xid_since"
 
 KUBECTL_TIMEOUT = 10  # per-call seconds; one slow node must not kill the run
-# exec / logs into the device-plugin pod take well under a second; a short
+# kubectl logs from the device-plugin pod takes well under a second; a short
 # bound keeps a hung node from eating the 30 s cadence.
 DRIVER_READ_TIMEOUT = 5
 GPU_RESOURCE = "nvidia.com/gpu"
+# nvidia-smi erroring or the exec not returning within this is a GPU hang.
+# kubectl can't say whether a timed-out exec was stuck in nvidia-smi or in
+# the API server; a slow API server stalls every node at once, which the
+# rules treat as a shared incident rather than a host fault.
+GPU_HANG_TIMEOUT = 30
+NETWORK_PROBE_TIMEOUT = 10
+# Same targets as gpu-reporter.py. The plugin pod is not on the host network,
+# so this checks the pod network and cluster DNS that CI job pods use; the
+# node's own image pulls go through the host network, which it can't see.
+NETWORK_PROBES = (
+    ("github", "https://github.com"),
+    ("registry", "https://public.ecr.aws/v2/"),
+    ("pypi", "https://pypi.org/simple/"),
+)
+# Two execs per node, all nodes at once (see process_node).
+POD_READS = concurrent.futures.ThreadPoolExecutor(max_workers=32)
 
 DISK_SCRAPE_INTERVAL = int(os.environ.get("GPU_REPORT_DISK_INTERVAL", "300"))
 DISK_STATE_FILE = os.environ.get(
@@ -238,11 +262,92 @@ def parse_smi_gpus(text):
 
 
 def read_smi(pod):
-    return parse_smi_gpus(kubectl(
+    """exec nvidia-smi in the plugin pod -> (readings by uuid, hung, error).
+
+    kubectl reports a non-zero exit of nvidia-smi as "command terminated
+    with exit code N": that, or no answer within GPU_HANG_TIMEOUT, is a
+    hang. Any other kubectl failure (API error, pod gone) raises, and the
+    caller reports a missing reading.
+    """
+    try:
+        out = kubectl(
+            "exec", "-n", DCGM_NS, pod, "-c", PLUGIN_CONTAINER, "--",
+            "nvidia-smi", f"--query-gpu={SMI_FIELDS}", "--format=csv,noheader",
+            timeout=GPU_HANG_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return {}, True, f"nvidia-smi exec did not return in {GPU_HANG_TIMEOUT} s"
+    except RuntimeError as e:
+        if "command terminated with exit code" in str(e):
+            return {}, True, str(e)
+        raise
+    return parse_smi_gpus(out), False, None
+
+
+# Each probe prints "<target> <wget exit code> <ms> <wget stderr>". busybox
+# date has no %N, so the clock is /proc/uptime in centiseconds.
+PROBE_SCRIPT = """
+cs() { read u _ < /proc/uptime; echo "${u%%.*}${u#*.}"; }
+for t in %s; do
+  ( s=$(cs); e=$(timeout %d wget -q -T %d --spider "${t#*=}" 2>&1); r=$?
+    echo "${t%%%%=*} $r $(( ($(cs) - s) * 10 )) $(echo "$e" | tr '\\n' ' ')" ) &
+done
+wait
+"""
+
+
+def wget_error_kind(code, stderr):
+    """busybox wget exit code + stderr -> None (reached) or an error kind."""
+    if code == 0 or "server returned error" in stderr:
+        return None  # any HTTP answer, a registry's 401 included
+    if code == 127 or "not found" in stderr:
+        raise RuntimeError(f"probe tool missing: {stderr.strip()}")
+    if code == 143 or "timed out" in stderr:
+        return "timeout"
+    if "bad address" in stderr:
+        return "dns"
+    if "TLS" in stderr or "ssl" in stderr.lower():
+        return "tls"
+    if "can't connect" in stderr or "Connection" in stderr:
+        return "connect"
+    return "other"
+
+
+def parse_probe_output(text):
+    """PROBE_SCRIPT output -> [{target, ok, error, latency_ms}].
+
+    Raises when a target's line is missing: that's no reading, not a failure.
+    """
+    by_target = {}
+    for line in text.splitlines():
+        parts = line.split(" ", 3)
+        if len(parts) < 3 or not (parts[1].isdigit() and parts[2].isdigit()):
+            continue
+        kind = wget_error_kind(int(parts[1]), parts[3] if len(parts) > 3 else "")
+        by_target[parts[0]] = {
+            "target": parts[0], "ok": kind is None, "error": kind,
+            "latency_ms": int(parts[2]) if kind is None else None,
+        }
+    missing = [t for t, _ in NETWORK_PROBES if t not in by_target]
+    if missing:
+        raise RuntimeError(f"no probe result for {', '.join(missing)}")
+    return [by_target[t] for t, _ in NETWORK_PROBES]
+
+
+def read_network_probes(pod):
+    targets = " ".join(shlex.quote(f"{t}={url}") for t, url in NETWORK_PROBES)
+    script = PROBE_SCRIPT % (targets, NETWORK_PROBE_TIMEOUT + 1,
+                             NETWORK_PROBE_TIMEOUT)
+    return parse_probe_output(kubectl(
         "exec", "-n", DCGM_NS, pod, "-c", PLUGIN_CONTAINER, "--",
-        "nvidia-smi", f"--query-gpu={SMI_FIELDS}", "--format=csv,noheader",
-        timeout=DRIVER_READ_TIMEOUT,
+        "sh", "-c", script, timeout=NETWORK_PROBE_TIMEOUT + 5,
     ))
+
+
+def start_pod_reads(pod):
+    """Start one node's execs; process_node waits on the futures."""
+    return {"smi": POD_READS.submit(read_smi, pod),
+            "network": POD_READS.submit(read_network_probes, pod)}
 
 
 # `kubectl logs --timestamps` line:
@@ -578,11 +683,19 @@ def driver_fields(node):
         # H200-only fields; always missing on k8s.
         "mig_slices": None,
         "root_owned_slots": None,
+        # Filled in by process_node; null = not checked.
+        "gpu_query_hung": None,
+        "gpu_query_error": None,
+        "network_probes": None,
     }
 
 
-def process_node(node, pod_ip, disk_state, now, plugin_pod=None):
-    """Build the full report payload for one node. Never raises."""
+def process_node(node, pod_ip, disk_state, now, plugin_pod=None, reads=None):
+    """Build the full report payload for one node. Never raises.
+
+    reads are the node's execs from start_pod_reads, started early by main;
+    they're started here when not given.
+    """
     name = node["metadata"]["name"]
     payload = {
         "hostname": name,
@@ -622,10 +735,17 @@ def process_node(node, pod_ip, disk_state, now, plugin_pod=None):
         print(f"  WARNING: node {name} has no device-plugin pod; driver "
               f"readings missing", file=sys.stderr)
     else:
+        reads = reads or start_pod_reads(plugin_pod)
         try:
-            smi = read_smi(plugin_pod)
+            smi, payload["gpu_query_hung"], payload["gpu_query_error"] = \
+                reads["smi"].result()
         except Exception as e:
             print(f"  WARNING: nvidia-smi exec on {name} failed: {e}",
+                  file=sys.stderr)
+        try:
+            payload["network_probes"] = reads["network"].result()
+        except Exception as e:
+            print(f"  WARNING: network probe exec on {name} failed: {e}",
                   file=sys.stderr)
         since_map = disk_state.setdefault(XID_STATE_KEY, {})
         since = since_map.get(name)
@@ -730,6 +850,9 @@ def main():
               file=sys.stderr)
         plugin_pods = {}
 
+    reads = {name: start_pod_reads(pod) for name, pod in plugin_pods.items()
+             if name in gpu_node_names}
+
     state_path = resolve_state_path()
     disk_state = load_disk_state(state_path)
     now = time.time()
@@ -741,7 +864,8 @@ def main():
         prev_since = disk_state.get(XID_STATE_KEY, {}).get(name)
         try:
             payload = process_node(node, pods_by_node.get(name),
-                                   disk_state, now, plugin_pods.get(name))
+                                   disk_state, now, plugin_pods.get(name),
+                                   reads.get(name))
         except Exception as e:
             print(f"ERROR: node {name}: unhandled failure: {e}",
                   file=sys.stderr)
