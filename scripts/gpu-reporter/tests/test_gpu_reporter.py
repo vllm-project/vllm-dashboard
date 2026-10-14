@@ -170,6 +170,7 @@ def test_nvidia_smi_failure_posts_degraded_payload(reporter, monkeypatch):
     monkeypatch.setattr(reporter, "query_xids", lambda path: ([], None))
     monkeypatch.setattr(reporter, "query_mig_slices", lambda: 0)
     monkeypatch.setattr(reporter, "find_root_owned_slots", lambda: [])
+    monkeypatch.setattr(reporter, "NETWORK_PROBES", ())
     monkeypatch.setattr(reporter, "collect_host_metrics", lambda: {
         "cpu_util": 1.0, "cpu_count": 8, "ram_used_bytes": 1,
         "ram_total_bytes": 2, "ram_available_bytes": 1, "disks": [],
@@ -182,7 +183,12 @@ def test_nvidia_smi_failure_posts_degraded_payload(reporter, monkeypatch):
     assert calls["gpus"] == []
     assert set(calls["host"]) == HOST_KEYS
     # nvidia-smi -L is skipped once nvidia-smi has failed; Xids still flow.
-    assert calls["faults"] == {"xids": [], "mig_slices": None, "root_owned_slots": []}
+    # The failed query is a hang, sent as an explicit failing value.
+    assert calls["faults"] == {
+        "xids": [], "mig_slices": None, "root_owned_slots": [],
+        "gpu_query_hung": True, "gpu_query_error": "nvidia-smi failed: not found",
+        "network_probes": [],
+    }
 
 
 def test_report_payload_top_level_keys(reporter, monkeypatch):
@@ -395,6 +401,7 @@ def run_main(reporter, monkeypatch, tmp_path, post_ok=True, **queries):
     monkeypatch.setattr(reporter, "REPORT_URL", "http://dummy")
     monkeypatch.setattr(reporter, "JOURNAL_CURSOR_FILE", str(tmp_path / "journal.cursor"))
     monkeypatch.setattr(reporter, "report", fake_report)
+    monkeypatch.setattr(reporter, "NETWORK_PROBES", ())
     monkeypatch.setattr(reporter, "collect_host_metrics", lambda: {})
     monkeypatch.setattr(reporter, "query_gpus", lambda: [
         {"index": 0, "dead_proc_mem_mb": None, "recovery_action": None,
@@ -419,7 +426,9 @@ def test_each_failed_query_reports_null_independently(reporter, monkeypatch, tmp
 
     sent = run_main(reporter, monkeypatch, tmp_path, fault=boom,
                     mig=lambda: 12)  # xids and slots fail
-    assert sent["faults"] == {"xids": None, "mig_slices": 12, "root_owned_slots": None}
+    assert sent["faults"] == {"xids": None, "mig_slices": 12, "root_owned_slots": None,
+                              "gpu_query_hung": False, "gpu_query_error": None,
+                              "network_probes": []}
     gpu = sent["gpus"][0]
     assert gpu["recovery_action"] is None
     assert gpu["remapped_rows_failure"] is None
@@ -444,3 +453,74 @@ def test_cursor_is_not_saved_when_the_post_fails(reporter, monkeypatch, tmp_path
     run_main(reporter, monkeypatch, tmp_path, post_ok=False,
              xids=lambda path: ([], "c7"), mig=lambda: 0, slots=lambda: [])
     assert reporter.read_cursor(reporter.JOURNAL_CURSOR_FILE) is None
+
+
+# --- GPU hang and network probes ---------------------------------------------
+
+def test_gpu_query_past_the_hang_timeout_reports_hung(reporter, monkeypatch, tmp_path):
+    import subprocess
+
+    def hung(cmd, **kwargs):
+        assert kwargs["timeout"] == reporter.GPU_HANG_TIMEOUT
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(reporter.subprocess, "run", hung)
+    sent = {}
+    monkeypatch.setattr(reporter, "REPORT_URL", "http://dummy")
+    monkeypatch.setattr(reporter, "JOURNAL_CURSOR_FILE", str(tmp_path / "c"))
+    monkeypatch.setattr(reporter, "NETWORK_PROBES", ())
+    monkeypatch.setattr(reporter, "collect_host_metrics", lambda: {})
+    monkeypatch.setattr(reporter, "query_xids", lambda path: ([], None))
+    monkeypatch.setattr(reporter, "find_root_owned_slots", lambda: [])
+    monkeypatch.setattr(reporter, "report",
+                        lambda gpus, host, status, err, faults: sent.update(faults))
+    reporter.main()
+    assert sent["gpu_query_hung"] is True
+    assert "timed out after 30 seconds" in sent["gpu_query_error"]
+
+
+def test_probe_counts_any_http_answer_as_reached(reporter, monkeypatch):
+    import urllib.error
+
+    def unauthorized(req, timeout):
+        assert req.get_method() == "HEAD"
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr(reporter.urllib.request, "urlopen", unauthorized)
+    result = reporter.probe("https://public.ecr.aws/v2/")
+    assert result["ok"] is True and result["error"] is None
+    assert result["latency_ms"] >= 0
+
+
+def test_probe_error_kinds(reporter):
+    import socket
+    import ssl
+    import urllib.error
+
+    kind = reporter.probe_error_kind
+    assert kind(urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))) == "dns"
+    assert kind(urllib.error.URLError(TimeoutError("timed out"))) == "timeout"
+    assert kind(TimeoutError("read timed out")) == "timeout"
+    assert kind(urllib.error.URLError(ssl.SSLError("bad cert"))) == "tls"
+    assert kind(urllib.error.URLError(ConnectionRefusedError(111, "refused"))) == "connect"
+    assert kind(ValueError("unknown url type")) == "other"
+
+
+def test_network_probes_run_together_and_stuck_ones_time_out(reporter, monkeypatch):
+    def fake_probe(url):
+        if url == "stuck":
+            time.sleep(5)
+        return {"ok": url == "up", "error": None if url == "up" else "dns",
+                "latency_ms": 1 if url == "up" else None}
+
+    monkeypatch.setattr(reporter, "probe", fake_probe)
+    monkeypatch.setattr(reporter, "NETWORK_PROBE_TIMEOUT", 0)
+    start = time.monotonic()
+    results = reporter.finish_network_probes(reporter.start_network_probes(
+        (("a", "up"), ("b", "down"), ("c", "stuck"))))
+    assert time.monotonic() - start < 2  # one shared deadline, not one each
+    assert results == [
+        {"target": "a", "ok": True, "error": None, "latency_ms": 1},
+        {"target": "b", "ok": False, "error": "dns", "latency_ms": None},
+        {"target": "c", "ok": False, "error": "timeout", "latency_ms": None},
+    ]

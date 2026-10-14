@@ -12,12 +12,17 @@ ALTER TABLE gpu_snapshots
 
 -- Host-level readings live on host_snapshots, which already carries one row
 -- per report for bare-metal and Kubernetes nodes alike. allocatable/capacity
--- are Kubernetes-only; H200 hosts leave them NULL.
+-- are Kubernetes-only; H200 hosts leave them NULL. gpu_query_hung is an
+-- explicit failing value (true when nvidia-smi errored or ran past 30 s), and
+-- network_probes holds one {target, ok, error, latency_ms} per probe target.
 ALTER TABLE host_snapshots
     ADD COLUMN IF NOT EXISTS mig_slices integer,
     ADD COLUMN IF NOT EXISTS root_owned_slots jsonb,
     ADD COLUMN IF NOT EXISTS allocatable_gpus integer,
-    ADD COLUMN IF NOT EXISTS capacity_gpus integer;
+    ADD COLUMN IF NOT EXISTS capacity_gpus integer,
+    ADD COLUMN IF NOT EXISTS gpu_query_hung boolean,
+    ADD COLUMN IF NOT EXISTS gpu_query_error text,
+    ADD COLUMN IF NOT EXISTS network_probes jsonb;
 
 ALTER TABLE host_snapshots
     DROP CONSTRAINT IF EXISTS host_snapshots_fault_fields_check,
@@ -26,7 +31,8 @@ ALTER TABLE host_snapshots
             (mig_slices IS NULL OR mig_slices >= 0) AND
             (allocatable_gpus IS NULL OR allocatable_gpus >= 0) AND
             (capacity_gpus IS NULL OR capacity_gpus >= 0) AND
-            (root_owned_slots IS NULL OR jsonb_typeof(root_owned_slots) = 'array')
+            (root_owned_slots IS NULL OR jsonb_typeof(root_owned_slots) = 'array') AND
+            (network_probes IS NULL OR jsonb_typeof(network_probes) = 'array')
         );
 
 -- Xids new since the reporter's last read, one row per kernel-log line. The

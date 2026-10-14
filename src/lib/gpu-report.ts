@@ -12,6 +12,7 @@ const MAX_ERROR_LENGTH = 2048;
 const MAX_XID_COUNT = 500;
 const MAX_XID_MESSAGE_LENGTH = 1024;
 const MAX_ROOT_OWNED_SLOTS = 256;
+const MAX_NETWORK_PROBES = 8;
 const MAX_BYTES_VALUE = Number.MAX_SAFE_INTEGER;
 
 export type ReporterStatus = "ok" | "degraded";
@@ -37,6 +38,14 @@ export interface NormalizedXidEvent {
   xid: number;
   at: Date;
   message: string;
+}
+
+export interface NormalizedNetworkProbe {
+  target: string;
+  ok: boolean;
+  /** Error kind (timeout, dns, tls, connect, other); null when ok. */
+  error: string | null;
+  latency_ms: number | null;
 }
 
 export interface NormalizedDiskMetric {
@@ -79,6 +88,10 @@ export interface NormalizedGpuReport {
   root_owned_slots: string[] | null;
   allocatable_gpus: number | null;
   capacity_gpus: number | null;
+  /** true = nvidia-smi errored or hung; null = not checked. */
+  gpu_query_hung: boolean | null;
+  gpu_query_error: string | null;
+  network_probes: NormalizedNetworkProbe[] | null;
 }
 
 export class GpuReportValidationError extends Error {
@@ -197,6 +210,22 @@ function xidEvent(value: unknown, index: number): NormalizedXidEvent {
     xid: numberValue(event.xid, `${path}.xid`, { min: 0, max: 65_535, integer: true }),
     at,
     message: event.message,
+  };
+}
+
+function networkProbe(value: unknown, index: number): NormalizedNetworkProbe {
+  const path = `network_probes[${index}]`;
+  const probe = objectValue(value, path);
+  exactKeys(probe, ["target", "ok", "error", "latency_ms"], path);
+  if (typeof probe.ok !== "boolean") invalid(`${path}.ok`, "must be a boolean");
+  return {
+    target: stringValue(probe.target, `${path}.target`, { maxLength: 64 }),
+    ok: probe.ok,
+    error: optionalString(probe.error, `${path}.error`, 64),
+    latency_ms: optionalNumber(probe.latency_ms, `${path}.latency_ms`, {
+      min: 0,
+      max: 600_000,
+    }),
   };
 }
 
@@ -433,6 +462,9 @@ export function parseGpuReportPayload(value: unknown): NormalizedGpuReport {
       "root_owned_slots",
       "allocatable_gpus",
       "capacity_gpus",
+      "gpu_query_hung",
+      "gpu_query_error",
+      "network_probes",
     ],
     "payload",
   );
@@ -476,6 +508,16 @@ export function parseGpuReportPayload(value: unknown): NormalizedGpuReport {
       stringValue(slot, `root_owned_slots[${index}]`, { maxLength: MAX_PATH_LENGTH }),
     );
   }
+  let networkProbes: NormalizedNetworkProbe[] | null = null;
+  if (report.network_probes !== undefined && report.network_probes !== null) {
+    if (
+      !Array.isArray(report.network_probes) ||
+      report.network_probes.length > MAX_NETWORK_PROBES
+    ) {
+      invalid("network_probes", `must be an array with at most ${MAX_NETWORK_PROBES} entries`);
+    }
+    networkProbes = report.network_probes.map(networkProbe);
+  }
   const gpuCount = { min: 0, max: 65_536, integer: true };
   const lastError = optionalString(report.last_error, "last_error", MAX_ERROR_LENGTH);
   if (reporterStatus === "degraded" && lastError === null) {
@@ -499,6 +541,9 @@ export function parseGpuReportPayload(value: unknown): NormalizedGpuReport {
     root_owned_slots: rootOwnedSlots,
     allocatable_gpus: optionalNumber(report.allocatable_gpus, "allocatable_gpus", gpuCount),
     capacity_gpus: optionalNumber(report.capacity_gpus, "capacity_gpus", gpuCount),
+    gpu_query_hung: optionalBoolean(report.gpu_query_hung, "gpu_query_hung"),
+    gpu_query_error: optionalString(report.gpu_query_error, "gpu_query_error", MAX_ERROR_LENGTH),
+    network_probes: networkProbes,
   };
 }
 

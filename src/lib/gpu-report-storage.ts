@@ -88,6 +88,12 @@ export async function storeGpuReport(
         : db.json(jsonValue(report.root_owned_slots)),
     allocatable_gpus: report.allocatable_gpus,
     capacity_gpus: report.capacity_gpus,
+    gpu_query_hung: report.gpu_query_hung,
+    gpu_query_error: report.gpu_query_error,
+    network_probes:
+      report.network_probes == null
+        ? null
+        : db.json(jsonValue(report.network_probes)),
   };
   const cpuSampleCount = host?.cpu_util == null ? 0 : 1;
   const ramSampleCount = host?.ram_used_bytes == null ? 0 : 1;
@@ -183,6 +189,9 @@ export async function storeGpuReport(
         "root_owned_slots",
         "allocatable_gpus",
         "capacity_gpus",
+        "gpu_query_hung",
+        "gpu_query_error",
+        "network_probes",
       )}
     `;
     await tx`

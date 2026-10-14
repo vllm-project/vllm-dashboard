@@ -278,3 +278,42 @@ test("rejects malformed fault fields", () => {
     /root_owned_slots/,
   );
 });
+
+const probe = { target: "registry", ok: false, error: "timeout", latency_ms: null };
+
+test("accepts the GPU-hang flag and network probe results", () => {
+  const report = parseGpuReportPayload({
+    ...legacyPayload,
+    gpus: [],
+    reporter_status: "degraded",
+    last_error: "nvidia-smi timed out",
+    gpu_query_hung: true,
+    gpu_query_error: "Command 'nvidia-smi' timed out after 30 seconds",
+    network_probes: [{ target: "github", ok: true, error: null, latency_ms: 142 }, probe],
+  });
+  assert.equal(report.gpu_query_hung, true);
+  assert.match(report.gpu_query_error ?? "", /timed out/);
+  assert.deepEqual(report.network_probes?.[1], probe);
+  const legacy = parseGpuReportPayload(legacyPayload);
+  assert.equal(legacy.gpu_query_hung, null);
+  assert.equal(legacy.network_probes, null);
+});
+
+test("rejects malformed GPU-hang and network probe fields", () => {
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, gpu_query_hung: "yes" }),
+    /gpu_query_hung/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, network_probes: [{ ...probe, ok: null }] }),
+    /network_probes\[0\]\.ok/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, network_probes: [{ ...probe, url: "x" }] }),
+    /unsupported field 'url'/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, network_probes: Array(9).fill(probe) }),
+    /network_probes must be an array/,
+  );
+});

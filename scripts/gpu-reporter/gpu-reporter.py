@@ -28,6 +28,12 @@ Hardware-fault readings (recovery action, row-remap failure, uncorrected ECC,
 Xids, MIG slice count, root-owned checkout slots) each come from their own
 query and fail independently: a failed read is reported as null, never as a
 passing value.
+
+Two host-fault readings are explicit values instead: gpu_query_hung is true
+(with gpu_query_error) when the main nvidia-smi query errors or runs past
+GPU_HANG_TIMEOUT, and network_probes holds one result per target in
+NETWORK_PROBES. The probes run on threads alongside everything else, so a
+dead network adds at most NETWORK_PROBE_TIMEOUT to the run.
 """
 
 import concurrent.futures
@@ -38,9 +44,12 @@ import os
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
+import threading
 import time
+import urllib.error
 import urllib.request
 
 REPORT_URL = os.environ.get("GPU_REPORT_URL", "")
@@ -65,10 +74,23 @@ PROC_MEMINFO = "/proc/meminfo"
 PROC_MOUNTS = "/proc/mounts"
 PROC_ROOT = "/proc"
 
+# The main nvidia-smi query erroring or running past this is a GPU hang
+# (reported as gpu_query_hung=true). The unit's TimeoutSec leaves room for it.
+GPU_HANG_TIMEOUT = 30
+NETWORK_PROBE_TIMEOUT = 10
+# What every CI job needs: checkout, image pull (the agents' environment hook
+# pulls CI images from public.ecr.aws) and pip installs. Any HTTP response,
+# a registry's 401 included, means the target was reached.
+NETWORK_PROBES = (
+    ("github", "https://github.com"),
+    ("registry", "https://public.ecr.aws/v2/"),
+    ("pypi", "https://pypi.org/simple/"),
+)
+
 CPU_SAMPLE_INTERVAL = 1.0  # seconds between the two /proc/stat reads
 DISK_STAT_TIMEOUT = float(os.environ.get("GPU_REPORT_DISK_TIMEOUT", "5"))
 COMPUTE_APPS_TIMEOUT = float(os.environ.get("GPU_REPORT_COMPUTE_APPS_TIMEOUT", "10"))
-FAULT_QUERY_TIMEOUT = 5  # nvidia-smi -L, fault query and journalctl; the unit's TimeoutSec is 30
+FAULT_QUERY_TIMEOUT = 5  # nvidia-smi -L, fault query and journalctl; the unit's TimeoutSec is 90
 STATE_DIR = os.environ.get("GPU_REPORT_STATE_DIR", "/var/lib/gpu-reporter")
 JOURNAL_CURSOR_FILE = os.path.join(STATE_DIR, "journal.cursor")
 MAX_XIDS_PER_REPORT = 200  # the ingestion contract allows 500
@@ -116,7 +138,7 @@ def query_gpus():
         ],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=GPU_HANG_TIMEOUT,
     )
     if result.returncode != 0:
         raise RuntimeError(f"nvidia-smi failed: {result.stderr.strip()}")
@@ -380,6 +402,64 @@ def find_root_owned_slots(patterns=CHECKOUT_GLOBS, root_uid=0):
     return slots
 
 
+def probe_error_kind(error):
+    """Exception from urlopen -> "timeout" | "dns" | "tls" | "connect" | "other"."""
+    reason = getattr(error, "reason", error)  # URLError wraps the socket error
+    if isinstance(reason, TimeoutError):
+        return "timeout"
+    if isinstance(reason, socket.gaierror):
+        return "dns"
+    if isinstance(reason, ssl.SSLError):
+        return "tls"
+    if isinstance(reason, OSError):
+        return "connect"
+    return "other"
+
+
+def probe(url, timeout=NETWORK_PROBE_TIMEOUT):
+    """HEAD `url` -> {"ok", "error", "latency_ms"}."""
+    start = time.monotonic()
+    try:
+        urllib.request.urlopen(urllib.request.Request(url, method="HEAD"),
+                               timeout=timeout).close()
+    except urllib.error.HTTPError:
+        pass  # the server answered: reachable
+    except Exception as e:
+        return {"ok": False, "error": probe_error_kind(e), "latency_ms": None}
+    return {"ok": True, "error": None,
+            "latency_ms": round((time.monotonic() - start) * 1000)}
+
+
+def start_network_probes(targets):
+    """Start one daemon-thread probe per target; see finish_network_probes."""
+    started = []
+    for target, url in targets:
+        slot = [None]  # one assignment, so a late thread can't half-write it
+
+        def run(slot=slot, url=url):
+            slot[0] = probe(url)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        started.append((target, thread, slot))
+    return started, time.monotonic() + NETWORK_PROBE_TIMEOUT + 1
+
+
+def finish_network_probes(started):
+    """Wait out the probes' shared deadline -> [{target, ok, error, latency_ms}].
+
+    urlopen's timeout doesn't cover DNS, so a probe still running at the
+    deadline is reported as a timeout and its daemon thread is abandoned.
+    """
+    probes, deadline = started
+    results = []
+    for target, thread, slot in probes:
+        thread.join(max(0.0, deadline - time.monotonic()))
+        results.append({"target": target, **(slot[0] or {
+            "ok": False, "error": "timeout", "latency_ms": None})})
+    return results
+
+
 def parse_cpu_stat(text):
     """Parse the aggregate 'cpu' line of /proc/stat -> (idle, total) jiffies.
 
@@ -532,13 +612,18 @@ def main():
         print("GPU_REPORT_URL not set", file=sys.stderr)
         sys.exit(1)
 
+    probes = start_network_probes(NETWORK_PROBES)
     host = collect_host_metrics()
-    faults = {"xids": None, "mig_slices": None, "root_owned_slots": None}
+    faults = {"xids": None, "mig_slices": None, "root_owned_slots": None,
+              "gpu_query_hung": False, "gpu_query_error": None}
 
     try:
         gpus = query_gpus()
         status, last_error = "ok", None
     except Exception as e:
+        # An error or a run past GPU_HANG_TIMEOUT is a hang: an explicit
+        # failing value, never a missing reading.
+        faults["gpu_query_hung"], faults["gpu_query_error"] = True, str(e)
         # A GPU query failure must not silence the host: report with an
         # empty GPU list and a degraded status instead of exiting quietly.
         # The ingestion contract requires last_error to be non-null when
@@ -585,6 +670,8 @@ def main():
         faults["root_owned_slots"] = find_root_owned_slots()
     except Exception as e:
         print(f"root-owned checkout scan failed: {e}", file=sys.stderr)
+
+    faults["network_probes"] = finish_network_probes(probes)
 
     try:
         report(gpus, host, status, last_error, faults)

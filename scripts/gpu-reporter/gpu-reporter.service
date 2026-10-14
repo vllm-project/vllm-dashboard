@@ -7,6 +7,7 @@ Type=oneshot
 # the real values. The secret must never be committed or written into this unit.
 EnvironmentFile=/etc/gpu-reporter.env
 ExecStart=/usr/bin/python3 /opt/gpu-reporter/gpu-reporter.py
-TimeoutSec=30
+# nvidia-smi alone may take GPU_HANG_TIMEOUT (30 s) before a hang is reported.
+TimeoutSec=90
 # Creates /var/lib/gpu-reporter, where the kernel-log cursor lives.
 StateDirectory=gpu-reporter
