@@ -37,7 +37,8 @@ metadata:
 type: kubernetes.io/service-account-token
 ---
 # nodes get/list - read cordon and taints; patch - cordon/uncordon
-# (spec.unschedulable) and add/remove the vllm.ci/quarantine taint.
+# (spec.unschedulable), add/remove the vllm.ci/quarantine taint, and the
+# vllm.ci/quarantine-cordoned annotation that marks a cordon as ours.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
