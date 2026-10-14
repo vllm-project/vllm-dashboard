@@ -183,6 +183,20 @@ class FakePostgresConnection:
                     alert["details"] = json.loads(params[1])
                     return Result(rowcount=1)
             return Result(rowcount=0)
+        if statement.startswith("UPDATE alerting_infra_alerts SET status = %s"):
+            assert self.transaction_depth == 1
+            for alert in self.state["infra_alerts"]:
+                if (
+                    alert["alert_type"] == params[4]
+                    and alert["subject_key"] == params[5]
+                    and alert["status"] == "open"
+                    and alert["details"].get("stage") == params[6]
+                ):
+                    alert["status"] = params[0]
+                    alert["resolved_at"] = params[1]
+                    alert["details"] = {**alert["details"], **json.loads(params[2])}
+                    return Result(rowcount=1)
+            return Result(rowcount=0)
         if statement.startswith("INSERT INTO alerting_notification_outbox"):
             assert self.transaction_depth == 1
             self.state["outbox"][params[0]] = params
@@ -330,3 +344,37 @@ def test_postgres_disk_group_deduplicates_across_hosts_sharing_a_volume() -> Non
     text = json.loads(outbox_row[6])["text"]
     assert "h200-ci-1" in text and "h200-ci-2" in text
     assert "/scratch" not in text
+
+
+def test_postgres_stage_change_merges_its_patch_and_keeps_dashboard_fields() -> None:
+    connection = FakePostgresConnection()
+    connection.state["thresholds"] = []
+    connection.state["infra_alerts"].append(
+        {
+            "alert_id": 1,
+            "alert_type": "quarantine",
+            "subject_key": "h200-ci-2",
+            "status": "open",
+            "opened_at": START,
+            "details": {
+                "stage": "resolving",
+                "resolved_by": "oncall",
+                "actuator_state": "returned",
+            },
+            "resolved_at": None,
+        }
+    )
+    runtime, clock = runtime_for(connection, FixtureHosts(set()))
+
+    scan(runtime, clock.now())
+
+    [alert] = connection.state["infra_alerts"]
+    assert alert["status"] == "resolved"
+    assert alert["resolved_at"] == clock.now()
+    assert alert["details"] == {
+        "stage": "resolved",
+        "resolved_by": "oncall",
+        "actuator_state": "returned",
+    }
+    [row] = connection.state["outbox"].values()
+    assert str(row[0]).endswith(":resolved")

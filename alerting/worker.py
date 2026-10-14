@@ -56,6 +56,15 @@ def _delivery_mode() -> DeliveryMode:
         raise RuntimeError("ALERTING_DELIVERY_MODE must be 'shadow' or 'live'") from exc
 
 
+def _quarantine_live() -> bool:
+    # Dry run unless explicitly switched: quarantines are recorded and posted
+    # as 'would', and the actuators only log them.
+    raw = os.environ.get("QUARANTINE_MODE", "dry_run")
+    if raw not in ("dry_run", "live"):
+        raise RuntimeError("QUARANTINE_MODE must be 'dry_run' or 'live'")
+    return raw == "live"
+
+
 def _runtime(
     consumer: str,
     clock: Clock,
@@ -140,6 +149,7 @@ def _runtime(
             slack=_slack(),
             clock=clock,
             delivery_mode=delivery_mode,
+            quarantine_live=_quarantine_live(),
         )
     if consumer == "main-ci-analyze":
         return build_main_ci_analysis_runtime(

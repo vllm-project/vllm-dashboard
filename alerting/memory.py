@@ -42,6 +42,7 @@ from alerting.infra import (
     InfraScanPlan,
     InfraStateSnapshot,
     InfraSubjectState,
+    QuarantineStageChange,
 )
 from alerting.main_ci import (
     MainCIJobAlert,
@@ -608,6 +609,11 @@ class InMemoryInfraStore:
                     for episode in plan.resolved
                     if self._resolve_episode(episode)
                 ),
+                stage_changes=tuple(
+                    change
+                    for change in plan.stage_changes
+                    if self._change_stage(change)
+                ),
             )
             for message in notification_factory(applied):
                 self._outbox.enqueue(message, now=now)
@@ -640,6 +646,33 @@ class InMemoryInfraStore:
             current, resolved_at=episode.resolved_at, details=episode.details
         )
         return True
+
+    def _change_stage(self, change: QuarantineStageChange) -> bool:
+        key = (change.episode.alert_type, change.episode.subject_key)
+        index = self._active.get(key)
+        if index is None:
+            return False
+        current = self._episodes[index]
+        if current.details.get("stage") != change.from_stage:
+            return False
+        self._episodes[index] = replace(
+            current,
+            resolved_at=change.episode.resolved_at,
+            details={**current.details, **change.patch},
+        )
+        if change.episode.resolved_at is not None:
+            del self._active[key]
+        return True
+
+    def update_details(
+        self, alert_type: str, subject_key: str, **fields: Any
+    ) -> None:
+        """Merge fields into an open episode, as the dashboard endpoints do."""
+        index = self._active[(alert_type, subject_key)]
+        current = self._episodes[index]
+        self._episodes[index] = replace(
+            current, details={**current.details, **fields}
+        )
 
     def episodes(self) -> list[InfraAlertEpisode]:
         return list(self._episodes)

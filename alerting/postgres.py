@@ -45,6 +45,7 @@ from alerting.infra import (
     InfraStateSnapshot,
     InfraSubjectState,
     InfraThreshold,
+    QuarantineStageChange,
 )
 from alerting.main_ci import (
     MainCIJobObservation,
@@ -1408,10 +1409,37 @@ class PostgresAlertStore:
                     )
                     if updated.rowcount == 1:
                         resolved.append(episode)
+                # The dashboard writes these rows too (operator resolve,
+                # actuator reports), so a stage change merges only its own
+                # keys and applies only if the stage is still the one read.
+                changed: list[QuarantineStageChange] = []
+                for change in plan.stage_changes:
+                    episode = change.episode
+                    updated = connection.execute(
+                        """
+                        UPDATE alerting_infra_alerts
+                        SET status = %s, resolved_at = %s,
+                            details = details || %s::jsonb, updated_at = %s
+                        WHERE alert_type = %s AND subject_key = %s
+                          AND status = 'open' AND details->>'stage' = %s
+                        """,
+                        (
+                            episode.status,
+                            episode.resolved_at,
+                            json.dumps(change.patch),
+                            now,
+                            episode.alert_type,
+                            episode.subject_key,
+                            change.from_stage,
+                        ),
+                    )
+                    if updated.rowcount == 1:
+                        changed.append(change)
                 applied = InfraScanPlan(
                     states=plan.states,
                     opened=tuple(opened),
                     resolved=tuple(resolved),
+                    stage_changes=tuple(changed),
                 )
                 for message in notification_factory(applied):
                     self._enqueue(connection, message, next_attempt_at=now)
@@ -2025,6 +2053,7 @@ def build_infra_runtime(
     slack: SlackPort,
     clock: Clock,
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
+    quarantine_live: bool = False,
 ) -> AlertingRuntime:
     """Wire the infra health scan: optional kubectl nodes + Postgres.
 
@@ -2049,6 +2078,7 @@ def build_infra_runtime(
         store=store,
         clock=clock,
         delivery_mode=delivery_mode,
+        quarantine_live=quarantine_live,
     )
     return AlertingRuntime(
         executions=store,

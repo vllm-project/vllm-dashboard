@@ -14,6 +14,10 @@ reported mount alerts regardless of role; only a per-mount error skips one. GPU 
 (memory still allocated to processes that no longer exist) are keyed per
 host and GPU.
 RAM, load, and network are display-only and never alert.
+
+The same scan also runs the quarantine sequence (see plan_quarantine): a
+quarantine is one more episode type, keyed by lowercased host, whose stage in
+details moves would | quarantining -> quarantined -> resolving -> resolved.
 """
 
 from __future__ import annotations
@@ -72,6 +76,7 @@ class InfraAlertType(StrEnum):
     GPU_TEMPERATURE = "gpu_temperature"
     GPU_DEAD_MEMORY = "gpu_dead_memory"
     GPU_COUNT = "gpu_count"
+    QUARANTINE = "quarantine"
 
 
 @dataclass(frozen=True)
@@ -170,12 +175,46 @@ class InfraAlertEpisode:
 
 
 @dataclass(frozen=True)
+class QuarantineDecision:
+    """A trigger rule's verdict that one host should be taken out of CI.
+
+    `cluster` is what the pool's actuator asks the dashboard for: `h100` and
+    `b200` for the Kubernetes pools (each control plane's QUARANTINE_CLUSTER,
+    with `host` its node name), `h200` for the bare-metal hosts.
+    """
+
+    host: str
+    cluster: str
+    pool: str
+    reason: str
+    evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class QuarantineStageChange:
+    """An open quarantine episode moving to its next stage.
+
+    `episode` is the episode after the change (resolved_at set when it
+    closes) and renders the post. The store merges only `patch` into the
+    stored details, and only while the stored stage is still `from_stage`:
+    the dashboard writes the same row (operator resolve, actuator reports),
+    so the worker never overwrites what it did not read.
+    """
+
+    episode: InfraAlertEpisode
+    from_stage: str
+    patch: dict[str, Any]
+    silent: bool = False
+
+
+@dataclass(frozen=True)
 class InfraScanPlan:
     """The state upserts and episode transitions one scan decided."""
 
     states: tuple[InfraSubjectState, ...] = ()
     opened: tuple[InfraAlertEpisode, ...] = ()
     resolved: tuple[InfraAlertEpisode, ...] = ()
+    stage_changes: tuple[QuarantineStageChange, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -655,6 +694,125 @@ def _plan_gpu_count(
     )
 
 
+# A dry-run ('would') quarantine closes itself, without a post, once its
+# decision has been absent this many consecutive scans.
+DRY_RUN_EXPIRY_SCANS = 2
+
+
+def _stage_change(
+    episode: InfraAlertEpisode,
+    patch: dict[str, Any],
+    *,
+    resolved_at: datetime | None = None,
+    silent: bool = False,
+) -> QuarantineStageChange:
+    return QuarantineStageChange(
+        episode=replace(
+            episode, details={**episode.details, **patch}, resolved_at=resolved_at
+        ),
+        from_stage=str(episode.details.get("stage")),
+        patch=patch,
+        silent=silent,
+    )
+
+
+def plan_quarantine(
+    *,
+    now: datetime,
+    live: bool,
+    decisions: Iterable[QuarantineDecision],
+    states: Mapping[tuple[str, str], InfraSubjectState],
+    open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
+) -> InfraScanPlan:
+    """Advance the quarantine sequence by one scan.
+
+    A decision for a host with no open quarantine opens one: 'would' in dry
+    run, 'quarantining' when live. The actuators report through the dashboard
+    into details['actuator_state']; 'drained' moves quarantining to
+    quarantined and 'returned' moves resolving (set by the operator resolve
+    endpoint) to resolved. A dry-run episode closes silently once its decision
+    is gone for DRY_RUN_EXPIRY_SCANS scans; a live one never closes by itself.
+    """
+    kind = InfraAlertType.QUARANTINE.value
+    wanted: dict[str, QuarantineDecision] = {}
+    for wanted_decision in decisions:
+        wanted.setdefault(wanted_decision.host.strip().lower(), wanted_decision)
+    out_states: list[InfraSubjectState] = []
+    opened: list[InfraAlertEpisode] = []
+    changes: list[QuarantineStageChange] = []
+    hosts = set(wanted) | {
+        subject_key for alert_type, subject_key in open_episodes if alert_type == kind
+    }
+    for host in sorted(hosts):
+        decision = wanted.get(host)
+        episode = open_episodes.get((kind, host))
+        state = states.get((kind, host), InfraSubjectState(kind, host))
+        absent = int(state.details.get("absent_scans") or 0)
+        next_absent = 0
+        command = (
+            {
+                "cluster": decision.cluster,
+                "pool": decision.pool,
+                "reason": decision.reason,
+                "evidence": decision.evidence,
+                "commanded_at": now.isoformat(),
+            }
+            if decision is not None
+            else {}
+        )
+        stage = episode.details.get("stage") if episode is not None else None
+        actuator = episode.details.get("actuator_state") if episode else None
+        if episode is None:
+            # Safety limits (§4.3) belong here: a live command they block
+            # opens as 'held' instead and is applied when a slot frees.
+            opened.append(
+                InfraAlertEpisode(
+                    alert_type=kind,
+                    subject_key=host,
+                    opened_at=now,
+                    details={
+                        "hostname": host,
+                        "stage": "quarantining" if live else "would",
+                        **command,
+                    },
+                )
+            )
+        elif stage == "would" and decision is not None and live:
+            # Dry run was switched off while the decision still holds.
+            changes.append(
+                _stage_change(episode, {"stage": "quarantining", **command})
+            )
+        elif stage == "would" and decision is None:
+            next_absent = absent + 1
+            if next_absent >= DRY_RUN_EXPIRY_SCANS:
+                next_absent = 0
+                changes.append(
+                    _stage_change(
+                        episode,
+                        {"stage": "resolved", "resolution": "decision_cleared"},
+                        resolved_at=now,
+                        silent=True,
+                    )
+                )
+        elif stage == "quarantining" and actuator == "drained":
+            changes.append(
+                _stage_change(
+                    episode, {"stage": "quarantined", "quarantined_at": now.isoformat()}
+                )
+            )
+        elif stage == "resolving" and actuator == "returned":
+            changes.append(
+                _stage_change(episode, {"stage": "resolved"}, resolved_at=now)
+            )
+        if next_absent != absent:
+            out_states.append(
+                replace(state, details={**state.details, "absent_scans": next_absent})
+            )
+    return InfraScanPlan(
+        states=tuple(out_states), opened=tuple(opened), stage_changes=tuple(changes)
+    )
+
+
 def plan_infra_scan(
     *,
     now: datetime,
@@ -667,12 +825,24 @@ def plan_infra_scan(
     gpu_counts: list[GpuCountObservation],
     states: Mapping[tuple[str, str], InfraSubjectState],
     open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
+    quarantine_decisions: Iterable[QuarantineDecision] = (),
+    quarantine_live: bool = False,
 ) -> InfraScanPlan:
     """Decide state upserts and episode transitions for one scan.
 
-    Disabled threshold rows suppress their alert type entirely.
+    Disabled threshold rows suppress their alert type entirely. The
+    quarantine sequence always runs, so an open episode keeps advancing on
+    actuator reports even when no decision names its host.
     """
-    plans: list[InfraScanPlan] = []
+    plans: list[InfraScanPlan] = [
+        plan_quarantine(
+            now=now,
+            live=quarantine_live,
+            decisions=quarantine_decisions,
+            states=states,
+            open_episodes=open_episodes,
+        )
+    ]
     unreporting = thresholds.get(InfraAlertType.UNREPORTING.value)
     if unreporting is not None and unreporting.enabled:
         plans.append(
@@ -733,6 +903,7 @@ def plan_infra_scan(
         states=tuple(state for plan in plans for state in plan.states),
         opened=tuple(episode for plan in plans for episode in plan.opened),
         resolved=tuple(episode for plan in plans for episode in plan.resolved),
+        stage_changes=tuple(change for plan in plans for change in plan.stage_changes),
     )
 
 
@@ -756,7 +927,39 @@ def _render_disk_subject(details: Mapping[str, Any], subject_key: str) -> str:
     return _code(subject_key)
 
 
+# Placeholder until the quarantine runbook page exists.
+QUARANTINE_RUNBOOK = "Runbook: to be linked before quarantine goes live."
+
+
+def _render_quarantine(episode: InfraAlertEpisode) -> str:
+    host = _code(episode.subject_key)
+    reason = _escape(episode.details.get("reason"))
+    stage = episode.details.get("stage")
+    if stage == "would":
+        return f":eyes: *Quarantine (dry run)* — would quarantine {host}: {reason}"
+    if stage == "quarantining":
+        return (
+            f":construction: *Quarantine* — {host} will be quarantined once its "
+            f"running jobs finish: {reason}"
+        )
+    if stage == "quarantined":
+        return f":no_entry: *Quarantine* — {host} is quarantined\n{QUARANTINE_RUNBOOK}"
+    if stage == "resolved":
+        by = _escape(episode.details.get("resolved_by") or "unknown")
+        # The actuator explains what it left alone, such as a person's own
+        # cordon that predates the quarantine.
+        observed = episode.details.get("actuator_observed")
+        note = observed.get("note") if isinstance(observed, dict) else None
+        return (
+            f":white_check_mark: *Quarantine* — {host} is back in service "
+            f"(resolved by {by})" + (f"; {_escape(note)}" if note else "")
+        )
+    raise ValueError(f"no quarantine renderer for stage: {stage}")
+
+
 def _render_open(episode: InfraAlertEpisode) -> str:
+    if episode.alert_type == InfraAlertType.QUARANTINE:
+        return _render_quarantine(episode)
     if episode.alert_type == InfraAlertType.UNREPORTING:
         hostname = _code(episode.details.get("hostname") or episode.subject_key)
         minutes = _escape(episode.details.get("threshold_minutes"))
@@ -892,14 +1095,16 @@ InfraNotificationFactory = Callable[[InfraScanPlan], list[NotificationIntent]]
 def _intent(
     episode: InfraAlertEpisode,
     *,
-    opening: bool,
+    verb: str,
+    text: str,
     delivery_mode: DeliveryMode,
 ) -> NotificationIntent:
     digest = hashlib.sha256(
         f"{episode.alert_type}\0{episode.subject_key}".encode()
     ).hexdigest()[:16]
     epoch = int(episode.opened_at.timestamp())
-    verb = "open" if opening else "resolve"
+    # ':resolve' edits the paired ':open' message in place (see runtime);
+    # quarantine stage posts use their stage as the verb and post fresh.
     delivery_id = f"infra:{episode.alert_type}:{digest}:{epoch}:{verb}"
     return NotificationIntent(
         delivery_id=delivery_id,
@@ -908,24 +1113,43 @@ def _intent(
         delivery_mode=delivery_mode,
         destination_mode=DestinationMode.BOT_TOKEN,
         destination=slack_channel(),
-        payload={
-            "text": _render_open(episode) if opening else _render_resolve(episode)
-        },
+        payload={"text": text},
     )
 
 
 def infra_notifications(
     plan: InfraScanPlan, *, delivery_mode: DeliveryMode
 ) -> list[NotificationIntent]:
-    """Render exactly one intent per applied transition: open and resolve."""
+    """Render exactly one intent per applied transition: open, resolve, and
+    each non-silent quarantine stage change."""
     return [
         *(
-            _intent(episode, opening=True, delivery_mode=delivery_mode)
+            _intent(
+                episode,
+                verb="open",
+                text=_render_open(episode),
+                delivery_mode=delivery_mode,
+            )
             for episode in plan.opened
         ),
         *(
-            _intent(episode, opening=False, delivery_mode=delivery_mode)
+            _intent(
+                episode,
+                verb="resolve",
+                text=_render_resolve(episode),
+                delivery_mode=delivery_mode,
+            )
             for episode in plan.resolved
+        ),
+        *(
+            _intent(
+                change.episode,
+                verb=str(change.episode.details["stage"]),
+                text=_render_quarantine(change.episode),
+                delivery_mode=delivery_mode,
+            )
+            for change in plan.stage_changes
+            if not change.silent
         ),
     ]
 
@@ -941,12 +1165,18 @@ class InfraScanHandler:
         store: InfraStore,
         clock: Clock,
         delivery_mode: DeliveryMode = DeliveryMode.LIVE,
+        quarantine_decisions: Callable[[], Iterable[QuarantineDecision]] = tuple,
+        quarantine_live: bool = False,
     ) -> None:
         self._hosts = hosts
         self._snapshots = snapshots
         self._store = store
         self._clock = clock
         self._delivery_mode = delivery_mode
+        # The trigger rules (a later change) supply decisions; until then the
+        # source is empty and the sequence only advances existing episodes.
+        self._quarantine_decisions = quarantine_decisions
+        self._quarantine_live = quarantine_live
 
     def __call__(self, command: ScheduledCommand) -> HandlerCompletion:
         now = command.target_time
@@ -983,6 +1213,8 @@ class InfraScanHandler:
                 (episode.alert_type, episode.subject_key): episode
                 for episode in snapshot.open_episodes
             },
+            quarantine_decisions=self._quarantine_decisions(),
+            quarantine_live=self._quarantine_live,
         )
         self._store.commit_infra_scan(
             command=command,
