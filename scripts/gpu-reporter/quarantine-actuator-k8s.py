@@ -39,6 +39,7 @@ Environment variables:
 """
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -56,6 +57,10 @@ CORDON_MARK = "vllm.ci/quarantine-cordoned"  # annotation: the cordon is ours
 CI_NAMESPACE = "buildkite"
 OUT_STAGES = ("quarantining", "quarantined")
 KUBECTL_TIMEOUT = 20
+# Nodes reconcile in parallel so slow calls on some (a hung pod list, a
+# dashboard POST timing out) can't use up the run before later nodes get
+# their turn. Each node's own steps stay in order on one worker.
+NODE_WORKERS = 8
 
 
 def kubectl(*args):
@@ -174,34 +179,36 @@ class Actuator:
             print(f"  NOTE: {name} {observed['note']}")
         self.post(name, want["alertId"], "returned", observed)
 
-    def run(self, desired, nodes):
-        by_name = {n["metadata"]["name"]: n for n in nodes}
-        wanted = set()
-        for want in desired:
-            host, stage = want["host"], want["stage"]
-            wanted.add(host)
-            print(f"{host}: {stage} ({want.get('reason', '')})")
-            if stage == "would":
-                print(f"  would quarantine {host}")
-                continue
-            node = by_name.get(host)
-            if node is None:
-                print(f"ERROR: {host} is not a node in this cluster",
+    def reconcile(self, want, node):
+        host, stage = want["host"], want["stage"]
+        print(f"{host}: {stage} ({want.get('reason', '')})")
+        if stage == "would":
+            print(f"  would quarantine {host}")
+            return
+        if node is None:
+            print(f"ERROR: {host} is not a node in this cluster",
+                  file=sys.stderr)
+            self.ok = False
+            return
+        try:
+            if stage in OUT_STAGES:
+                self.take_out(node, want)
+            elif stage == "resolving":
+                self.bring_back(node, want)
+            else:
+                print(f"ERROR: {host}: unknown stage {stage!r}",
                       file=sys.stderr)
                 self.ok = False
-                continue
-            try:
-                if stage in OUT_STAGES:
-                    self.take_out(node, want)
-                elif stage == "resolving":
-                    self.bring_back(node, want)
-                else:
-                    print(f"ERROR: {host}: unknown stage {stage!r}",
-                          file=sys.stderr)
-                    self.ok = False
-            except Exception as e:
-                print(f"ERROR: {host}: {e}", file=sys.stderr)
-                self.ok = False
+        except Exception as e:
+            print(f"ERROR: {host}: {e}", file=sys.stderr)
+            self.ok = False
+
+    def run(self, desired, nodes):
+        by_name = {n["metadata"]["name"]: n for n in nodes}
+        wanted = {want["host"] for want in desired}
+        with concurrent.futures.ThreadPoolExecutor(NODE_WORKERS) as pool:
+            for want in desired:
+                pool.submit(self.reconcile, want, by_name.get(want["host"]))
         for name, node in by_name.items():
             if name not in wanted and our_taint(node) is not None:
                 print(f"WARNING: {name} carries {TAINT_KEY} but is not in the "
