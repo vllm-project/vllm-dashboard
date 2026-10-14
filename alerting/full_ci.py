@@ -219,6 +219,22 @@ class BuildkiteRestClient:
             by_id[str(build["id"])] = build
         return list(by_id.values())
 
+    def list_recent_builds_with_jobs(
+        self, *, created_from: datetime, up_to: datetime
+    ) -> list[dict[str, Any]]:
+        """Return builds on every branch created in the window, jobs embedded.
+
+        Retried executions are included: each attempt ran on its own host.
+        """
+        return self._list_build_pages(
+            {
+                "created_from": _iso8601(created_from),
+                "created_to": _iso8601(up_to),
+                "include_retried_jobs": "true",
+                "per_page": 100,
+            }
+        )
+
     def list_jobs(self, build_number: int) -> list[dict[str, Any]]:
         url: str | None = (
             f"{self._BUILDS_URL}/{build_number}/jobs"
