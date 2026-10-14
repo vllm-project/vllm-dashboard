@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import pytest
+
 from alerting.infra import (
     DiskMountObservation,
     GpuCountObservation,
@@ -116,6 +118,7 @@ def test_pilot_pools_map_k8s_nodes_by_name_and_bare_metal_by_agent_queue() -> No
         [
             ("GPU-Node-7.example.com", "h200_35gb"),
             ("gpu-node-9", "H200"),
+            ("gpu-node-8", "h200_18gb"),
             ("ci-pod-abc", "b200-k8s"),  # a k8s agent's hostname is its pod
             ("cpu-host-1", "cpu_queue"),
         ],
@@ -125,6 +128,7 @@ def test_pilot_pools_map_k8s_nodes_by_name_and_bare_metal_by_agent_queue() -> No
         "dgxb200-test": ("b200", "b200-k8s"),
         "gpu-node-7": ("h200", "h200_35gb"),
         "gpu-node-9": ("h200", "H200"),
+        "gpu-node-8": ("h200", "h200_18gb"),
     }
 
 
@@ -140,15 +144,18 @@ def test_recovery_action_trips_on_one_fresh_reading_only() -> None:
         assert scans.run(gpu_faults=[gpu(scans, recovery_action=action)]) == []
     stale = gpu(scans, recovery_action="Reset", reported_at=scans.reading_at(61))
     assert scans.run(gpu_faults=[stale]) == []
+    edge = gpu(scans, recovery_action="Reset", reported_at=scans.reading_at(60))
+    assert len(scans.run(gpu_faults=[edge])) == 1  # 60 s old is still fresh
     other = gpu(scans, host="other-gpu-1", recovery_action="Reset")
     assert scans.run(gpu_faults=[other]) == []
 
 
 def test_row_remap_failure_trips_and_unreadable_is_never_healthy_or_failing() -> None:
     scans = Scans()
-    assert rules(scans.run(gpu_faults=[gpu(scans, remapped_rows_failure=True)])) == [
-        ("gpu-node-7", "remapped_rows")
-    ]
+    [decision] = scans.run(gpu_faults=[gpu(scans, remapped_rows_failure=True)])
+    assert (decision.host, decision.evidence["rule"]) == ("gpu-node-7", "remapped_rows")
+    assert decision.hardware
+    assert decision.reason == "GPU 3 has run out of spare memory rows"
     # MIG hosts read NULL: missing, so no trip either way.
     assert scans.run(gpu_faults=[gpu(scans, remapped_rows_failure=None)]) == []
 
@@ -159,8 +166,38 @@ def test_hardware_xids_trip_on_first_sight_and_app_xids_never() -> None:
     assert decision.hardware
     assert decision.reason == "Xid 79 on GPU 0000:1b:00.0"
     assert scans.run(xid_events=[xid(13, START), xid(43, START), xid(31, START)]) == []
-    # Out of the 24 h window.
+    # Out of the 24 h window; exactly 24 h old is still in it.
     assert scans.run(xid_events=[xid(79, scans.now - timedelta(hours=25))]) == []
+    assert len(scans.run(xid_events=[xid(79, scans.now - timedelta(hours=24))])) == 1
+
+
+@pytest.mark.parametrize("code", [48, 54, 64, 79, 110, 140, 143, 157, 171, 172])
+def test_every_first_sight_xid_trips_on_one_event(code: int) -> None:
+    scans = Scans()
+    assert rules(scans.run(xid_events=[xid(code, START)])) == [("gpu-node-7", "xid")]
+
+
+@pytest.mark.parametrize("code", range(144, 151))
+def test_every_nvlink_xid_trips_on_b200_and_never_elsewhere(code: int) -> None:
+    scans = Scans()
+    event = xid(code, START, name="k8s-node-1", bus="")
+    assert rules(scans.run(xid_events=[event])) == [("k8s-node-1", "xid")]
+    assert scans.run(xid_events=[xid(code, START)]) == []
+
+
+def test_xids_past_the_nvlink_range_never_trip_on_first_sight() -> None:
+    scans = Scans()
+    assert scans.run(xid_events=[xid(151, START, name="k8s-node-1", bus="")]) == []
+
+
+@pytest.mark.parametrize("code", [46, 62, 74, 95, 109, 119, 120, 136, 158])
+def test_every_reset_class_xid_trips_on_its_third_event_only(code: int) -> None:
+    scans = Scans()
+    at = [START - timedelta(hours=h) for h in (20, 10, 1)]
+    assert scans.run(xid_events=[xid(code, t) for t in at[:2]]) == []
+    assert rules(scans.run(xid_events=[xid(code, t) for t in at])) == [
+        ("gpu-node-7", "xid_repeat")
+    ]
 
 
 def test_nvlink_xids_trip_on_first_sight_only_on_b200() -> None:
@@ -189,8 +226,12 @@ def test_reset_class_xids_trip_on_three_of_one_xid_on_one_gpu_in_a_day() -> None
     assert scans.run(xid_events=old) == []
 
     # Kubernetes Xids carry no bus id; they count per host.
-    k8s = [xid(62, t, name="k8s-node-1", bus="") for t in at]
-    assert rules(scans.run(xid_events=k8s)) == [("k8s-node-1", "xid_repeat")]
+    k8s = [xid(62, t, name="k8s-node-1", bus="") for t in reversed(at)]
+    [decision] = scans.run(xid_events=k8s)
+    assert (decision.host, decision.evidence["rule"]) == ("k8s-node-1", "xid_repeat")
+    assert decision.reason == "Xid 62 3 times on GPU unknown in 24 h"
+    assert decision.evidence["first_at"] == at[0].isoformat()
+    assert decision.evidence["last_at"] == at[2].isoformat()
 
 
 def test_a_resolve_covers_the_xids_seen_before_it() -> None:
@@ -204,9 +245,12 @@ def test_a_resolve_covers_the_xids_seen_before_it() -> None:
         opened_at=START,
         details={"stage": "resolving"},
     )
-    scans.run(xid_events=events)
+    resolved_at = scans.now
+    assert scans.run(xid_events=events) == []  # the resolving scan itself
     scans.open_episodes.clear()
     assert scans.run(xid_events=events) == []
+    # An Xid at the resolve cutoff is covered too.
+    assert scans.run(xid_events=[*events, xid(48, resolved_at)]) == []
 
     newer = [*events, xid(48, scans.now - timedelta(minutes=1))]
     assert rules(scans.run(xid_events=newer)) == [("gpu-node-7", "xid")]
@@ -269,6 +313,7 @@ def test_network_trips_when_only_this_host_cannot_reach_out() -> None:
     assert scans.run(host_faults=network(scans, alone)) == []
     [decision] = scans.run(host_faults=network(scans, alone))
     assert decision.evidence["rule"] == "network"
+    assert decision.evidence["probes"] == 2
     assert decision.reason == (
         "every network probe failed on 2 consecutive checks "
         "while most of the pool passed"
@@ -293,17 +338,32 @@ def test_network_failing_across_most_of_the_pool_is_a_shared_incident() -> None:
         assert lone.run(host_faults=network(lone, {"gpu-node-7": False})) == []
 
 
+def test_network_ignores_hosts_in_other_pools() -> None:
+    scans = Scans()
+    ok = {"gpu-node-7": False, "gpu-node-8": True, "gpu-node-9": True}
+    ok["k8s-node-1"] = False  # down too, but in another pool
+    assert scans.run(host_faults=network(scans, ok)) == []
+    assert rules(scans.run(host_faults=network(scans, ok))) == [
+        ("gpu-node-7", "network")
+    ]
+
+
 def disk_mount(
-    scans: Scans, *, fstype: str = "ext4", used: float = 95.0
+    scans: Scans,
+    *,
+    fstype: str = "ext4",
+    used: float = 95.0,
+    mount_point: str = "/mnt/local",
+    total: int = 10000,
 ) -> DiskMountObservation:
     return DiskMountObservation(
         hostname="gpu-node-7",
-        mount_point="/mnt/local",
+        mount_point=mount_point,
         device="/dev/nvme0n1",
         fstype=fstype,
         role="workspace",
-        used_bytes=int(used * 10),
-        total_bytes=1000,
+        used_bytes=round(used * total / 100),
+        total_bytes=total,
         error=None,
         reported_at=scans.reading_at(),
     )
@@ -325,6 +385,40 @@ def test_a_full_local_disk_trips_on_two_checks_and_a_shared_volume_never() -> No
         assert disabled.run(disk_mounts=[disk_mount(disabled)]) == []
 
 
+def test_a_disk_at_exactly_the_threshold_trips() -> None:
+    scans = Scans()
+    assert scans.run(disk_mounts=[disk_mount(scans, used=90.0)]) == []
+    assert rules(scans.run(disk_mounts=[disk_mount(scans, used=90.0)])) == [
+        ("gpu-node-7", "disk")
+    ]
+
+
+def test_the_disk_decision_names_the_fullest_mount() -> None:
+    scans = Scans()
+
+    def mounts() -> list[DiskMountObservation]:
+        return [
+            disk_mount(scans, used=92.34),
+            disk_mount(scans, used=97.06, mount_point="/mnt/scratch"),
+        ]
+
+    assert scans.run(disk_mounts=mounts()) == []
+    [decision] = scans.run(disk_mounts=mounts())
+    assert decision.reason == "disk /mnt/scratch at 97% used on 2 consecutive checks"
+    assert decision.evidence["rule"] == "disk"
+    assert decision.evidence["used_percent"] == 97.1
+    assert decision.evidence["threshold_percent"] == 90
+
+
+def test_a_zero_size_mount_is_unread_but_any_real_size_counts() -> None:
+    scans = Scans()
+    for _ in range(3):
+        assert scans.run(disk_mounts=[disk_mount(scans, used=0, total=0)]) == []
+    tiny = Scans()
+    assert tiny.run(disk_mounts=[disk_mount(tiny, used=100, total=1)]) == []
+    assert len(tiny.run(disk_mounts=[disk_mount(tiny, used=100, total=1)])) == 1
+
+
 def test_dead_process_memory_trips_on_two_checks_at_the_alert_threshold() -> None:
     scans = Scans()
 
@@ -339,6 +433,23 @@ def test_dead_process_memory_trips_on_two_checks_at_the_alert_threshold() -> Non
     assert scans.run(gpu_dead_memory=held(100)) == []
 
 
+def test_the_dead_memory_decision_names_the_worst_gpu() -> None:
+    scans = Scans()
+
+    def held() -> list[GpuDeadMemoryObservation]:
+        return [
+            GpuDeadMemoryObservation("gpu-node-7", 2, 5000, scans.reading_at()),
+            GpuDeadMemoryObservation("gpu-node-7", 5, 6000, scans.reading_at()),
+        ]
+
+    assert scans.run(gpu_dead_memory=held()) == []
+    [decision] = scans.run(gpu_dead_memory=held())
+    assert decision.evidence["rule"] == "dead_memory"
+    assert decision.reason == (
+        "6000 MiB held by dead processes on GPU 5 on 2 consecutive checks"
+    )
+
+
 def test_root_owned_slots_trip_on_bare_metal_only() -> None:
     scans = Scans()
     slots = ["/mnt/local/buildkite-agent/builds/agent-1"]
@@ -351,6 +462,21 @@ def test_root_owned_slots_trip_on_bare_metal_only() -> None:
         )
     assert rules(decisions) == [("gpu-node-7", "root_owned")]
     assert "agent-1" not in decisions[0].reason
+    assert decisions[0].reason == (
+        "root-owned files in 1 checkout slot(s) on 2 consecutive checks"
+    )
+    assert decisions[0].evidence["slots"] == 1
+
+
+def test_a_kubernetes_node_never_hides_the_bare_metal_hosts_after_it() -> None:
+    scans = Scans(
+        {"b200-node-1": ("b200", "b200-k8s"), "gpu-node-7": ("h200", "h200_35gb")}
+    )
+    slots = ["/mnt/local/buildkite-agent/builds/agent-1"]
+    assert scans.run(host_faults=[host(scans, root_owned_slots=slots)]) == []
+    assert rules(scans.run(host_faults=[host(scans, root_owned_slots=slots)])) == [
+        ("gpu-node-7", "root_owned")
+    ]
 
 
 def test_fewer_gpus_than_the_baseline_trips_on_h200_only() -> None:
@@ -369,7 +495,40 @@ def test_fewer_gpus_than_the_baseline_trips_on_h200_only() -> None:
     assert scans.run(gpu_counts=counts()) == []
     [decision] = scans.run(gpu_counts=counts())
     assert decision.host == "gpu-node-7"
+    assert decision.evidence["rule"] == "gpu_count"
     assert decision.reason == "7 of 8 GPUs usable on 2 consecutive checks"
+
+
+def test_gpu_count_reads_each_hosts_own_count_against_its_baseline() -> None:
+    scans = Scans()
+    for name in ("gpu-node-7", "gpu-node-8"):
+        scans.states[("gpu_count", f"gpu-count:{name}")] = InfraSubjectState(
+            "gpu_count", f"gpu-count:{name}", details={"baseline_gpus": 8}
+        )
+
+    def counts() -> list[GpuCountObservation]:
+        return [
+            GpuCountObservation("gpu-node-7", 6, scans.reading_at()),
+            GpuCountObservation("gpu-node-8", 8, scans.reading_at()),
+        ]
+
+    assert scans.run(gpu_counts=counts()) == []
+    [decision] = scans.run(gpu_counts=counts())
+    assert decision.host == "gpu-node-7"
+    assert decision.reason == "6 of 8 GPUs usable on 2 consecutive checks"
+
+
+def test_gpu_count_without_a_baseline_never_trips() -> None:
+    scans = Scans()
+    scans.states[("gpu_count", "gpu-count:gpu-node-8")] = InfraSubjectState(
+        "gpu_count", "gpu-count:gpu-node-8"
+    )
+    for _ in range(3):
+        observed = [
+            GpuCountObservation(name, 0, scans.reading_at())
+            for name in ("gpu-node-7", "gpu-node-8")
+        ]
+        assert scans.run(gpu_counts=observed) == []
 
 
 def test_hardware_decisions_come_first_so_they_win_for_a_host() -> None:
@@ -380,3 +539,63 @@ def test_hardware_decisions_come_first_so_they_win_for_a_host() -> None:
         xid_events=[xid(79, START)],
     )
     assert rules(decisions) == [("gpu-node-7", "xid"), ("gpu-node-7", "gpu_hang")]
+
+
+def test_gpu_fault_decisions_run_in_host_then_gpu_order_with_their_reading() -> None:
+    scans = Scans()
+    stale = gpu(
+        scans, gpu_index=0, recovery_action="Reset", reported_at=scans.reading_at(61)
+    )
+    reading = scans.reading_at()
+    decisions = scans.run(
+        gpu_faults=[
+            gpu(scans, "gpu-node-8", gpu_index=1, remapped_rows_failure=True),
+            gpu(scans, gpu_index=5, recovery_action="Reset"),
+            stale,
+        ]
+    )
+    assert [(d.host, d.evidence["gpu_index"]) for d in decisions] == [
+        ("gpu-node-7", 5),
+        ("gpu-node-8", 1),
+    ]
+    assert {d.evidence["reading_at"] for d in decisions} == {reading.isoformat()}
+
+
+def test_streaks_persist_under_stable_per_rule_subject_keys() -> None:
+    """Subject state outlives a deploy, so its keys must not drift."""
+    scans = Scans()
+    scans.states[("gpu_count", "gpu-count:gpu-node-7")] = InfraSubjectState(
+        "gpu_count", "gpu-count:gpu-node-7", details={"baseline_gpus": 8}
+    )
+    scans.open_episodes[("quarantine", "gpu-node-7")] = InfraAlertEpisode(
+        alert_type="quarantine",
+        subject_key="gpu-node-7",
+        opened_at=START,
+        details={"stage": "resolving"},
+    )
+    failing = network(
+        scans, {"gpu-node-7": False, "gpu-node-8": True, "gpu-node-9": True}
+    )
+    failing[0] = host(
+        scans,
+        gpu_query_hung=True,
+        network_probes=[{"target": "a", "ok": False}],
+        root_owned_slots=["agent-1"],
+    )
+    scans.run(
+        host_faults=failing,
+        disk_mounts=[disk_mount(scans)],
+        gpu_dead_memory=[
+            GpuDeadMemoryObservation("gpu-node-7", 2, 5000, scans.reading_at())
+        ],
+        gpu_counts=[GpuCountObservation("gpu-node-7", 7, scans.reading_at())],
+    )
+    assert sorted(key for kind, key in scans.states if kind == "quarantine") == [
+        "rule:dead_memory:gpu-node-7",
+        "rule:disk:gpu-node-7",
+        "rule:gpu_count:gpu-node-7",
+        "rule:gpu_hang:gpu-node-7",
+        "rule:network:gpu-node-7",
+        "rule:root_owned:gpu-node-7",
+        "rule:xid:gpu-node-7",
+    ]

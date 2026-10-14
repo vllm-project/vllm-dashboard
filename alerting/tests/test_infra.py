@@ -1235,6 +1235,8 @@ def test_job_failure_trigger_runs_every_15_minutes_and_its_decisions_hold() -> N
     assert episode.details["stage"] == "would"
     assert episode.details["evidence"] == {"xid": 79, "gpu": 3}
     assert len(slack.deliveries) == 1
+    cached = {state.subject_key for state in store.infra_state().states}
+    assert "trigger:job_failure" in cached
 
 
 def test_a_failed_job_failure_fetch_yields_nothing_and_retries_next_scan(
@@ -1251,7 +1253,10 @@ def test_a_failed_job_failure_fetch_yields_nothing_and_retries_next_scan(
     runtime, store, slack, clock = job_failure_runtime(fetch)
     scan_and_post(runtime, clock)
     assert store.open_episodes() == []
-    assert "job-failure trigger skipped: RuntimeError" in capsys.readouterr().err
+    assert (
+        "job-failure trigger skipped: RuntimeError: GET /builds failed with HTTP 502"
+        in capsys.readouterr().err.splitlines()
+    )
 
     scan_and_post(runtime, clock)
     assert len(calls) == 2
@@ -1277,3 +1282,36 @@ def test_a_trigger_rule_opens_a_dry_run_quarantine_with_its_pool() -> None:
     )
     text = slack.deliveries[-1].payload["text"]
     assert text.endswith("would quarantine `dgxb200-test`: Xid 79 on GPU unknown")
+
+
+def test_a_gpu_fault_reading_opens_a_dry_run_quarantine() -> None:
+    runtime, store, slack, clock = quarantine_runtime([])
+    snapshots = runtime._handlers["infra_scan"]._snapshots  # type: ignore[attr-defined]
+    reading_at = clock.now() + timedelta(minutes=5, seconds=-10)
+    snapshots.faults = [
+        GpuFaultObservation("dgxb200-test", 2, "Reset", None, reading_at),
+    ]
+
+    scan_and_post(runtime, clock)
+
+    [episode] = store.open_episodes()
+    assert episode.subject_key == "dgxb200-test"
+    text = slack.deliveries[-1].payload["text"]
+    assert text.endswith("the driver asks for recovery (Reset) on GPU 2")
+
+
+def test_a_host_fault_reading_opens_a_dry_run_quarantine_on_its_second_check() -> None:
+    runtime, store, slack, clock = quarantine_runtime([])
+    snapshots = runtime._handlers["infra_scan"]._snapshots  # type: ignore[attr-defined]
+    for _ in range(2):
+        snapshots.host_fault_rows = [
+            HostFaultObservation(
+                "dgxb200-test", True, None, None, clock.now() + timedelta(minutes=4)
+            )
+        ]
+        scan_and_post(runtime, clock)
+
+    [episode] = store.open_episodes()
+    assert episode.subject_key == "dgxb200-test"
+    text = slack.deliveries[-1].payload["text"]
+    assert text.endswith("the GPU query hung on 2 consecutive checks")

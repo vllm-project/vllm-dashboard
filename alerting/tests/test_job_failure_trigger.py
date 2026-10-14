@@ -170,6 +170,7 @@ def test_dry_run_decisions_from_buildkite_builds() -> None:
         "h200_18gb",
     )
     assert decision.reason == "last 10 jobs failed across 3 builds"
+    assert decision.hardware is False  # job failures are not a hardware rule
     assert isinstance(decision, QuarantineDecision)
     assert decision.evidence["builds"] == [1, 2, 3]
     assert decision.evidence["failed_jobs"] == 10
