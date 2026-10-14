@@ -213,3 +213,41 @@ def test_taint_value_is_a_valid_label_value(run):
     v = run.mod.taint_value("  !!" + "x" * 80)
     assert len(v) <= 63 and v[0].isalnum() and v[-1].isalnum()
     assert run.mod.taint_value("") == "quarantine"
+
+
+def test_slow_nodes_do_not_hold_up_a_new_quarantine(run):
+    import threading
+
+    # n1 and n2 are already out; their applied POSTs hang until n3, a new
+    # quarantine listed after them, has been cordoned. Run serially, n3 is
+    # never reached while they wait.
+    n3_cordoned = threading.Event()
+    waited = {}
+
+    class Kube(FakeKube):
+        def __call__(self, *args):
+            out = super().__call__(*args)
+            if args == ("cordon", "n3"):
+                n3_cordoned.set()
+            return out
+
+    class Dash(FakeDashboard):
+        def __call__(self, method, path, body=None):
+            host = path.split("/")[-2]
+            if method == "POST" and host in ("n1", "n2"):
+                waited[host] = n3_cordoned.wait(timeout=5)
+            return super().__call__(method, path, body)
+
+    kube = Kube({"n1": node(True, ours=True), "n2": node(True, ours=True),
+                 "n3": node()})
+    dash = Dash([want("n1", "quarantined"), want("n2", "quarantined"),
+                 want("n3", "quarantining")])
+    assert run(kube, dash) == 0
+    assert waited == {"n1": True, "n2": True}
+    # Each node's own steps keep their order.
+    assert [w for w in kube.writes if "n3" in w] == [
+        ("cordon", "n3"),
+        ("annotate", "--overwrite", "node", "n3", f"{MARK}=true"),
+        ("taint", "nodes", "n3",
+         f"{KEY}=Xid-79-GPU-fell-off-the-bus:NoSchedule"),
+    ]
