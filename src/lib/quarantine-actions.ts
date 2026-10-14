@@ -73,47 +73,61 @@ export function textField(
   return trimmed.length >= 1 && trimmed.length <= max ? trimmed : null;
 }
 
-// Max lengths mirror the CHECK constraints in migration 0030.
+// Max lengths mirror the CHECK constraints in migration 0030 (by, cause,
+// match); the quarantine resolve reason is held to the same 500.
 export const MAX_BY = 80;
 export const MAX_REASON = 500;
 export const MAX_CAUSE = 500;
 export const MAX_MATCH = 200;
 
 /**
- * Closes the host's open pilot record (would, live or held). A hand cordon or
- * pause ('manual' row) is not ours to lift: undoing it by hand closes its
- * record. A host with only closed records is a 409, one never seen a 404. The
- * worker and the control-plane timers lift the pause or taint from the record.
+ * Resolves a host's open quarantine episode (alert type 'quarantine' in
+ * alerting_infra_alerts) by moving its stage to 'resolving'. The episode stays
+ * open: the actuator undoes its cordon and taint or lock file, and the worker
+ * marks it resolved once the host is back. A dry-run ('would') episode has
+ * nothing to undo, so it is a 409, as is one already resolving or resolved;
+ * a host never quarantined is a 404.
  */
-export async function returnQuarantine(
+export async function resolveQuarantine(
   db: Db,
   host: string,
   by: string,
   reason: string,
 ): Promise<ActionResult> {
-  const closed = await db<{ record_id: string }[]>`
-    UPDATE alerting_quarantine_records
-    SET state = 'closed',
-        closed_at = now(),
-        closed_by = ${by},
-        close_how = 'returned',
-        close_reason = ${reason},
+  const resolved = await db<{ alert_id: string }[]>`
+    UPDATE alerting_infra_alerts
+    SET details = details || jsonb_build_object(
+          'stage', 'resolving',
+          'resolved_by', ${by}::text,
+          'resolve_reason', ${reason}::text,
+          'resolve_requested_at', now()
+        ),
         updated_at = now()
-    WHERE host = ${host} AND state IN ('would', 'live', 'held')
-    RETURNING record_id
+    WHERE alert_type = 'quarantine'
+      AND subject_key = ${host}
+      AND status = 'open'
+      AND details->>'stage' IN ('held', 'quarantining', 'quarantined')
+    RETURNING alert_id
   `;
-  if (closed.length > 0) {
-    return { status: 200, body: { ok: true, recordId: Number(closed[0].record_id) } };
+  if (resolved.length > 0) {
+    return { status: 200, body: { ok: true, alertId: Number(resolved[0].alert_id) } };
   }
-  const [{ manual }] = await db<{ manual: boolean | null }[]>`
-    SELECT bool_or(state = 'manual') AS manual
-    FROM alerting_quarantine_records
-    WHERE host = ${host}
+  const latest = await db<{ stage: string | null }[]>`
+    SELECT details->>'stage' AS stage
+    FROM alerting_infra_alerts
+    WHERE alert_type = 'quarantine' AND subject_key = ${host}
+    ORDER BY opened_at DESC
+    LIMIT 1
   `;
-  if (manual === null) return fail(404, "No quarantine record exists for this host.");
-  return manual
-    ? fail(409, "Host is cordoned or paused by hand; undo that by hand to return it.")
-    : fail(409, "Host has no open quarantine; it is already returned.");
+  if (latest.length === 0) return fail(404, "This host has never been quarantined.");
+  const { stage } = latest[0];
+  if (stage === "would") {
+    return fail(409, "This is a dry-run quarantine; nothing was applied to resolve.");
+  }
+  if (stage === "resolving") {
+    return fail(409, "This quarantine is already being resolved.");
+  }
+  return fail(409, "This host has no open quarantine; it is already resolved.");
 }
 
 /** Moves a suspected incident to confirmed, recording cause and match. */

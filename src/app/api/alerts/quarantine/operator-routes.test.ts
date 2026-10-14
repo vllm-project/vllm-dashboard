@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { POST as closeIncident } from "../incidents/[id]/close/route";
 import { POST as confirmIncident } from "../incidents/[id]/confirm/route";
-import { POST as returnHost } from "./[host]/return/route";
+import { POST as resolveHost } from "./[host]/resolve/route";
 
 type Handler = (
   request: Request,
@@ -11,8 +11,8 @@ type Handler = (
 
 const routes: { name: string; post: Handler; params: object; valid: object }[] = [
   {
-    name: "return",
-    post: returnHost as unknown as Handler,
+    name: "resolve",
+    post: resolveHost as unknown as Handler,
     params: { host: "h200-1" },
     valid: { by: "oncall", reason: "rebooted" },
   },
@@ -96,7 +96,7 @@ for (const route of routes) {
   });
 }
 
-test("incident routes reject a non-numeric id; return rejects a bad host", async () => {
+test("incident routes reject a non-numeric id; resolve rejects a bad host", async () => {
   await withToken("secret", async () => {
     const auth = { authorization: "Bearer secret" };
     for (const route of routes.slice(1)) {

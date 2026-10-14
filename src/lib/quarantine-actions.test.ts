@@ -4,7 +4,7 @@ import type { Db } from "./quarantine-actions";
 import {
   closeIncident,
   confirmIncident,
-  returnQuarantine,
+  resolveQuarantine,
 } from "./quarantine-actions";
 
 /** A fake tagged-template DB that answers each query with the next row set. */
@@ -17,30 +17,32 @@ function fakeDb(...answers: Record<string, unknown>[][]) {
   return { db, queries };
 }
 
-test("returning a host closes its open pilot record, never a hand cordon", async () => {
-  const { db, queries } = fakeDb([{ record_id: "7" }]);
-  const result = await returnQuarantine(db, "h200-1", "oncall", "rebooted");
-  assert.deepEqual(result, { status: 200, body: { ok: true, recordId: 7 } });
+test("resolving moves an open, applied or held quarantine to resolving", async () => {
+  const { db, queries } = fakeDb([{ alert_id: "7" }]);
+  const result = await resolveQuarantine(db, "h200-1", "oncall", "rebooted");
+  assert.deepEqual(result, { status: 200, body: { ok: true, alertId: 7 } });
   assert.equal(queries.length, 1);
-  assert.match(queries[0], /close_how = 'returned'/);
-  assert.match(queries[0], /state IN \('would', 'live', 'held'\)/);
+  assert.match(queries[0], /'stage', 'resolving'/);
+  assert.match(queries[0], /alert_type = 'quarantine'/);
+  assert.match(queries[0], /status = 'open'/);
+  assert.match(queries[0], /IN \('held', 'quarantining', 'quarantined'\)/);
 });
 
-test("returning a host that is already closed is a 409", async () => {
-  const { db } = fakeDb([], [{ manual: false }]);
-  assert.equal((await returnQuarantine(db, "h200-1", "k", "r")).status, 409);
-});
-
-test("returning a host cordoned only by hand is a 409 that says to undo it by hand", async () => {
-  const { db } = fakeDb([], [{ manual: true }]);
-  const result = await returnQuarantine(db, "h200-1", "k", "r");
+test("resolving a dry-run quarantine is a 409 that says nothing was applied", async () => {
+  const result = await resolveQuarantine(fakeDb([], [{ stage: "would" }]).db, "h", "k", "r");
   assert.equal(result.status, 409);
-  assert.match(String(result.body.error), /by hand/);
+  assert.match(String(result.body.error), /dry-run/);
 });
 
-test("returning a host with no record is a 404", async () => {
-  const { db } = fakeDb([], [{ manual: null }]);
-  assert.equal((await returnQuarantine(db, "nope", "k", "r")).status, 404);
+test("resolving twice, or after the host is back, is a 409", async () => {
+  for (const stage of ["resolving", "resolved"]) {
+    const { db } = fakeDb([], [{ stage }]);
+    assert.equal((await resolveQuarantine(db, "h", "k", "r")).status, 409, stage);
+  }
+});
+
+test("resolving a host never quarantined is a 404", async () => {
+  assert.equal((await resolveQuarantine(fakeDb([], []).db, "nope", "k", "r")).status, 404);
 });
 
 test("confirming a suspected incident succeeds", async () => {

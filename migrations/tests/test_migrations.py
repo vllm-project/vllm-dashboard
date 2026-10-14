@@ -276,12 +276,21 @@ def test_infra_schema_preserves_one_open_episode_per_subject_and_widens_path() -
         assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
 
 
-def test_quarantine_and_incident_schema_keeps_one_open_row_and_is_server_only() -> None:
-    sql = (MIGRATIONS_DIR / "0030_quarantine_and_incidents.sql").read_text()
+def test_quarantine_is_an_infra_alert_type_and_incidents_are_server_only() -> None:
+    sql = (MIGRATIONS_DIR / "0030_quarantine_alert_type_and_incidents.sql").read_text()
+
+    # No quarantine table: both infra alert_type checks widen together (0027).
+    assert "alerting_quarantine_records" not in sql
+    for constraint in (
+        "alerting_infra_host_states_alert_type_check",
+        "alerting_infra_alerts_alert_type_check",
+    ):
+        block = sql.split(f"ADD CONSTRAINT {constraint}", 1)[1].split(";", 1)[0]
+        assert "'gpu_count',\n            'quarantine'" in block
+    assert "'would', 'held', 'quarantining', 'quarantined',\n" in sql
+    assert "AND (status = 'resolved') = (details->>'stage' = 'resolved')" in sql
 
     tables = (
-        "alerting_quarantine_records",
-        "alerting_quarantine_reruns",
         "alerting_expected_gpu_exceptions",
         "alerting_incidents",
         "alerting_incident_reruns",
@@ -289,11 +298,7 @@ def test_quarantine_and_incident_schema_keeps_one_open_row_and_is_server_only() 
     for table in tables:
         assert f"CREATE TABLE IF NOT EXISTS {table}" in sql
         assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
-    assert "ON alerting_quarantine_records (host, (origin = 'manual'))\n    WHERE state <> 'closed'" in sql
     assert "ON alerting_incidents (scope)\n    WHERE state IN ('suspected', 'confirmed')" in sql
-    assert "CHECK (state IN ('would', 'live', 'held', 'manual', 'closed'))" in sql
-    assert "CHECK (origin IN ('auto', 'dry_run', 'manual'))" in sql
-    assert "CHECK ((tier IS NULL) = (origin = 'manual'))" in sql
     assert "REVOKE ALL PRIVILEGES ON SEQUENCE %s FROM %I" in sql
     assert "'suspected', 'confirmed', 'closed', 'self_closed'" in sql
 
