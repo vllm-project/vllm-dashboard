@@ -958,6 +958,8 @@ def quarantine_runtime(
     store = InMemoryInfraStore(executions=executions, outbox=outbox)
     snapshots = FixtureSnapshots()
     snapshots.threshold_rows = []
+    # A pool of eight: the safety limits allow two out at once.
+    snapshots.agents = [(f"gpu-node-{n}", "h200_35gb") for n in range(1, 9)]
     runtime = AlertingRuntime(
         executions=executions,
         outbox=outbox,
@@ -981,8 +983,8 @@ def quarantine_runtime(
 def quarantine_decision(host: str = "GPU-Node-7") -> QuarantineDecision:
     return QuarantineDecision(
         host=host,
-        cluster="b200",
-        pool="b200",
+        cluster="h200",
+        pool="h200_35gb",
         reason="Xid 79: GPU fell off the bus",
         evidence={"xid": 79, "gpu": 3},
     )
@@ -1002,7 +1004,7 @@ def test_live_quarantine_runs_the_whole_sequence_on_actuator_reports() -> None:
     [episode] = store.open_episodes()
     assert episode.subject_key == "gpu-node-7"
     assert episode.details["stage"] == "quarantining"
-    assert episode.details["cluster"] == "b200"
+    assert episode.details["cluster"] == "h200"
     assert episode.details["evidence"] == {"xid": 79, "gpu": 3}
     assert "commanded_at" in episode.details
     assert slack.deliveries[-1].payload["text"].endswith(
@@ -1294,8 +1296,12 @@ def test_a_trigger_rule_opens_a_dry_run_quarantine_with_its_pool() -> None:
         "b200",
         "b200-k8s",
     )
+    # The pool's only known host: a hardware fault would page a person.
     text = slack.deliveries[-1].payload["text"]
-    assert text.endswith("would quarantine `dgxb200-test`: Xid 79 on GPU unknown")
+    assert text.endswith(
+        "would quarantine `dgxb200-test`: Xid 79 on GPU unknown "
+        "(last serving host: would page a person)"
+    )
 
 
 def test_a_gpu_fault_reading_opens_a_dry_run_quarantine() -> None:
@@ -1311,7 +1317,11 @@ def test_a_gpu_fault_reading_opens_a_dry_run_quarantine() -> None:
     [episode] = store.open_episodes()
     assert episode.subject_key == "dgxb200-test"
     text = slack.deliveries[-1].payload["text"]
-    assert text.endswith("the driver asks for recovery (Reset) on GPU 2")
+    # The pool's only known host: a hardware fault would page a person.
+    assert text.endswith(
+        "the driver asks for recovery (Reset) on GPU 2 "
+        "(last serving host: would page a person)"
+    )
 
 
 def test_a_host_fault_reading_opens_a_dry_run_quarantine_on_its_second_check() -> None:
@@ -1328,4 +1338,8 @@ def test_a_host_fault_reading_opens_a_dry_run_quarantine_on_its_second_check() -
     [episode] = store.open_episodes()
     assert episode.subject_key == "dgxb200-test"
     text = slack.deliveries[-1].payload["text"]
-    assert text.endswith("the GPU query hung on 2 consecutive checks")
+    # The pool's only known host: a host fault would be held.
+    assert text.endswith(
+        "the GPU query hung on 2 consecutive checks "
+        "(would be held: last serving host in its pool)"
+    )
