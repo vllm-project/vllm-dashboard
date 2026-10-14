@@ -1007,3 +1007,18 @@ def test_backstop_latest_build_failure_does_not_resolve_alert() -> None:
         ("open", 2)
     ]
     assert store.alerts()[0].last_failure.job_id == "still-broken"
+
+
+def test_buildkite_client_fetches_every_branch_when_branch_is_none() -> None:
+    # The job-failure trigger needs jobs on every branch that finished in the
+    # window, including a recent pass in a build created long before it.
+    client = RecordingRestClient()
+    observed_from = START - timedelta(hours=24)
+
+    client.list_job_builds(observed_from=observed_from, up_to=START, branch=None)
+
+    assert [q.get("state") for q in client.queries] == [None, "finished"]
+    assert client.queries[1]["finished_from"] == "2026-08-28T10:00:00Z"
+    for query in client.queries:
+        assert "branch" not in query
+        assert query["include_retried_jobs"] == "true"

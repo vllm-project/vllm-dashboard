@@ -180,8 +180,8 @@ def decisions(trips: list[Trip]) -> list[QuarantineDecision]:
 
 
 class RecentBuildsPort(Protocol):
-    def list_recent_builds_with_jobs(
-        self, *, created_from: datetime, up_to: datetime
+    def list_job_builds(
+        self, *, observed_from: datetime, up_to: datetime, branch: str | None
     ) -> list[dict[str, Any]]: ...
 
 
@@ -194,7 +194,10 @@ def dry_run_decisions(
     """Fetch recent builds and return the decisions the trigger would make."""
     # ponytail: re-reads a full day of builds per call; low-volume whole-GPU
     # hosts need that much history for 10 jobs. Cache by build if it costs too much.
-    builds = buildkite.list_recent_builds_with_jobs(
-        created_from=now - lookback, up_to=now
+    # Builds that finished in the window plus those still running, on every
+    # branch: what counts is when each job finished, and a recent pass can sit
+    # in a build created long before the window.
+    builds = buildkite.list_job_builds(
+        observed_from=now - lookback, up_to=now, branch=None
     )
     return decisions(failure_streak_trips(finished_jobs(builds)))

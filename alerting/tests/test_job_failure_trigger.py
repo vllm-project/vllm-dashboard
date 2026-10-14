@@ -156,10 +156,11 @@ def test_dry_run_decisions_from_buildkite_builds() -> None:
     builds += [build(n, "gpu-host-b", "passed", 0) for n in (1, 2, 3)]
 
     class FakeBuildkite:
-        def list_recent_builds_with_jobs(
-            self, *, created_from: datetime, up_to: datetime
+        def list_job_builds(
+            self, *, observed_from: datetime, up_to: datetime, branch: str | None
         ) -> list[dict[str, Any]]:
-            assert up_to - created_from == timedelta(hours=24)
+            assert up_to - observed_from == timedelta(hours=24)
+            assert branch is None
             return builds
 
     [decision] = dry_run_decisions(FakeBuildkite(), now=T0 + timedelta(hours=1))
