@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { postMessage, updateMessage, addReaction } from "@/lib/slack";
 import { effectiveWaiting } from "@/lib/queue-plugins";
+import {
+  fmtPacificTime,
+  getPacificDateKey,
+  getPacificTzAbbr,
+} from "@/lib/alerts-shared";
 
 export const maxDuration = 55;
 
@@ -21,35 +26,6 @@ function fmtDuration(secs: number): string {
   const h = Math.floor(m / 60);
   const rm = m % 60;
   return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
-}
-
-function fmtTime(): string {
-  return new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-    timeZone: "America/Los_Angeles",
-  });
-}
-
-function getPacificDateKey(): string {
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Los_Angeles",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  return formatter.format(new Date());
-}
-
-function getPacificTzAbbr(): string {
-  const abbr = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Los_Angeles",
-    timeZoneName: "short",
-  })
-    .formatToParts(new Date())
-    .find((p) => p.type === "timeZoneName");
-  return abbr?.value ?? "PT";
 }
 
 function buildCombinedMessage(
@@ -167,7 +143,7 @@ export async function GET(request: NextRequest) {
         ? (summaryRows[0].queues as Record<string, QueueAlertEntry>)
         : {};
 
-    const time = fmtTime();
+    const time = fmtPacificTime();
     let changed = false;
 
     // Update/add queues over threshold

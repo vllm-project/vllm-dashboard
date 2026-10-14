@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
+import { hasPostgresErrorCode } from "@/lib/postgres-errors";
 
 export const maxDuration = 55;
 
@@ -39,6 +40,16 @@ export async function GET(request: NextRequest) {
       DELETE FROM buildkite_agent_snapshots
       WHERE polled_at < NOW() - INTERVAL '30 days'
     `;
+    let evalSnapshotsDeleted: { count: number } = { count: 0 };
+    try {
+      evalSnapshotsDeleted = await db`
+        DELETE FROM alerting_eval_regression_snapshots
+        WHERE checked_at < NOW() - INTERVAL '30 days'
+      `;
+    } catch (error) {
+      if (!hasPostgresErrorCode(error, "42P01")) throw error;
+      // Table not migrated yet — skip silently.
+    }
 
     return NextResponse.json({
       ok: true,
@@ -46,6 +57,7 @@ export async function GET(request: NextRequest) {
       gpuSnapshotsDeleted: gpuDeleted.count,
       hostSnapshotsDeleted: hostDeleted.count,
       agentSnapshotsDeleted: agentDeleted.count,
+      evalSnapshotsDeleted: evalSnapshotsDeleted.count,
     });
   } catch (error) {
     console.error("Retention failed:", error);
