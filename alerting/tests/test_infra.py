@@ -13,6 +13,8 @@ import pytest
 from alerting.commands import ScheduledCommand
 from alerting.fast_ci import ALERTS_SLACK_CHANNEL
 from alerting.infra import (
+    InfraAlertEpisode,
+    _render_quarantine,
     RETIREMENT_AGE,
     DiskMountObservation,
     GpuCountObservation,
@@ -1075,7 +1077,7 @@ def test_switching_to_live_upgrades_a_standing_dry_run_episode() -> None:
     scan_and_post(runtime, clock)
 
     handler = runtime._handlers["infra_scan"]
-    handler._quarantine_live = True
+    handler._quarantine_live = True  # type: ignore[attr-defined]
     scan_and_post(runtime, clock)
 
     [episode] = store.open_episodes()
@@ -1102,3 +1104,18 @@ def test_stage_change_is_skipped_when_the_stage_moved_since_the_read() -> None:
 
     assert store.open_episodes()[0].details["stage"] == "resolving"
     assert len(slack.deliveries) == 1
+
+
+@pytest.mark.parametrize("stage", ["would", "quarantining", "quarantined", "resolved"])
+def test_quarantine_posts_never_say_how_to_resolve(stage: str) -> None:
+    # The infra channel is public; resolving is for the operator token holders.
+    text = _render_quarantine(
+        InfraAlertEpisode(
+            alert_type="quarantine",
+            subject_key="gpu-node-7",
+            opened_at=START,
+            details={"stage": stage, "reason": "Xid 79", "resolved_by": "oncall"},
+        )
+    ).lower()
+    for hint in ("/api/", "bearer", "token", "curl", "/resolve"):
+        assert hint not in text

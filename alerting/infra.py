@@ -927,7 +927,9 @@ def _render_disk_subject(details: Mapping[str, Any], subject_key: str) -> str:
     return _code(subject_key)
 
 
-# Placeholder until the quarantine runbook page exists.
+# Placeholder until the quarantine runbook page exists. The infra channel is
+# public: link only an access-controlled page, and keep resolve steps (endpoint,
+# token, commands) out of every post. Only the operator token holders resolve.
 QUARANTINE_RUNBOOK = "Runbook: to be linked before quarantine goes live."
 
 
