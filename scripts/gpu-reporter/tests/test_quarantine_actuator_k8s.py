@@ -13,6 +13,7 @@ import pytest
 from conftest import load_module
 
 KEY = "vllm.ci/quarantine"
+MARK = "vllm.ci/quarantine-cordoned"
 
 
 class FakeKube:
@@ -24,7 +25,8 @@ class FakeKube:
     def __call__(self, *args):
         if args[:2] == ("get", "nodes"):
             return json.dumps({"items": [
-                {"metadata": {"name": n},
+                {"metadata": {"name": n,
+                              "annotations": dict(s.get("annotations", {}))},
                  "spec": {"unschedulable": s["unschedulable"],
                           "taints": list(s["taints"])}}
                 for n, s in self.nodes.items()]})
@@ -34,12 +36,19 @@ class FakeKube:
             return json.dumps({"items": [
                 {"status": {"phase": p}} for p in self.pods.get(node, [])]})
         self.writes.append(args)
-        verb, node = args[0], args[-1] if args[0] != "taint" else args[2]
+        verb = args[0]
+        node = args[{"taint": 2, "annotate": -2}.get(verb, -1)]
         s = self.nodes[node]
+        ann = s.setdefault("annotations", {})
         if verb == "cordon":
             s["unschedulable"] = True
         elif verb == "uncordon":
             s["unschedulable"] = False
+        elif verb == "annotate" and args[-1].endswith("-"):
+            ann.pop(args[-1][:-1], None)
+        elif verb == "annotate":
+            k, v = args[-1].split("=", 1)
+            ann[k] = v
         elif verb == "taint" and args[3].endswith("-"):
             s["taints"] = [t for t in s["taints"] if t["key"] != KEY]
         elif verb == "taint":
@@ -63,11 +72,15 @@ class FakeDashboard:
         return {}
 
 
-def node(unschedulable=False, ours=False, other=()):
+def node(unschedulable=False, ours=False, other=(), marked=None):
+    """marked: our cordon annotation; defaults to set when ours and cordoned."""
     taints = [{"key": k, "effect": "NoSchedule"} for k in other]
     if ours:
         taints.append({"key": KEY, "value": "xid79", "effect": "NoSchedule"})
-    return {"unschedulable": unschedulable, "taints": taints}
+    if marked is None:
+        marked = ours and unschedulable
+    return {"unschedulable": unschedulable, "taints": taints,
+            "annotations": {MARK: "true"} if marked else {}}
 
 
 def want(host, stage, reason="Xid 79: GPU fell off the bus"):
@@ -94,6 +107,7 @@ def test_apply_cordons_and_taints_then_posts_out(run):
     assert run(kube, dash) == 0
     assert kube.writes == [
         ("cordon", "n1"),
+        ("annotate", "--overwrite", "node", "n1", f"{MARK}=true"),
         ("taint", "nodes", "n1",
          f"{KEY}=Xid-79-GPU-fell-off-the-bus:NoSchedule"),
     ]
@@ -120,7 +134,8 @@ def test_resolve_with_our_taint_returns_node(run):
     dash = FakeDashboard([want("n1", "resolving")])
     assert run(kube, dash) == 0
     assert kube.writes == [("taint", "nodes", "n1", f"{KEY}:NoSchedule-"),
-                           ("uncordon", "n1")]
+                           ("uncordon", "n1"),
+                           ("annotate", "node", "n1", f"{MARK}-")]
     assert kube.nodes["n1"] == node(other=["gpu=bad"])
     assert dash.posts[0][1]["state"] == "returned"
 
@@ -131,7 +146,21 @@ def test_resolve_leaves_a_foreign_cordon(run):
     assert run(kube, dash) == 0
     assert kube.writes == []
     body = dash.posts[0][1]
-    assert body["state"] == "out" and "person" in body["observed"]["note"]
+    assert body["state"] == "returned"
+    assert "pre-existing cordon" in body["observed"]["note"]
+
+
+def test_person_cordon_survives_quarantine_and_resolve(run):
+    kube = FakeKube({"n1": node(unschedulable=True)})
+    assert run(kube, FakeDashboard([want("n1", "quarantining")])) == 0
+    assert kube.writes == [("taint", "nodes", "n1",
+                            f"{KEY}=Xid-79-GPU-fell-off-the-bus:NoSchedule")]
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert kube.nodes["n1"] == node(unschedulable=True)  # cordoned, no taint
+    body = dash.posts[0][1]
+    assert body["state"] == "returned" and body["observed"]["cordoned"]
+    assert "pre-existing cordon" in body["observed"]["note"]
 
 
 def test_resolve_already_schedulable_posts_returned(run):
@@ -144,10 +173,11 @@ def test_resolve_already_schedulable_posts_returned(run):
 
 @pytest.mark.parametrize("before", [node(False, True), node(True, False)])
 def test_drift_reapplies_and_flags(run, before):
+    expected_writes = 1 if before["unschedulable"] else 2  # + annotate
     kube = FakeKube({"n1": before})
     dash = FakeDashboard([want("n1", "quarantined")])
     assert run(kube, dash) == 0
-    assert len(kube.writes) == 1
+    assert len(kube.writes) == expected_writes
     assert kube.nodes["n1"]["unschedulable"]
     assert run.mod.our_taint({"spec": kube.nodes["n1"]})
     assert dash.posts[0][1]["observed"]["reapplied"] is True

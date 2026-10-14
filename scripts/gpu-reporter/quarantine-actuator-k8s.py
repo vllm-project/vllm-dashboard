@@ -12,9 +12,11 @@ this cluster from the dashboard and reconciles each node:
       Pending. A quarantined node that lost the cordon or our taint (by hand)
       gets both back and the post carries reapplied: true.
   resolving
-      Only when our taint is present: remove it and uncordon, then post
-      "returned". A cordon without our taint belongs to a person and is left
-      alone.
+      Removes our taint. Uncordons only if we cordoned: take_out marks its own
+      cordon with the annotation vllm.ci/quarantine-cordoned=true, and resolve
+      uncordons and drops that annotation only when it is present. A cordon
+      without it (a person's, made before or after ours) stays in place; the
+      post is still "returned" (our quarantine is undone) with a note.
   would
       Dry-run stage: log only.
 
@@ -50,6 +52,7 @@ REPORT_SECRET = os.environ.get("GPU_REPORT_SECRET", "")
 CLUSTER = os.environ.get("QUARANTINE_CLUSTER", "")
 
 TAINT_KEY = "vllm.ci/quarantine"
+CORDON_MARK = "vllm.ci/quarantine-cordoned"  # annotation: the cordon is ours
 CI_NAMESPACE = "buildkite"
 OUT_STAGES = ("quarantining", "quarantined")
 KUBECTL_TIMEOUT = 20
@@ -137,6 +140,8 @@ class Actuator:
         tainted = our_taint(node) is not None
         if not cordoned:
             self.write("cordon", name)
+            self.write("annotate", "--overwrite", "node", name,
+                       f"{CORDON_MARK}=true")
         if not tainted:
             self.write("taint", "nodes", name,
                        f"{TAINT_KEY}={taint_value(want['reason'])}:NoSchedule")
@@ -157,20 +162,17 @@ class Actuator:
         cordoned = bool(node["spec"].get("unschedulable"))
         if our_taint(node) is not None:
             self.write("taint", "nodes", name, f"{TAINT_KEY}:NoSchedule-")
+        if CORDON_MARK in (node["metadata"].get("annotations") or {}):
             if cordoned:
                 self.write("uncordon", name)
-            self.post(name, want["alertId"], "returned",
-                      {"cordoned": False, "tainted": False})
-        elif not cordoned:
-            self.post(name, want["alertId"], "returned",
-                      {"cordoned": False, "tainted": False})
-        else:
-            note = ("cordoned without our taint (a person's cordon?); "
-                    "left cordoned, uncordon by hand to return")
-            print(f"  WARNING: {name} {note}", file=sys.stderr)
-            # ponytail: the contract has no "blocked" state; "out" + note.
-            self.post(name, want["alertId"], "out",
-                      {"cordoned": True, "tainted": False, "note": note})
+            self.write("annotate", "node", name, f"{CORDON_MARK}-")
+            cordoned = False
+        observed = {"cordoned": cordoned, "tainted": False}
+        if cordoned:
+            observed["note"] = ("pre-existing cordon (not ours) left in "
+                                "place; uncordon by hand to return the node")
+            print(f"  NOTE: {name} {observed['note']}")
+        self.post(name, want["alertId"], "returned", observed)
 
     def run(self, desired, nodes):
         by_name = {n["metadata"]["name"]: n for n in nodes}
