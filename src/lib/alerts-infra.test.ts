@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   INFRA_ALERT_TYPE_LABELS,
+  isResolvableQuarantine,
   summarizeInfraEpisode,
   viewInfraAlerts,
   type InfraAlertEpisode,
@@ -295,4 +296,17 @@ test("quarantine episodes read their stage, reason, resolver and actuator note",
     quarantine({ stage: "resolved", resolution: "decision_cleared" }, "resolved"),
     "Dry run closed: the trigger stopped firing.",
   );
+});
+
+test("only open held, quarantining or quarantined episodes offer resolve", () => {
+  const quarantine = (stage: string, status: "open" | "resolved" = "open") =>
+    episode({ alertType: "quarantine", status, details: { stage } });
+  for (const stage of ["held", "quarantining", "quarantined"]) {
+    assert.equal(isResolvableQuarantine(quarantine(stage)), true, stage);
+  }
+  for (const stage of ["would", "resolving"]) {
+    assert.equal(isResolvableQuarantine(quarantine(stage)), false, stage);
+  }
+  assert.equal(isResolvableQuarantine(quarantine("resolved", "resolved")), false);
+  assert.equal(isResolvableQuarantine(episode()), false);
 });

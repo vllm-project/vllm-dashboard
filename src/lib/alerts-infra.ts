@@ -171,6 +171,18 @@ const QUARANTINE_STAGES: Record<string, string> = {
   resolved: "Back in service",
 };
 
+/** Stages the operator resolve endpoint accepts (resolveQuarantine). */
+const RESOLVABLE_QUARANTINE_STAGES = new Set(["held", "quarantining", "quarantined"]);
+
+/** Whether an operator can resolve this episode from the dashboard. */
+export function isResolvableQuarantine(episode: InfraAlertEpisode): boolean {
+  return (
+    episode.alertType === "quarantine" &&
+    episode.status === "open" &&
+    RESOLVABLE_QUARANTINE_STAGES.has(stringDetail(episode.details, "stage") ?? "")
+  );
+}
+
 function summarizeQuarantine(episode: InfraAlertEpisode): string {
   const { details } = episode;
   if (details.resolution === "decision_cleared") {

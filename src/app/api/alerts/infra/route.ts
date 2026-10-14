@@ -81,6 +81,7 @@ export async function GET() {
         retiredHosts: retiredHosts.map(toRetiredHost),
         windowDays: WINDOW_DAYS,
         schemaStatus: "ready",
+        resolutionEnabled: Boolean(process.env.ALERT_OPERATOR_TOKEN),
       },
       { headers: { "Cache-Control": "no-store" } },
     );

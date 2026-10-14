@@ -1,4 +1,6 @@
+import { useState } from "react";
 import {
+  isResolvableQuarantine,
   type InfraAlertEpisodeView,
   type InfraAlertView,
   type InfraRetiredHost,
@@ -25,7 +27,102 @@ function RetiredBadge() {
   );
 }
 
-function EpisodeRow({ episode }: { episode: InfraAlertEpisodeView }) {
+export type ResolveQuarantine = (
+  host: string,
+  by: string,
+  reason: string,
+) => Promise<void>;
+
+const INPUT =
+  "min-h-9 min-w-0 flex-1 rounded-md border border-zinc-200 bg-zinc-50 px-3 text-sm text-zinc-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/15 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100";
+
+function ResolveQuarantineForm({
+  host,
+  onResolve,
+}: {
+  host: string;
+  onResolve: ResolveQuarantine;
+}) {
+  const [open, setOpen] = useState(false);
+  const [by, setBy] = useState("");
+  const [reason, setReason] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="dashboard-control h-6 shrink-0 rounded-md border border-zinc-200 px-2 text-[11px] font-medium text-zinc-500 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-800 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
+      >
+        Resolve
+      </button>
+    );
+  }
+  return (
+    <form
+      className="flex w-full flex-col gap-2 sm:flex-row sm:items-center"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        setPending(true);
+        setError(null);
+        try {
+          await onResolve(host, by.trim(), reason.trim());
+        } catch (failure) {
+          setError(failure instanceof Error ? failure.message : "Resolve failed.");
+          setPending(false);
+        }
+      }}
+    >
+      <input
+        aria-label="Your name"
+        placeholder="Your name"
+        value={by}
+        onChange={(event) => setBy(event.target.value)}
+        maxLength={80}
+        required
+        className={`${INPUT} sm:max-w-40`}
+      />
+      <input
+        aria-label="What was fixed"
+        placeholder="What was fixed"
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+        maxLength={500}
+        required
+        className={INPUT}
+      />
+      <button
+        type="submit"
+        disabled={pending}
+        className="dashboard-control h-9 shrink-0 rounded-md bg-zinc-900 px-3 text-xs font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+      >
+        {pending ? "Resolving…" : "Return to service"}
+      </button>
+      <button
+        type="button"
+        onClick={() => setOpen(false)}
+        className="dashboard-control h-9 shrink-0 px-2 text-xs text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+      >
+        Cancel
+      </button>
+      {error && (
+        <p role="alert" className="w-full text-xs font-medium text-red-700 dark:text-red-300">
+          {error}
+        </p>
+      )}
+    </form>
+  );
+}
+
+function EpisodeRow({
+  episode,
+  onResolveQuarantine,
+}: {
+  episode: InfraAlertEpisodeView;
+  onResolveQuarantine?: ResolveQuarantine;
+}) {
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm sm:px-5">
       <span className="min-w-0 truncate font-mono text-zinc-900 dark:text-zinc-100">
@@ -44,6 +141,12 @@ function EpisodeRow({ episode }: { episode: InfraAlertEpisodeView }) {
       <p className="w-full text-xs text-zinc-500 dark:text-zinc-400">
         {episode.summary}
       </p>
+      {onResolveQuarantine && isResolvableQuarantine(episode) && (
+        <ResolveQuarantineForm
+          host={episode.subjectKey}
+          onResolve={onResolveQuarantine}
+        />
+      )}
     </li>
   );
 }
@@ -51,9 +154,11 @@ function EpisodeRow({ episode }: { episode: InfraAlertEpisodeView }) {
 function EpisodeSection({
   title,
   episodes,
+  onResolveQuarantine,
 }: {
   title: string;
   episodes: InfraAlertEpisodeView[];
+  onResolveQuarantine?: ResolveQuarantine;
 }) {
   if (episodes.length === 0) return null;
   return (
@@ -66,7 +171,11 @@ function EpisodeSection({
       </h2>
       <ul className="divide-y divide-zinc-100 overflow-hidden rounded-xl border border-zinc-200 bg-white dark:divide-zinc-800/60 dark:border-zinc-800 dark:bg-zinc-950">
         {episodes.map((episode) => (
-          <EpisodeRow key={episode.alertId} episode={episode} />
+          <EpisodeRow
+            key={episode.alertId}
+            episode={episode}
+            onResolveQuarantine={onResolveQuarantine}
+          />
         ))}
       </ul>
     </section>
@@ -111,13 +220,21 @@ function RetiredHosts({ hosts }: { hosts: InfraRetiredHost[] }) {
 
 /**
  * Infra alert episodes are per-subject breach episodes with exactly two Slack
- * notifications each, so this view reports them read-only: it deliberately
- * exposes no resolution, acknowledgement, or suppression controls.
+ * notifications each, so this view reports them read-only. The one exception
+ * is resolving a quarantine, offered only once the operator token is entered:
+ * that is the only way a quarantined host returns to service, and it is kept
+ * off Slack because the infra channel is public.
  *
  * Episodes are per subject rather than per job run, so the lists stay short
  * enough to render without pagination.
  */
-export function InfraAlerts({ view }: { view: InfraAlertView }) {
+export function InfraAlerts({
+  view,
+  onResolveQuarantine,
+}: {
+  view: InfraAlertView;
+  onResolveQuarantine?: ResolveQuarantine;
+}) {
   const { open, resolved, retiredHosts } = view;
 
   if (open.length === 0 && resolved.length === 0 && retiredHosts.length === 0) {
@@ -130,7 +247,11 @@ export function InfraAlerts({ view }: { view: InfraAlertView }) {
 
   return (
     <div className="space-y-6">
-      <EpisodeSection title="Open" episodes={open} />
+      <EpisodeSection
+        title="Open"
+        episodes={open}
+        onResolveQuarantine={onResolveQuarantine}
+      />
       <EpisodeSection title="Recently resolved" episodes={resolved} />
       <RetiredHosts hosts={retiredHosts} />
     </div>
