@@ -99,12 +99,20 @@ and nothing changes on a host.
   unused reading: GPU hang, all network probes failing while most of the
   pool passes, disk and dead-process GPU memory at the alert thresholds,
   and on H200 only root-owned checkout slots and a short GPU count.
-- Job failures (`job_failure_trigger.py`), at most every 15 minutes.
+- Job failures (`job_failure_trigger.py`), at most every 15 minutes. These
+  stay dry run (`would` only) even when quarantine is live; the trigger
+  goes live only after its own review.
 
-**Limits** (`_quarantine_limits`): a quarter of a pool out at once (at least
-one); the last serving host is held unless the fault is hardware, which
-goes ahead and pages; more than 3 new quarantines in an hour trips the
-fleet breaker. A blocked decision opens as `held`.
+**Limits** (`_quarantine_limits`): a quarter of a pool out at once (at
+least one), except that a hardware fault skips this cap. The last serving
+host is held unless the fault is hardware, which goes ahead and pages.
+More than 3 new quarantines in an hour trips the fleet breaker, which holds
+hardware faults too. Its hosts stay held while their decisions stand, so a
+person needs to look. A blocked decision opens as `held`.
+
+**Paging:** a live hardware fault on the last serving host, a repeat
+offender, and a tripped breaker also go to
+`ALERTING_FAILURE_SLACK_DESTINATION`, the same DM as a worker failure.
 
 **Stages:**
 
