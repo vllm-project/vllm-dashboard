@@ -284,6 +284,10 @@ test("quarantine episodes read their stage, reason, resolver and actuator note",
     "Quarantined: Xid 79.",
   );
   assert.equal(
+    quarantine({ stage: "resolve_requested", reason: "Xid 79" }),
+    "Resolve requested: waiting for a clean reading: Xid 79.",
+  );
+  assert.equal(
     quarantine({
       stage: "resolving",
       reason: "Xid 79",

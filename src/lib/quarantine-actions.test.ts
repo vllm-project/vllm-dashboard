@@ -18,12 +18,32 @@ function fakeDb(...answers: Record<string, unknown>[][]) {
   return { db, queries };
 }
 
-test("resolving moves an open, applied or held quarantine to resolving", async () => {
+/** A fake DB that also records each query's interpolated values. */
+function recordingDb(...answers: Record<string, unknown>[][]) {
+  const values: unknown[][] = [];
+  const db = (async (_strings: TemplateStringsArray, ...args: unknown[]) => {
+    values.push(args);
+    return answers.shift() ?? [];
+  }) as unknown as Db;
+  return { db, values };
+}
+
+test("resolving waits for a clean reading unless forced", async () => {
+  const waits = recordingDb([{ alert_id: "7" }]);
+  await resolveQuarantine(waits.db, "h200-1", "oncall", "rebooted");
+  assert.deepEqual(waits.values[0].slice(0, 2), ["resolve_requested", false]);
+  const forced = recordingDb([{ alert_id: "7" }]);
+  await resolveQuarantine(forced.db, "h200-1", "oncall", "rebooted", true);
+  assert.deepEqual(forced.values[0].slice(0, 2), ["resolving", true]);
+});
+
+test("resolving moves an open, applied or held quarantine on", async () => {
   const { db, queries } = fakeDb([{ alert_id: "7" }]);
   const result = await resolveQuarantine(db, "h200-1", "oncall", "rebooted");
   assert.deepEqual(result, { status: 200, body: { ok: true, alertId: 7 } });
   assert.equal(queries.length, 1);
-  assert.match(queries[0], /'stage', 'resolving'/);
+  assert.match(queries[0], /'stage', \?::text/);
+  assert.match(queries[0], /'resolve_forced', \?::boolean/);
   assert.match(queries[0], /alert_type = 'quarantine'/);
   assert.match(queries[0], /status = 'open'/);
   assert.match(queries[0], /IN \('held', 'quarantining', 'quarantined'\)/);
@@ -44,6 +64,21 @@ test("the desired set carries each host's last actuator report", async () => {
     },
   ]);
   const result = await desiredQuarantines(db, "h100");
+  // The actuator keeps a node out while its resolve waits on a reading.
+  // db(ACTUATED_STAGES) is a fragment call: the list is its first argument.
+  const firstArgs: unknown[] = [];
+  const stagesDb = (async (first: unknown) => {
+    firstArgs.push(first);
+    return [];
+  }) as unknown as Db;
+  await desiredQuarantines(stagesDb, "h100");
+  assert.deepEqual(firstArgs[0], [
+    "would",
+    "quarantining",
+    "quarantined",
+    "resolve_requested",
+    "resolving",
+  ]);
   assert.deepEqual(result.body.nodes, [
     { host: "n1", alertId: 7, stage: "resolving", reason: "Xid 79", actuatorState: "verify_failed" },
   ]);
@@ -56,9 +91,12 @@ test("resolving a dry-run quarantine is a 409 that says nothing was applied", as
 });
 
 test("resolving twice, or after the host is back, is a 409", async () => {
-  for (const stage of ["resolving", "resolved"]) {
+  for (const stage of ["resolve_requested", "resolving", "resolved"]) {
     const { db } = fakeDb([], [{ stage }]);
-    assert.equal((await resolveQuarantine(db, "h", "k", "r")).status, 409, stage);
+    const result = await resolveQuarantine(db, "h", "k", "r");
+    assert.equal(result.status, 409, stage);
+    const expected = stage === "resolved" ? /already resolved/ : /already being resolved/;
+    assert.match(String(result.body.error), expected, stage);
   }
 });
 

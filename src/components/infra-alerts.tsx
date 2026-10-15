@@ -31,6 +31,7 @@ export type ResolveQuarantine = (
   host: string,
   by: string,
   reason: string,
+  force: boolean,
 ) => Promise<void>;
 
 const INPUT =
@@ -46,6 +47,7 @@ function ResolveQuarantineForm({
   const [open, setOpen] = useState(false);
   const [by, setBy] = useState("");
   const [reason, setReason] = useState("");
+  const [force, setForce] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,7 +70,7 @@ function ResolveQuarantineForm({
         setPending(true);
         setError(null);
         try {
-          await onResolve(host, by.trim(), reason.trim());
+          await onResolve(host, by.trim(), reason.trim(), force);
         } catch (failure) {
           setError(failure instanceof Error ? failure.message : "Resolve failed.");
           setPending(false);
@@ -93,6 +95,16 @@ function ResolveQuarantineForm({
         required
         className={INPUT}
       />
+      {/* By default the host waits for a fresh reading that no longer shows
+          the fault; skip it only when you know better than the reading. */}
+      <label className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+        <input
+          type="checkbox"
+          checked={force}
+          onChange={(event) => setForce(event.target.checked)}
+        />
+        Skip the clean-reading check
+      </label>
       <button
         type="submit"
         disabled={pending}

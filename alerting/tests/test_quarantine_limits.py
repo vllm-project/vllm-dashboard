@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from alerting.infra import (
+    HostFaultObservation,
     InfraAlertEpisode,
     InfraScanPlan,
     InfraSubjectState,
@@ -694,3 +695,48 @@ def test_a_held_host_that_goes_ahead_is_recorded() -> None:
         "host-1": (NOW - timedelta(hours=1)).isoformat(),
         "host-2": NOW.isoformat(),
     }
+
+
+def waiting(read_age: timedelta, *, requested_age: timedelta) -> str:
+    """The stage after one scan of a resolve waiting on a host reading."""
+    resolve = episode("host-1", "resolve_requested")
+    resolve.details["resolve_requested_at"] = (NOW - requested_age).isoformat()
+    reading = HostFaultObservation(
+        hostname="host-1",
+        gpu_query_hung=False,
+        network_probes=[],
+        root_owned_slots=[],
+        reported_at=NOW - read_age,
+    )
+    result = plan_infra_scan(
+        now=NOW,
+        thresholds={},
+        expected_hosts=frozenset(),
+        latest_reports={},
+        disk_mounts=[],
+        gpu_temperatures=[],
+        gpu_dead_memory=[],
+        gpu_counts=[],
+        states={},
+        open_episodes={("quarantine", "host-1"): resolve},
+        quarantine_live=True,
+        pools={"host-1": ("h200", "pool-a")},
+        host_faults=[reading],
+    )
+    changes = result.stage_changes
+    return str(changes[0].episode.details["stage"]) if changes else "unchanged"
+
+
+def test_a_host_reading_newer_than_the_resolve_releases_it() -> None:
+    minute = timedelta(minutes=1)
+    assert waiting(timedelta(seconds=60), requested_age=minute * 2) == "resolving"
+    # Older than READING_MAX_AGE, or not newer than the request: still waits.
+    assert waiting(timedelta(seconds=61), requested_age=minute * 2) == "unchanged"
+    assert waiting(minute, requested_age=minute) == "unchanged"
+
+
+def test_a_resolve_waiting_on_a_reading_still_holds_a_cap_slot() -> None:
+    result = plan(
+        [decision("host-2")], {"pool-a": 4}, [episode("host-1", "resolve_requested")]
+    )
+    assert opened(result) == {"host-2": ("held", "pool_cap")}

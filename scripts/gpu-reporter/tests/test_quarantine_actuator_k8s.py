@@ -235,10 +235,12 @@ def test_resolve_already_schedulable_posts_returned(run):
     assert dash.posts[0][1]["state"] == "returned"
 
 
+@pytest.mark.parametrize("stage", ["quarantined", "resolve_requested"])
 @pytest.mark.parametrize("before", [node(False, True), node(True, False)])
-def test_drift_reapplies_and_flags(run, before):
-    kube = FakeKube({"n1": before})
-    dash = FakeDashboard([want("n1", "quarantined")])
+def test_drift_reapplies_and_flags(run, before, stage):
+    # resolve_requested waits on a clean reading: the node stays out.
+    kube = FakeKube({"n1": json.loads(json.dumps(before))})
+    dash = FakeDashboard([want("n1", stage)])
     assert run(kube, dash) == 0
     assert len(kube.writes) == 1  # the lost cordon or the lost taint
     assert kube.nodes["n1"]["unschedulable"]

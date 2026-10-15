@@ -5,7 +5,9 @@ Quarantine actuator for K8s clusters: makes the cluster match the dashboard.
 Runs on the control plane every minute. Pulls the desired quarantine set for
 this cluster from the dashboard and reconciles each node:
 
-  quarantining / quarantined
+  quarantining / quarantined / resolve_requested
+      (resolve_requested: a person resolved it and the dashboard is waiting
+      for a clean reading before it says resolving; the node stays out.)
       Cordon + taint vllm.ci/quarantine=<reason>:NoSchedule (both). The
       cordon and its ownership annotation vllm.ci/quarantine-cordoned=true
       go in one patch guarded by the node's resourceVersion.
@@ -68,7 +70,7 @@ CLUSTER = os.environ.get("QUARANTINE_CLUSTER", "")
 TAINT_KEY = "vllm.ci/quarantine"
 CORDON_MARK = "vllm.ci/quarantine-cordoned"  # annotation: the cordon is ours
 CI_NAMESPACE = "buildkite"
-OUT_STAGES = ("quarantining", "quarantined")
+OUT_STAGES = ("quarantining", "quarantined", "resolve_requested")
 KUBECTL_TIMEOUT = 20
 # Nodes reconcile in parallel so slow calls on some (a hung pod list, a
 # dashboard POST timing out) can't use up the run before later nodes get
@@ -229,7 +231,7 @@ class Actuator:
         # ponytail: stateless, so a lost cordon/taint counts as drift only once
         # the dashboard says quarantined; a hand uncordon during quarantining
         # is re-applied without the flag.
-        reapplied = want["stage"] == "quarantined" and not (cordoned and tainted)
+        reapplied = want["stage"] != "quarantining" and not (cordoned and tainted)
         if reapplied:
             print(f"  DRIFT: {name} had lost its "
                   f"{'cordon' if tainted else 'taint'}; re-applied")

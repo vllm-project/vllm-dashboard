@@ -256,6 +256,28 @@ def test_a_resolve_covers_the_xids_seen_before_it() -> None:
     assert rules(scans.run(xid_events=newer)) == [("gpu-node-7", "xid")]
 
 
+def test_a_waiting_resolve_covers_xids_up_to_its_request_only() -> None:
+    scans = Scans()
+    requested = scans.now - timedelta(minutes=10)
+    scans.open_episodes[("quarantine", "gpu-node-7")] = InfraAlertEpisode(
+        alert_type="quarantine",
+        subject_key="gpu-node-7",
+        opened_at=START,
+        details={
+            "stage": "resolve_requested",
+            "resolve_requested_at": requested.isoformat(),
+        },
+    )
+    covered = [xid(79, requested)]
+    assert scans.run(xid_events=covered, advance=False) == []
+    assert scans.states[("quarantine", "rule:xid:gpu-node-7")].last_reported_at == (
+        requested
+    )
+    # One after the request, while it waits, sends the resolve back.
+    newer = [*covered, xid(79, requested + timedelta(seconds=1))]
+    assert rules(scans.run(xid_events=newer)) == [("gpu-node-7", "xid")]
+
+
 def resolve(scans: Scans, name: str = "gpu-node-7") -> datetime:
     """Runs the scan that sees the host 'resolving'; returns the cutoff."""
     scans.open_episodes[("quarantine", name)] = InfraAlertEpisode(

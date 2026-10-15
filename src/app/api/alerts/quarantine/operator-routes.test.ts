@@ -106,5 +106,10 @@ test("incident routes reject a non-numeric id; resolve rejects a bad host", asyn
     }
     const body = JSON.stringify(routes[0].valid);
     assert.equal((await call(routes[0], body, auth, { host: "bad host!" })).status, 400);
+    // force is optional but must be a boolean; checked before any DB call.
+    for (const force of ["true", 1, null]) {
+      const forced = JSON.stringify({ ...routes[0].valid, force });
+      assert.equal((await call(routes[0], forced, auth)).status, 400, String(force));
+    }
   });
 });

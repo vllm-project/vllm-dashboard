@@ -77,8 +77,71 @@ retries never duplicate.
 ## Dashboard history
 
 `/alerts?tab=infra` ("Infra") lists open and resolved episodes plus retired
-hosts; the view is read-only — there is nothing to resolve by hand. Backed
-by `src/app/api/alerts/infra/route.ts`.
+hosts. Alerts resolve themselves; the only thing resolved by hand is a
+quarantine (below), once the operator token is entered. Backed by
+`src/app/api/alerts/infra/route.ts`.
+
+## Quarantine
+
+The same scan also decides when to take a host out of CI. A quarantine is
+one more episode type (`quarantine`, keyed by host) in
+`alerting_infra_alerts`; its stage and evidence live in `details`.
+`QUARANTINE_MODE` defaults to `dry_run`: decisions open `would` episodes
+and nothing changes on a host.
+
+**Triggers** (`plan_trigger_rules`), over the pilot pools (`pilot_pools`):
+
+- GPU hardware, on first sight: a driver recovery action other than `None`,
+  a row-remap failure, or a first-sight hardware Xid. Reset-class Xids trip
+  on 3 of one Xid on one GPU in 24 h, or on 1 within 24 h of the host's
+  last resolve (`xid_probation`).
+- Host faults, on 2 consecutive scans that each read a fresh (≤ 60 s),
+  unused reading: GPU hang, all network probes failing while most of the
+  pool passes, disk and dead-process GPU memory at the alert thresholds,
+  and on H200 only root-owned checkout slots and a short GPU count.
+- Job failures (`job_failure_trigger.py`), at most every 15 minutes.
+
+**Limits** (`_quarantine_limits`): a quarter of a pool out at once (at least
+one); the last serving host is held unless the fault is hardware, which
+goes ahead and pages; more than 3 new quarantines in an hour trips the
+fleet breaker. A blocked decision opens as `held`.
+
+**Stages:**
+
+```
+would (dry run)        held ─┐
+                             ▼
+quarantining ──drained──▶ quarantined ──resolve──▶ resolve_requested
+                              ▲                         │ fresh reading, no fault
+                              │ fault still read,       ▼
+                              │ or return check fails  resolving ──returned──▶ resolved
+                              └─────────────────────────┘
+```
+
+- The actuators pull their cluster's desired set
+  (`/api/alerts/quarantine/desired`) every minute and report what they did
+  (`/api/alerts/quarantine/<host>/applied`): `out`, `drained`, `verifying`,
+  `verify_failed`, `returned`. The worker moves the stage on those reports.
+- **Resolve** (`POST /api/alerts/quarantine/<host>/resolve {by, reason,
+  force?}`, operator token, or the Resolve button) moves the episode to
+  `resolve_requested`. The host stays out until a fresh reading taken after
+  the request: if a reading-based trigger still fires it goes back to
+  `quarantined` and the post says why; otherwise it moves to `resolving`.
+  Job-failure decisions don't block it, since an idle host can't clear
+  them. `force: true` (the "Skip the clean-reading check" box) goes straight
+  to `resolving`. Xids up to the request are covered by the resolve.
+- **Return check** (Kubernetes actuator, `resolving`): a one-off pod on the
+  node holding all its GPUs checks nvidia-smi and runs `dcgmi diag -r 2`.
+  A failure, or no finish in 30 min, reports `verify_failed` and the episode
+  goes back to `quarantined`. `QUARANTINE_VERIFY_LEVEL=0` skips it. The H200
+  bare-metal actuator is not built yet; it needs the same check on the host.
+- A host quarantined again within 7 days of a resolve still goes out, and
+  its post says the fix may not have held and pages a person.
+- An actuator that hasn't confirmed 10 minutes after a command, or a
+  resolve with no fresh reading for 10 minutes, posts once per stage.
+
+Posts never say how to resolve. Delivery ids add the scan time for the
+posts that can repeat in one episode (a failed return, a stuck actuator).
 
 ## Tables
 

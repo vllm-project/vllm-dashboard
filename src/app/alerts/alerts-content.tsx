@@ -448,7 +448,12 @@ function InfraSection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
 
   // Only the operator token holders resolve a quarantine; the actuator then
   // returns the host and the worker marks it resolved.
-  const resolveQuarantine = async (host: string, by: string, reason: string) => {
+  const resolveQuarantine = async (
+    host: string,
+    by: string,
+    reason: string,
+    force: boolean,
+  ) => {
     const response = await fetch(
       `/api/alerts/quarantine/${encodeURIComponent(host)}/resolve`,
       {
@@ -457,7 +462,7 @@ function InfraSection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
           "Content-Type": "application/json",
           Authorization: `Bearer ${operatorToken}`,
         },
-        body: JSON.stringify({ by, reason }),
+        body: JSON.stringify({ by, reason, force }),
       },
     );
     if (!response.ok) {

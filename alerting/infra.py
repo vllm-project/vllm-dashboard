@@ -902,13 +902,22 @@ def plan_trigger_rules(
 
     # Xids stay within XID_WINDOW for a day, so a resolved host would trip
     # again on the Xid it was resolved for. A resolve covers every Xid up to
-    # the scan that saw it 'resolving'; only newer ones count after that.
+    # the request, so a new one while it waits for a clean reading still
+    # counts, and then up to the scan that saw it 'resolving', which covers
+    # any the actuator's return check raises.
     floors: dict[str, datetime] = {}
     for host in pools:
         key = (kind, f"rule:xid:{host}")
         state = states.get(key, InfraSubjectState(*key))
         episode = open_episodes.get((kind, host))
-        if episode is not None and episode.details.get("stage") == "resolving":
+        stage = episode.details.get("stage") if episode is not None else None
+        if episode is not None and stage == "resolve_requested":
+            requested = datetime.fromisoformat(
+                str(episode.details.get("resolve_requested_at"))
+            )
+            out_states.append(replace(state, last_reported_at=requested))
+            floors[host] = requested
+        elif stage == "resolving":
             out_states.append(replace(state, last_reported_at=now))
             floors[host] = now
         elif state.last_reported_at is not None:
@@ -1132,11 +1141,24 @@ def _actuator_stuck(
     if stage == "quarantining" and actuator not in ("out", "drained"):
         since = episode.details.get("commanded_at")
     elif stage == "resolving" and actuator != "verifying":
+        since = episode.details.get("resolving_at") or episode.details.get(
+            "resolve_requested_at"
+        )
+    elif stage == "resolve_requested":
+        # No fresh reading since the resolve: the reporter may be down.
         since = episode.details.get("resolve_requested_at")
     else:
         return False
     started = datetime.fromisoformat(str(since)) if since else episode.opened_at
     return now - started >= ACTUATOR_CONFIRM_TIMEOUT
+
+
+def _read_since_resolve(episode: InfraAlertEpisode, read_at: datetime | None) -> bool:
+    if read_at is None:
+        return False
+    return read_at > datetime.fromisoformat(
+        str(episode.details.get("resolve_requested_at"))
+    )
 
 
 def _stage_change(
@@ -1161,7 +1183,9 @@ def _stage_change(
 # in one scan plus the past hour points at the detector, not the hosts.
 FLEET_BREAKER_LIMIT = 3
 FLEET_BREAKER_WINDOW = timedelta(hours=1)
-OUT_STAGES = frozenset({"quarantining", "quarantined", "resolving"})
+OUT_STAGES = frozenset(
+    {"quarantining", "quarantined", "resolve_requested", "resolving"}
+)
 # Why a limit blocked a decision; it opens (or would open) as 'held'.
 # A host quarantined again this soon after a resolve was likely not fixed;
 # the post asks a person to look rather than resolve it the same way again.
@@ -1274,8 +1298,16 @@ def plan_quarantine(
     states: Mapping[tuple[str, str], InfraSubjectState],
     open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
     pool_sizes: Mapping[str, int] | None = None,
+    faults: Mapping[str, str] | None = None,
+    readings: Mapping[str, datetime] | None = None,
 ) -> InfraScanPlan:
     """Advance the quarantine sequence by one scan.
+
+    A resolve is 'resolve_requested' until a fresh reading taken after it:
+    `faults` (host -> reason of a reading-based trigger decision this scan)
+    sends it back to quarantined, otherwise the host's latest fresh reading
+    (`readings`) hands it to the actuator as 'resolving'. Job-failure
+    decisions don't gate it: a quarantined host runs no jobs to clear them.
 
     A decision for a host with no open quarantine opens one: 'would' in dry
     run or for a dry-run trigger, 'quarantining' when live, or 'held' when a
@@ -1413,6 +1445,32 @@ def plan_quarantine(
                 "fix": episode.details.get("resolve_reason"),
                 "reason": episode.details.get("reason"),
             }
+        elif stage == "resolve_requested" and host in (faults or {}):
+            note = f"still reports {(faults or {})[host]}"
+            changes.append(
+                replace(
+                    _stage_change(
+                        episode,
+                        {
+                            "stage": "quarantined",
+                            "verify_failed_at": now.isoformat(),
+                            "verify_note": note,
+                            "actuator_stuck": None,
+                        },
+                    ),
+                    notice=f"verify_failed:{now.isoformat()}",
+                )
+            )
+        elif stage == "resolve_requested" and _read_since_resolve(
+            episode, (readings or {}).get(host)
+        ):
+            changes.append(
+                _stage_change(
+                    episode,
+                    {"stage": "resolving", "resolving_at": now.isoformat()},
+                    silent=True,
+                )
+            )
         elif stage == "resolving" and actuator == "verify_failed":
             # The host failed the actuator's return check and is still out.
             observed = episode.details.get("actuator_observed")
@@ -1517,6 +1575,17 @@ def plan_infra_scan(
         states=states,
         open_episodes=open_episodes,
     )
+    # The newest fresh reading per host, for a resolve waiting on one.
+    readings: dict[str, datetime] = {}
+    for hostname, reported_at in [
+        *((r.hostname, r.reported_at) for r in gpu_faults or []),
+        *((r.hostname, r.reported_at) for r in host_faults or []),
+    ]:
+        if now - reported_at <= READING_MAX_AGE:
+            readings[hostname] = max(readings.get(hostname, reported_at), reported_at)
+    faults: dict[str, str] = {}
+    for rule_decision in rule_decisions:
+        faults.setdefault(rule_decision.host, rule_decision.reason)
     plans: list[InfraScanPlan] = [
         InfraScanPlan(states=tuple(rule_states)),
         plan_quarantine(
@@ -1526,6 +1595,8 @@ def plan_infra_scan(
             states=states,
             open_episodes=open_episodes,
             pool_sizes=_pool_sizes(pools or {}, open_episodes),
+            faults=faults,
+            readings=readings,
         ),
     ]
     unreporting = thresholds.get(InfraAlertType.UNREPORTING.value)
@@ -1693,11 +1764,17 @@ def _render_detector_suspect(episodes: list[InfraAlertEpisode]) -> str:
 
 def _render_actuator_stuck(episode: InfraAlertEpisode) -> str:
     host = _code(episode.subject_key)
+    minutes = ACTUATOR_CONFIRM_TIMEOUT // timedelta(minutes=1)
+    if episode.details.get("stage") == "resolve_requested":
+        return (
+            f":warning: *Quarantine* — {host} has had no fresh reading for "
+            f"{minutes} min since it was resolved, so it stays out. Check its "
+            "reporter."
+        )
     if episode.details.get("stage") == "resolving":
         doing = "has not confirmed returning"
     else:
         doing = "has not confirmed taking out"
-    minutes = int(ACTUATOR_CONFIRM_TIMEOUT.total_seconds() // 60)
     return (
         f":warning: *Quarantine* — the actuator {doing} {host} after "
         f"{minutes} min; the host may be half out. Check the actuator on its "

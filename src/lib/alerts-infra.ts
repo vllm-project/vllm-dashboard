@@ -167,6 +167,7 @@ const QUARANTINE_STAGES: Record<string, string> = {
   held: "Held by a safety limit",
   quarantining: "Quarantining once running jobs finish",
   quarantined: "Quarantined",
+  resolve_requested: "Resolve requested: waiting for a clean reading",
   resolving: "Resolving: returning to service",
   resolved: "Back in service",
 };

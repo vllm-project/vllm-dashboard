@@ -106,9 +106,12 @@ export const MAX_MATCH = 200;
 
 /**
  * Resolves a host's open quarantine episode (alert type 'quarantine' in
- * alerting_infra_alerts) by moving its stage to 'resolving'. The episode stays
- * open: the actuator runs its return check, undoes its cordon and taint or
- * lock file, and the worker marks it resolved once the host is back. It
+ * alerting_infra_alerts) by moving its stage to 'resolve_requested'. The
+ * episode stays open: the worker waits for a fresh reading taken after the
+ * request and sends it back to quarantined if a trigger still fires, else
+ * moves it to 'resolving'. `force` skips that wait and goes straight to
+ * 'resolving'. The actuator then runs its return check, undoes its cordon and
+ * taint or lock file, and the worker marks it resolved once the host is back. It
  * clears the last actuator report and return-check failure, so a check that
  * failed before doesn't send this resolve straight back to quarantined. A dry-run ('would') episode has
  * nothing to undo, so it is a 409, as is one already resolving or resolved;
@@ -119,11 +122,14 @@ export async function resolveQuarantine(
   host: string,
   by: string,
   reason: string,
+  force = false,
 ): Promise<ActionResult> {
+  const nextStage = force ? "resolving" : "resolve_requested";
   const resolved = await db<{ alert_id: string }[]>`
     UPDATE alerting_infra_alerts
     SET details = details || jsonb_build_object(
-          'stage', 'resolving',
+          'stage', ${nextStage}::text,
+          'resolve_forced', ${force}::boolean,
           'resolved_by', ${by}::text,
           'resolve_reason', ${reason}::text,
           'resolve_requested_at', now(),
@@ -152,14 +158,20 @@ export async function resolveQuarantine(
   if (stage === "would") {
     return fail(409, "This is a dry-run quarantine; nothing was applied to resolve.");
   }
-  if (stage === "resolving") {
+  if (stage === "resolve_requested" || stage === "resolving") {
     return fail(409, "This quarantine is already being resolved.");
   }
   return fail(409, "This host has no open quarantine; it is already resolved.");
 }
 
 /** Episode stages an actuator acts on; it only logs 'would'. */
-const ACTUATED_STAGES = ["would", "quarantining", "quarantined", "resolving"];
+const ACTUATED_STAGES = [
+  "would",
+  "quarantining",
+  "quarantined",
+  "resolve_requested",
+  "resolving",
+];
 
 /**
  * The hosts one cluster's actuator should have out (quarantining,
