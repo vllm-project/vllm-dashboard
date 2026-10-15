@@ -106,9 +106,10 @@ and nothing changes on a host.
 **Limits** (`_quarantine_limits`): a quarter of a pool out at once (at
 least one), except that a hardware fault skips this cap. The last serving
 host is held unless the fault is hardware, which goes ahead and pages.
-More than 3 new quarantines in an hour trips the fleet breaker, which holds
-hardware faults too. Its hosts stay held while their decisions stand, so a
-person needs to look. A blocked decision opens as `held`.
+More than 3 quarantines commanded within an hour (resolved ones included,
+from a record in subject state `limits:commands`) trips the fleet breaker,
+which holds hardware faults too. A breaker hold sticks while its decision
+stands, so a person needs to look. A blocked decision opens as `held`.
 
 **Paging:** a live hardware fault on the last serving host, a repeat
 offender, and a tripped breaker also go to
