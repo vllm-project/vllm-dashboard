@@ -1163,6 +1163,12 @@ OUT_STAGES = frozenset({"quarantining", "quarantined", "resolving"})
 # A host quarantined again this soon after a resolve was likely not fixed;
 # the post asks a person to look rather than resolve it the same way again.
 REPEAT_WINDOW = timedelta(days=7)
+# Subject state recording when each host was last commanded out, so the
+# breaker counts the past hour's commands even once their episodes resolve.
+BREAKER_RECORD_KEY = "limits:commands"
+# Limit details a later verdict replaces; cleared when a held or dry-run
+# episode moves on, so an old hold or page doesn't follow it.
+LIMIT_DETAILS = ("held_reason", "would_hold", "breaker_count", "paged", "repeat_of")
 HELD_REASONS = {
     "pool_cap": "pool cap",
     "last_host": "last serving host in its pool",
@@ -1177,6 +1183,7 @@ def _quarantine_limits(
     wanted: Mapping[str, QuarantineDecision],
     episodes: Mapping[str, InfraAlertEpisode],
     pool_sizes: Mapping[str, int],
+    commands: Mapping[str, datetime] | None = None,
 ) -> tuple[dict[str, str], int]:
     """Verdict per host whose decision would take it out this scan: 'apply',
     'page' (applied: a hardware fault on the last serving host), or a
@@ -1184,7 +1191,10 @@ def _quarantine_limits(
 
     Pool sizes are every known host in the pool, so an unknown pool reads as
     one whose last host this is. In dry run a 'would' episode stands in for
-    the out stages, so the verdicts say what the limits would do.
+    the out stages, so the verdicts say what the limits would do. `commands`
+    is when each host was last commanded out (BREAKER_RECORD_KEY), which the
+    breaker counts alongside the hosts still out. A breaker hold sticks: the
+    host stays held while its decision stands.
     """
 
     def is_out(episode: InfraAlertEpisode) -> bool:
@@ -1199,8 +1209,17 @@ def _quarantine_limits(
 
     out_episodes = [episode for episode in episodes.values() if is_out(episode)]
     out = Counter(str(episode.details.get("pool")) for episode in out_episodes)
-    recent = sum(
-        1 for e in out_episodes if now - commanded_at(e) <= FLEET_BREAKER_WINDOW
+    recent = len(
+        {
+            e.subject_key
+            for e in out_episodes
+            if now - commanded_at(e) <= FLEET_BREAKER_WINDOW
+        }
+        | {
+            host
+            for host, at in (commands or {}).items()
+            if now - at <= FLEET_BREAKER_WINDOW
+        }
     )
 
     def stage(host: str) -> Any:
@@ -1219,6 +1238,11 @@ def _quarantine_limits(
     verdicts: dict[str, str] = {}
     for host in candidates:
         decision = wanted[host]
+        episode = episodes.get(host)
+        held_by = episode.details.get("held_reason") if episode else None
+        if stage(host) == "held" and held_by == "detector_suspect":
+            verdicts[host] = "detector_suspect"
+            continue
         size, taken = pool_sizes.get(decision.pool, 0), out[decision.pool]
         last_host = size - taken <= 1
         # A hardware fault skips the cap (design §4.4): a broken GPU only
@@ -1273,6 +1297,9 @@ def plan_quarantine(
         for (alert_type, subject_key), episode in open_episodes.items()
         if alert_type == kind
     }
+    record = states.get((kind, BREAKER_RECORD_KEY))
+    recorded: dict[str, str] = record.details["commands"] if record else {}
+    commands = {host: datetime.fromisoformat(at) for host, at in recorded.items()}
     verdicts, breaker_count = _quarantine_limits(
         now=now,
         live=live,
@@ -1284,6 +1311,7 @@ def plan_quarantine(
         },
         episodes=episodes,
         pool_sizes=pool_sizes or {},
+        commands=commands,
     )
     for host in sorted(set(wanted) | set(episodes)):
         decision = wanted.get(host)
@@ -1342,17 +1370,15 @@ def plan_quarantine(
             )
         elif stage in ("would", "held") and acts:
             # Dry run was switched off, or a held one may now go ahead. A
-            # held one that is still blocked stays as it is, without a post.
+            # held one still blocked for the same reason stays as it is,
+            # without a post; a new reason (the breaker tripping) is posted.
+            moved = dict.fromkeys(LIMIT_DETAILS) | command | limit
             if verdict not in HELD_REASONS:
                 changes.append(
-                    _stage_change(
-                        episode, {"stage": "quarantining", **command, **limit}
-                    )
+                    _stage_change(episode, {**moved, "stage": "quarantining"})
                 )
-            elif stage == "would":
-                changes.append(
-                    _stage_change(episode, {"stage": "held", **command, **limit})
-                )
+            elif episode.details.get("held_reason") != verdict:
+                changes.append(_stage_change(episode, {**moved, "stage": "held"}))
         elif stage in ("would", "held") and (
             decision is None or (stage == "held" and decision.dry_run)
         ):
@@ -1391,6 +1417,24 @@ def plan_quarantine(
             state_details["absent_scans"] = next_absent
         if state_details != state.details:
             out_states.append(replace(state, details=state_details))
+    # Record this scan's commands for the breaker, keeping the past hour's.
+    commanded = [
+        *(e.subject_key for e in opened if e.details["stage"] == "quarantining"),
+        *(
+            c.episode.subject_key
+            for c in changes
+            if c.patch.get("stage") == "quarantining"
+        ),
+    ]
+    kept = {
+        host: at.isoformat()
+        for host, at in commands.items()
+        if now - at <= FLEET_BREAKER_WINDOW
+    } | dict.fromkeys(commanded, now.isoformat())
+    if kept != recorded:
+        out_states.append(
+            InfraSubjectState(kind, BREAKER_RECORD_KEY, details={"commands": kept})
+        )
     return InfraScanPlan(
         states=tuple(out_states), opened=tuple(opened), stage_changes=tuple(changes)
     )
@@ -1797,12 +1841,20 @@ def infra_notifications(
     serving host, a repeat offender, or a tripped breaker) also goes to
     `operator_destination`, the worker-failure DM, when it is set.
     """
-    # A tripped breaker holds every new quarantine of the scan; one post
-    # says so for all of them.
+    # A tripped breaker holds every new quarantine of the scan, newly opened
+    # or moved from held or dry run; one post says so for all of them.
+    tripped = [
+        change
+        for change in plan.stage_changes
+        if not change.silent and change.patch.get("held_reason") == "detector_suspect"
+    ]
     suspect = [
-        episode
-        for episode in plan.opened
-        if episode.details.get("held_reason") == "detector_suspect"
+        *(
+            episode
+            for episode in plan.opened
+            if episode.details.get("held_reason") == "detector_suspect"
+        ),
+        *(change.episode for change in tripped),
     ]
     channel = [
         *(
@@ -1849,7 +1901,7 @@ def infra_notifications(
                 delivery_mode=delivery_mode,
             )
             for change in plan.stage_changes
-            if not change.silent
+            if not change.silent and change not in tripped
         ),
     ]
     if not operator_destination:

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from alerting.infra import (
     InfraAlertEpisode,
     InfraScanPlan,
+    InfraSubjectState,
     QuarantineDecision,
     infra_notifications,
     plan_quarantine,
@@ -45,6 +46,8 @@ def episode(
             "pool": pool,
             "reason": "the GPU query hung on 2 consecutive checks",
             "commanded_at": (NOW - commanded).isoformat(),
+            # A real held episode always says which limit holds it.
+            **({"held_reason": "pool_cap"} if stage == "held" else {}),
         },
     )
 
@@ -537,4 +540,133 @@ def test_dry_run_hosts_the_breaker_holds_when_live_reach_the_operator() -> None:
     assert {c.patch["held_reason"] for c in result.stage_changes} == {
         "detector_suspect"
     }
-    assert len(operator_posts(result)) == 4
+    # One combined post, not four, and one message to the operator.
+    [post] = texts(result)
+    assert "detector suspect" in post and "`host-4`" in post
+    assert len(operator_posts(result)) == 1
+
+
+def record(**ages: timedelta) -> dict[tuple[str, str], InfraSubjectState]:
+    """The breaker's command record: host -> how long ago it was commanded."""
+    commands = {host: (NOW - age).isoformat() for host, age in ages.items()}
+    key = ("quarantine", "limits:commands")
+    return {key: InfraSubjectState(*key, details={"commands": commands})}
+
+
+def test_the_breaker_counts_commands_whose_quarantine_already_resolved() -> None:
+    def verdict(states: dict[tuple[str, str], InfraSubjectState]) -> object:
+        result = plan_quarantine(
+            now=NOW,
+            live=True,
+            decisions=[decision("host-9")],
+            states=states,
+            open_episodes={},
+            pool_sizes={"pool-a": 40},
+        )
+        return opened(result)["host-9"]
+
+    minutes = {f"host-{n}": timedelta(minutes=30) for n in (1, 2, 3)}
+    assert verdict(record(**minutes)) == ("held", "detector_suspect")
+    # Commands older than the hour no longer count.
+    old = dict(minutes, **{"host-3": timedelta(minutes=61)})
+    assert verdict(record(**old)) == ("quarantining", None)
+
+
+def test_each_command_is_recorded_for_the_breaker() -> None:
+    result = plan_quarantine(
+        now=NOW,
+        live=True,
+        decisions=[decision("host-9")],
+        states=record(
+            **{"host-1": timedelta(minutes=30), "host-2": timedelta(hours=2)}
+        ),
+        open_episodes={},
+        pool_sizes={"pool-a": 40},
+    )
+    [state] = [s for s in result.states if s.subject_key == "limits:commands"]
+    assert state.details == {
+        "commands": {
+            "host-1": (NOW - timedelta(minutes=30)).isoformat(),
+            "host-9": NOW.isoformat(),
+        }
+    }
+    # Nothing new and nothing aged out: no write.
+    again_ = plan_quarantine(
+        now=NOW,
+        live=True,
+        decisions=[],
+        states=record(**{"host-1": timedelta(minutes=30)}),
+        open_episodes={},
+        pool_sizes={"pool-a": 40},
+    )
+    assert again_.states == ()
+
+
+def test_a_breaker_hold_sticks_while_its_decision_stands() -> None:
+    held = [episode(f"host-{n}", "held") for n in (1, 2, 3, 4)]
+    for e in held:
+        e.details["held_reason"] = "detector_suspect"
+    # One decision goes; the other three stay held, without posts.
+    result = plan([decision(f"host-{n}") for n in (1, 2, 3)], {"pool-a": 40}, held)
+    assert result.stage_changes == ()
+
+
+def test_a_held_host_the_breaker_now_blocks_is_posted_once() -> None:
+    held = episode("host-1", "held")
+    new = [decision(f"host-{n}") for n in (1, 2, 3, 4)]
+    result = plan(new, {"pool-a": 40}, [held])
+    [change] = result.stage_changes
+    assert change.patch["held_reason"] == "detector_suspect"
+    [post] = texts(result)
+    assert post.startswith(":warning: *Quarantine detector suspect*")
+    assert len(operator_posts(result)) == 1
+
+
+def test_a_held_host_that_goes_ahead_drops_its_old_hold_and_page() -> None:
+    held = episode("host-2", "held")
+    held.details.update(
+        repeat_of={"at": "2026-08-01T00:00:00+00:00", "by": "oncall"},
+        paged=True,
+        would_hold="pool_cap",
+        breaker_count=4,
+    )
+    result = plan([decision("host-2")], {"pool-a": 4}, [held])
+    [change] = result.stage_changes
+    assert change.patch["stage"] == "quarantining"
+    assert change.episode.details["held_reason"] is None
+    assert change.episode.details["repeat_of"] is None
+    assert change.episode.details["paged"] is None
+    assert change.episode.details["would_hold"] is None
+    assert change.episode.details["breaker_count"] is None
+    assert operator_posts(result) == []
+
+
+def test_the_breaker_record_includes_the_full_hour() -> None:
+    # Commanded exactly an hour ago: still counted, and still kept.
+    hour = {f"host-{n}": timedelta(hours=1) for n in (1, 2, 3)}
+    result = plan_quarantine(
+        now=NOW,
+        live=True,
+        decisions=[decision("host-9")],
+        states=record(**hour),
+        open_episodes={},
+        pool_sizes={"pool-a": 40},
+    )
+    assert opened(result)["host-9"] == ("held", "detector_suspect")
+
+
+def test_a_held_host_that_goes_ahead_is_recorded() -> None:
+    hour = {"host-1": timedelta(hours=1)}
+    result = plan_quarantine(
+        now=NOW,
+        live=True,
+        decisions=[decision("host-2")],
+        states=record(**hour),
+        open_episodes={("quarantine", "host-2"): episode("host-2", "held")},
+        pool_sizes={"pool-a": 40},
+    )
+    [state] = [s for s in result.states if s.subject_key == "limits:commands"]
+    assert state.details["commands"] == {
+        "host-1": (NOW - timedelta(hours=1)).isoformat(),
+        "host-2": NOW.isoformat(),
+    }
