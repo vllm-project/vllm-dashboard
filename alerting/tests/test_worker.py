@@ -131,10 +131,12 @@ def test_infra_runtime_passes_kubeconfigs_and_delivery_mode(
     monkeypatch.setenv("GPU_REPORTER_KUBECONFIG_H100", "/run/alerting/h100.conf")
     monkeypatch.setenv("GPU_REPORTER_KUBECONFIG_DGX", "/run/alerting/dgx.conf")
     monkeypatch.setenv("BUILDKITE_TOKEN", "bk-token")
+    monkeypatch.setenv("ALERTING_FAILURE_SLACK_DESTINATION", "UOPS")
     monkeypatch.setattr(worker, "build_infra_runtime", fake_build)
 
     worker._runtime("infra", worker.SystemClock(), DeliveryMode.SHADOW)
 
+    assert captured["operator_destination"] == "UOPS"
     assert captured["kubeconfigs"] == [
         "/run/alerting/h100.conf",
         "/run/alerting/dgx.conf",

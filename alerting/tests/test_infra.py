@@ -6,6 +6,7 @@ import json
 import pathlib
 import subprocess
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -949,7 +950,10 @@ def test_every_alert_type_is_permitted_by_the_sql_constraints(constraint: str) -
 
 
 def quarantine_runtime(
-    decisions: list[QuarantineDecision], *, live: bool = False
+    decisions: list[QuarantineDecision],
+    *,
+    live: bool = False,
+    operator_destination: str | None = None,
 ) -> tuple[AlertingRuntime, InMemoryInfraStore, RecordingSlackPort, FixedClock]:
     clock = FixedClock(START)
     executions = InMemoryAutomationExecutionStore()
@@ -973,11 +977,28 @@ def quarantine_runtime(
                 clock=clock,
                 quarantine_decisions=lambda: list(decisions),
                 quarantine_live=live,
+                operator_destination=operator_destination,
             )
         },
         alert_path=None,
     )
     return runtime, store, slack, clock
+
+
+def test_a_tripped_breaker_also_reaches_the_operator() -> None:
+    # Hardware faults skip the pool cap, so the breaker is what stops four.
+    decisions = [
+        replace(quarantine_decision(f"gpu-node-{n}"), hardware=True)
+        for n in range(1, 5)
+    ]
+    runtime, store, slack, clock = quarantine_runtime(
+        decisions, live=True, operator_destination="UOPS"
+    )
+    scan_and_post(runtime, clock)
+    channel, operator = slack.deliveries
+    assert operator.destination == "UOPS"
+    assert operator.payload == channel.payload
+    assert "detector suspect" in operator.payload["text"]
 
 
 def quarantine_decision(host: str = "GPU-Node-7") -> QuarantineDecision:

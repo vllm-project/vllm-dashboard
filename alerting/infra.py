@@ -1221,7 +1221,9 @@ def _quarantine_limits(
         decision = wanted[host]
         size, taken = pool_sizes.get(decision.pool, 0), out[decision.pool]
         last_host = size - taken <= 1
-        if taken >= max(1, size // 4):
+        # A hardware fault skips the cap (design §4.4): a broken GPU only
+        # fails the jobs it takes. The breaker below still counts it.
+        if taken >= max(1, size // 4) and not decision.hardware:
             verdicts[host] = "pool_cap"
         elif last_host and not decision.hardware:
             verdicts[host] = "last_host"
@@ -1254,9 +1256,10 @@ def plan_quarantine(
     quarantining on a later scan once the limits allow it. The actuators
     report through the dashboard into details['actuator_state']; 'drained'
     moves quarantining to quarantined and 'returned' moves resolving (set by
-    the operator resolve endpoint) to resolved. A dry-run or held episode closes silently once its
-    decision is gone for DRY_RUN_EXPIRY_SCANS scans; a live one never closes
-    by itself.
+    the operator resolve endpoint) to resolved. A dry-run or held episode
+    closes silently once its decision is gone (or, for a held one, only a
+    dry-run trigger names it) for DRY_RUN_EXPIRY_SCANS scans; a live one
+    never closes by itself.
     """
     kind = InfraAlertType.QUARANTINE.value
     wanted: dict[str, QuarantineDecision] = {}
@@ -1595,7 +1598,8 @@ def _render_detector_suspect(episodes: list[InfraAlertEpisode]) -> str:
     return (
         f":warning: *Quarantine detector suspect* — {count} new quarantines "
         f"within an hour (limit {FLEET_BREAKER_LIMIT}), so none from this scan "
-        f"were applied. Held: {hosts}"
+        f"were applied. Held: {hosts}\nThey stay held while their decisions "
+        "stand: a person needs to check the detector, or what these hosts share."
     )
 
 
@@ -1781,10 +1785,18 @@ def _intent(
 
 
 def infra_notifications(
-    plan: InfraScanPlan, *, delivery_mode: DeliveryMode
+    plan: InfraScanPlan,
+    *,
+    delivery_mode: DeliveryMode,
+    operator_destination: str | None = None,
 ) -> list[NotificationIntent]:
     """Render exactly one intent per applied transition: open, resolve, and
-    each non-silent quarantine stage change."""
+    each non-silent quarantine stage change.
+
+    A live quarantine that needs a person (a hardware fault on the last
+    serving host, a repeat offender, or a tripped breaker) also goes to
+    `operator_destination`, the worker-failure DM, when it is set.
+    """
     # A tripped breaker holds every new quarantine of the scan; one post
     # says so for all of them.
     suspect = [
@@ -1792,7 +1804,7 @@ def infra_notifications(
         for episode in plan.opened
         if episode.details.get("held_reason") == "detector_suspect"
     ]
-    return [
+    channel = [
         *(
             _intent(
                 episode,
@@ -1840,6 +1852,37 @@ def infra_notifications(
             if not change.silent
         ),
     ]
+    if not operator_destination:
+        return channel
+    # The command, not every later stage of it: an opened episode, or one a
+    # held or dry-run stage moved to quarantining or held.
+    commanded = {
+        f"infra:{episode.alert_type}:{episode.subject_key}"
+        for episode in [
+            *plan.opened,
+            *(
+                change.episode
+                for change in plan.stage_changes
+                if not change.silent
+                and change.patch.get("stage") in ("quarantining", "held")
+            ),
+        ]
+        if episode.details.get("stage") != "would"
+        and (
+            episode.details.get("paged")
+            or episode.details.get("repeat_of")
+            or episode.details.get("held_reason") == "detector_suspect"
+        )
+    }
+    return channel + [
+        replace(
+            intent,
+            delivery_id=f"{intent.delivery_id}:operator",
+            destination=operator_destination,
+        )
+        for intent in channel
+        if intent.alert_ref in commanded
+    ]
 
 
 class InfraScanHandler:
@@ -1858,6 +1901,7 @@ class InfraScanHandler:
             Callable[[datetime], Iterable[QuarantineDecision]] | None
         ) = None,
         quarantine_live: bool = False,
+        operator_destination: str | None = None,
     ) -> None:
         self._hosts = hosts
         self._snapshots = snapshots
@@ -1870,6 +1914,7 @@ class InfraScanHandler:
         self._quarantine_decisions = quarantine_decisions
         self._job_failure_decisions = job_failure_decisions
         self._quarantine_live = quarantine_live
+        self._operator_destination = operator_destination
 
     def _job_failures(
         self, now: datetime, states: Mapping[tuple[str, str], InfraSubjectState]
@@ -1971,7 +2016,9 @@ class InfraScanHandler:
             plan=plan,
             now=self._clock.now(),
             notification_factory=lambda applied: infra_notifications(
-                applied, delivery_mode=self._delivery_mode
+                applied,
+                delivery_mode=self._delivery_mode,
+                operator_destination=self._operator_destination,
             ),
         )
         return HandlerCompletion.TRANSACTIONAL

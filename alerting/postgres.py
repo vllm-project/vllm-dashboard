@@ -2205,6 +2205,7 @@ def build_infra_runtime(
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
     quarantine_live: bool = False,
     buildkite_token: str | None = None,
+    operator_destination: str | None = None,
 ) -> AlertingRuntime:
     """Wire the infra health scan: optional kubectl nodes + Postgres, and the
     job-failure quarantine trigger when a Buildkite token is set.
@@ -2242,6 +2243,7 @@ def build_infra_runtime(
         delivery_mode=delivery_mode,
         job_failure_decisions=job_failure_decisions,
         quarantine_live=quarantine_live,
+        operator_destination=operator_destination,
     )
     return AlertingRuntime(
         executions=store,

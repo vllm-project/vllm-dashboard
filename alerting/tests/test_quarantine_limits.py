@@ -194,6 +194,8 @@ def test_the_breaker_holds_every_new_quarantine_and_posts_once() -> None:
     assert post.endswith(
         "(limit 3), so none from this scan were applied. "
         "Held: `host-1`, `host-2`, `host-3`, `host-4`"
+        "\nThey stay held while their decisions stand: a person needs to check "
+        "the detector, or what these hosts share."
     )
 
 
@@ -244,6 +246,8 @@ def test_the_breaker_window_runs_from_the_command_and_includes_the_hour() -> Non
     assert texts(result)[0] == (
         ":warning: *Quarantine detector suspect* — 4 new quarantines within an "
         "hour (limit 3), so none from this scan were applied. Held: `host-1`"
+        "\nThey stay held while their decisions stand: a person needs to check "
+        "the detector, or what these hosts share."
     )
 
 
@@ -405,3 +409,132 @@ def test_a_repeat_says_so_while_held_and_in_dry_run() -> None:
         "hung on 2 consecutive checks (again within 7 days of a resolve: would "
         "page a person)"
     ]
+
+
+def test_a_hardware_fault_skips_the_pool_cap() -> None:
+    out = [episode("host-1", "quarantined")]
+    result = plan(
+        [decision("host-2", hardware=True), decision("host-3")], {"pool-a": 4}, out
+    )
+    assert opened(result) == {
+        "host-2": ("quarantining", None),
+        "host-3": ("held", "pool_cap"),
+    }
+    # Even past a quarter of the pool, while the breaker allows it.
+    result = plan(
+        [decision(f"host-{n}", hardware=True) for n in (2, 3, 4)], {"pool-a": 8}, out
+    )
+    assert set(opened(result).values()) == {("quarantining", None)}
+
+
+def test_the_breaker_still_holds_hardware_faults() -> None:
+    result = plan(
+        [decision(f"host-{n}", hardware=True) for n in range(1, 5)], {"pool-a": 40}
+    )
+    assert set(opened(result).values()) == {("held", "detector_suspect")}
+
+
+def test_a_dry_run_decision_takes_no_slot_when_live() -> None:
+    job = replace(decision("host-1"), dry_run=True)
+    result = plan([job, decision("host-2")], {"pool-a": 4})
+    assert opened(result) == {
+        "host-1": ("would", None),
+        "host-2": ("quarantining", None),
+    }
+    # A held host that only a dry-run trigger still names closes like one
+    # whose decision is gone.
+    held = episode("host-1", "held")
+    first = plan([job], {"pool-a": 4}, [held])
+    assert first.stage_changes == ()
+    absent = {("quarantine", "host-1"): first.states[0]}
+    second = plan_quarantine(
+        now=NOW,
+        live=True,
+        decisions=[job],
+        states=absent,
+        open_episodes={("quarantine", "host-1"): held},
+        pool_sizes={"pool-a": 4},
+    )
+    [change] = second.stage_changes
+    assert change.patch == {"stage": "resolved", "resolution": "decision_cleared"}
+
+
+def operator_posts(result: InfraScanPlan) -> list[str]:
+    return [
+        intent.delivery_id
+        for intent in infra_notifications(
+            result, delivery_mode=DeliveryMode.LIVE, operator_destination="UOPS"
+        )
+        if intent.destination == "UOPS"
+    ]
+
+
+def test_events_that_need_a_person_also_go_to_the_operator() -> None:
+    # A hardware fault on the last serving host.
+    paged = plan([decision("host-1", hardware=True)], {"pool-a": 1})
+    [delivery] = operator_posts(paged)
+    assert delivery.endswith(":open:operator")
+    [intent] = [
+        i
+        for i in infra_notifications(
+            paged, delivery_mode=DeliveryMode.LIVE, operator_destination="UOPS"
+        )
+        if i.destination == "UOPS"
+    ]
+    assert "this pages a person" in intent.payload["text"]
+    # A tripped breaker: its one post.
+    breaker = plan([decision(f"host-{n}") for n in range(1, 5)], {"pool-a": 40})
+    [delivery] = operator_posts(breaker)
+    assert delivery.endswith(":held:detector_suspect:operator")
+    # A repeat offender.
+    repeat = again(returned("host-1", NOW - timedelta(days=1)), NOW)
+    assert len(operator_posts(repeat)) == 1
+    # A held hardware fault that a later scan applies to the last host.
+    held = plan(
+        [decision("host-1", hardware=True)], {"pool-a": 1}, [episode("host-1", "held")]
+    )
+    [delivery] = operator_posts(held)
+    assert delivery.endswith(":quarantining:operator")
+
+
+def test_the_operator_hears_only_about_live_commands_that_need_a_person() -> None:
+    assert operator_posts(plan([decision("host-1")], {"pool-a": 8})) == []
+    assert (
+        operator_posts(
+            plan([decision("host-1", hardware=True)], {"pool-a": 1}, live=False)
+        )
+        == []
+    )
+    # Later stages of a paged episode don't go to the operator again.
+    out = episode("host-1", "quarantining")
+    out.details.update(paged=True, actuator_state="drained")
+    result = plan([decision("host-1", hardware=True)], {"pool-a": 1}, [out])
+    assert [c.patch["stage"] for c in result.stage_changes] == ["quarantined"]
+    assert operator_posts(result) == []
+    # No operator destination: the channel post only.
+    paged = plan([decision("host-1", hardware=True)], {"pool-a": 1})
+    assert len(infra_notifications(paged, delivery_mode=DeliveryMode.LIVE)) == 1
+
+
+def test_a_hardware_fault_on_the_last_host_left_is_paged_past_the_cap() -> None:
+    # One of two out: the other is the last one serving.
+    result = plan(
+        [decision("host-2", hardware=True)],
+        {"pool-a": 2},
+        [episode("host-1", "quarantined")],
+    )
+    assert opened(result) == {"host-2": ("quarantining", None)}
+    assert result.opened[0].details["paged"] is True
+
+
+def test_dry_run_hosts_the_breaker_holds_when_live_reach_the_operator() -> None:
+    hosts = [f"host-{n}" for n in range(1, 5)]
+    result = plan(
+        [decision(host) for host in hosts],
+        {"pool-a": 40},
+        [episode(host, "would") for host in hosts],
+    )
+    assert {c.patch["held_reason"] for c in result.stage_changes} == {
+        "detector_suspect"
+    }
+    assert len(operator_posts(result)) == 4

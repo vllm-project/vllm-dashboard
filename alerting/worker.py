@@ -155,6 +155,9 @@ def _runtime(
             # Optional like the kubeconfigs: unset skips the job-failure
             # trigger, and its fetch failing never fails the scan.
             buildkite_token=os.environ.get("BUILDKITE_TOKEN"),
+            # Quarantine events that need a person go here too: the same DM
+            # the worker-failure alert uses.
+            operator_destination=os.environ.get("ALERTING_FAILURE_SLACK_DESTINATION"),
         )
     if consumer == "main-ci-analyze":
         return build_main_ci_analysis_runtime(
