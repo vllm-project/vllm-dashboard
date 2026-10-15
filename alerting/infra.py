@@ -775,6 +775,9 @@ REPEAT_XIDS = frozenset({46, 62, 74, 95, 109, 119, 120, 136, 158})
 TRIGGER_XIDS = FIRST_SIGHT_XIDS | B200_FIRST_SIGHT_XIDS | REPEAT_XIDS
 XID_WINDOW = timedelta(hours=24)
 XID_REPEATS = 3
+# A fix that didn't hold shows up as the same fault soon after: for this long
+# after a resolve, one reset-class Xid trips instead of XID_REPEATS.
+PROBATION = timedelta(hours=24)
 
 
 def pilot_pools(
@@ -831,7 +834,13 @@ def plan_trigger_rules(
 
     def decide(host: str, rule: str, reason: str, **evidence: Any) -> None:
         cluster, pool = pools[host]
-        is_hardware = rule in ("recovery_action", "remapped_rows", "xid", "xid_repeat")
+        is_hardware = rule in (
+            "recovery_action",
+            "remapped_rows",
+            "xid",
+            "xid_repeat",
+            "xid_probation",
+        )
         (hardware if is_hardware else host_fault).append(
             QuarantineDecision(
                 host=host,
@@ -919,6 +928,16 @@ def plan_trigger_rules(
                 xid=event.xid,
                 bus_id=event.bus_id,
                 at=event.at.isoformat(),
+            )
+        elif event.xid in REPEAT_XIDS and floor and event.at - floor <= PROBATION:
+            decide(
+                host,
+                "xid_probation",
+                f"Xid {event.xid} on GPU {gpu} within 24 h of its last resolve",
+                xid=event.xid,
+                bus_id=event.bus_id,
+                at=event.at.isoformat(),
+                resolved_at=floor.isoformat(),
             )
         elif event.xid in REPEAT_XIDS:
             repeats[(host, event.bus_id, event.xid)].append(event)

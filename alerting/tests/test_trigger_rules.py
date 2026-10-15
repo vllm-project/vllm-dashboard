@@ -256,6 +256,51 @@ def test_a_resolve_covers_the_xids_seen_before_it() -> None:
     assert rules(scans.run(xid_events=newer)) == [("gpu-node-7", "xid")]
 
 
+def resolve(scans: Scans, name: str = "gpu-node-7") -> datetime:
+    """Runs the scan that sees the host 'resolving'; returns the cutoff."""
+    scans.open_episodes[("quarantine", name)] = InfraAlertEpisode(
+        alert_type="quarantine",
+        subject_key=name,
+        opened_at=START,
+        details={"stage": "resolving"},
+    )
+    resolved_at = scans.now
+    scans.run()
+    scans.open_episodes.clear()
+    return resolved_at
+
+
+def test_one_reset_class_xid_trips_while_the_host_is_on_probation() -> None:
+    scans = Scans()
+    resolved_at = resolve(scans)
+    [decision] = scans.run(xid_events=[xid(62, scans.now - timedelta(minutes=1))])
+    assert decision.hardware
+    assert decision.evidence["rule"] == "xid_probation"
+    assert decision.evidence["resolved_at"] == resolved_at.isoformat()
+    assert decision.reason == (
+        "Xid 62 on GPU 0000:1b:00.0 within 24 h of its last resolve"
+    )
+
+
+def test_probation_ends_a_day_after_the_resolve() -> None:
+    scans = Scans()
+    resolved_at = resolve(scans)
+    day = timedelta(hours=24)
+    scans.now = resolved_at + day
+    assert rules(scans.run(xid_events=[xid(62, resolved_at + day)])) == [
+        ("gpu-node-7", "xid_probation")
+    ]
+    later = resolved_at + day + timedelta(seconds=1)
+    scans.now = later
+    assert scans.run(xid_events=[xid(62, later)]) == []
+
+
+def test_a_host_never_resolved_is_never_on_probation() -> None:
+    scans = Scans()
+    assert scans.run(xid_events=[xid(62, START)]) == []
+    assert scans.run(xid_events=[xid(13, START)]) == []  # not a trigger Xid
+
+
 def test_host_fault_trips_on_the_second_consecutive_fresh_failing_check() -> None:
     scans = Scans()
     assert scans.run(host_faults=[host(scans, gpu_query_hung=True)]) == []
