@@ -858,6 +858,14 @@ def plan_trigger_rules(
             )
         )
 
+    # A host waiting on its resolve needs one failing reading after it, not a
+    # streak: the resolve says it is fixed, so one fault proves otherwise.
+    waiting = {
+        host
+        for (_, host), episode in open_episodes.items()
+        if episode.details.get("stage") == "resolve_requested"
+    }
+
     def check(host: str, rule: str, failing: bool | None, at: datetime | None) -> bool:
         """Advance one host-fault streak; True when it trips this scan."""
         key = (kind, f"rule:{rule}:{host}")
@@ -875,7 +883,7 @@ def plan_trigger_rules(
         out_states.append(
             replace(state, consecutive_breaches=streak, last_reported_at=at)
         )
-        return streak >= HOST_FAULT_CHECKS
+        return streak >= (1 if host in waiting else HOST_FAULT_CHECKS)
 
     for fault in sorted(gpu_faults, key=lambda r: (r.hostname, r.gpu_index)):
         if fault.hostname not in pools or not fresh(fault.reported_at):
@@ -984,9 +992,13 @@ def plan_trigger_rules(
     disk = thresholds.get(InfraAlertType.DISK_USAGE.value)
     dead = thresholds.get(InfraAlertType.GPU_DEAD_MEMORY.value)
     count = thresholds.get(InfraAlertType.GPU_COUNT.value)
-    checks = HOST_FAULT_CHECKS
     for host in sorted(pools):
         cluster, pool = pools[host]
+        checks = (
+            "after its resolve"
+            if host in waiting
+            else f"on {HOST_FAULT_CHECKS} consecutive checks"
+        )
         reading = latest.get(host)
         if reading is not None and check(
             host, "gpu_hang", reading.gpu_query_hung, reading.reported_at
@@ -994,7 +1006,7 @@ def plan_trigger_rules(
             decide(
                 host,
                 "gpu_hang",
-                f"the GPU query hung on {checks} consecutive checks",
+                f"the GPU query hung {checks}",
                 reading_at=reading.reported_at.isoformat(),
             )
 
@@ -1015,8 +1027,8 @@ def plan_trigger_rules(
             decide(
                 host,
                 "network",
-                "every network probe failed on "
-                f"{checks} consecutive checks while most of the pool passed",
+                f"every network probe failed {checks} while most of the pool "
+                "passed",
                 probes=len(reading.network_probes or []),
                 reading_at=reading.reported_at.isoformat(),
             )
@@ -1040,7 +1052,7 @@ def plan_trigger_rules(
                     host,
                     "disk",
                     f"disk {worst.mount_point} at {worst.used_percent:.0f}% "
-                    f"used on {checks} consecutive checks",
+                    f"used {checks}",
                     mount_point=worst.mount_point,
                     used_percent=round(worst.used_percent, 1),
                     threshold_percent=disk.threshold_value,
@@ -1061,8 +1073,7 @@ def plan_trigger_rules(
                     host,
                     "dead_memory",
                     f"{worst_gpu.dead_proc_mem_mb:.0f} MiB held by dead "
-                    f"processes on GPU {worst_gpu.gpu_index} on {checks} "
-                    "consecutive checks",
+                    f"processes on GPU {worst_gpu.gpu_index} {checks}",
                     gpu_index=worst_gpu.gpu_index,
                     dead_proc_mem_mb=worst_gpu.dead_proc_mem_mb,
                     threshold_mib=dead.threshold_value,
@@ -1085,7 +1096,7 @@ def plan_trigger_rules(
                     host,
                     "root_owned",
                     f"root-owned files in {len(slots or [])} checkout slot(s) "
-                    f"on {checks} consecutive checks",
+                    f"{checks}",
                     slots=len(slots or []),
                     reading_at=reading.reported_at.isoformat(),
                 )
@@ -1107,8 +1118,8 @@ def plan_trigger_rules(
                 decide(
                     host,
                     "gpu_count",
-                    f"{observed.observed_gpus} of {baseline} GPUs usable on "
-                    f"{checks} consecutive checks",
+                    f"{observed.observed_gpus} of {baseline} GPUs usable "
+                    f"{checks}",
                     observed_gpus=observed.observed_gpus,
                     baseline_gpus=baseline,
                     reading_at=observed.reported_at.isoformat(),
@@ -1129,7 +1140,8 @@ DRY_RUN_EXPIRY_SCANS = 2
 # The actuators run every minute; one that has not confirmed a quarantine
 # ('out') or a resolve ('returned') this long after the command is stuck, and
 # the host may be half out. Posted once per stage. 'verifying' is a resolve
-# still in the return check, which times itself out on the actuator.
+# still in the return check, which the actuator reports every run and times
+# out itself, so only reports that stop count.
 ACTUATOR_CONFIRM_TIMEOUT = timedelta(minutes=10)
 
 
@@ -1140,7 +1152,9 @@ def _actuator_stuck(
         return False
     if stage == "quarantining" and actuator not in ("out", "drained"):
         since = episode.details.get("commanded_at")
-    elif stage == "resolving" and actuator != "verifying":
+    elif stage == "resolving" and actuator == "verifying":
+        since = episode.details.get("actuator_state_at")
+    elif stage == "resolving":
         since = episode.details.get("resolving_at") or episode.details.get(
             "resolve_requested_at"
         )
@@ -1446,7 +1460,6 @@ def plan_quarantine(
                 "reason": episode.details.get("reason"),
             }
         elif stage == "resolve_requested" and host in (faults or {}):
-            note = f"still reports {(faults or {})[host]}"
             changes.append(
                 replace(
                     _stage_change(
@@ -1454,7 +1467,8 @@ def plan_quarantine(
                         {
                             "stage": "quarantined",
                             "verify_failed_at": now.isoformat(),
-                            "verify_note": note,
+                            "verify_note": (faults or {})[host],
+                            "verify_check": "reading",
                             "actuator_stuck": None,
                         },
                     ),
@@ -1482,6 +1496,7 @@ def plan_quarantine(
                     "verify_note": observed.get("note")
                     if isinstance(observed, dict)
                     else None,
+                    "verify_check": "return_check",
                     # The next resolve gets its own confirm timer.
                     "actuator_stuck": None,
                 },
@@ -1575,17 +1590,40 @@ def plan_infra_scan(
         states=states,
         open_episodes=open_episodes,
     )
-    # The newest fresh reading per host, for a resolve waiting on one.
-    readings: dict[str, datetime] = {}
-    for hostname, reported_at in [
-        *((r.hostname, r.reported_at) for r in gpu_faults or []),
-        *((r.hostname, r.reported_at) for r in host_faults or []),
-    ]:
-        if now - reported_at <= READING_MAX_AGE:
-            readings[hostname] = max(readings.get(hostname, reported_at), reported_at)
+    # When a host was last read in full, for a resolve waiting on a clean
+    # reading: a fresh GPU row and a fresh host reading whose GPU query
+    # answered. A reading that says nothing proves nothing.
+    gpu_read: dict[str, datetime] = {}
+    for gpu in gpu_faults or []:
+        if now - gpu.reported_at <= READING_MAX_AGE:
+            gpu_read[gpu.hostname] = max(
+                gpu_read.get(gpu.hostname, gpu.reported_at), gpu.reported_at
+            )
+    readings = {
+        reading.hostname: min(reading.reported_at, gpu_read[reading.hostname])
+        for reading in host_faults or []
+        if reading.gpu_query_hung is False
+        and now - reading.reported_at <= READING_MAX_AGE
+        and reading.hostname in gpu_read
+    }
+    # A fault sends a waiting resolve back only when read after the request;
+    # one read before it is what the resolve says was fixed.
     faults: dict[str, str] = {}
     for rule_decision in rule_decisions:
-        faults.setdefault(rule_decision.host, rule_decision.reason)
+        host = rule_decision.host
+        episode = open_episodes.get((InfraAlertType.QUARANTINE.value, host))
+        seen = rule_decision.evidence.get("reading_at") or rule_decision.evidence.get(
+            "at"
+        )
+        if (
+            episode is not None
+            and episode.details.get("stage") == "resolve_requested"
+            and not _read_since_resolve(
+                episode, datetime.fromisoformat(str(seen)) if seen else None
+            )
+        ):
+            continue
+        faults.setdefault(host, rule_decision.reason)
     plans: list[InfraScanPlan] = [
         InfraScanPlan(states=tuple(rule_states)),
         plan_quarantine(
@@ -1729,6 +1767,12 @@ def _render_quarantine(episode: InfraAlertEpisode) -> str:
             f"running jobs finish: {reason}"
             + (f"\n{PAGE_NOTE}" if paged else "")
             + _repeat_note(episode)
+        )
+    if stage == "quarantined" and episode.details.get("verify_check") == "reading":
+        fault = _escape(episode.details.get("verify_note"))
+        return (
+            f":x: *Quarantine* — {host} still reports a fault after its resolve "
+            f"and stays quarantined: {fault}\n{QUARANTINE_RUNBOOK}"
         )
     if stage == "quarantined" and episode.details.get("verify_failed_at"):
         failure = _escape(episode.details.get("verify_note"))

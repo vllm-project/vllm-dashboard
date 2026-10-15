@@ -87,12 +87,22 @@ subjects:
     namespace: gpu-operator
 ---
 # The return check: a one-off pod per resolved node, read for its phase and
-# log, then deleted.
+# log, then deleted. It runs in its own namespace, so the actuator can't
+# create a pod under a service account worth more than the empty default
+# one there. The pod needs SYS_ADMIN for dcgmi, so the namespace allows
+# privileged pods; the admission policy below allows only the check's shape.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vllm-quarantine-verify
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: quarantine-actuator-verify
-  namespace: gpu-operator
+  namespace: vllm-quarantine-verify
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -105,7 +115,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: quarantine-actuator-verify
-  namespace: gpu-operator
+  namespace: vllm-quarantine-verify
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -114,3 +124,48 @@ subjects:
   - kind: ServiceAccount
     name: quarantine-actuator
     namespace: gpu-operator
+---
+# Every pod in the namespace must be the return check: NVIDIA's DCGM image,
+# one container, SYS_ADMIN as its only added capability, not privileged, no
+# volumes, no host namespaces and no service account token.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: vllm-quarantine-verify
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  validations:
+    - expression: >-
+        size(object.spec.containers) == 1 &&
+        !has(object.spec.initContainers) &&
+        !has(object.spec.ephemeralContainers) &&
+        object.spec.containers[0].image.startsWith('nvcr.io/nvidia/cloud-native/dcgm:') &&
+        !has(object.spec.volumes) &&
+        !has(object.spec.containers[0].volumeMounts) &&
+        !has(object.spec.hostNetwork) && !has(object.spec.hostPID) && !has(object.spec.hostIPC) &&
+        has(object.spec.automountServiceAccountToken) && !object.spec.automountServiceAccountToken &&
+        (!has(object.spec.containers[0].securityContext) ||
+          ((!has(object.spec.containers[0].securityContext.privileged) ||
+            object.spec.containers[0].securityContext.privileged == false) &&
+           (!has(object.spec.containers[0].securityContext.capabilities) ||
+            !has(object.spec.containers[0].securityContext.capabilities.add) ||
+            object.spec.containers[0].securityContext.capabilities.add.all(c, c == 'SYS_ADMIN'))))
+      message: Only the quarantine return check runs in vllm-quarantine-verify.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: vllm-quarantine-verify
+spec:
+  policyName: vllm-quarantine-verify
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: vllm-quarantine-verify

@@ -6,11 +6,13 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from alerting.infra import (
+    GpuFaultObservation,
     HostFaultObservation,
     InfraAlertEpisode,
     InfraScanPlan,
     InfraSubjectState,
     QuarantineDecision,
+    XidEvent,
     infra_notifications,
     plan_infra_scan,
     plan_quarantine,
@@ -697,16 +699,28 @@ def test_a_held_host_that_goes_ahead_is_recorded() -> None:
     }
 
 
-def waiting(read_age: timedelta, *, requested_age: timedelta) -> str:
-    """The stage after one scan of a resolve waiting on a host reading."""
+def waiting(
+    read_age: timedelta,
+    *,
+    requested_age: timedelta,
+    gpu_age: timedelta | None = None,
+    hung: bool | None = False,
+) -> str:
+    """The stage after one scan of a resolve waiting on a host reading.
+
+    The GPU row is as old as the host reading unless `gpu_age` says otherwise.
+    """
     resolve = episode("host-1", "resolve_requested")
     resolve.details["resolve_requested_at"] = (NOW - requested_age).isoformat()
     reading = HostFaultObservation(
         hostname="host-1",
-        gpu_query_hung=False,
+        gpu_query_hung=hung,
         network_probes=[],
         root_owned_slots=[],
         reported_at=NOW - read_age,
+    )
+    gpu = GpuFaultObservation(
+        "host-1", 0, "None", False, NOW - (read_age if gpu_age is None else gpu_age)
     )
     result = plan_infra_scan(
         now=NOW,
@@ -722,6 +736,7 @@ def waiting(read_age: timedelta, *, requested_age: timedelta) -> str:
         quarantine_live=True,
         pools={"host-1": ("h200", "pool-a")},
         host_faults=[reading],
+        gpu_faults=[gpu],
     )
     changes = result.stage_changes
     return str(changes[0].episode.details["stage"]) if changes else "unchanged"
@@ -733,6 +748,41 @@ def test_a_host_reading_newer_than_the_resolve_releases_it() -> None:
     # Older than READING_MAX_AGE, or not newer than the request: still waits.
     assert waiting(timedelta(seconds=61), requested_age=minute * 2) == "unchanged"
     assert waiting(minute, requested_age=minute) == "unchanged"
+    # Both halves count, by the older of the two.
+    assert waiting(minute, requested_age=minute * 2, gpu_age=minute * 2) == "unchanged"
+    assert waiting(minute, requested_age=minute * 2, gpu_age=minute * 3) == "unchanged"
+    assert waiting(minute * 2, requested_age=minute * 2, gpu_age=minute) == "unchanged"
+    # A GPU query that didn't answer, or hung, doesn't release it.
+    assert waiting(minute, requested_age=minute * 2, hung=None) == "unchanged"
+
+
+def test_a_new_xid_after_the_request_sends_a_resolve_back() -> None:
+    # The GPU fault was read before the request, so the resolve covers it;
+    # the Xid came after, so it doesn't.
+    resolve = episode("host-1", "resolve_requested")
+    requested = NOW - timedelta(seconds=30)
+    resolve.details["resolve_requested_at"] = requested.isoformat()
+    result = plan_infra_scan(
+        now=NOW,
+        thresholds={},
+        expected_hosts=frozenset(),
+        latest_reports={},
+        disk_mounts=[],
+        gpu_temperatures=[],
+        gpu_dead_memory=[],
+        gpu_counts=[],
+        states={},
+        open_episodes={("quarantine", "host-1"): resolve},
+        quarantine_live=True,
+        pools={"host-1": ("h200", "pool-a")},
+        gpu_faults=[GpuFaultObservation("host-1", 0, "Reset", False, requested)],
+        xid_events=[
+            XidEvent("host-1", "0000:01:00.0", 79, NOW - timedelta(seconds=10))
+        ],
+    )
+    [change] = result.stage_changes
+    assert change.episode.details["stage"] == "quarantined"
+    assert change.episode.details["verify_note"] == "Xid 79 on GPU 0000:01:00.0"
 
 
 def test_a_resolve_waiting_on_a_reading_still_holds_a_cap_slot() -> None:

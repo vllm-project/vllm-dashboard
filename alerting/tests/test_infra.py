@@ -1259,13 +1259,22 @@ def test_a_failed_return_check_sends_a_resolve_back_to_quarantined() -> None:
             f":resolving:actuator_stuck:{clock.now().isoformat()}"
         )
 
-    # A check running past the confirm timeout is not a stuck actuator.
+    # A check that keeps reporting past the confirm timeout is not stuck; one
+    # whose reports stop is.
     resolve()
-    store.update_details("quarantine", "gpu-node-7", actuator_state="verifying")
     for _ in range(4):
+        store.update_details(
+            "quarantine",
+            "gpu-node-7",
+            actuator_state="verifying",
+            actuator_state_at=clock.now().isoformat(),
+        )
         scan_and_post(runtime, clock)
     assert store.open_episodes()[0].details["stage"] == "resolving"
     assert len(slack.deliveries) == 2
+    scan_and_post(runtime, clock)  # 10 min since the last 'verifying'
+    assert len(slack.deliveries) == 3
+    assert "has not confirmed returning" in slack.deliveries[-1].payload["text"]
 
     assert fail_check() == (
         ":x: *Quarantine* — `gpu-node-7` failed its return check and stays "
@@ -1274,9 +1283,10 @@ def test_a_failed_return_check_sends_a_resolve_back_to_quarantined() -> None:
     )
     [episode] = store.open_episodes()
     assert episode.details["verify_note"] == "| Memory | Fail - GPU 3 |"
+    assert episode.details["verify_check"] == "return_check"
     assert episode.details["verify_failed_at"] == clock.now().isoformat()
     scan_and_post(runtime, clock)
-    assert len(slack.deliveries) == 3
+    assert len(slack.deliveries) == 4
 
     # Each later resolve gets its own confirm timer and failure post.
     resolve()
@@ -1309,7 +1319,9 @@ def test_a_resolve_waits_for_a_clean_reading_before_the_host_returns() -> None:
             resolve_requested_at=clock.now().isoformat(),
         )
 
-    def scan_with(recovery_action: str | None) -> dict[str, Any]:
+    def scan_with(
+        recovery_action: str | None, hung: bool | None = False
+    ) -> dict[str, Any]:
         clock.advance(minutes=5)
         snapshots.faults = (
             []
@@ -1320,6 +1332,9 @@ def test_a_resolve_waits_for_a_clean_reading_before_the_host_returns() -> None:
                 )
             ]
         )
+        snapshots.host_fault_rows = [
+            HostFaultObservation("gpu-node-7", hung, None, None, clock.now())
+        ]
         scan(runtime, clock.now())
         runtime.dispatch_due_notifications()
         return store.open_episodes()[0].details
@@ -1329,30 +1344,49 @@ def test_a_resolve_waits_for_a_clean_reading_before_the_host_returns() -> None:
     assert scan_with(None)["stage"] == "resolve_requested"
     assert len(slack.deliveries) == 2
 
+    # A reading whose GPU query didn't answer proves nothing: it waits.
+    request_resolve()
+    assert scan_with("None", hung=None)["stage"] == "resolve_requested"
+
     # The fault is still there: back to quarantined, and the post says why.
     details = scan_with("Reset")
     assert details["stage"] == "quarantined"
-    assert details["verify_note"] == (
-        "still reports the driver asks for recovery (Reset) on GPU 3"
-    )
+    assert details["verify_note"] == "the driver asks for recovery (Reset) on GPU 3"
+    assert details["verify_check"] == "reading"
     assert slack.deliveries[-1].payload["text"].startswith(
-        ":x: *Quarantine* — `gpu-node-7` failed its return check and stays "
-        "quarantined: still reports the driver asks for recovery (Reset)"
+        ":x: *Quarantine* — `gpu-node-7` still reports a fault after its resolve "
+        "and stays quarantined: the driver asks for recovery (Reset)"
     )
     assert slack.deliveries[-1].delivery_id.endswith(
         f":quarantined:verify_failed:{clock.now().isoformat()}"
     )
     assert len(slack.deliveries) == 3
 
+    # One hung GPU query after the resolve is enough; no two-scan streak.
+    request_resolve()
+    details = scan_with("None", hung=True)
+    assert details["stage"] == "quarantined"
+    assert details["verify_note"] == "the GPU query hung after its resolve"
+    assert len(slack.deliveries) == 4
+
+    # A fault read before the request is what the resolve fixed: it waits.
+    snapshots.faults = [
+        GpuFaultObservation("gpu-node-7", 3, "Reset", False, clock.now())
+    ]
+    request_resolve()
+    clock.advance(seconds=30)
+    scan(runtime, clock.now())
+    assert store.open_episodes()[0].details["stage"] == "resolve_requested"
+
     # A clean fresh reading hands it to the actuator.
     request_resolve()
     details = scan_with("None")
     assert details["stage"] == "resolving"
     assert details["resolving_at"] == clock.now().isoformat()
-    assert len(slack.deliveries) == 3
+    assert len(slack.deliveries) == 4
     # The actuator's confirm timer runs from the hand-over, not the request.
     scan_with(None)
-    assert len(slack.deliveries) == 3
+    assert len(slack.deliveries) == 4
     scan_with(None)
     assert "has not confirmed returning" in slack.deliveries[-1].payload["text"]
 

@@ -21,7 +21,8 @@ class FakeKube:
     def __init__(self, nodes, pods=None, checks=None):
         self.nodes = nodes  # name -> {"unschedulable": bool, "taints": [...]}
         self.pods = pods or {}  # name -> [phase, ...] in namespace buildkite
-        # Return-check pods in gpu-operator: pod name -> {phase, age, logs}.
+        # Return-check pods: pod name -> {phase, age, logs, reason, message};
+        # no logs means the pod never ran and kubectl logs fails.
         self.checks = checks or {}
         self.created = []  # return-check pod specs, as created
         self.writes = []
@@ -34,12 +35,14 @@ class FakeKube:
                              "annotations": dict(s.get("annotations", {}))},
                 "spec": {"unschedulable": s["unschedulable"],
                          "taints": list(s["taints"])},
-                "status": {"capacity": {"nvidia.com/gpu": "8"}}}
+                "status": {"capacity": {"nvidia.com/gpu": "8"},
+                           "allocatable": {
+                               "nvidia.com/gpu": s.get("allocatable", "8")}}}
 
     def check_call(self, args, input):
         """The return-check pod calls; None when args are not one."""
         if args[:2] == ("get", "pod"):
-            assert args[3:] == ("-n", "gpu-operator", "-o", "json")
+            assert args[3:] == ("-n", "vllm-quarantine-verify", "-o", "json")
             check = self.checks.get(args[2])
             if check is None:
                 raise RuntimeError(
@@ -50,9 +53,12 @@ class FakeKube:
             return json.dumps({
                 "metadata": {"creationTimestamp":
                              created.strftime("%Y-%m-%dT%H:%M:%SZ")},
-                "status": {"phase": check["phase"]}})
+                "status": {k: check[k] for k in ("phase", "reason", "message")
+                           if k in check}})
         if args[0] == "logs":
-            assert args[2:] == ("-n", "gpu-operator", "--tail=20")
+            assert args[2:] == ("-n", "vllm-quarantine-verify", "--tail=20")
+            if "logs" not in self.checks[args[1]]:
+                raise RuntimeError("kubectl logs failed: container not started")
             return self.checks[args[1]]["logs"]
         if args[0] == "create":
             self.writes.append(args)
@@ -188,7 +194,7 @@ def test_drained_once_no_ci_pod_runs_or_waits(run):
 
 CHECK = "vllm-quarantine-verify-n1"
 PASSED = {CHECK: {"phase": "Succeeded"}}
-DELETE_CHECK = ("delete", "pod", CHECK, "-n", "gpu-operator")
+DELETE_CHECK = ("delete", "pod", CHECK, "-n", "vllm-quarantine-verify")
 
 
 def test_resolve_with_our_taint_returns_node(run):
@@ -385,10 +391,11 @@ def test_resolve_runs_the_return_check_before_returning(run):
                                   "observed": {"phase": "Created"}})]
     assert kube.created == [{
         "apiVersion": "v1", "kind": "Pod",
-        "metadata": {"name": CHECK, "namespace": "gpu-operator",
+        "metadata": {"name": CHECK, "namespace": "vllm-quarantine-verify",
                      "labels": {"app": "vllm-quarantine-verify"}},
         "spec": {
             "nodeName": "n1", "restartPolicy": "Never",
+            "automountServiceAccountToken": False,
             "runtimeClassName": "nvidia",
             "tolerations": [{"operator": "Exists"}],
             "containers": [{
@@ -454,6 +461,41 @@ def test_a_failure_note_is_never_empty_or_long(run, logs, note):
     dash = FakeDashboard([want("n1", "resolving")])
     assert run(kube, dash) == 0
     assert dash.posts[0][1]["observed"] == {"note": note}
+
+
+def test_a_check_pod_the_kubelet_rejected_fails_with_its_reason(run):
+    kube = FakeKube({"n1": node(True, True)}, checks={CHECK: {
+        "phase": "Failed", "reason": "OutOfnvidia.com/gpu",
+        "message": "Node didn't have enough resource"}})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert kube.writes == [DELETE_CHECK + ("--wait=false",)]
+    assert dash.posts[0][1]["observed"] == {
+        "note": "OutOfnvidia.com/gpu Node didn't have enough resource"}
+
+    kube = FakeKube({"n1": node(True, True)}, checks={CHECK: {"phase": "Failed"}})
+    assert run(kube, dash) == 0
+    assert dash.posts[-1][1]["observed"] == {"note": "no output"}
+
+
+def test_the_check_waits_for_ci_pods_to_finish(run):
+    kube = FakeKube({"n1": node(True, True)}, pods={"n1": ["Running", "Failed"]})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert kube.created == [] and kube.writes == []
+    assert dash.posts == [("n1", {"alertId": 7, "state": "verifying", "observed": {
+        "phase": "WaitingForCIPods", "ciPods": 1}})]
+
+
+def test_a_gpu_the_device_plugin_dropped_fails_the_check(run, capsys):
+    kube = FakeKube({"n1": dict(node(True, True), allocatable="7")})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert kube.created == [] and kube.writes == []
+    assert dash.posts == [("n1", {"alertId": 7, "state": "verify_failed",
+                                  "observed": {"note": "only 7 of 8 GPUs are usable"}})]
+    assert ("  n1: return check failed: only 7 of 8 GPUs are usable\n"
+            in capsys.readouterr().out)
 
 
 def test_a_return_check_that_never_finishes_fails(run):

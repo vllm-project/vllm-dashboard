@@ -110,7 +110,9 @@ export const MAX_MATCH = 200;
  * episode stays open: the worker waits for a fresh reading taken after the
  * request and sends it back to quarantined if a trigger still fires, else
  * moves it to 'resolving'. `force` skips that wait and goes straight to
- * 'resolving'. The actuator then runs its return check, undoes its cordon and
+ * 'resolving', as does a held episode: its host never went out, and its
+ * trigger is usually still firing, so the wait would take it out past the
+ * limit that held it. The actuator then runs its return check, undoes its cordon and
  * taint or lock file, and the worker marks it resolved once the host is back. It
  * clears the last actuator report and return-check failure, so a check that
  * failed before doesn't send this resolve straight back to quarantined. A dry-run ('would') episode has
@@ -124,17 +126,20 @@ export async function resolveQuarantine(
   reason: string,
   force = false,
 ): Promise<ActionResult> {
-  const nextStage = force ? "resolving" : "resolve_requested";
   const resolved = await db<{ alert_id: string }[]>`
     UPDATE alerting_infra_alerts
     SET details = details || jsonb_build_object(
-          'stage', ${nextStage}::text,
+          'stage', CASE
+            WHEN ${force}::boolean OR details->>'stage' = 'held' THEN 'resolving'
+            ELSE 'resolve_requested'
+          END,
           'resolve_forced', ${force}::boolean,
           'resolved_by', ${by}::text,
           'resolve_reason', ${reason}::text,
           'resolve_requested_at', now(),
           'actuator_state', NULL::text,
-          'verify_note', NULL::text
+          'verify_note', NULL::text,
+          'verify_check', NULL::text
         ),
         updated_at = now()
     WHERE alert_type = 'quarantine'

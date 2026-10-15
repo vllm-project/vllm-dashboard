@@ -28,13 +28,20 @@ function recordingDb(...answers: Record<string, unknown>[][]) {
   return { db, values };
 }
 
-test("resolving waits for a clean reading unless forced", async () => {
+test("resolving waits for a clean reading unless forced or held", async () => {
   const waits = recordingDb([{ alert_id: "7" }]);
   await resolveQuarantine(waits.db, "h200-1", "oncall", "rebooted");
-  assert.deepEqual(waits.values[0].slice(0, 2), ["resolve_requested", false]);
+  assert.deepEqual(waits.values[0].slice(0, 2), [false, false]);
   const forced = recordingDb([{ alert_id: "7" }]);
   await resolveQuarantine(forced.db, "h200-1", "oncall", "rebooted", true);
-  assert.deepEqual(forced.values[0].slice(0, 2), ["resolving", true]);
+  assert.deepEqual(forced.values[0].slice(0, 2), [true, true]);
+  // A held host never went out; waiting on a reading would take it out.
+  const { db, queries } = fakeDb([{ alert_id: "7" }]);
+  await resolveQuarantine(db, "h200-1", "oncall", "rebooted");
+  assert.match(
+    queries[0],
+    /'stage', CASE WHEN \?::boolean OR details->>'stage' = 'held' THEN 'resolving' ELSE 'resolve_requested' END,/,
+  );
 });
 
 test("resolving moves an open, applied or held quarantine on", async () => {
@@ -42,7 +49,6 @@ test("resolving moves an open, applied or held quarantine on", async () => {
   const result = await resolveQuarantine(db, "h200-1", "oncall", "rebooted");
   assert.deepEqual(result, { status: 200, body: { ok: true, alertId: 7 } });
   assert.equal(queries.length, 1);
-  assert.match(queries[0], /'stage', \?::text/);
   assert.match(queries[0], /'resolve_forced', \?::boolean/);
   assert.match(queries[0], /alert_type = 'quarantine'/);
   assert.match(queries[0], /status = 'open'/);
@@ -50,6 +56,7 @@ test("resolving moves an open, applied or held quarantine on", async () => {
   // A return check that failed before must not bounce this resolve.
   assert.match(queries[0], /'actuator_state', NULL::text/);
   assert.match(queries[0], /'verify_note', NULL::text/);
+  assert.match(queries[0], /'verify_check', NULL::text/);
 });
 
 test("the desired set carries each host's last actuator report", async () => {

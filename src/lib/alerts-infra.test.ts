@@ -307,6 +307,17 @@ test("quarantine episodes read their stage, reason, resolver and actuator note",
       "Return check failed, so it stays out: | Memory | Fail - GPU 3 |.",
   );
   assert.equal(
+    quarantine({
+      stage: "quarantined",
+      reason: "Xid 79",
+      verify_note: "the GPU query hung after its resolve",
+      verify_check: "reading",
+    }),
+    "Quarantined: Xid 79. " +
+      "Still reports a fault after its resolve, so it stays out: " +
+      "the GPU query hung after its resolve.",
+  );
+  assert.equal(
     quarantine({ stage: "resolved", resolution: "decision_cleared" }, "resolved"),
     "Dry run closed: the trigger stopped firing.",
   );

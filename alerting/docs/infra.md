@@ -124,21 +124,29 @@ quarantining ──drained──▶ quarantined ──resolve──▶ resolve_r
   `verify_failed`, `returned`. The worker moves the stage on those reports.
 - **Resolve** (`POST /api/alerts/quarantine/<host>/resolve {by, reason,
   force?}`, operator token, or the Resolve button) moves the episode to
-  `resolve_requested`. The host stays out until a fresh reading taken after
-  the request: if a reading-based trigger still fires it goes back to
-  `quarantined` and the post says why; otherwise it moves to `resolving`.
-  Job-failure decisions don't block it, since an idle host can't clear
-  them. `force: true` (the "Skip the clean-reading check" box) goes straight
-  to `resolving`. Xids up to the request are covered by the resolve.
-- **Return check** (Kubernetes actuator, `resolving`): a one-off pod on the
-  node holding all its GPUs checks nvidia-smi and runs `dcgmi diag -r 2`.
-  A failure, or no finish in 30 min, reports `verify_failed` and the episode
-  goes back to `quarantined`. `QUARANTINE_VERIFY_LEVEL=0` skips it. The H200
-  bare-metal actuator is not built yet; it needs the same check on the host.
+  `resolve_requested`. The host stays out until a full reading taken after
+  the request: a GPU row plus a host reading whose GPU query answered. If a
+  reading-based trigger fires on a reading after the request (one failing
+  reading is enough, no two-scan streak), it goes back to `quarantined` and
+  the post says what it still reports; otherwise it moves to `resolving`.
+  Faults read before the request, and Xids up to it, are what the resolve
+  covers. Job-failure decisions don't block it, since an idle host can't
+  clear them. `force: true` (the "Skip the clean-reading check" box) goes
+  straight to `resolving`, and so does a `held` episode: its host never went
+  out, and waiting would take it out past the limit that held it.
+- **Return check** (Kubernetes actuator, `resolving`): once no CI pod is
+  left on the node, a one-off pod there holding all its GPUs checks
+  nvidia-smi and runs `dcgmi diag -r 2`. It runs in the
+  `vllm-quarantine-verify` namespace, where an admission policy allows only
+  that pod's shape. A GPU the device plugin dropped, a failure, or no finish
+  in 30 min reports `verify_failed` and the episode goes back to
+  `quarantined`. `QUARANTINE_VERIFY_LEVEL=0` skips it. The H200 bare-metal
+  actuator is not built yet; it needs the same check on the host.
 - A host quarantined again within 7 days of a resolve still goes out, and
   its post says the fix may not have held and pages a person.
-- An actuator that hasn't confirmed 10 minutes after a command, or a
-  resolve with no fresh reading for 10 minutes, posts once per stage.
+- An actuator that hasn't confirmed 10 minutes after a command, a return
+  check that stopped reporting for 10 minutes, or a resolve with no fresh
+  reading for 10 minutes, posts once per stage.
 
 Posts never say how to resolve. Delivery ids add the scan time for the
 posts that can repeat in one episode (a failed return, a stuck actuator).

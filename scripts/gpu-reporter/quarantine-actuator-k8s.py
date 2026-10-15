@@ -81,9 +81,11 @@ GPU_RESOURCE = "nvidia.com/gpu"
 VERIFY_LEVEL = os.environ.get("QUARANTINE_VERIFY_LEVEL", "2")
 VERIFY_IMAGE = os.environ.get(
     "QUARANTINE_VERIFY_IMAGE", "nvcr.io/nvidia/cloud-native/dcgm:4.4.2-1-ubuntu22.04")
-VERIFY_NS = "gpu-operator"
-# Measured from the pod's creation, so it covers the image pull and the wait
-# for the GPUs of a node still finishing its CI jobs.
+# Its own namespace, so the actuator can create pods nowhere that holds
+# another service account worth taking (quarantine-actuator-k8s-rbac.yaml).
+VERIFY_NS = "vllm-quarantine-verify"
+# Measured from the pod's creation, so it covers the image pull and the
+# check itself.
 VERIFY_TIMEOUT = datetime.timedelta(minutes=30)
 # $1 is the diag level. A recovery action or row-remap value of [N/A] is
 # unsupported on the GPU, not a fault.
@@ -157,7 +159,7 @@ def verify_pod_name(node_name):
 def verify_pod(node):
     """The return-check pod: pinned to the node, holding all its GPUs."""
     name = node["metadata"]["name"]
-    gpus = node["status"]["capacity"][GPU_RESOURCE]
+    gpus = node["status"]["allocatable"][GPU_RESOURCE]
     return {
         "apiVersion": "v1", "kind": "Pod",
         "metadata": {"name": verify_pod_name(name), "namespace": VERIFY_NS,
@@ -166,6 +168,7 @@ def verify_pod(node):
             # nodeName skips the scheduler, so our cordon and taint don't
             # keep it off; the toleration covers the kubelet's own checks.
             "nodeName": name, "restartPolicy": "Never",
+            "automountServiceAccountToken": False,
             "runtimeClassName": "nvidia",
             "tolerations": [{"operator": "Exists"}],
             "containers": [{
@@ -261,6 +264,21 @@ class Actuator:
         except RuntimeError as e:
             if "NotFound" not in str(e):
                 raise
+            # nodeName skips the scheduler, so the kubelet fails the pod at
+            # once if a GPU is still held or unhealthy: wait out the CI pods,
+            # and treat a GPU the device plugin dropped as a failed check.
+            pods = ci_pod_count(name)
+            if pods:
+                self.post(name, want["alertId"], "verifying",
+                          {"phase": "WaitingForCIPods", "ciPods": pods})
+                return False
+            usable = node["status"]["allocatable"][GPU_RESOURCE]
+            total = node["status"]["capacity"][GPU_RESOURCE]
+            if usable != total:
+                note = f"only {usable} of {total} GPUs are usable"
+                print(f"  {name}: return check failed: {note}")
+                self.post(name, want["alertId"], "verify_failed", {"note": note})
+                return False
             self.write("create", "-f", "-", input=json.dumps(verify_pod(node)))
             self.post(name, want["alertId"], "verifying", {"phase": "Created"})
             return False
@@ -277,8 +295,15 @@ class Actuator:
             self.post(name, want["alertId"], "verifying", {"phase": phase})
             return False
         if phase == "Failed":
-            lines = kubectl("logs", pod_name, "-n", VERIFY_NS,
-                            "--tail=20").strip().splitlines()
+            # A pod the kubelet rejected never ran, so it has no log; its
+            # status says why.
+            try:
+                lines = kubectl("logs", pod_name, "-n", VERIFY_NS,
+                                "--tail=20").strip().splitlines()
+            except RuntimeError:
+                status = pod.get("status", {})
+                lines = [" ".join(filter(None, (status.get("reason"),
+                                                status.get("message"))))]
             note = " / ".join(lines[-3:])[:300] or "no output"
         else:
             minutes = VERIFY_TIMEOUT // datetime.timedelta(minutes=1)
