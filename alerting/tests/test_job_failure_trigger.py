@@ -123,7 +123,16 @@ def test_finished_jobs_maps_hosts_and_drops_agentless_jobs() -> None:
                     "b200-k8s",
                     {"hostname": "K8S-Node-2", "meta_data": ["k8s:node=k8s-node-2"]},
                 ),
+                # Buildkite may give a bare-metal host as an FQDN; the
+                # reporter and the pools use the short name. A node name
+                # from meta_data is kept whole.
+                bk_job("h200_18gb", {"hostname": "GPU-Host-D.example.internal"}),
+                bk_job(
+                    "b200-k8s",
+                    {"hostname": "pod", "meta_data": ["k8s:node=node-3.cluster"]},
+                ),
                 bk_job("b200-k8s", None),  # stack_error: no agent, no host
+                bk_job("h200_18gb", {"meta_data": []}),  # an agent with no name
                 bk_job("cpu_queue_premerge", {"hostname": "ip-10-0-0-1"}),
             ],
         }
@@ -133,6 +142,8 @@ def test_finished_jobs_maps_hosts_and_drops_agentless_jobs() -> None:
         ("gpu-host-c", "h200", "h200_35gb"),
         ("k8s-node-1", "h100", "mithril-h100-pool"),
         ("k8s-node-2", "b200", "b200-k8s"),
+        ("gpu-host-d", "h200", "h200_18gb"),
+        ("node-3.cluster", "b200", "b200-k8s"),
     ]
 
 

@@ -126,8 +126,10 @@ def finished_jobs(builds: list[dict[str, Any]]) -> list[FinishedJob]:
                 ),
                 None,
             )
-            # k8s pools name the node only in meta_data; bare metal in hostname.
-            host = str(node or agent.get("hostname") or "").lower()
+            # k8s pools name the node only in meta_data; bare metal in
+            # hostname, which Buildkite may give as an FQDN where the reporter
+            # and pilot_pools use the short name.
+            host = (node or str(agent.get("hostname") or "").split(".")[0]).lower()
             if not host:
                 continue
             jobs.append(
