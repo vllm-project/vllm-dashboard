@@ -218,6 +218,9 @@ class QuarantineDecision:
     reason: str
     evidence: dict[str, Any] = field(default_factory=dict)
     hardware: bool = False
+    # A trigger still in its own dry run (the job-failure trigger): it only
+    # ever opens a 'would' episode, even when quarantine is live.
+    dry_run: bool = False
 
 
 @dataclass(frozen=True)
@@ -1160,7 +1163,7 @@ def plan_quarantine(
     """Advance the quarantine sequence by one scan.
 
     A decision for a host with no open quarantine opens one: 'would' in dry
-    run, 'quarantining' when live. The actuators report through the dashboard
+    run or for a dry-run trigger, 'quarantining' when live. The actuators report through the dashboard
     into details['actuator_state']; 'drained' moves quarantining to
     quarantined and 'returned' moves resolving (set by the operator resolve
     endpoint) to resolved. A dry-run episode closes silently once its decision
@@ -1195,6 +1198,7 @@ def plan_quarantine(
         )
         stage = episode.details.get("stage") if episode is not None else None
         actuator = episode.details.get("actuator_state") if episode else None
+        acts = live and decision is not None and not decision.dry_run
         if episode is None:
             # Safety limits (§4.3) belong here: a live command they block
             # opens as 'held' instead and is applied when a slot frees.
@@ -1205,12 +1209,12 @@ def plan_quarantine(
                     opened_at=now,
                     details={
                         "hostname": host,
-                        "stage": "quarantining" if live else "would",
+                        "stage": "quarantining" if acts else "would",
                         **command,
                     },
                 )
             )
-        elif stage == "would" and decision is not None and live:
+        elif stage == "would" and acts:
             # Dry run was switched off while the decision still holds.
             changes.append(
                 _stage_change(episode, {"stage": "quarantining", **command})
@@ -1672,7 +1676,10 @@ class InfraScanHandler:
         """The job-failure trigger's decisions, refreshed every
         JOB_FAILURE_REFRESH and cached in subject state between scans (each
         scan is its own process). A failed fetch yields no decisions and
-        retries next scan; it never fails the scan."""
+        retries next scan; it never fails the scan.
+
+        Every one is dry run: the trigger goes live only after its own review
+        (design §6), not when quarantine does."""
         if self._job_failure_decisions is None:
             return [], ()
         key = (InfraAlertType.QUARANTINE.value, JOB_FAILURE_CACHE_KEY)
@@ -1683,10 +1690,14 @@ class InfraScanHandler:
             and now - cached.last_reported_at < JOB_FAILURE_REFRESH
         ):
             return [
-                QuarantineDecision(**item) for item in cached.details["decisions"]
+                QuarantineDecision(**{**item, "dry_run": True})
+                for item in cached.details["decisions"]
             ], ()
         try:
-            decisions = list(self._job_failure_decisions(now))
+            decisions = [
+                replace(decision, dry_run=True)
+                for decision in self._job_failure_decisions(now)
+            ]
         except Exception as exc:
             print(
                 f"job-failure trigger skipped: {type(exc).__name__}: {exc}",

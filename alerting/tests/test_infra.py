@@ -1191,7 +1191,7 @@ def test_actuator_not_confirming_posts_once_per_stage() -> None:
 
 
 def job_failure_runtime(
-    fetch: Any,
+    fetch: Any, *, live: bool = False
 ) -> tuple[AlertingRuntime, InMemoryInfraStore, RecordingSlackPort, FixedClock]:
     clock = FixedClock(START)
     executions = InMemoryAutomationExecutionStore()
@@ -1212,6 +1212,7 @@ def job_failure_runtime(
                 store=store,
                 clock=clock,
                 job_failure_decisions=fetch,
+                quarantine_live=live,
             )
         },
         alert_path=None,
@@ -1237,6 +1238,19 @@ def test_job_failure_trigger_runs_every_15_minutes_and_its_decisions_hold() -> N
     assert len(slack.deliveries) == 1
     cached = {state.subject_key for state in store.infra_state().states}
     assert "trigger:job_failure" in cached
+
+
+def test_job_failure_decisions_stay_dry_run_when_quarantine_is_live() -> None:
+    # Fetched and then cached: neither path takes a host out.
+    runtime, store, slack, clock = job_failure_runtime(
+        lambda now: [quarantine_decision()], live=True
+    )
+    for _ in range(3):
+        scan_and_post(runtime, clock)
+    [episode] = store.open_episodes()
+    assert episode.details["stage"] == "would"
+    assert len(slack.deliveries) == 1
+    assert "would quarantine" in slack.deliveries[0].payload["text"]
 
 
 def test_a_failed_job_failure_fetch_yields_nothing_and_retries_next_scan(
