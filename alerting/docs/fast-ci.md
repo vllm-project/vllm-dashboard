@@ -26,8 +26,8 @@ lifecycle: each is a one-way observation.
 
 - `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID` — the
   source warehouse query (secrets).
-- `SLACK_BOT_TOKEN` — delivery; `SLACK_CHANNEL_ID` overrides the default
-  channel (`C0ABTNM9L5U`).
+- `SLACK_BOT_TOKEN` — delivery; `SLACK_CI_ALERT_CHANNEL` overrides the shared
+  alert channel (`C0ANHBE642Y`).
 - Control plane: the S3 `control/fast_ci.mode` object, applied by
   `alerting/control.py` to `alerting-fast-ci.timer`. `shadow` (the default)
   persists rendered messages without delivering; `live` delivers;

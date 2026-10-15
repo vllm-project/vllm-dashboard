@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
-import { postMessage, updateMessage, addReaction } from "@/lib/slack";
+import {
+  postMessage,
+  updateMessage,
+  addReaction,
+  headedBlocks,
+  type SlackBlock,
+} from "@/lib/slack";
 import { effectiveWaiting } from "@/lib/queue-plugins";
 
 export const maxDuration = 55;
@@ -55,22 +61,25 @@ function getPacificTzAbbr(): string {
 function buildCombinedMessage(
   queues: Record<string, QueueAlertEntry>,
   time: string,
-): string {
+): { text: string; blocks: SlackBlock[] } {
   const entries = Object.entries(queues);
   const active = entries.filter(([, q]) => q.status === "active");
   const resolved = entries.filter(([, q]) => q.status === "resolved");
 
   let header: string;
+  let title: string;
   if (active.length === 0 && resolved.length > 0) {
     header = `:white_check_mark: *All Queue Alerts Resolved*`;
+    title = "✅ QUEUE WAIT · All queue alerts resolved";
   } else {
     const parts: string[] = [];
     if (active.length > 0) parts.push(`${active.length} active`);
     if (resolved.length > 0) parts.push(`${resolved.length} resolved`);
     header = `:rotating_light: *Queue Wait Time Alert* — ${parts.join(", ")}`;
+    title = `⏳ QUEUE WAIT · ${parts.join(", ")}`;
   }
 
-  const lines: string[] = [header, ""];
+  const lines: string[] = [];
 
   // Active queues sorted by P90 descending (worst first)
   active
@@ -96,7 +105,8 @@ function buildCombinedMessage(
 
   lines.push("", `_Updated ${time} ${getPacificTzAbbr()}_`);
 
-  return lines.join("\n");
+  const body = lines.join("\n");
+  return { text: `${header}\n\n${body}`, blocks: headedBlocks(title, body) };
 }
 
 export async function GET(request: NextRequest) {
@@ -108,15 +118,9 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  if (
-    !process.env.SLACK_BOT_TOKEN ||
-    (!process.env.SLACK_CI_INFRA_ALERT_CHANNEL && !process.env.SLACK_CHANNEL_ID)
-  ) {
+  if (!process.env.SLACK_BOT_TOKEN) {
     return NextResponse.json(
-      {
-        error:
-          "SLACK_BOT_TOKEN and SLACK_CI_INFRA_ALERT_CHANNEL (or legacy SLACK_CHANNEL_ID) not configured",
-      },
+      { error: "SLACK_BOT_TOKEN not configured" },
       { status: 500 },
     );
   }
@@ -201,10 +205,15 @@ export async function GET(request: NextRequest) {
 
     // Post or update the combined Slack message
     if (changed && Object.keys(queueStates).length > 0) {
-      const text = buildCombinedMessage(queueStates, time);
+      const { text, blocks } = buildCombinedMessage(queueStates, time);
 
       if (messageTs) {
-        await updateMessage(messageTs, text);
+        const updated = await updateMessage(messageTs, text, blocks);
+        // Today's message may sit in a channel the alerts have since moved
+        // out of; start a fresh one in the current channel.
+        if (!updated.ok) messageTs = null;
+      }
+      if (messageTs) {
         // Post a thread reply so the channel gets a notification
         const active = Object.values(queueStates).filter(
           (q) => q.status === "active",
@@ -218,7 +227,7 @@ export async function GET(request: NextRequest) {
           : `:rotating_light: ${active.length} queue${active.length !== 1 ? "s" : ""} still alerting — updated ${time} ${getPacificTzAbbr()}`;
         await postMessage(threadText, messageTs);
       } else {
-        const result = await postMessage(text);
+        const result = await postMessage(text, undefined, undefined, blocks);
         if (result.ok && result.ts) {
           messageTs = result.ts;
         }

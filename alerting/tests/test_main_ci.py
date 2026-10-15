@@ -1094,7 +1094,7 @@ def posts(outbox: InMemoryOutboxStore) -> list[tuple[str, str, str, str]]:
 def test_image_build_red_on_two_main_builds_posts_once_then_green_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SLACK_CI_FAST_FAILURE_ALERT_CHANNEL", "CFAST")
+    monkeypatch.setenv("SLACK_CI_ALERT_CHANNEL", "CFAST")
     runtime, source, outbox, _ = image_runtime_for()
 
     source.observations = [
@@ -1113,27 +1113,30 @@ def test_image_build_red_on_two_main_builds_posts_once_then_green_once(
     reconcile(runtime, START + timedelta(minutes=9))
 
     failing_body = (
-        "*:docker: Build image* red since"
-        " <https://buildkite.com/vllm/ci/builds/94919|#94919> with no pass since,"
-        " latest <https://buildkite.com/vllm/ci/builds/94920#job-94920-failed|#94920>."
-        " Jobs that use this image cannot run until it is fixed."
+        ":red_circle: :docker: <https://buildkite.com/vllm/ci/builds/94920"
+        "#job-94920-failed|Build image> — red since"
+        " <https://buildkite.com/vllm/ci/builds/94919|CI #94919>, no pass since"
+        " · latest <https://buildkite.com/vllm/ci/builds/94920|CI #94920>"
+        " · commit `commit-9`\n"
+        "Jobs that use this image cannot run until it is fixed."
     )
     green_body = (
-        "*:docker: Build image* passed again in"
-        " <https://buildkite.com/vllm/ci/builds/94949#job-94949-passed|#94949>."
+        ":white_check_mark: :docker: <https://buildkite.com/vllm/ci/builds/94949"
+        "#job-94949-passed|Build image> — passed in"
+        " <https://buildkite.com/vllm/ci/builds/94949|CI #94949> · commit `commit-9`"
     )
     assert posts(outbox) == [
         (
             "main-ci:image-build:1:failing",
             "live",
             "CFAST",
-            f":rotating_light: Image build failing on main: {failing_body}",
+            f"🐳 MAIN CI · Image build failing: {failing_body}",
         ),
         (
             "main-ci:image-build:1:green",
             "live",
             "CFAST",
-            f":white_check_mark: Image build green again on main: {green_body}",
+            f"✅ MAIN CI · Image build green again: {green_body}",
         ),
     ]
     assert [record.payload["blocks"] for record in outbox.records()] == [
@@ -1142,7 +1145,7 @@ def test_image_build_red_on_two_main_builds_posts_once_then_green_once(
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": ":rotating_light: Image build failing on main",
+                    "text": "🐳 MAIN CI · Image build failing",
                     "emoji": True,
                 },
             },
@@ -1153,7 +1156,7 @@ def test_image_build_red_on_two_main_builds_posts_once_then_green_once(
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": ":white_check_mark: Image build green again on main",
+                    "text": "✅ MAIN CI · Image build green again",
                     "emoji": True,
                 },
             },

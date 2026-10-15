@@ -137,7 +137,7 @@ def _payload_texts(connection: ScriptedConnection) -> list[str]:
 def test_commit_enqueues_the_failing_post_from_the_refreshed_episode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SLACK_CI_FAST_FAILURE_ALERT_CHANNEL", "CALERTS")
+    monkeypatch.setenv("SLACK_CI_ALERT_CHANNEL", "CALERTS")
     connection = ScriptedConnection(
         [(7, 94919, "https://buildkite.com/vllm/ci/builds/94919")]
     )
@@ -155,7 +155,7 @@ def test_commit_enqueues_the_failing_post_from_the_refreshed_episode(
         )
     ]
     assert (
-        "red since <https://buildkite.com/vllm/ci/builds/94919|#94919>"
+        "red since <https://buildkite.com/vllm/ci/builds/94919|CI #94919>"
         in (_payload_texts(connection)[0])
     )
 

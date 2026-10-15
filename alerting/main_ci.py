@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from alerting.commands import ScheduledCommand
-from alerting.fast_ci import _slack_escape, _slack_link, slack_channel
+from alerting.fast_ci import _slack_code, _slack_link, _split_job_emoji, slack_channel
 from alerting.ports import (
     AlertPath,
     Clock,
@@ -24,6 +24,7 @@ from alerting.ports import (
     NotificationIntent,
 )
 from alerting.runtime import HandlerCompletion
+from alerting.slack import header_block, section_blocks
 
 INITIAL_LOOKBACK = timedelta(days=1)
 SAFETY_OVERLAP = timedelta(minutes=30)
@@ -133,20 +134,29 @@ def image_build_notice(
         or first_failure_build_number == last_failure_build_number
     ):
         return None
-    name = _slack_escape(job_name)
-    build = _slack_link(observation.job_url, f"#{observation.build_number}")
+    # Laid out like a Fast CI job line: emoji outside the linked job name,
+    # then the builds and the commit.
+    emoji, bare_name = _split_job_emoji(job_name)
+    job = _slack_link(observation.job_url, bare_name)
+    if emoji:
+        job = f"{emoji} {job}"
+    build = _slack_link(observation.build_url, f"CI #{observation.build_number}")
+    commit = f"commit {_slack_code(observation.commit_sha[:8])}"
     if observation.failed:
         kind = "failing"
-        heading = ":rotating_light: Image build failing on main"
-        first = _slack_link(first_failure_build_url, f"#{first_failure_build_number}")
+        heading = "🐳 MAIN CI · Image build failing"
+        first = _slack_link(
+            first_failure_build_url, f"CI #{first_failure_build_number}"
+        )
         body = (
-            f"*{name}* red since {first} with no pass since, latest {build}."
-            " Jobs that use this image cannot run until it is fixed."
+            f":red_circle: {job} — red since {first}, no pass since"
+            f" · latest {build} · {commit}\n"
+            "Jobs that use this image cannot run until it is fixed."
         )
     else:
         kind = "green"
-        heading = ":white_check_mark: Image build green again on main"
-        body = f"*{name}* passed again in {build}."
+        heading = "✅ MAIN CI · Image build green again"
+        body = f":white_check_mark: {job} — passed in {build} · {commit}"
     delivery_id = f"main-ci:image-build:{alert_id}:{kind}"
     return NotificationIntent(
         delivery_id=delivery_id,
@@ -155,17 +165,11 @@ def image_build_notice(
         delivery_mode=delivery_mode,
         destination_mode=DestinationMode.BOT_TOKEN,
         destination=slack_channel(),
-        # All alert paths share one channel; the header block is what tells
-        # this post apart. `text` is the notification and fallback copy.
+        # The header block tells this post apart in the shared alert channel;
+        # `text` is the notification and fallback copy.
         payload={
             "text": f"{heading}: {body}",
-            "blocks": [
-                {
-                    "type": "header",
-                    "text": {"type": "plain_text", "text": heading, "emoji": True},
-                },
-                {"type": "section", "text": {"type": "mrkdwn", "text": body}},
-            ],
+            "blocks": [header_block(heading), *section_blocks(body)],
         },
     )
 

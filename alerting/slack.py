@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import html
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 from urllib.error import HTTPError
@@ -14,6 +16,15 @@ from alerting.ports import (
     SlackPermanentError,
     SlackTransientError,
 )
+
+# Alert paths share one channel, so every post leads with a Block Kit header,
+# "<icon> SOURCE · what happened". Slack caps a header at 150 characters and a
+# section at 3000. `text` keeps the full mrkdwn copy: Slack shows it in
+# notifications, and a resolve edit strikes it through.
+HEADER_LIMIT = 150
+SECTION_LIMIT = 3000
+_LEAD = re.compile(r"^(?:(:[a-z0-9_+-]+:) )?\*[^*\n]+\* — ")
+_LINK = re.compile(r"<[^|>\n]*\|([^>\n]*)>")
 
 CHAT_POST_MESSAGE_URL = "https://slack.com/api/chat.postMessage"
 CHAT_UPDATE_URL = "https://slack.com/api/chat.update"
@@ -213,3 +224,92 @@ def _retry_after(headers: Mapping[str, str]) -> float | None:
             except ValueError:
                 return None
     return None
+
+
+def header_block(title: str) -> dict[str, Any]:
+    if len(title) > HEADER_LIMIT:
+        title = title[: HEADER_LIMIT - 1] + "…"
+    return {
+        "type": "header",
+        "text": {"type": "plain_text", "text": title, "emoji": True},
+    }
+
+
+def section_blocks(body: str) -> list[dict[str, Any]]:
+    """Body mrkdwn as sections, split at line breaks under the size cap."""
+    chunks: list[str] = []
+    current = ""
+    for line in body.strip("\n").split("\n"):
+        while len(line) > SECTION_LIMIT:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:SECTION_LIMIT])
+            line = line[SECTION_LIMIT:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > SECTION_LIMIT:
+            chunks.append(current)
+            candidate = line
+        current = candidate
+    if current:
+        chunks.append(current)
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": chunk}}
+        for chunk in chunks
+    ]
+
+
+def _plain(mrkdwn: str) -> str:
+    # Underscores stay: queue and host names carry them.
+    text = _LINK.sub(r"\1", mrkdwn)
+    return html.unescape(re.sub(r"[`*~]", "", text))
+
+
+def headed_payload(text: str, *, source: str, icon: str) -> dict[str, Any]:
+    """Lift a post's first line into a header block above the rest.
+
+    A leading ``:emoji: *Label* — `` is the old in-text heading and gives way
+    to the header's icon and source; a ✅ line keeps its check. When the
+    header has to be cut, the full first line stays at the top of the body.
+    """
+    first, _, body = text.partition("\n")
+    lead = _LEAD.match(first)
+    if lead is not None and lead.group(1) == ":white_check_mark:":
+        icon = "✅"
+    title = f"{icon} {source} · {_plain(first[lead.end() :] if lead else first)}"
+    if len(title) > HEADER_LIMIT:
+        body = f"{first}\n{body}"
+    return {"text": text, "blocks": [header_block(title), *section_blocks(body)]}
+
+
+def _strike(text: str) -> str:
+    # Slack mrkdwn strikethrough does not span line breaks.
+    return "\n".join(f"~{line}~" if line.strip() else line for line in text.split("\n"))
+
+
+def resolved_edit(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The in-place edit that marks a delivered alert resolved.
+
+    Slack drops a message's blocks when an edit sends only text, so a headed
+    alert is edited with a ✅ header over its struck-through sections.
+    """
+    edit: dict[str, Any] = {
+        "text": f":white_check_mark: {_strike(str(payload.get('text') or ''))}"
+    }
+    blocks = payload.get("blocks")
+    if isinstance(blocks, list) and blocks and blocks[0].get("type") == "header":
+        # A header cannot be struck through, so it says so in words.
+        title = str(blocks[0]["text"]["text"]).split(" ", 1)[-1]
+        source, dot, what = title.partition(" · ")
+        edit["blocks"] = [
+            header_block(f"✅ {source} · Resolved: {what}" if dot else f"✅ {title}"),
+            *(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": _strike(block["text"]["text"])},
+                }
+                for block in blocks[1:]
+                if block.get("type") == "section"
+            ),
+        ]
+    return edit

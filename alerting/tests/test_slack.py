@@ -14,7 +14,12 @@ from alerting.ports import (
     SlackPermanentError,
     SlackTransientError,
 )
-from alerting.slack import HttpResponse, SlackDeliveryPort
+from alerting.slack import (
+    HttpResponse,
+    SlackDeliveryPort,
+    headed_payload,
+    resolved_edit,
+)
 
 NOW = datetime(2026, 8, 27, 19, 0, tzinfo=timezone.utc)
 
@@ -219,3 +224,141 @@ def test_update_message_rejection_is_permanent() -> None:
         slack.update_message(
             channel="C0ANHBE642Y", ts="1724900000.001", payload={"text": "x"}
         )
+
+
+def _header(text: str) -> dict[str, Any]:
+    return {
+        "type": "header",
+        "text": {"type": "plain_text", "text": text, "emoji": True},
+    }
+
+
+def _section(text: str) -> dict[str, Any]:
+    return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
+
+
+def test_headed_payload_lifts_the_bold_first_line_into_a_plain_header() -> None:
+    text = (
+        ":rotating_light: *Infra alert* — GPU 3 on `h200_ci-4` at 89&lt;C"
+        " <https://ci.vllm.ai/x|details> ~now~\n"
+        "\n"
+        "Last seen 21:40 UTC"
+    )
+
+    assert headed_payload(text, source="INFRA", icon="🖥️") == {
+        "text": text,
+        "blocks": [
+            _header("🖥️ INFRA · GPU 3 on h200_ci-4 at 89<C details now"),
+            _section("Last seen 21:40 UTC"),
+        ],
+    }
+
+
+def test_headed_payload_marks_a_resolved_line_with_a_check() -> None:
+    payload = headed_payload(
+        ":white_check_mark: *Quarantine* — h1 is back in service",
+        source="QUARANTINE",
+        icon="🚧",
+    )
+    assert payload["blocks"] == [_header("✅ QUARANTINE · h1 is back in service")]
+
+
+def test_headed_payload_keeps_a_line_without_a_bold_label_whole() -> None:
+    payload = headed_payload("plain first line\nbody", source="FAST CI", icon="⚡")
+    assert payload["blocks"] == [
+        _header("⚡ FAST CI · plain first line"),
+        _section("body"),
+    ]
+
+
+def test_headed_payload_cuts_a_long_header_and_keeps_the_full_line_below() -> None:
+    first = ":eyes: *Quarantine (dry run)* — would quarantine h1: " + "x" * 200
+    payload = headed_payload(f"{first}\nbody", source="QUARANTINE", icon="🚧")
+
+    header = payload["blocks"][0]["text"]["text"]
+    assert len(header) == 150
+    assert header.startswith("🚧 QUARANTINE · would quarantine h1: xxx")
+    assert header.endswith("x…")
+    assert payload["blocks"][1:] == [_section(f"{first}\nbody")]
+
+
+def test_headed_payload_splits_a_body_over_the_section_limit_at_lines() -> None:
+    lines = ["a" * 1000, "b" * 1000, "c" * 998, "d" * 10]
+    payload = headed_payload(
+        "*x* — head\n" + "\n".join(lines), source="FAST CI", icon="⚡"
+    )
+    assert [block["text"]["text"] for block in payload["blocks"][1:]] == [
+        "\n".join(lines[:3]),
+        lines[3],
+    ]
+
+
+def test_headed_payload_cuts_a_single_line_over_the_section_limit() -> None:
+    payload = headed_payload("head\n" + "z" * 3001, source="FAST CI", icon="⚡")
+    assert [len(block["text"]["text"]) for block in payload["blocks"][1:]] == [
+        3000,
+        1,
+    ]
+
+
+def test_resolved_edit_strikes_each_section_line_and_checks_the_header() -> None:
+    payload = headed_payload(
+        ":rotating_light: *Infra alert* — host h1 stopped reporting\n"
+        "Last report 21:40\n"
+        "\n"
+        "Runbook",
+        source="INFRA",
+        icon="🖥️",
+    )
+
+    assert resolved_edit(payload) == {
+        "text": ":white_check_mark: ~:rotating_light: *Infra alert* — host h1"
+        " stopped reporting~\n~Last report 21:40~\n\n~Runbook~",
+        "blocks": [
+            _header("✅ INFRA · Resolved: host h1 stopped reporting"),
+            _section("~Last report 21:40~\n\n~Runbook~"),
+        ],
+    }
+
+
+def test_resolved_edit_of_a_text_only_message_stays_text_only() -> None:
+    assert resolved_edit({"text": "line one\nline two"}) == {
+        "text": ":white_check_mark: ~line one~\n~line two~"
+    }
+
+
+def test_header_and_first_line_at_exactly_the_limit_stay_whole() -> None:
+    title = "🖥️ INFRA · " + "x" * (150 - len("🖥️ INFRA · "))
+    assert len(title) == 150
+    payload = headed_payload(
+        f"*Infra alert* — {title.split(' · ', 1)[1]}\nbody",
+        source="INFRA",
+        icon="🖥️",
+    )
+    assert payload["blocks"] == [_header(title), _section("body")]
+
+
+def test_a_long_line_after_a_short_one_starts_its_own_sections() -> None:
+    payload = headed_payload("head\nshort\n" + "z" * 3001, source="X", icon="⚡")
+    assert [block["text"]["text"] for block in payload["blocks"][1:]] == [
+        "short",
+        "z" * 3000,
+        "z",
+    ]
+
+
+def test_body_edges_keep_their_own_characters() -> None:
+    payload = headed_payload("head\n\nXX ends in X\n", source="X", icon="⚡")
+    assert payload["blocks"][1:] == [_section("XX ends in X")]
+
+
+def test_resolved_edit_without_text_or_header_stays_text_only() -> None:
+    assert resolved_edit({}) == {"text": ":white_check_mark: "}
+    assert resolved_edit({"text": "t", "blocks": [_section("t")]}) == {
+        "text": ":white_check_mark: ~t~"
+    }
+
+
+def test_resolved_edit_checks_a_header_with_no_icon() -> None:
+    edit = resolved_edit({"text": "t", "blocks": [_header("ALERT")]})
+    assert edit["blocks"] == [_header("✅ ALERT")]

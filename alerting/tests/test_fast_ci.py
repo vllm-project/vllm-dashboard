@@ -153,6 +153,10 @@ def test_more_than_eight_failures_are_persisted_in_existing_slack_batches() -> N
     assert "GPU &lt;fast&gt; 'test'" in records[0].payload["text"]
     assert "CI #123" in records[0].payload["text"]
     assert "> A failure with whitespace" in records[0].payload["text"]
+    assert records[0].payload["blocks"][0]["text"]["text"] == (
+        "⚡ FAST CI · 8 jobs failed in 30s or less"
+        " (main branch, required jobs only) — batch 1/2"
+    )
     delivery_ids = {record.delivery_id for record in records}
     assert {
         fast_ci.delivery_id_for(stored.job_id) for stored in fast_ci.events()
@@ -200,6 +204,10 @@ def test_stale_batches_become_one_recovery_summary_while_fresh_batch_stays_detai
         "while notifications were unavailable"
     )
     assert recovery.payload["text"].count(":red_circle:") == 10
+    assert recovery.payload["blocks"][0]["text"]["text"] == (
+        "⚡ FAST CI · 10 jobs failed in 30s or less (main branch, required jobs"
+        " only) while notifications were unavailable"
+    )
     assert "Fast CI job failure alert" in fresh.payload["text"]
     assert fresh.payload["text"].count(":red_circle:") == 1
     assert all(
@@ -434,25 +442,26 @@ def test_fast_failure_event_has_no_resolution_lifecycle() -> None:
     assert not hasattr(stored, "resolved_at")
 
 
-def test_slack_channel_env_override_wins(monkeypatch: Any) -> None:
+def test_alerts_share_one_channel_and_full_ci_keeps_its_own(
+    monkeypatch: Any,
+) -> None:
     import alerting.fast_ci as fast_ci
 
     for var in (
-        "SLACK_CI_FAST_FAILURE_ALERT_CHANNEL",
+        "SLACK_CI_ALERT_CHANNEL",
         "SLACK_CI_NOTIFICATIONS_CHANNEL",
         "SLACK_CHANNEL_ID",
     ):
         monkeypatch.delenv(var, raising=False)
-    assert fast_ci.slack_channel() == fast_ci.ALERTS_SLACK_CHANNEL
-    assert fast_ci.full_ci_slack_channel() == fast_ci.ALERTS_SLACK_CHANNEL
+    assert fast_ci.slack_channel() == "C0ANHBE642Y"
+    assert fast_ci.full_ci_slack_channel() == "C0ABTNM9L5U"
 
-    # Legacy shared env var still applies to both paths.
-    monkeypatch.setenv("SLACK_CHANNEL_ID", "C0NEWCHANNEL")
-    assert fast_ci.slack_channel() == "C0NEWCHANNEL"
-    assert fast_ci.full_ci_slack_channel() == "C0NEWCHANNEL"
+    # The legacy shared variable now moves Full CI only.
+    monkeypatch.setenv("SLACK_CHANNEL_ID", "C0LEGACY")
+    assert fast_ci.slack_channel() == "C0ANHBE642Y"
+    assert fast_ci.full_ci_slack_channel() == "C0LEGACY"
 
-    # Per-path channels win over the legacy fallback and stay independent.
-    monkeypatch.setenv("SLACK_CI_FAST_FAILURE_ALERT_CHANNEL", "C0FASTALERT")
-    monkeypatch.setenv("SLACK_CI_NOTIFICATIONS_CHANNEL", "C0CINOTIF")
-    assert fast_ci.slack_channel() == "C0FASTALERT"
-    assert fast_ci.full_ci_slack_channel() == "C0CINOTIF"
+    monkeypatch.setenv("SLACK_CI_ALERT_CHANNEL", "C0ALERTS")
+    monkeypatch.setenv("SLACK_CI_NOTIFICATIONS_CHANNEL", "C0NOTIFY")
+    assert fast_ci.slack_channel() == "C0ALERTS"
+    assert fast_ci.full_ci_slack_channel() == "C0NOTIFY"

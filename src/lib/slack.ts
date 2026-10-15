@@ -4,17 +4,48 @@ interface SlackPostResult {
   error?: string;
 }
 
+export const ALERTS_SLACK_CHANNEL = "C0ANHBE642Y";
+
+// Alerts share one channel, so each post leads with a header block,
+// "<icon> SOURCE · what happened". Slack caps a header at 150 characters and
+// a section at 3000.
+const HEADER_LIMIT = 150;
+const SECTION_LIMIT = 3000;
+
+export type SlackBlock = Record<string, unknown>;
+
+export function headedBlocks(title: string, body: string): SlackBlock[] {
+  const header =
+    title.length > HEADER_LIMIT ? `${title.slice(0, HEADER_LIMIT - 1)}…` : title;
+  const chunks: string[] = [];
+  let current = "";
+  for (let line of body.replace(/^\n+|\n+$/g, "").split("\n")) {
+    while (line.length > SECTION_LIMIT) {
+      if (current) chunks.push(current);
+      current = "";
+      chunks.push(line.slice(0, SECTION_LIMIT));
+      line = line.slice(SECTION_LIMIT);
+    }
+    let candidate = current ? `${current}\n${line}` : line;
+    if (candidate.length > SECTION_LIMIT) {
+      chunks.push(current);
+      candidate = line;
+    }
+    current = candidate;
+  }
+  if (current) chunks.push(current);
+  return [
+    { type: "header", text: { type: "plain_text", text: header, emoji: true } },
+    ...chunks.map((text) => ({ type: "section", text: { type: "mrkdwn", text } })),
+  ];
+}
+
 function getConfig() {
   const token = process.env.SLACK_BOT_TOKEN;
-  // Per-path channel convention (values live in secrets manager):
-  // SLACK_CI_INFRA_ALERT_CHANNEL covers infrastructure/queue alerts;
-  // SLACK_CHANNEL_ID is the legacy shared fallback.
-  const channel =
-    process.env.SLACK_CI_INFRA_ALERT_CHANNEL ?? process.env.SLACK_CHANNEL_ID;
-  if (!token || !channel) {
-    throw new Error(
-      "SLACK_BOT_TOKEN and SLACK_CI_INFRA_ALERT_CHANNEL (or legacy SLACK_CHANNEL_ID) must be set",
-    );
+  // Every alert path shares one channel, told apart by each post's heading.
+  const channel = process.env.SLACK_CI_ALERT_CHANNEL ?? ALERTS_SLACK_CHANNEL;
+  if (!token) {
+    throw new Error("SLACK_BOT_TOKEN must be set");
   }
   return { token, channel };
 }
@@ -23,11 +54,13 @@ export async function postMessage(
   text: string,
   threadTs?: string,
   channelOverride?: string,
+  blocks?: SlackBlock[],
 ): Promise<SlackPostResult> {
   const { token, channel: defaultChannel } = getConfig();
   const channel = channelOverride ?? defaultChannel;
-  const body: Record<string, string> = { channel, text };
+  const body: Record<string, unknown> = { channel, text };
   if (threadTs) body.thread_ts = threadTs;
+  if (blocks) body.blocks = blocks;
 
   const res = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",
@@ -44,6 +77,7 @@ export async function postMessage(
 export async function updateMessage(
   ts: string,
   text: string,
+  blocks?: SlackBlock[],
 ): Promise<SlackPostResult> {
   const { token, channel } = getConfig();
 
@@ -53,7 +87,8 @@ export async function updateMessage(
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ channel, ts, text }),
+    // An edit with text but no blocks would drop the header.
+    body: JSON.stringify({ channel, ts, text, ...(blocks ? { blocks } : {}) }),
   });
 
   return res.json();

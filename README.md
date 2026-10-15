@@ -97,7 +97,8 @@ page (Builds) loads, see the [Builds latency guide](./docs/builds-performance.md
 | `GPU_REPORT_SECRET` | Required shared Bearer token for GPU and host telemetry ingestion; the endpoint fails closed when unset |
 | `GPU_REPORT_MAX_BYTES` | Optional JSON request limit; defaults to 256 KiB and is capped at 4 MiB |
 | `SLACK_BOT_TOKEN` | Slack bot for queue-depth alerts (`chat:write`, `reactions:write`) |
-| `SLACK_CI_NOTIFICATIONS_CHANNEL`, `SLACK_CI_FAST_FAILURE_ALERT_CHANNEL`, `SLACK_CI_INFRA_ALERT_CHANNEL` | Per-path Slack channels for Full CI, Fast CI, and infra/queue alerts; `SLACK_CHANNEL_ID` is the legacy shared fallback when a per-path channel is unset |
+| `SLACK_CI_ALERT_CHANNEL` | Optional override for the shared alert channel (Fast CI, Main CI image builds, infra, queue wait); defaults to `C0ANHBE642Y` |
+| `SLACK_CI_NOTIFICATIONS_CHANNEL` | Optional override for the Full CI report channel; defaults to `C0ABTNM9L5U` (`SLACK_CHANNEL_ID` is the legacy fallback) |
 | `CRON_SECRET` | Optional shared secret required by Vercel cron handlers |
 | `WARM_DEFAULTS_BASE_URL` | Optional base URL the `/api/cron/warm-defaults` cache warmer requests; defaults to `https://ci.vllm.ai` |
 

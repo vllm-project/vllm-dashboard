@@ -26,8 +26,9 @@ outbox, and keeps its state in `alert_summary`.
 
 ## Configuration
 
-- `SLACK_BOT_TOKEN`, `SLACK_CHANNEL_ID` — the bot and channel the combined
-  message posts to. The route returns 500 if either is missing.
+- `SLACK_BOT_TOKEN` — the bot the combined message posts with; the route
+  returns 500 without it. It posts to the shared alert channel
+  (`SLACK_CI_ALERT_CHANNEL`, default `C0ANHBE642Y`).
 - `CRON_SECRET` — when set, the route requires `Authorization: Bearer`.
 - The threshold is a code constant, `WAIT_THRESHOLD_MINUTES = 30`, in the
   route. There is no thresholds table row and no shadow/disabled control

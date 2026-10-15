@@ -50,8 +50,8 @@ on two main builds with no pass between, the poller or the backstop
 enqueues one post under an "Image build failing on main" header block, and
 one "green again" post when the episode resolves. A retry inside one build
 counts as one red build, so a single blip stays dashboard-only. Posts go to
-`SLACK_CI_FAST_FAILURE_ALERT_CHANNEL`; every alert path now shares one
-channel, told apart by its header. Every other episode stays dashboard-only:
+the shared alert channel (`SLACK_CI_ALERT_CHANNEL`, default `C0ANHBE642Y`),
+told apart from the other paths by its header. Every other episode stays dashboard-only:
 lifecycle records carry raw Buildkite evidence, and diagnosis stays a curated
 Slack concern.
 

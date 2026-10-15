@@ -11,7 +11,6 @@ from typing import Any
 import pytest
 
 from alerting.commands import ScheduledCommand
-from alerting.fast_ci import ALERTS_SLACK_CHANNEL
 from alerting.infra import (
     InfraAlertEpisode,
     _render_quarantine,
@@ -27,7 +26,6 @@ from alerting.infra import (
     KubectlNodesSource,
     QuarantineDecision,
     UnionExpectedHostSource,
-    slack_channel,
 )
 from alerting.memory import (
     FixedClock,
@@ -233,6 +231,13 @@ def test_first_fresh_report_resolves_episode_by_editing_the_open_message() -> No
     assert update_text.startswith(":white_check_mark: ~")
     assert "stopped reporting" in update_text
     assert update_text.endswith("~") and "(edited)" not in update_text
+    # The shared alert channel tells posts apart by their header block.
+    assert slack.deliveries[0].payload["blocks"][0]["text"]["text"] == (
+        "🖥️ INFRA · host gpu-h100-01 stopped reporting"
+    )
+    assert slack.updates[0]["payload"]["blocks"][0]["text"]["text"] == (
+        "✅ INFRA · Resolved: host gpu-h100-01 stopped reporting"
+    )
 
 
 def test_reopened_episode_after_resolution_sends_a_new_pair() -> None:
@@ -743,16 +748,6 @@ def test_expected_host_set_is_the_union_of_sources() -> None:
     assert source.expected_hosts() == frozenset({"gpu-h100-01", "h200-ci-1"})
 
 
-def test_infra_alerts_post_to_the_infra_channel_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("SLACK_CI_INFRA_ALERT_CHANNEL", raising=False)
-    assert slack_channel() == ALERTS_SLACK_CHANNEL
-
-    monkeypatch.setenv("SLACK_CI_INFRA_ALERT_CHANNEL", "C-INFRA-1")
-    assert slack_channel() == "C-INFRA-1"
-
-
 def gpu_count_reading(
     hostname: str,
     observed_gpus: int,
@@ -1052,6 +1047,17 @@ def test_dry_run_quarantine_posts_would_and_expires_silently() -> None:
     assert slack.deliveries[-1].payload["text"].endswith(
         "would quarantine `gpu-node-7`: Xid 79: GPU fell off the bus"
     )
+    assert slack.deliveries[-1].payload["blocks"] == [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": "🚧 QUARANTINE · would quarantine gpu-node-7:"
+                " Xid 79: GPU fell off the bus",
+                "emoji": True,
+            },
+        }
+    ]
 
     # One missed scan, then the decision is back: the count starts over.
     decisions.clear()

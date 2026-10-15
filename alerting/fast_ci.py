@@ -26,35 +26,33 @@ from alerting.ports import (
     NotificationIntent,
 )
 from alerting.runtime import HandlerCompletion
+from alerting.slack import headed_payload
 
 INITIAL_LOOKBACK = timedelta(minutes=30)
 SAFETY_OVERLAP = timedelta(minutes=15)
 MAX_DURATION_SECONDS = 30
 SLACK_BATCH_SIZE = 8
-# Both alert paths deliver through the Slack bot token. Channels follow the
-# per-path convention (values live in secrets manager):
-# SLACK_CI_NOTIFICATIONS_CHANNEL (Full CI), SLACK_CI_FAST_FAILURE_ALERT_CHANNEL
-# (Fast CI), SLACK_CI_INFRA_ALERT_CHANNEL (infra/queue alerts).
-# SLACK_CHANNEL_ID is the legacy shared fallback so a channel move stays a
-# secret edit, not a code change.
-ALERTS_SLACK_CHANNEL = "C0ABTNM9L5U"
+# Fast CI, Main CI image builds and infra post to one alert channel, told
+# apart by each post's header block; Full CI reports keep their own channel.
+# Both are overridable from secrets manager, so a channel move stays a
+# secret edit: SLACK_CI_ALERT_CHANNEL and SLACK_CI_NOTIFICATIONS_CHANNEL
+# (SLACK_CHANNEL_ID is Full CI's legacy fallback).
+ALERTS_SLACK_CHANNEL = "C0ANHBE642Y"
+CI_NOTIFICATIONS_SLACK_CHANNEL = "C0ABTNM9L5U"
 STALE_NOTIFICATION_AGE = timedelta(minutes=30)
 
 
-def _channel(primary_env: str) -> str:
-    return os.environ.get(
-        primary_env, os.environ.get("SLACK_CHANNEL_ID", ALERTS_SLACK_CHANNEL)
-    )
-
-
 def slack_channel() -> str:
-    """The channel Fast CI alert intents post to."""
-    return _channel("SLACK_CI_FAST_FAILURE_ALERT_CHANNEL")
+    """The shared alert channel Fast CI, Main CI and infra intents post to."""
+    return os.environ.get("SLACK_CI_ALERT_CHANNEL", ALERTS_SLACK_CHANNEL)
 
 
 def full_ci_slack_channel() -> str:
     """The channel Full CI report intents post to."""
-    return _channel("SLACK_CI_NOTIFICATIONS_CHANNEL")
+    return os.environ.get(
+        "SLACK_CI_NOTIFICATIONS_CHANNEL",
+        os.environ.get("SLACK_CHANNEL_ID", CI_NOTIFICATIONS_SLACK_CHANNEL),
+    )
 
 
 class FastFailureState(StrEnum):
@@ -422,7 +420,11 @@ def _notification_batches(
                     delivery_mode=delivery_mode,
                     destination_mode=DestinationMode.BOT_TOKEN,
                     destination=slack_channel(),
-                    payload={"text": _build_message(group, index, len(groups))},
+                    payload=headed_payload(
+                        _build_message(group, index, len(groups)),
+                        source="FAST CI",
+                        icon="⚡",
+                    ),
                 ),
                 job_ids=job_ids,
             )
@@ -444,7 +446,11 @@ def recovery_notification(
             delivery_mode=DeliveryMode.LIVE,
             destination_mode=DestinationMode.BOT_TOKEN,
             destination=slack_channel(),
-            payload={"text": _build_message(ordered_events, 1, 1, recovery=True)},
+            payload=headed_payload(
+                _build_message(ordered_events, 1, 1, recovery=True),
+                source="FAST CI",
+                icon="⚡",
+            ),
         ),
         job_ids=tuple(event.job_id for event in ordered_events),
     )

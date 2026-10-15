@@ -92,8 +92,9 @@ All three paths start in shadow mode. Durable controls live at
 `live`, and `disabled`. A root oneshot reconciles those objects every minute,
 but workers run as the non-login `alerting` user. Shadow runs persist source
 observations and rendered Slack payloads without leasing them for delivery.
-Main CI currently writes dashboard lifecycle only and renders no Slack payload;
-its mode still controls the independent two-minute timer.
+Main CI writes dashboard lifecycle and renders Slack payloads only for image
+builds red on two main builds in a row (see `alerting/docs/main-ci.md`); its
+mode controls those posts and the independent two-minute timer.
 
 Run the repeatable operator wizard from the repository root:
 

@@ -59,8 +59,8 @@ the resolve edits the bot's own open alert in place (chat.update) into a
   coverage is preserved because the control-plane scrapers report every
   cluster node (a dead scraper silences, and therefore alerts, its whole
   cluster).
-- Slack: `SLACK_BOT_TOKEN`; channel `SLACK_CI_INFRA_ALERT_CHANNEL` (falls
-  back to the shared alerts channel `C0ABTNM9L5U` until the secret exists).
+- Slack: `SLACK_BOT_TOKEN`; `SLACK_CI_ALERT_CHANNEL` overrides the shared
+  alert channel (`C0ANHBE642Y`).
 - Control plane: S3 `control/infra.mode` (`shadow` default / `live` /
   `disabled`) applied to `alerting-infra.timer`.
 
