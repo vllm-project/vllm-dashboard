@@ -478,13 +478,35 @@ def test_a_check_pod_the_kubelet_rejected_fails_with_its_reason(run):
     assert dash.posts[-1][1]["observed"] == {"note": "no output"}
 
 
-def test_the_check_waits_for_ci_pods_to_finish(run):
+def test_the_check_waits_for_ci_pods_to_finish(run, capsys):
+    # It posts nothing while it waits, so a wait that never ends shows as an
+    # actuator that hasn't confirmed returning.
     kube = FakeKube({"n1": node(True, True)}, pods={"n1": ["Running", "Failed"]})
     dash = FakeDashboard([want("n1", "resolving")])
     assert run(kube, dash) == 0
-    assert kube.created == [] and kube.writes == []
-    assert dash.posts == [("n1", {"alertId": 7, "state": "verifying", "observed": {
-        "phase": "WaitingForCIPods", "ciPods": 1}})]
+    assert kube.created == [] and kube.writes == [] and dash.posts == []
+    assert ("  n1: waiting for 1 CI pod(s) before the return check\n"
+            in capsys.readouterr().out)
+
+
+def test_a_failed_check_keeps_its_pod_until_the_dashboard_has_it(run):
+    kube = FakeKube({"n1": node(True, True)}, checks={CHECK: {
+        "phase": "Failed", "logs": "| Memory | Fail - GPU 3 |\n"}})
+    dash = FakeDashboard([want("n1", "resolving")])
+    real = dash.__call__
+
+    def post_fails(method, path, body=None):
+        if method == "POST":
+            raise urllib.error.URLError("connection refused")
+        return real(method, path, body)
+
+    assert run(kube, post_fails) == 1
+    assert kube.writes == [] and CHECK in kube.checks
+    # The next run reports the same failure from the pod, then deletes it.
+    assert run(kube, dash) == 0
+    assert kube.created == []
+    assert kube.writes == [DELETE_CHECK + ("--wait=false",)]
+    assert [b["state"] for _, b in dash.posts] == ["verify_failed"]
 
 
 def test_a_gpu_the_device_plugin_dropped_fails_the_check(run, capsys):

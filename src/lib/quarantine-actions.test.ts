@@ -52,7 +52,10 @@ test("resolving moves an open, applied or held quarantine on", async () => {
   assert.match(queries[0], /'resolve_forced', \?::boolean/);
   assert.match(queries[0], /alert_type = 'quarantine'/);
   assert.match(queries[0], /status = 'open'/);
-  assert.match(queries[0], /IN \('held', 'quarantining', 'quarantined'\)/);
+  assert.match(
+    queries[0],
+    /IN \('held', 'quarantining', 'quarantined'\) OR \(\?::boolean AND details->>'stage' = 'resolve_requested'\)/,
+  );
   // A return check that failed before must not bounce this resolve.
   assert.match(queries[0], /'actuator_state', NULL::text/);
   assert.match(queries[0], /'verify_note', NULL::text/);
@@ -98,11 +101,14 @@ test("resolving a dry-run quarantine is a 409 that says nothing was applied", as
 });
 
 test("resolving twice, or after the host is back, is a 409", async () => {
-  for (const stage of ["resolve_requested", "resolving", "resolved"]) {
+  for (const [stage, expected] of [
+    ["resolve_requested", /already waiting for a clean reading; skip the check/],
+    ["resolving", /already being resolved/],
+    ["resolved", /already resolved/],
+  ] as const) {
     const { db } = fakeDb([], [{ stage }]);
     const result = await resolveQuarantine(db, "h", "k", "r");
     assert.equal(result.status, 409, stage);
-    const expected = stage === "resolved" ? /already resolved/ : /already being resolved/;
     assert.match(String(result.body.error), expected, stage);
   }
 });

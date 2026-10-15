@@ -125,9 +125,12 @@ subjects:
     name: quarantine-actuator
     namespace: gpu-operator
 ---
-# Every pod in the namespace must be the return check: NVIDIA's DCGM image,
-# one container, SYS_ADMIN as its only added capability, not privileged, no
-# volumes, no host namespaces and no service account token.
+# Every pod in the namespace must look like the return check: NVIDIA's DCGM
+# image, on a GPU node, one container, SYS_ADMIN as its only added
+# capability, not privileged, no volumes, no host namespaces and no service
+# account token. It doesn't pin the command: whoever holds the actuator's
+# token can run any command in that image with SYS_ADMIN on a GPU node, which
+# is the same nodes the token can already cordon.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -142,6 +145,9 @@ spec:
         resources: ["pods"]
   validations:
     - expression: >-
+        has(object.spec.nodeName) &&
+        (object.spec.nodeName.startsWith('inf-4x8h100-') ||
+          object.spec.nodeName.startsWith('dgxb200-')) &&
         size(object.spec.containers) == 1 &&
         !has(object.spec.initContainers) &&
         !has(object.spec.ephemeralContainers) &&

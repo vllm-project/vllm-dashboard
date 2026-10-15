@@ -112,7 +112,8 @@ export const MAX_MATCH = 200;
  * moves it to 'resolving'. `force` skips that wait and goes straight to
  * 'resolving', as does a held episode: its host never went out, and its
  * trigger is usually still firing, so the wait would take it out past the
- * limit that held it. The actuator then runs its return check, undoes its cordon and
+ * limit that held it. A resolve already waiting can only be forced, for when
+ * the reading never comes (a dead reporter). The actuator then runs its return check, undoes its cordon and
  * taint or lock file, and the worker marks it resolved once the host is back. It
  * clears the last actuator report and return-check failure, so a check that
  * failed before doesn't send this resolve straight back to quarantined. A dry-run ('would') episode has
@@ -145,7 +146,10 @@ export async function resolveQuarantine(
     WHERE alert_type = 'quarantine'
       AND subject_key = ${host}
       AND status = 'open'
-      AND details->>'stage' IN ('held', 'quarantining', 'quarantined')
+      AND (
+        details->>'stage' IN ('held', 'quarantining', 'quarantined')
+        OR (${force}::boolean AND details->>'stage' = 'resolve_requested')
+      )
     RETURNING alert_id
   `;
   if (resolved.length > 0) {
@@ -163,7 +167,13 @@ export async function resolveQuarantine(
   if (stage === "would") {
     return fail(409, "This is a dry-run quarantine; nothing was applied to resolve.");
   }
-  if (stage === "resolve_requested" || stage === "resolving") {
+  if (stage === "resolve_requested") {
+    return fail(
+      409,
+      "This resolve is already waiting for a clean reading; skip the check to return it now.",
+    );
+  }
+  if (stage === "resolving") {
     return fail(409, "This quarantine is already being resolved.");
   }
   return fail(409, "This host has no open quarantine; it is already resolved.");

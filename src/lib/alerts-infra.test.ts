@@ -323,10 +323,10 @@ test("quarantine episodes read their stage, reason, resolver and actuator note",
   );
 });
 
-test("only open held, quarantining or quarantined episodes offer resolve", () => {
+test("only open held, quarantining, quarantined or waiting episodes offer resolve", () => {
   const quarantine = (stage: string, status: "open" | "resolved" = "open") =>
     episode({ alertType: "quarantine", status, details: { stage } });
-  for (const stage of ["held", "quarantining", "quarantined"]) {
+  for (const stage of ["held", "quarantining", "quarantined", "resolve_requested"]) {
     assert.equal(isResolvableQuarantine(quarantine(stage)), true, stage);
   }
   for (const stage of ["would", "resolving"]) {

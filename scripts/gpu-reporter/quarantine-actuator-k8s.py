@@ -194,18 +194,21 @@ class Actuator:
             kubectl(*args, input=input)
 
     def post(self, host, alert_id, state, observed):
+        """True once the dashboard has the report."""
         body = {"alertId": alert_id, "state": state, "observed": observed}
         if self.dry_run:
             print(f"  DRY RUN: would post {host} {json.dumps(body)}")
-            return
+            return True
         try:
             http_json("POST", "/api/alerts/quarantine/"
                       f"{urllib.parse.quote(host)}/applied", body)
             print(f"  posted {state} for {host}")
+            return True
         except Exception as e:
             print(f"ERROR: POST applied for {host} failed: {e}",
                   file=sys.stderr)
             self.ok = False
+            return False
 
     def set_cordon(self, node, on):
         """Cordon and mark the cordon ours (on), or lift both, in one patch.
@@ -267,10 +270,12 @@ class Actuator:
             # nodeName skips the scheduler, so the kubelet fails the pod at
             # once if a GPU is still held or unhealthy: wait out the CI pods,
             # and treat a GPU the device plugin dropped as a failed check.
+            # The wait posts nothing, so one that never ends shows on the
+            # dashboard as an actuator that hasn't confirmed returning.
             pods = ci_pod_count(name)
             if pods:
-                self.post(name, want["alertId"], "verifying",
-                          {"phase": "WaitingForCIPods", "ciPods": pods})
+                print(f"  {name}: waiting for {pods} CI pod(s) before the "
+                      "return check")
                 return False
             usable = node["status"]["allocatable"][GPU_RESOURCE]
             total = node["status"]["capacity"][GPU_RESOURCE]
@@ -308,9 +313,12 @@ class Actuator:
         else:
             minutes = VERIFY_TIMEOUT // datetime.timedelta(minutes=1)
             note = f"did not finish in {minutes} min ({phase})"
-        self.write("delete", "pod", pod_name, "-n", VERIFY_NS, "--wait=false")
         print(f"  {name}: return check failed: {note}")
-        self.post(name, want["alertId"], "verify_failed", {"note": note})
+        # The pod is the only record of the failure until the dashboard has
+        # it; deleting it first would let a lost post start a fresh check.
+        if self.post(name, want["alertId"], "verify_failed", {"note": note}):
+            self.write("delete", "pod", pod_name, "-n", VERIFY_NS,
+                       "--wait=false")
         return False
 
     def bring_back(self, node, want):

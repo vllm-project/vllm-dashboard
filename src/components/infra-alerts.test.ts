@@ -147,3 +147,19 @@ test("open and resolved episodes render under their own sections", () => {
   assert.match(markup, /Recently resolved/);
   assert.match(markup, /reporting again/);
 });
+
+test("a resolve waiting for a clean reading can only skip the wait", () => {
+  const quarantine = (stage: string) =>
+    renderToStaticMarkup(
+      createElement(InfraAlerts, {
+        view: viewInfraAlerts(
+          [episode({ alertType: "quarantine", subjectKey: "h1", details: { stage } })],
+          [],
+          CUTOFF,
+        ),
+        onResolveQuarantine: async () => {},
+      }),
+    );
+  assert.match(quarantine("resolve_requested"), />Skip the wait</);
+  assert.match(quarantine("quarantined"), />Resolve</);
+});

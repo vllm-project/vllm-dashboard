@@ -40,14 +40,17 @@ const INPUT =
 function ResolveQuarantineForm({
   host,
   onResolve,
+  forceOnly,
 }: {
   host: string;
   onResolve: ResolveQuarantine;
+  /** The resolve already waits for a clean reading; only skipping it is left. */
+  forceOnly: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [by, setBy] = useState("");
   const [reason, setReason] = useState("");
-  const [force, setForce] = useState(false);
+  const [force, setForce] = useState(forceOnly);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -58,7 +61,7 @@ function ResolveQuarantineForm({
         onClick={() => setOpen(true)}
         className="dashboard-control h-6 shrink-0 rounded-md border border-zinc-200 px-2 text-[11px] font-medium text-zinc-500 hover:border-zinc-300 hover:text-zinc-900 dark:border-zinc-800 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-100"
       >
-        Resolve
+        {forceOnly ? "Skip the wait" : "Resolve"}
       </button>
     );
   }
@@ -101,6 +104,7 @@ function ResolveQuarantineForm({
         <input
           type="checkbox"
           checked={force}
+          disabled={forceOnly}
           onChange={(event) => setForce(event.target.checked)}
         />
         Skip the clean-reading check
@@ -157,6 +161,7 @@ function EpisodeRow({
         <ResolveQuarantineForm
           host={episode.subjectKey}
           onResolve={onResolveQuarantine}
+          forceOnly={episode.details.stage === "resolve_requested"}
         />
       )}
     </li>

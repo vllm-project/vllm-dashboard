@@ -1591,21 +1591,55 @@ def plan_infra_scan(
         open_episodes=open_episodes,
     )
     # When a host was last read in full, for a resolve waiting on a clean
-    # reading: a fresh GPU row and a fresh host reading whose GPU query
-    # answered. A reading that says nothing proves nothing.
-    gpu_read: dict[str, datetime] = {}
-    for gpu in gpu_faults or []:
-        if now - gpu.reported_at <= READING_MAX_AGE:
-            gpu_read[gpu.hostname] = max(
-                gpu_read.get(gpu.hostname, gpu.reported_at), gpu.reported_at
-            )
-    readings = {
-        reading.hostname: min(reading.reported_at, gpu_read[reading.hostname])
-        for reading in host_faults or []
-        if reading.gpu_query_hung is False
-        and now - reading.reported_at <= READING_MAX_AGE
-        and reading.hostname in gpu_read
+    # reading. A reading that says nothing proves nothing, so it takes a
+    # fresh row for every GPU the host has had (the GPU-count baseline), a
+    # host reading whose GPU query answered, and a new measurement of the
+    # fault the host was quarantined for.
+    def fresh_times(pairs: Iterable[tuple[str, datetime]]) -> dict[str, datetime]:
+        newest: dict[str, datetime] = {}
+        for hostname, reported_at in pairs:
+            if now - reported_at <= READING_MAX_AGE:
+                newest[hostname] = max(newest.get(hostname, reported_at), reported_at)
+        return newest
+
+    fresh_gpus = [g for g in gpu_faults or [] if now - g.reported_at <= READING_MAX_AGE]
+    measured = {
+        "gpu_hang": fresh_times(
+            (r.hostname, r.reported_at)
+            for r in host_faults or []
+            if r.gpu_query_hung is False
+        ),
+        "network": fresh_times(
+            (r.hostname, r.reported_at) for r in host_faults or [] if r.network_probes
+        ),
+        "root_owned": fresh_times(
+            (r.hostname, r.reported_at)
+            for r in host_faults or []
+            if r.root_owned_slots is not None
+        ),
+        "disk": fresh_times(
+            (m.hostname, m.reported_at) for m in disk_mounts if m.error is None
+        ),
+        "dead_memory": fresh_times(
+            (r.hostname, r.reported_at) for r in gpu_dead_memory
+        ),
+        "gpu_count": fresh_times((r.hostname, r.reported_at) for r in gpu_counts),
     }
+    readings: dict[str, datetime] = {}
+    gpu_read = fresh_times((g.hostname, g.reported_at) for g in fresh_gpus)
+    for host, read_at in gpu_read.items():
+        count = states.get((InfraAlertType.GPU_COUNT.value, f"gpu-count:{host}"))
+        baseline = int(count.details.get("baseline_gpus") or 0) if count else 0
+        if len({g.gpu_index for g in fresh_gpus if g.hostname == host}) < baseline:
+            continue
+        episode = open_episodes.get((InfraAlertType.QUARANTINE.value, host))
+        evidence = episode.details.get("evidence") if episode is not None else None
+        rule = evidence.get("rule") if isinstance(evidence, dict) else None
+        times = [read_at, measured["gpu_hang"].get(host)]
+        if rule in measured:
+            times.append(measured[str(rule)].get(host))
+        if all(times):
+            readings[host] = min(t for t in times if t is not None)
     # A fault sends a waiting resolve back only when read after the request;
     # one read before it is what the resolve says was fixed.
     faults: dict[str, str] = {}
