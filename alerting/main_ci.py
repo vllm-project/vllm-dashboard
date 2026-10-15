@@ -42,6 +42,8 @@ RUNTIME_SHARD = re.compile(r" shard (\d+)/(\d+)$")
 # no pass between (a retry in the same build is still one build), the Fast CI
 # channel gets one post, and one more when it passes again. One red build
 # alone may be a registry or network blip, so it stays dashboard-only.
+# The dashboard lists these in their own Alerts tab: keep in sync with
+# IMAGE_BUILD_STEPS in src/lib/alerts-main-ci.ts.
 IMAGE_BUILD_STEPS = frozenset({"image-build", "image-build-cpu", "arm64-image-build"})
 
 

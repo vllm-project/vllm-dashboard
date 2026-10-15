@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   isAmdJobName,
+  isImageBuildAlert,
   isSoftFailJobName,
   toMainCiJobAlert,
   viewMainCiJobAlerts,
@@ -261,4 +262,22 @@ test("AMD job names match hardware tokens without hitting plain words", () => {
 test("soft-fail job names match their Buildkite labels", () => {
   assert.equal(isSoftFailJobName("Lint (soft-fail)"), true);
   assert.equal(isSoftFailJobName("GPU test"), false);
+});
+
+test("image-build alerts are the three image-build steps only", () => {
+  for (const jobKey of [
+    "step:image-build|name::docker: Build image",
+    "step:image-build-cpu|name::docker: Build CPU image",
+    "step:arm64-image-build|name::docker: Build arm64 image",
+  ]) {
+    assert.equal(isImageBuildAlert({ jobKey }), true, jobKey);
+  }
+  for (const jobKey of [
+    "step:image-build-amd|name:AMD: :docker: build test image and artifacts",
+    "step:image-build-smoke-test|name::docker: :smoking: Non-root smoke tests",
+    "step:gpu-test|name:GPU correctness",
+    "name:image-build",
+  ]) {
+    assert.equal(isImageBuildAlert({ jobKey }), false, jobKey);
+  }
 });

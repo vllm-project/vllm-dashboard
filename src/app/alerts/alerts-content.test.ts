@@ -11,4 +11,5 @@ test("explicit alert tabs remain selected", () => {
   assert.equal(resolveAlertTab("main-ci"), "main-ci");
   assert.equal(resolveAlertTab("fast-ci"), "fast-ci");
   assert.equal(resolveAlertTab("infra"), "infra");
+  assert.equal(resolveAlertTab("image-builds"), "image-builds");
 });

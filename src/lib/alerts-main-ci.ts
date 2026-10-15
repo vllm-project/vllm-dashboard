@@ -299,6 +299,20 @@ export function toMainCiJobAlert(
   };
 }
 
+// Image builds the other jobs wait on. They get their own Alerts tab, and the
+// worker posts their breakage to Slack; keep in sync with IMAGE_BUILD_STEPS
+// in alerting/main_ci.py.
+const IMAGE_BUILD_STEPS = new Set([
+  "image-build",
+  "image-build-cpu",
+  "arm64-image-build",
+]);
+
+export function isImageBuildAlert(alert: { jobKey: string }): boolean {
+  if (!alert.jobKey.startsWith("step:")) return false;
+  return IMAGE_BUILD_STEPS.has(alert.jobKey.slice("step:".length).split("|")[0]);
+}
+
 /** Open alerts remain visible regardless of age; resolved history obeys the window. */
 export function viewMainCiJobAlerts(
   alerts: readonly MainCiJobAlert[],

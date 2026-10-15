@@ -17,6 +17,7 @@ import {
   type InfraRetiredHost,
 } from "@/lib/alerts-infra";
 import {
+  isImageBuildAlert,
   viewMainCiJobAlerts,
   type MainCiJobAlert,
 } from "@/lib/alerts-main-ci";
@@ -37,7 +38,7 @@ async function fetcher<T>(url: string): Promise<T> {
   return payload;
 }
 
-type AlertTab = "main-ci" | "fast-ci" | "infra";
+type AlertTab = "main-ci" | "image-builds" | "fast-ci" | "infra";
 
 const ALERT_TABS: readonly {
   value: AlertTab;
@@ -49,7 +50,13 @@ const ALERT_TABS: readonly {
     value: "main-ci",
     label: "Failures",
     description:
-      "Hard command-job failures on the main branch. A failure stays open across builds until that exact Buildkite step positively passes again; soft failures, missing jobs, and older builds finishing late do not resolve it. Resolving an alert by hand closes it without waiting for a pass.",
+      "Hard command-job failures on the main branch, except the image builds, which have their own tab. A failure stays open across builds until that exact Buildkite step positively passes again; soft failures, missing jobs, and older builds finishing late do not resolve it. Resolving an alert by hand closes it without waiting for a pass.",
+  },
+  {
+    value: "image-builds",
+    label: "Image builds",
+    description:
+      "Failures of the CUDA, CPU and arm64 image builds on the main branch, which every job that uses the image waits on. They follow the same lifecycle as Failures. When one is red on two main builds in a row, the alert channel gets a post, and another when it passes again.",
   },
   {
     value: "fast-ci",
@@ -315,9 +322,12 @@ function OperatorAccess() {
 function MainCISection({
   timeWindow,
   options,
+  imageBuilds,
 }: {
   timeWindow: AlertTimeWindow;
   options: AlertOptions;
+  /** The Image builds tab, or Failures with the image builds left out. */
+  imageBuilds: boolean;
 }) {
   const { data, isLoading, error, mutate } = useSWR<MainCIAlertsResponse>(
     "/api/alerts/main-ci",
@@ -329,10 +339,12 @@ function MainCISection({
   const alerts = useMemo(
     () =>
       viewMainCiJobAlerts(
-        data?.alerts ?? [],
+        (data?.alerts ?? []).filter(
+          (alert) => isImageBuildAlert(alert) === imageBuilds,
+        ),
         alertWindowCutoff(timeWindow),
       ),
-    [data, timeWindow],
+    [data, timeWindow, imageBuilds],
   );
 
   const resolveAlert = async (alertId: string) => {
@@ -354,7 +366,7 @@ function MainCISection({
 
   return (
     <AlertSection
-      title="Failures"
+      title={imageBuilds ? "Image builds" : "Failures"}
       isLoading={isLoading}
       failed={Boolean(error || data?.error)}
       onRetry={() => void mutate()}
@@ -601,8 +613,12 @@ export default function AlertsContent() {
         </div>
       </div>
 
-      {tab === "main-ci" ? (
-        <MainCISection timeWindow={timeWindow} options={options} />
+      {tab === "main-ci" || tab === "image-builds" ? (
+        <MainCISection
+          timeWindow={timeWindow}
+          options={options}
+          imageBuilds={tab === "image-builds"}
+        />
       ) : tab === "infra" ? (
         <InfraSection timeWindow={timeWindow} />
       ) : (
