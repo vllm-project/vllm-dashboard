@@ -324,3 +324,84 @@ def test_dry_run_posts_what_the_limits_would_do() -> None:
     assert all(
         text.endswith("(would be held: detector suspect)") for text in texts(result)
     )
+
+
+REPEAT_NOTE = (
+    "\nQuarantined again within 7 days of oncall's resolve, so the fix may not "
+    "have held; this pages a person."
+)
+
+
+def returned(host: str, resolved_at: datetime) -> InfraScanPlan:
+    """The scan that closes a resolve the actuator confirmed."""
+    resolving = episode(host, "resolving")
+    resolving.details.update(
+        actuator_state="returned",
+        resolved_by="oncall",
+        resolve_reason="reseated GPU 3",
+        resolve_requested_at=resolved_at.isoformat(),
+    )
+    return plan_quarantine(
+        now=resolved_at,
+        live=True,
+        decisions=[],
+        states={},
+        open_episodes={("quarantine", host): resolving},
+    )
+
+
+def again(
+    resolve_plan: InfraScanPlan, at: datetime, *, live: bool = True
+) -> InfraScanPlan:
+    return plan_quarantine(
+        now=at,
+        live=live,
+        decisions=[decision("host-1")],
+        states={(s.alert_type, s.subject_key): s for s in resolve_plan.states},
+        open_episodes={},
+        pool_sizes={"pool-a": 4},
+    )
+
+
+def test_a_resolve_is_remembered_for_the_next_quarantine() -> None:
+    [state] = returned("host-1", NOW).states
+    assert (state.alert_type, state.subject_key) == ("quarantine", "host-1")
+    assert state.details["last_resolve"] == {
+        "at": NOW.isoformat(),
+        "by": "oncall",
+        "fix": "reseated GPU 3",
+        "reason": "the GPU query hung on 2 consecutive checks",
+    }
+
+
+def test_a_quarantine_within_a_week_of_a_resolve_pages_a_person() -> None:
+    resolve_plan = returned("host-1", NOW - timedelta(days=7))
+    result = again(resolve_plan, NOW)
+    [episode_] = result.opened
+    assert episode_.details["stage"] == "quarantining"  # it still goes out
+    assert episode_.details["repeat_of"]["by"] == "oncall"
+    assert texts(result)[0].endswith(REPEAT_NOTE)
+
+    later = again(resolve_plan, NOW + timedelta(seconds=1))
+    assert "repeat_of" not in later.opened[0].details
+    assert "pages a person" not in texts(later)[0]
+
+
+def test_a_repeat_says_so_while_held_and_in_dry_run() -> None:
+    resolve_plan = returned("host-1", NOW - timedelta(hours=5))
+    held = plan_quarantine(
+        now=NOW,
+        live=True,
+        decisions=[decision("host-1")],
+        states={(s.alert_type, s.subject_key): s for s in resolve_plan.states},
+        open_episodes={},
+        pool_sizes={"pool-a": 1},
+    )
+    assert opened(held) == {"host-1": ("held", "last_host")}
+    assert texts(held)[0].endswith(REPEAT_NOTE)
+    dry = again(resolve_plan, NOW, live=False)
+    assert texts(dry) == [
+        ":eyes: *Quarantine (dry run)* — would quarantine `host-1`: the GPU query "
+        "hung on 2 consecutive checks (again within 7 days of a resolve: would "
+        "page a person)"
+    ]

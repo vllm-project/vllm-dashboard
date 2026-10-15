@@ -1160,6 +1160,9 @@ FLEET_BREAKER_LIMIT = 3
 FLEET_BREAKER_WINDOW = timedelta(hours=1)
 OUT_STAGES = frozenset({"quarantining", "quarantined", "resolving"})
 # Why a limit blocked a decision; it opens (or would open) as 'held'.
+# A host quarantined again this soon after a resolve was likely not fixed;
+# the post asks a person to look rather than resolve it the same way again.
+REPEAT_WINDOW = timedelta(days=7)
 HELD_REASONS = {
     "pool_cap": "pool cap",
     "last_host": "last serving host in its pool",
@@ -1305,6 +1308,12 @@ def plan_quarantine(
             limit = {"paged": True}
         else:
             limit = {}
+        last_resolve = state.details.get("last_resolve")
+        if isinstance(last_resolve, dict) and now - datetime.fromisoformat(
+            str(last_resolve.get("at"))
+        ) <= REPEAT_WINDOW:
+            limit["repeat_of"] = last_resolve
+        state_details = dict(state.details)
         stage = episode.details.get("stage") if episode is not None else None
         actuator = episode.details.get("actuator_state") if episode else None
         acts = live and decision is not None and not decision.dry_run
@@ -1366,13 +1375,19 @@ def plan_quarantine(
             changes.append(
                 _stage_change(episode, {"stage": "resolved"}, resolved_at=now)
             )
+            state_details["last_resolve"] = {
+                "at": now.isoformat(),
+                "by": episode.details.get("resolved_by"),
+                "fix": episode.details.get("resolve_reason"),
+                "reason": episode.details.get("reason"),
+            }
         elif episode is not None and _actuator_stuck(episode, stage, actuator, now):
             change = _stage_change(episode, {"actuator_stuck": stage})
             changes.append(replace(change, notice="actuator_stuck"))
         if next_absent != absent:
-            out_states.append(
-                replace(state, details={**state.details, "absent_scans": next_absent})
-            )
+            state_details["absent_scans"] = next_absent
+        if state_details != state.details:
+            out_states.append(replace(state, details=state_details))
     return InfraScanPlan(
         states=tuple(out_states), opened=tuple(opened), stage_changes=tuple(changes)
     )
@@ -1521,6 +1536,16 @@ QUARANTINE_RUNBOOK = "Runbook: to be linked before quarantine goes live."
 PAGE_NOTE = "It is the last serving host in its pool; this pages a person."
 
 
+def _repeat_note(episode: InfraAlertEpisode) -> str:
+    repeat = episode.details.get("repeat_of")
+    if not isinstance(repeat, dict):
+        return ""
+    return (
+        f"\nQuarantined again within 7 days of {_escape(repeat.get('by'))}'s "
+        "resolve, so the fix may not have held; this pages a person."
+    )
+
+
 def _render_quarantine(episode: InfraAlertEpisode) -> str:
     host = _code(episode.subject_key)
     reason = _escape(episode.details.get("reason"))
@@ -1532,18 +1557,22 @@ def _render_quarantine(episode: InfraAlertEpisode) -> str:
             reason += f" (would be held: {hold})"
         elif paged:
             reason += " (last serving host: would page a person)"
+        if episode.details.get("repeat_of"):
+            reason += " (again within 7 days of a resolve: would page a person)"
         return f":eyes: *Quarantine (dry run)* — would quarantine {host}: {reason}"
     if stage == "held":
         held_by = HELD_REASONS.get(str(episode.details.get("held_reason")), "a limit")
         return (
             f":double_vertical_bar: *Quarantine held* ({held_by}) — {host} keeps "
             f"serving and is quarantined once a slot frees if this still holds: "
-            f"{reason}"
+            f"{reason}" + _repeat_note(episode)
         )
     if stage == "quarantining":
         return (
             f":construction: *Quarantine* — {host} will be quarantined once its "
-            f"running jobs finish: {reason}" + (f"\n{PAGE_NOTE}" if paged else "")
+            f"running jobs finish: {reason}"
+            + (f"\n{PAGE_NOTE}" if paged else "")
+            + _repeat_note(episode)
         )
     if stage == "quarantined":
         return f":no_entry: *Quarantine* — {host} is quarantined\n{QUARANTINE_RUNBOOK}"
