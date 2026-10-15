@@ -527,6 +527,17 @@ def test_a_gpu_the_device_plugin_dropped_fails_the_check(run, capsys):
     assert dash.posts[0][1]["observed"] == {"note": "only 0 of 8 GPUs are usable"}
 
 
+def test_a_check_that_passes_after_its_timeout_still_fails(run):
+    # The timeout's failure post was lost and the pod went on to pass; that
+    # attempt already failed, so the node stays out.
+    kube = FakeKube({"n1": node(True, True)}, checks={CHECK: {
+        "phase": "Succeeded", "age": datetime.timedelta(minutes=31)}})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert kube.nodes["n1"] == node(True, True)
+    assert dash.posts[0][1]["state"] == "verify_failed"
+
+
 def test_a_return_check_that_never_finishes_fails(run):
     kube = FakeKube({"n1": node(True, True)}, checks={CHECK: {
         "phase": "Pending", "age": datetime.timedelta(minutes=30)}})

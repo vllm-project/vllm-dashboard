@@ -290,14 +290,16 @@ class Actuator:
             self.post(name, want["alertId"], "verifying", {"phase": "Created"})
             return False
         phase = pod.get("status", {}).get("phase")
-        if phase == "Succeeded":
-            self.write("delete", "pod", pod_name, "-n", VERIFY_NS)
-            return True
         # strptime: the control planes' Python 3.10 fromisoformat rejects "Z".
         created = datetime.datetime.strptime(
             pod["metadata"]["creationTimestamp"], "%Y-%m-%dT%H:%M:%SZ",
         ).replace(tzinfo=datetime.timezone.utc)
         age = datetime.datetime.now(datetime.timezone.utc) - created
+        # A pass counts only within the timeout: past it, this attempt has
+        # already failed, even if reporting that failure didn't get through.
+        if phase == "Succeeded" and age < VERIFY_TIMEOUT:
+            self.write("delete", "pod", pod_name, "-n", VERIFY_NS)
+            return True
         if phase != "Failed" and age < VERIFY_TIMEOUT:
             self.post(name, want["alertId"], "verifying", {"phase": phase})
             return False

@@ -722,7 +722,8 @@ def waiting(
     """
     resolve = episode("host-1", "resolve_requested")
     resolve.details["resolve_requested_at"] = (NOW - requested_age).isoformat()
-    resolve.details["evidence"] = {"rule": rule}
+    # Quarantined for GPU 0 or the root mount, where the rule names one.
+    resolve.details["evidence"] = {"rule": rule, "gpu_index": 0, "mount_point": "/"}
     reading = HostFaultObservation(
         hostname="host-1",
         gpu_query_hung=hung,
@@ -791,6 +792,10 @@ def test_a_clean_reading_measures_the_fault_again_and_every_gpu() -> None:
     assert wait("disk") == "unchanged"
     assert wait("disk", disk_mounts=[replace(mount, error="EIO")]) == "unchanged"
     assert wait("disk", disk_mounts=[mount]) == "resolving"
+    # Another mount reading fine says nothing about the full one.
+    assert (
+        wait("disk", disk_mounts=[replace(mount, mount_point="/data")]) == "unchanged"
+    )
     assert (
         wait(
             "disk",
@@ -807,6 +812,24 @@ def test_a_clean_reading_measures_the_fault_again_and_every_gpu() -> None:
     dead = GpuDeadMemoryObservation("host-1", 0, 0.0, NOW - m)
     assert wait("dead_memory") == "unchanged"
     assert wait("dead_memory", gpu_dead_memory=[dead]) == "resolving"
+    assert (
+        wait("dead_memory", gpu_dead_memory=[replace(dead, gpu_index=1)]) == "unchanged"
+    )
+    # A GPU fault needs that GPU's field read, not [N/A].
+    gpu0 = GpuFaultObservation("host-1", 0, "None", False, NOW - m)
+    assert wait("recovery_action", gpu_faults=[gpu0]) == "resolving"
+    assert (
+        wait("recovery_action", gpu_faults=[replace(gpu0, recovery_action=None)])
+        == "unchanged"
+    )
+    assert wait("remapped_rows", gpu_faults=[gpu0]) == "resolving"
+    assert (
+        wait("remapped_rows", gpu_faults=[replace(gpu0, remapped_rows_failure=None)])
+        == "unchanged"
+    )
+    assert (
+        wait("recovery_action", gpu_faults=[replace(gpu0, gpu_index=1)]) == "unchanged"
+    )
     count = GpuCountObservation("host-1", 1, NOW - m)
     assert wait("gpu_count") == "unchanged"
     assert wait("gpu_count", gpu_counts=[count]) == "resolving"
@@ -820,6 +843,17 @@ def test_a_clean_reading_measures_the_fault_again_and_every_gpu() -> None:
     two = [GpuFaultObservation("host-1", i, "None", False, NOW - m) for i in (0, 1)]
     assert wait("xid", states=baseline, gpu_faults=two) == "resolving"
     stale = [two[0], replace(two[1], reported_at=NOW - 2 * m)]
+
+    # Each GPU's own reading must postdate the request, not just the newest.
+    def two_gpus(*ages: timedelta) -> str:
+        rows = [replace(two[i], reported_at=NOW - age) for i, age in enumerate(ages)]
+        return waiting(timedelta(0), requested_age=m // 2, rule="xid", gpu_faults=rows)
+
+    assert two_gpus(timedelta(0), timedelta(0)) == "resolving"
+    assert two_gpus(timedelta(0), m) == "unchanged"
+    # Another host's GPU doesn't make up this host's count.
+    elsewhere = replace(two[1], hostname="host-0")
+    assert wait("xid", states=baseline, gpu_faults=[two[0], elsewhere]) == "unchanged"
     assert wait("xid", states=baseline, gpu_faults=stale) == "unchanged"
     # Another host short of GPUs doesn't hold this one up.
     other = {
