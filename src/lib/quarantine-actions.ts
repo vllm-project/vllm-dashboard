@@ -107,8 +107,10 @@ export const MAX_MATCH = 200;
 /**
  * Resolves a host's open quarantine episode (alert type 'quarantine' in
  * alerting_infra_alerts) by moving its stage to 'resolving'. The episode stays
- * open: the actuator undoes its cordon and taint or lock file, and the worker
- * marks it resolved once the host is back. A dry-run ('would') episode has
+ * open: the actuator runs its return check, undoes its cordon and taint or
+ * lock file, and the worker marks it resolved once the host is back. It
+ * clears the last actuator report and return-check failure, so a check that
+ * failed before doesn't send this resolve straight back to quarantined. A dry-run ('would') episode has
  * nothing to undo, so it is a 409, as is one already resolving or resolved;
  * a host never quarantined is a 404.
  */
@@ -124,7 +126,9 @@ export async function resolveQuarantine(
           'stage', 'resolving',
           'resolved_by', ${by}::text,
           'resolve_reason', ${reason}::text,
-          'resolve_requested_at', now()
+          'resolve_requested_at', now(),
+          'actuator_state', NULL::text,
+          'verify_note', NULL::text
         ),
         updated_at = now()
     WHERE alert_type = 'quarantine'
@@ -166,10 +170,17 @@ export async function desiredQuarantines(
   cluster: string,
 ): Promise<ActionResult> {
   const rows = await db<
-    { host: string; alert_id: string; stage: string; reason: string | null }[]
+    {
+      host: string;
+      alert_id: string;
+      stage: string;
+      reason: string | null;
+      actuator_state: string | null;
+    }[]
   >`
     SELECT subject_key AS host, alert_id, details->>'stage' AS stage,
-           details->>'reason' AS reason
+           details->>'reason' AS reason,
+           details->>'actuator_state' AS actuator_state
     FROM alerting_infra_alerts
     WHERE alert_type = 'quarantine'
       AND status = 'open'
@@ -185,12 +196,21 @@ export async function desiredQuarantines(
         alertId: Number(row.alert_id),
         stage: row.stage,
         reason: row.reason,
+        // Its own last report: after 'verify_failed' it starts no new
+        // return check until a person resolves again.
+        actuatorState: row.actuator_state,
       })),
     },
   };
 }
 
-export const ACTUATOR_STATES = ["out", "drained", "returned"] as const;
+export const ACTUATOR_STATES = [
+  "out",
+  "drained",
+  "verifying",
+  "verify_failed",
+  "returned",
+] as const;
 export type ActuatorState = (typeof ACTUATOR_STATES)[number];
 
 /**

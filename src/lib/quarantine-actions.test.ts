@@ -4,6 +4,7 @@ import type { Db } from "./quarantine-actions";
 import {
   closeIncident,
   confirmIncident,
+  desiredQuarantines,
   resolveQuarantine,
 } from "./quarantine-actions";
 
@@ -26,6 +27,26 @@ test("resolving moves an open, applied or held quarantine to resolving", async (
   assert.match(queries[0], /alert_type = 'quarantine'/);
   assert.match(queries[0], /status = 'open'/);
   assert.match(queries[0], /IN \('held', 'quarantining', 'quarantined'\)/);
+  // A return check that failed before must not bounce this resolve.
+  assert.match(queries[0], /'actuator_state', NULL::text/);
+  assert.match(queries[0], /'verify_note', NULL::text/);
+});
+
+test("the desired set carries each host's last actuator report", async () => {
+  // The first answer goes to the stage-list fragment, db(ACTUATED_STAGES).
+  const { db } = fakeDb([], [
+    {
+      host: "n1",
+      alert_id: "7",
+      stage: "resolving",
+      reason: "Xid 79",
+      actuator_state: "verify_failed",
+    },
+  ]);
+  const result = await desiredQuarantines(db, "h100");
+  assert.deepEqual(result.body.nodes, [
+    { host: "n1", alertId: 7, stage: "resolving", reason: "Xid 79", actuatorState: "verify_failed" },
+  ]);
 });
 
 test("resolving a dry-run quarantine is a 409 that says nothing was applied", async () => {

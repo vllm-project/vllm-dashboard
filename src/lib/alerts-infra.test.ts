@@ -293,6 +293,16 @@ test("quarantine episodes read their stage, reason, resolver and actuator note",
     "Resolving: returning to service: Xid 79. Resolved by oncall. Actuator: left a person's cordon",
   );
   assert.equal(
+    quarantine({
+      stage: "quarantined",
+      reason: "Xid 79",
+      resolved_by: "oncall",
+      verify_note: "| Memory | Fail - GPU 3 |",
+    }),
+    "Quarantined: Xid 79. Resolved by oncall. " +
+      "Return check failed, so it stays out: | Memory | Fail - GPU 3 |.",
+  );
+  assert.equal(
     quarantine({ stage: "resolved", resolution: "decision_cleared" }, "resolved"),
     "Dry run closed: the trigger stopped firing.",
   );

@@ -198,9 +198,12 @@ function summarizeQuarantine(episode: InfraAlertEpisode): string {
     typeof observed === "object" && observed !== null
       ? stringDetail(observed as Record<string, unknown>, "note")
       : null;
+  // Kept by the worker when the return check sends a resolve back.
+  const verifyNote = stringDetail(details, "verify_note");
   return [
     `${QUARANTINE_STAGES[stage] ?? `Stage ${stage}`}${reason ? `: ${reason}` : ""}.`,
     by ? `Resolved by ${by}.` : "",
+    verifyNote ? `Return check failed, so it stays out: ${verifyNote}.` : "",
     note ? `Actuator: ${note}` : "",
   ]
     .filter(Boolean)

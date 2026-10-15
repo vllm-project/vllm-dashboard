@@ -5,6 +5,7 @@ the few kubectl calls the actuator makes; FakeDashboard serves the desired
 set and records posts.
 """
 
+import datetime
 import json
 import urllib.error
 
@@ -17,9 +18,12 @@ MARK = "vllm.ci/quarantine-cordoned"
 
 
 class FakeKube:
-    def __init__(self, nodes, pods=None):
+    def __init__(self, nodes, pods=None, checks=None):
         self.nodes = nodes  # name -> {"unschedulable": bool, "taints": [...]}
         self.pods = pods or {}  # name -> [phase, ...] in namespace buildkite
+        # Return-check pods in gpu-operator: pod name -> {phase, age, logs}.
+        self.checks = checks or {}
+        self.created = []  # return-check pod specs, as created
         self.writes = []
         self.rv = {n: 1 for n in nodes}  # resourceVersion, bumped per write
         self.fail = set()  # verbs that raise, to test partial failures
@@ -29,9 +33,43 @@ class FakeKube:
         return {"metadata": {"name": n, "resourceVersion": str(self.rv[n]),
                              "annotations": dict(s.get("annotations", {}))},
                 "spec": {"unschedulable": s["unschedulable"],
-                         "taints": list(s["taints"])}}
+                         "taints": list(s["taints"])},
+                "status": {"capacity": {"nvidia.com/gpu": "8"}}}
 
-    def __call__(self, *args):
+    def check_call(self, args, input):
+        """The return-check pod calls; None when args are not one."""
+        if args[:2] == ("get", "pod"):
+            assert args[3:] == ("-n", "gpu-operator", "-o", "json")
+            check = self.checks.get(args[2])
+            if check is None:
+                raise RuntimeError(
+                    f'kubectl get pod {args[2]} failed: Error from server '
+                    f'(NotFound): pods "{args[2]}" not found')
+            created = (datetime.datetime.now(datetime.timezone.utc)
+                       - check.get("age", datetime.timedelta(minutes=2)))
+            return json.dumps({
+                "metadata": {"creationTimestamp":
+                             created.strftime("%Y-%m-%dT%H:%M:%SZ")},
+                "status": {"phase": check["phase"]}})
+        if args[0] == "logs":
+            assert args[2:] == ("-n", "gpu-operator", "--tail=20")
+            return self.checks[args[1]]["logs"]
+        if args[0] == "create":
+            self.writes.append(args)
+            spec = json.loads(input)
+            self.created.append(spec)
+            self.checks[spec["metadata"]["name"]] = {"phase": "Pending"}
+            return ""
+        if args[:2] == ("delete", "pod"):
+            self.writes.append(args)
+            del self.checks[args[2]]
+            return ""
+        return None
+
+    def __call__(self, *args, input=None):
+        checked = self.check_call(args, input)
+        if checked is not None:
+            return checked
         if args[:2] == ("get", "nodes"):
             return json.dumps({"items": [self.node_json(n)
                                          for n in self.nodes]})
@@ -148,11 +186,18 @@ def test_drained_once_no_ci_pod_runs_or_waits(run):
     assert dash.posts[0][1]["observed"]["ciPods"] == 0
 
 
+CHECK = "vllm-quarantine-verify-n1"
+PASSED = {CHECK: {"phase": "Succeeded"}}
+DELETE_CHECK = ("delete", "pod", CHECK, "-n", "gpu-operator")
+
+
 def test_resolve_with_our_taint_returns_node(run):
-    kube = FakeKube({"n1": node(True, True, other=["gpu=bad"])})
+    kube = FakeKube({"n1": node(True, True, other=["gpu=bad"])},
+                    checks=dict(PASSED))
     dash = FakeDashboard([want("n1", "resolving")])
     assert run(kube, dash) == 0
-    assert kube.writes == [("taint", "nodes", "n1", f"{KEY}:NoSchedule-"),
+    assert kube.writes == [DELETE_CHECK,
+                           ("taint", "nodes", "n1", f"{KEY}:NoSchedule-"),
                            cordon_patch("n1", 2, on=False)]
     assert kube.nodes["n1"] == node(other=["gpu=bad"])
     assert dash.posts[0][1]["state"] == "returned"
@@ -174,6 +219,7 @@ def test_person_cordon_survives_quarantine_and_resolve(run):
     assert kube.writes == [("taint", "nodes", "n1",
                             f"{KEY}=Xid-79-GPU-fell-off-the-bus:NoSchedule")]
     dash = FakeDashboard([want("n1", "resolving")])
+    kube.checks = dict(PASSED)
     assert run(kube, dash) == 0
     assert kube.nodes["n1"] == node(unschedulable=True)  # cordoned, no taint
     body = dash.posts[0][1]
@@ -217,6 +263,7 @@ def test_dry_run_changes_nothing(run, capsys):
     assert kube.writes == [] and dash.posts == []
     out = capsys.readouterr().out
     assert "DRY RUN: kubectl patch node n1" in out
+    assert "DRY RUN: would run the return check on n2" in out
     assert "DRY RUN: kubectl patch node n2" in out
 
 
@@ -242,8 +289,8 @@ def test_slow_nodes_do_not_hold_up_a_new_quarantine(run):
     waited = {}
 
     class Kube(FakeKube):
-        def __call__(self, *args):
-            out = super().__call__(*args)
+        def __call__(self, *args, input=None):
+            out = super().__call__(*args, input=input)
             if args[:3] == ("patch", "node", "n3"):
                 n3_cordoned.set()
             return out
@@ -294,6 +341,7 @@ def test_taint_failure_after_cordon_still_resolves_cleanly(run):
     assert run(kube, dash) == 0
     assert any(t["key"] == KEY for t in kube.nodes["n1"]["taints"])
     resolve = FakeDashboard([want("n1", "resolving")])
+    kube.checks = dict(PASSED)
     assert run(kube, resolve) == 0
     assert kube.nodes["n1"] == node()
     assert "note" not in resolve.posts[0][1]["observed"]
@@ -306,11 +354,11 @@ def test_cordon_by_a_person_mid_run_is_never_marked_ours(run):
     kube = FakeKube({"n1": node()})
     real = kube.__call__
 
-    def racing(*args):
+    def racing(*args, input=None):
         if args[0] == "patch":
             kube.nodes["n1"]["unschedulable"] = True
             kube.rv["n1"] += 1
-        return real(*args)
+        return real(*args, input=input)
 
     dash = FakeDashboard([want("n1", "quarantining")])
     assert run(racing, dash) == 1
@@ -318,6 +366,166 @@ def test_cordon_by_a_person_mid_run_is_never_marked_ours(run):
     assert run(kube, dash) == 0
     assert kube.nodes["n1"]["annotations"] == {}
     resolve = FakeDashboard([want("n1", "resolving")])
+    kube.checks = dict(PASSED)
     assert run(kube, resolve) == 0
     assert kube.nodes["n1"]["unschedulable"] is True  # the person's cordon
     assert "pre-existing cordon" in resolve.posts[0][1]["observed"]["note"]
+
+
+def test_resolve_runs_the_return_check_before_returning(run):
+    kube = FakeKube({"n1": node(True, True)})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    # The check starts; the node stays out.
+    assert kube.writes == [("create", "-f", "-")]
+    assert kube.nodes["n1"] == node(True, True)
+    assert dash.posts == [("n1", {"alertId": 7, "state": "verifying",
+                                  "observed": {"phase": "Created"}})]
+    assert kube.created == [{
+        "apiVersion": "v1", "kind": "Pod",
+        "metadata": {"name": CHECK, "namespace": "gpu-operator",
+                     "labels": {"app": "vllm-quarantine-verify"}},
+        "spec": {
+            "nodeName": "n1", "restartPolicy": "Never",
+            "runtimeClassName": "nvidia",
+            "tolerations": [{"operator": "Exists"}],
+            "containers": [{
+                "name": "verify",
+                "image": "nvcr.io/nvidia/cloud-native/dcgm:4.4.2-1-ubuntu22.04",
+                "command": ["bash", "-c", run.mod.VERIFY_SCRIPT, "verify", "2"],
+                "securityContext": {"capabilities": {"add": ["SYS_ADMIN"]}},
+                "resources": {"limits": {"nvidia.com/gpu": "8"}},
+            }],
+        },
+    }]
+    assert "dcgmi diag -r \"$1\"" in run.mod.VERIFY_SCRIPT
+
+    # Still running: no change, still verifying.
+    kube.checks[CHECK]["phase"] = "Running"
+    dash.posts.clear()
+    assert run(kube, dash) == 0
+    assert kube.writes == [("create", "-f", "-")]
+    assert dash.posts[0][1]["state"] == "verifying"
+    assert dash.posts[0][1]["observed"] == {"phase": "Running"}
+
+    # Passed: the pod goes and the node comes back.
+    kube.checks[CHECK]["phase"] = "Succeeded"
+    dash.posts.clear()
+    assert run(kube, dash) == 0
+    assert kube.checks == {}
+    assert kube.nodes["n1"] == node()
+    assert [body["state"] for _, body in dash.posts] == ["returned"]
+
+
+def test_a_failed_return_check_keeps_the_node_out(run, capsys):
+    kube = FakeKube({"n1": node(True, True)}, checks={CHECK: {
+        "phase": "Failed",
+        "logs": "0, None, No\n| Memory | Fail - GPU 3 |\nline 3\nline 4\n"}})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert kube.writes == [DELETE_CHECK + ("--wait=false",)]
+    assert kube.nodes["n1"] == node(True, True)
+    assert dash.posts == [("n1", {"alertId": 7, "state": "verify_failed",
+                                  "observed": {"note": (
+                                      "| Memory | Fail - GPU 3 | / line 3 / "
+                                      "line 4")}})]
+
+    assert "n1: return check failed: | Memory" in capsys.readouterr().out
+
+    # Until a person resolves again, no new check starts.
+    failed = dict(want("n1", "resolving"), actuatorState="verify_failed")
+    dash = FakeDashboard([failed])
+    kube.writes.clear()
+    assert run(kube, dash) == 0
+    assert kube.writes == [] and dash.posts == []
+    assert ("n1 failed its return check; waiting for a resolve"
+            in capsys.readouterr().out)
+
+
+@pytest.mark.parametrize("logs, note", [
+    ("", "no output"),
+    ("x" * 400, "x" * 300),
+])
+def test_a_failure_note_is_never_empty_or_long(run, logs, note):
+    kube = FakeKube({"n1": node(True, True)},
+                    checks={CHECK: {"phase": "Failed", "logs": logs}})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert dash.posts[0][1]["observed"] == {"note": note}
+
+
+def test_a_return_check_that_never_finishes_fails(run):
+    kube = FakeKube({"n1": node(True, True)}, checks={CHECK: {
+        "phase": "Pending", "age": datetime.timedelta(minutes=30)}})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert kube.writes == [DELETE_CHECK + ("--wait=false",)]
+    assert dash.posts[0][1] == {"alertId": 7, "state": "verify_failed",
+                                "observed": {"note": "did not finish in 30 "
+                                             "min (Pending)"}}
+
+    kube = FakeKube({"n1": node(True, True)}, checks={CHECK: {
+        "phase": "Pending", "age": datetime.timedelta(minutes=29)}})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert dash.posts[0][1]["state"] == "verifying"
+
+
+def test_a_node_that_lost_our_taint_but_kept_our_cordon_is_checked(run):
+    kube = FakeKube({"n1": node(True, marked=True)})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert dash.posts[0][1]["state"] == "verifying"
+    assert kube.nodes["n1"]["unschedulable"] is True
+
+
+def test_the_return_check_is_skipped_for_a_node_we_never_took_out(run):
+    # A held quarantine resolved before it went out: nothing to check.
+    kube = FakeKube({"n1": node()})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert kube.created == []
+    assert dash.posts[0][1]["state"] == "returned"
+
+
+def test_level_zero_skips_the_return_check(run, monkeypatch):
+    monkeypatch.setattr(run.mod, "VERIFY_LEVEL", "0")
+    kube = FakeKube({"n1": node(True, True)})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert kube.created == []
+    assert kube.nodes["n1"] == node()
+
+
+def test_a_check_pod_lookup_error_changes_nothing(run):
+    kube = FakeKube({"n1": node(True, True)})
+
+    def flaky(*args, input=None):
+        if args[:2] == ("get", "pod"):
+            raise RuntimeError("kubectl get pod failed: connection refused")
+        return kube(*args, input=input)
+
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(flaky, dash) == 1
+    assert kube.writes == [] and dash.posts == []
+
+
+def test_verify_settings_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("QUARANTINE_VERIFY_LEVEL", "3")
+    monkeypatch.setenv("QUARANTINE_VERIFY_IMAGE", "dcgm:test")
+    mod = load_module("quarantine_actuator_k8s", "quarantine-actuator-k8s.py")
+    assert (mod.VERIFY_LEVEL, mod.VERIFY_IMAGE) == ("3", "dcgm:test")
+
+
+def test_kubectl_passes_input_and_returns_stdout(run, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return type("Done", (), {"returncode": 0, "stdout": "ok", "stderr": ""})
+
+    monkeypatch.setattr(run.mod.subprocess, "run", fake_run)
+    assert run.mod.kubectl("create", "-f", "-", input="{}") == "ok"
+    assert calls == [(["kubectl", "create", "-f", "-"], {
+        "capture_output": True, "text": True, "input": "{}",
+        "timeout": run.mod.KUBECTL_TIMEOUT})]

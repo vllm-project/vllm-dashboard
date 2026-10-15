@@ -1213,6 +1213,82 @@ def test_actuator_not_confirming_posts_once_per_stage() -> None:
     assert len(slack.deliveries) == 4
 
 
+def test_a_failed_return_check_sends_a_resolve_back_to_quarantined() -> None:
+    decisions = [quarantine_decision()]
+    runtime, store, slack, clock = quarantine_runtime(decisions, live=True)
+    scan_and_post(runtime, clock)
+    store.update_details("quarantine", "gpu-node-7", actuator_state="drained")
+    scan_and_post(runtime, clock)
+    assert len(slack.deliveries) == 2
+
+    def resolve() -> None:
+        store.update_details(
+            "quarantine",
+            "gpu-node-7",
+            stage="resolving",
+            resolved_by="oncall",
+            resolve_requested_at=clock.now().isoformat(),
+            # What the resolve endpoint clears.
+            actuator_state=None,
+            verify_note=None,
+        )
+
+    def fail_check() -> str:
+        store.update_details(
+            "quarantine",
+            "gpu-node-7",
+            actuator_state="verify_failed",
+            actuator_observed={"note": "| Memory | Fail - GPU 3 |"},
+        )
+        scan_and_post(runtime, clock)
+        assert store.open_episodes()[0].details["stage"] == "quarantined"
+        delivery = slack.deliveries[-1]
+        assert delivery.delivery_id.endswith(
+            f":quarantined:verify_failed:{clock.now().isoformat()}"
+        )
+        return str(delivery.payload["text"])
+
+    def stuck_after_two_scans() -> None:
+        before = len(slack.deliveries)
+        scan_and_post(runtime, clock)
+        scan_and_post(runtime, clock)
+        assert len(slack.deliveries) == before + 1
+        delivery = slack.deliveries[-1]
+        assert "has not confirmed returning" in delivery.payload["text"]
+        assert delivery.delivery_id.endswith(
+            f":resolving:actuator_stuck:{clock.now().isoformat()}"
+        )
+
+    # A check running past the confirm timeout is not a stuck actuator.
+    resolve()
+    store.update_details("quarantine", "gpu-node-7", actuator_state="verifying")
+    for _ in range(4):
+        scan_and_post(runtime, clock)
+    assert store.open_episodes()[0].details["stage"] == "resolving"
+    assert len(slack.deliveries) == 2
+
+    assert fail_check() == (
+        ":x: *Quarantine* — `gpu-node-7` failed its return check and stays "
+        "quarantined: | Memory | Fail - GPU 3 |\n"
+        "Runbook: to be linked before quarantine goes live."
+    )
+    [episode] = store.open_episodes()
+    assert episode.details["verify_note"] == "| Memory | Fail - GPU 3 |"
+    assert episode.details["verify_failed_at"] == clock.now().isoformat()
+    scan_and_post(runtime, clock)
+    assert len(slack.deliveries) == 3
+
+    # Each later resolve gets its own confirm timer and failure post.
+    resolve()
+    stuck_after_two_scans()
+    fail_check()
+    resolve()
+    stuck_after_two_scans()
+    store.update_details("quarantine", "gpu-node-7", actuator_state="returned")
+    scan_and_post(runtime, clock)
+    assert store.open_episodes() == []
+
+
 def job_failure_runtime(
     fetch: Any, *, live: bool = False
 ) -> tuple[AlertingRuntime, InMemoryInfraStore, RecordingSlackPort, FixedClock]:

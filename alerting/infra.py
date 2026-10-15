@@ -239,8 +239,10 @@ class QuarantineStageChange:
     from_stage: str
     patch: dict[str, Any]
     silent: bool = False
-    # Set for a post about the episode rather than a move to its next stage;
-    # only "actuator_stuck" so far.
+    # Set for a post about the episode rather than a plain move to its next
+    # stage: "actuator_stuck:<scan time>" or "verify_failed:<scan time>". A
+    # failed return check sends a resolve back, so an episode can see each
+    # more than once; the scan time keeps their delivery ids apart.
     notice: str | None = None
 
 
@@ -1117,7 +1119,8 @@ DRY_RUN_EXPIRY_SCANS = 2
 
 # The actuators run every minute; one that has not confirmed a quarantine
 # ('out') or a resolve ('returned') this long after the command is stuck, and
-# the host may be half out. Posted once per stage.
+# the host may be half out. Posted once per stage. 'verifying' is a resolve
+# still in the return check, which times itself out on the actuator.
 ACTUATOR_CONFIRM_TIMEOUT = timedelta(minutes=10)
 
 
@@ -1128,7 +1131,7 @@ def _actuator_stuck(
         return False
     if stage == "quarantining" and actuator not in ("out", "drained"):
         since = episode.details.get("commanded_at")
-    elif stage == "resolving" and actuator != "returned":
+    elif stage == "resolving" and actuator != "verifying":
         since = episode.details.get("resolve_requested_at")
     else:
         return False
@@ -1410,9 +1413,27 @@ def plan_quarantine(
                 "fix": episode.details.get("resolve_reason"),
                 "reason": episode.details.get("reason"),
             }
+        elif stage == "resolving" and actuator == "verify_failed":
+            # The host failed the actuator's return check and is still out.
+            observed = episode.details.get("actuator_observed")
+            change = _stage_change(
+                episode,
+                {
+                    "stage": "quarantined",
+                    "verify_failed_at": now.isoformat(),
+                    "verify_note": observed.get("note")
+                    if isinstance(observed, dict)
+                    else None,
+                    # The next resolve gets its own confirm timer.
+                    "actuator_stuck": None,
+                },
+            )
+            changes.append(replace(change, notice=f"verify_failed:{now.isoformat()}"))
         elif episode is not None and _actuator_stuck(episode, stage, actuator, now):
             change = _stage_change(episode, {"actuator_stuck": stage})
-            changes.append(replace(change, notice="actuator_stuck"))
+            changes.append(
+                replace(change, notice=f"actuator_stuck:{now.isoformat()}")
+            )
         if next_absent != absent:
             state_details["absent_scans"] = next_absent
         if state_details != state.details:
@@ -1637,6 +1658,12 @@ def _render_quarantine(episode: InfraAlertEpisode) -> str:
             f"running jobs finish: {reason}"
             + (f"\n{PAGE_NOTE}" if paged else "")
             + _repeat_note(episode)
+        )
+    if stage == "quarantined" and episode.details.get("verify_failed_at"):
+        failure = _escape(episode.details.get("verify_note"))
+        return (
+            f":x: *Quarantine* — {host} failed its return check and stays "
+            f"quarantined: {failure}\n{QUARANTINE_RUNBOOK}"
         )
     if stage == "quarantined":
         return f":no_entry: *Quarantine* — {host} is quarantined\n{QUARANTINE_RUNBOOK}"
@@ -1912,7 +1939,7 @@ def infra_notifications(
                 + (f":{change.notice}" if change.notice else ""),
                 text=(
                     _render_actuator_stuck(change.episode)
-                    if change.notice == "actuator_stuck"
+                    if str(change.notice).startswith("actuator_stuck:")
                     else _render_quarantine(change.episode)
                 ),
                 delivery_mode=delivery_mode,
