@@ -138,6 +138,7 @@ export async function resolveQuarantine(
           'resolved_by', ${by}::text,
           'resolve_reason', ${reason}::text,
           'resolve_requested_at', now(),
+          'resolving_at', NULL::text,
           'actuator_state', NULL::text,
           'verify_note', NULL::text,
           'verify_check', NULL::text

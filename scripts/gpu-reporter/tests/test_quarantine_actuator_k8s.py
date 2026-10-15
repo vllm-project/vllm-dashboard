@@ -37,7 +37,8 @@ class FakeKube:
                          "taints": list(s["taints"])},
                 "status": {"capacity": {"nvidia.com/gpu": "8"},
                            "allocatable": {
-                               "nvidia.com/gpu": s.get("allocatable", "8")}}}
+                               "nvidia.com/gpu": s.get("allocatable", "8")}
+                           if s.get("allocatable", "8") is not None else {}}}
 
     def check_call(self, args, input):
         """The return-check pod calls; None when args are not one."""
@@ -518,6 +519,12 @@ def test_a_gpu_the_device_plugin_dropped_fails_the_check(run, capsys):
                                   "observed": {"note": "only 7 of 8 GPUs are usable"}})]
     assert ("  n1: return check failed: only 7 of 8 GPUs are usable\n"
             in capsys.readouterr().out)
+
+    # A plugin that dropped the resource entirely is the same failure.
+    kube = FakeKube({"n1": dict(node(True, True), allocatable=None)})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert dash.posts[0][1]["observed"] == {"note": "only 0 of 8 GPUs are usable"}
 
 
 def test_a_return_check_that_never_finishes_fails(run):

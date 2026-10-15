@@ -60,6 +60,8 @@ test("resolving moves an open, applied or held quarantine on", async () => {
   assert.match(queries[0], /'actuator_state', NULL::text/);
   assert.match(queries[0], /'verify_note', NULL::text/);
   assert.match(queries[0], /'verify_check', NULL::text/);
+  // A forced resolve's stuck timer runs from this request, not an old hand-over.
+  assert.match(queries[0], /'resolving_at', NULL::text/);
 });
 
 test("the desired set carries each host's last actuator report", async () => {

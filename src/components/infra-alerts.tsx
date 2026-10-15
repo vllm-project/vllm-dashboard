@@ -159,6 +159,8 @@ function EpisodeRow({
       </p>
       {onResolveQuarantine && isResolvableQuarantine(episode) && (
         <ResolveQuarantineForm
+          // A resolve that moves the episode on starts the form afresh.
+          key={String(episode.details.stage)}
           host={episode.subjectKey}
           onResolve={onResolveQuarantine}
           forceOnly={episode.details.stage === "resolve_requested"}

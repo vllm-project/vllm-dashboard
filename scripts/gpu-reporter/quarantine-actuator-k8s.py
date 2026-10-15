@@ -277,8 +277,10 @@ class Actuator:
                 print(f"  {name}: waiting for {pods} CI pod(s) before the "
                       "return check")
                 return False
-            usable = node["status"]["allocatable"][GPU_RESOURCE]
-            total = node["status"]["capacity"][GPU_RESOURCE]
+            # The device plugin may drop the resource entirely.
+            status = node["status"]
+            usable = status.get("allocatable", {}).get(GPU_RESOURCE, "0")
+            total = status.get("capacity", {}).get(GPU_RESOURCE, "0")
             if usable != total:
                 note = f"only {usable} of {total} GPUs are usable"
                 print(f"  {name}: return check failed: {note}")
