@@ -114,6 +114,45 @@ test("Databricks multi-chunk results follow chunk links", async (t) => {
   ]);
 });
 
+test("results over the inline byte limit are refetched through external links", async (t) => {
+  configureWarehouse(t);
+  const dispositions: string[] = [];
+  const externalAuth: (string | null)[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+    const auth = new Headers(init?.headers).get("Authorization");
+    if (url.startsWith("https://storage.example/")) {
+      externalAuth.push(auth);
+      return Response.json(url.endsWith("/0") ? [["eval-a"], ["eval-b"]] : [["eval-c"]]);
+    }
+    if (url.endsWith("/chunks/1")) {
+      return Response.json({ external_links: [{ chunk_index: 1, external_link: "https://storage.example/1" }] });
+    }
+    dispositions.push(JSON.parse(String(init?.body)).disposition);
+    if (dispositions.length === 1) {
+      return Response.json({
+        status: {
+          state: "FAILED",
+          error: { message: "Inline byte limit exceeded. Statements executed with disposition=INLINE can have a result size of at most 26214400 bytes." },
+        },
+      });
+    }
+    return Response.json({
+      status: { state: "SUCCEEDED" },
+      manifest: { schema: { columns: [{ name: "m" }] }, truncated: false, total_chunk_count: 2, total_row_count: 3 },
+      result: {
+        external_links: [{
+          chunk_index: 0, external_link: "https://storage.example/0",
+          next_chunk_internal_link: "/api/2.0/sql/statements/s1/result/chunks/1",
+        }],
+      },
+    });
+  });
+  const rows = await queryDatabricks<{ m: string }>("SELECT m FROM evals");
+  assert.deepEqual(rows.map((row) => row.m), ["eval-a", "eval-b", "eval-c"]);
+  assert.deepEqual(dispositions, ["INLINE", "EXTERNAL_LINKS"]);
+  assert.deepEqual(externalAuth, [null, null]);
+});
+
 test("Databricks chunk fetch failures are surfaced", async (t) => {
   configureWarehouse(t);
   t.mock.method(globalThis, "fetch", async (url: string) => url.includes("/chunks/")
