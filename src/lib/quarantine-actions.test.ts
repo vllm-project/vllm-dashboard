@@ -62,6 +62,8 @@ test("resolving moves an open, applied or held quarantine on", async () => {
   assert.match(queries[0], /'verify_check', NULL::text/);
   // A forced resolve's stuck timer runs from this request, not an old hand-over.
   assert.match(queries[0], /'resolving_at', NULL::text/);
+  // The H200 pauser returns a host it never took out without a check.
+  assert.match(queries[0], /'resolved_while_held', \(details->>'stage' = 'held'\)/);
 });
 
 test("the desired set carries each host's last actuator report", async () => {
@@ -73,6 +75,7 @@ test("the desired set carries each host's last actuator report", async () => {
       stage: "resolving",
       reason: "Xid 79",
       actuator_state: "verify_failed",
+      resolved_while_held: "true",
     },
   ]);
   const result = await desiredQuarantines(db, "h100");
@@ -92,8 +95,19 @@ test("the desired set carries each host's last actuator report", async () => {
     "resolving",
   ]);
   assert.deepEqual(result.body.nodes, [
-    { host: "n1", alertId: 7, stage: "resolving", reason: "Xid 79", actuatorState: "verify_failed" },
+    {
+      host: "n1",
+      alertId: 7,
+      stage: "resolving",
+      reason: "Xid 79",
+      actuatorState: "verify_failed",
+      resolvedWhileHeld: true,
+    },
   ]);
+  const notHeld = fakeDb([], [{ host: "n1", alert_id: "7", resolved_while_held: null }]);
+  const plain = await desiredQuarantines(notHeld.db, "h100");
+  const [node] = (plain.body as { nodes: { resolvedWhileHeld: boolean }[] }).nodes;
+  assert.equal(node.resolvedWhileHeld, false);
 });
 
 test("resolving a dry-run quarantine is a 409 that says nothing was applied", async () => {

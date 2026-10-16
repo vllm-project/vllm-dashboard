@@ -10,3 +10,5 @@ EnvironmentFile=/etc/gpu-reporter.env
 ExecStart=/usr/bin/python3 /opt/gpu-reporter/quarantine-check-host.py --dry-run
 # A MIG host diags its GPUs one at a time, each capped at 30 min.
 TimeoutSec=5h
+# /var/lib/gpu-reporter keeps the episode being checked and its result.
+StateDirectory=gpu-reporter

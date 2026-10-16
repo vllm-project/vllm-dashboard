@@ -23,7 +23,10 @@ checks the GPUs before the pauser may lift the pauses:
 
 While it runs it posts "verifying" every minute, then "verified" or
 "verify_failed" with a note. A failure keeps the host out until a person
-resolves again, including slices that didn't come back.
+resolves again, including slices that didn't come back. The result is
+saved under /var/lib/gpu-reporter, so one the dashboard didn't get is sent
+again on the next run; a check cut off midway (a reboot) is reported as a
+failure, so the host can't wait on it forever.
 
 Usage (env from /etc/gpu-reporter.env, as gpu-reporter.service):
   python3 quarantine-check-host.py [--dry-run]
@@ -41,6 +44,7 @@ Environment variables:
 import argparse
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -60,6 +64,11 @@ HEARTBEAT_SECONDS = 60
 COMMAND_TIMEOUT = 120
 DIAG_TIMEOUT = 30 * 60
 FULL_GPU_PROFILE = "0"
+# The episode being checked and, once known, its result: a result the
+# dashboard didn't get is sent again, and a check with none was cut off.
+STATE_PATH = "/var/lib/gpu-reporter/quarantine-check.json"
+INTERRUPTED = ("the check was cut off before it finished (host restart?); "
+               "check the MIG layout with nvidia-smi -L before resolving again")
 
 
 def http_json(method, path, body=None):
@@ -137,14 +146,14 @@ def check_mig_gpu(index, uuid, profiles):
         clear_mig(index)
         must(["nvidia-smi", "mig", "-cgi", FULL_GPU_PROFILE, "-C", "-i", index])
         diag(f"device={uuid}")
-    except (CheckFailed, TimeoutError) as e:
+    except Exception as e:
         failure = f"GPU {index}: {e}"
     else:
         failure = None
     try:
         clear_mig(index)
         must(["nvidia-smi", "mig", "-cgi", ",".join(profiles), "-C", "-i", index])
-    except (CheckFailed, TimeoutError) as e:
+    except Exception as e:
         raise CheckFailed(f"MIG layout not restored on GPU {index}: {e}") from None
     if failure:
         raise CheckFailed(failure)
@@ -152,6 +161,8 @@ def check_mig_gpu(index, uuid, profiles):
 
 def check():
     """Raises CheckFailed with a note when the host isn't fit to return."""
+    if shutil.which("docker") is None:
+        raise CheckFailed("docker is not installed")
     apps = must(["nvidia-smi", "--query-compute-apps=pid,process_name",
                  "--format=csv,noheader"]).strip()
     if apps:
@@ -192,6 +203,20 @@ def check():
         raise CheckFailed(" / ".join(failures))
 
 
+def load_state():
+    try:
+        with open(STATE_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(alert_id, result):
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+    with open(STATE_PATH, "w") as f:
+        json.dump({"alertId": alert_id, "result": result}, f)
+
+
 class Reporter:
     """Posts "verifying" every HEARTBEAT_SECONDS until stopped."""
 
@@ -230,33 +255,47 @@ def main(argv=None):
         print(f"ERROR: desired set unavailable: {e}", file=sys.stderr)
         return 1
     want = next((w for w in desired if w["host"] == HOST), None)
-    if (want is None or want["stage"] != "resolving"
-            or want.get("actuatorState") != "drained"):
+    state = (want or {}).get("actuatorState")
+    if want is None or want["stage"] != "resolving" or state not in (
+            "drained", "verifying"):
         print(f"{HOST}: nothing to check")
         return 0
     if args.dry_run:
         print(f"DRY RUN: would run the return check on {HOST}")
         return 0
     reporter = Reporter(want["alertId"])
+    if state == "verifying":
+        # No check runs now (systemd starts one run at a time), so this
+        # one's result never reached the dashboard, or it was cut off.
+        saved = load_state()
+        if saved.get("alertId") != want["alertId"]:
+            print(f"{HOST}: verifying, but not by this host's check")
+            return 0
+        result = saved.get("result") or ["verify_failed", {"note": INTERRUPTED}]
+        save_state(want["alertId"], result)
+        reporter.post(*result)
+        return 0 if reporter.ok else 1
     if VERIFY_LEVEL == "0":
         reporter.post("verified", {"note": "QUARANTINE_VERIFY_LEVEL=0"})
         return 0 if reporter.ok else 1
+    save_state(want["alertId"], None)
     reporter.post("verifying", {"phase": "Started"})
     beat = threading.Thread(target=reporter.beat, daemon=True)
     beat.start()
     try:
         check()
-        result = ("verified", {})
+        result = ["verified", {}]
     except (CheckFailed, TimeoutError) as e:
-        result = ("verify_failed", {"note": str(e)[:300]})
+        result = ["verify_failed", {"note": str(e)[:300]}]
     except Exception as e:
-        result = ("verify_failed", {"note": f"check crashed: {e}"[:300]})
-    reporter.stop.set()
-    beat.join()
+        result = ["verify_failed", {"note": f"check crashed: {e}"[:300]}]
+    finally:
+        reporter.stop.set()
+        beat.join()
+    save_state(want["alertId"], result)
     print(f"{HOST}: {result[0]} {result[1].get('note', '')}")
     reporter.post(*result)
     return 0 if reporter.ok else 1
-
 
 if __name__ == "__main__":
     sys.exit(main())

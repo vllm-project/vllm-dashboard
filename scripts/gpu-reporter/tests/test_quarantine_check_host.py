@@ -100,10 +100,13 @@ def want(stage="resolving", actuator_state="drained", host=HOST):
 
 
 @pytest.fixture()
-def run(monkeypatch):
+def run(monkeypatch, tmp_path):
     mod = load_module("quarantine_check_host", "quarantine-check-host.py")
     monkeypatch.setattr(mod, "REPORT_URL", "https://dash.example/api/gpu/report")
     monkeypatch.setattr(mod, "HOST", HOST)
+    monkeypatch.setattr(mod, "STATE_PATH", str(tmp_path / "check.json"))
+    monkeypatch.setattr(mod.shutil, "which",
+                        lambda name: "/usr/bin/docker" if name == "docker" else None)
 
     def go(host, dash, *argv):
         monkeypatch.setattr(mod, "run_cmd", host)
@@ -450,3 +453,97 @@ def test_a_long_crash_note_is_cut_to_300_characters(run):
         raise ValueError("x" * 400)
     assert run(crashes, dash) == 0
     assert dash.posts[-1]["observed"]["note"] == ("check crashed: " + "x" * 400)[:300]
+
+
+def test_a_lost_result_is_sent_again_on_the_next_run(run):
+    host = FakeHost(gpus=1)
+    real = FakeDashboard([want()])
+    lost = []
+
+    def last_post_fails(method, path, body=None):
+        if method == "POST" and body["state"] != "verifying":
+            lost.append(body)
+            raise urllib.error.URLError("connection refused")
+        return real(method, path, body)
+    assert run(host, last_post_fails) == 1
+    calls = len(host.calls)
+    # The dashboard still says verifying; the next run sends the result
+    # without checking again.
+    dash = FakeDashboard([want(actuator_state="verifying")])
+    assert run(host, dash) == 0
+    assert dash.posts == lost == [{"alertId": 7, "state": "verified", "observed": {}}]
+    assert len(host.calls) == calls
+
+
+def test_a_check_cut_off_midway_fails_so_the_host_isnt_stuck(run):
+    host = FakeHost(gpus=1)
+    real = FakeDashboard([want()])
+
+    def dies(cmd, timeout):
+        if cmd[0] == "docker":
+            raise KeyboardInterrupt  # the host rebooting mid-check
+        return host(cmd, timeout)
+    with pytest.raises(KeyboardInterrupt):
+        run(dies, real)
+    dash = FakeDashboard([want(actuator_state="verifying")])
+    assert run(host, dash) == 0
+    assert dash.posts == [{"alertId": 7, "state": "verify_failed", "observed": {
+        "note": "the check was cut off before it finished (host restart?); "
+                "check the MIG layout with nvidia-smi -L before resolving again"}}]
+
+
+def test_verifying_for_another_episode_is_left_alone(run):
+    host, dash = FakeHost(), FakeDashboard([dict(want(actuator_state="verifying"),
+                                                 alertId=8)])
+    assert run(host, dash) == 0
+    assert host.calls == [] and dash.posts == []
+
+
+def test_a_new_resolve_of_the_same_episode_checks_again(run):
+    host = FakeHost(mig=False)
+    host.diag["all"] = (1, "Fail")
+    assert run(host, FakeDashboard([want()])) == 0
+    host.diag["all"] = DIAG_PASS
+    dash = FakeDashboard([want()])
+    assert run(host, dash) == 0
+    assert [p["state"] for p in dash.posts] == ["verifying", "verified"]
+
+
+def test_any_error_during_a_gpus_diag_still_puts_its_slices_back(run):
+    host, dash = FakeHost(gpus=1), FakeDashboard([want()])
+    real = host.__call__
+
+    def exec_fails(cmd, timeout):
+        if cmd[0] == "docker":
+            raise OSError("exec format error")
+        return real(cmd, timeout)
+    assert run(exec_fails, dash) == 0
+    assert dash.posts[-1]["observed"]["note"] == "GPU 0: exec format error"
+    assert host.layout == {0: ["1g.35gb"] * 4}
+
+
+def test_no_docker_fails_before_any_slice_is_touched(run, monkeypatch):
+    monkeypatch.setattr(run.mod.shutil, "which", lambda name: None)
+    host, dash = FakeHost(gpus=1), FakeDashboard([want()])
+    assert run(host, dash) == 0
+    assert dash.posts[-1]["observed"]["note"] == "docker is not installed"
+    assert not any(c[:2] == ["nvidia-smi", "mig"] for c in host.calls)
+
+
+def test_its_state_lives_in_the_units_state_directory():
+    mod = load_module("check_paths", "quarantine-check-host.py")
+    assert mod.STATE_PATH == "/var/lib/gpu-reporter/quarantine-check.json"
+    unit = (load_module.__globals__["SCRIPTS_DIR"]
+            / "quarantine-check-host.service").read_text()
+    assert "StateDirectory=gpu-reporter" in unit
+
+
+def test_a_result_that_still_cant_be_sent_fails_the_run(run):
+    host = FakeHost(gpus=1)
+    assert run(host, FakeDashboard([want()])) == 0
+
+    def posts_fail(method, path, body=None):
+        if method == "POST":
+            raise urllib.error.URLError("connection refused")
+        return {"nodes": [want(actuator_state="verifying")]}
+    assert run(host, posts_fail) == 1

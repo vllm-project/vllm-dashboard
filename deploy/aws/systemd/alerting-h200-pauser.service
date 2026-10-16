@@ -19,6 +19,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
+# ProtectSystem=strict mounts /run read-only; load-secrets writes the
+# credential file there and a failed run leaves its error in failures/.
+ReadWritePaths=/run/alerting
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true

@@ -18,8 +18,9 @@ its running job and takes no new one. No host access is needed.
       the post carries reapplied: true. A person's pause (any other note) is
       left alone and counts as out.
   resolving
-      A host with none of our pauses (a held quarantine that was resolved)
-      is returned at once. Otherwise the host's own check
+      A host resolved while held (resolvedWhileHeld in the desired set)
+      never went out and is returned at once. Otherwise it stays paused,
+      agents a restart registered included, and the host's own check
       (quarantine-check-host.py) decides, through the actuator state:
         - empty or "out": post "out" naming the jobs still running, or
           "drained" once none is, which starts the host check;
@@ -180,25 +181,37 @@ class Pauser:
                    "reapplied": reapplied})
 
     def bring_back(self, host, want, agents):
-        mine = [a for a in agents if ours(a)]
         state = want.get("actuatorState")
-        if mine and state != "verified":
-            self.renew(mine, want)
-            if state in CHECK_STATES:
-                return
-            busy = [a for a in agents if a.get("job")]
-            if busy:
-                jobs = [a["job"].get("web_url") or a["name"] for a in busy]
-                note = (f"waiting for {len(busy)} CI job(s) to finish: "
-                        + ", ".join(jobs[:3]) + (", ..." if len(jobs) > 3 else ""))
-                print(f"  {host}: {note}")
-                self.post(host, want["alertId"], "out",
-                          {"ciPods": len(busy), "note": note})
-            else:
-                self.post(host, want["alertId"], "drained", {"busy": 0})
+        # A host resolved while held never went out; one that passed its
+        # check is done. Our pauses are lifted only then.
+        if want.get("resolvedWhileHeld") or state == "verified":
+            self.lift(host, want, agents)
             return
-        for a in mine:
-            self.agent_call(a, "resume", {})
+        # Still out until its check passes, including agents a restart
+        # registered since.
+        fresh = [a for a in agents if not a.get("paused")]
+        for a in fresh:
+            self.pause(a, want)
+        if fresh:
+            print(f"  DRIFT: {host}: paused {len(fresh)} new agent(s)")
+        self.renew(agents, want)
+        if state in CHECK_STATES:
+            return
+        busy = [a for a in agents if a.get("job")]
+        if busy:
+            jobs = [a["job"].get("web_url") or a["name"] for a in busy]
+            note = (f"waiting for {len(busy)} CI job(s) to finish: "
+                    + ", ".join(jobs[:3]) + (", ..." if len(jobs) > 3 else ""))
+            print(f"  {host}: {note}")
+            self.post(host, want["alertId"], "out",
+                      {"ciPods": len(busy), "note": note})
+        else:
+            self.post(host, want["alertId"], "drained", {"busy": 0})
+
+    def lift(self, host, want, agents):
+        for a in agents:
+            if ours(a):
+                self.agent_call(a, "resume", {})
         observed = {"paused": False}
         others = sum(1 for a in agents if a.get("paused") and not ours(a))
         if others:

@@ -501,6 +501,7 @@ def test_h200_pauser_runs_every_minute_in_dry_run_without_sensitive_data() -> No
     installer = read("install.sh")
 
     assert "ExecStart=/opt/alerting/bin/run-h200-pauser --dry-run" in service
+    assert "ReadWritePaths=/run/alerting" in service
     assert "OnUnitActiveSec=60" in timer
     assert "Unit=alerting-h200-pauser.service" in timer
     assert "/opt/alerting/bin/load-secrets" in wrapper

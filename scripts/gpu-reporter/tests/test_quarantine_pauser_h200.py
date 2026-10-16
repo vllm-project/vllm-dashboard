@@ -81,9 +81,9 @@ class FakeDashboard:
         return {}
 
 
-def want(host, stage, actuator_state=None):
+def want(host, stage, actuator_state=None, held=False):
     return {"host": host, "alertId": 7, "stage": stage, "reason": "Xid 79",
-            "actuatorState": actuator_state}
+            "actuatorState": actuator_state, "resolvedWhileHeld": held}
 
 
 @pytest.fixture()
@@ -219,14 +219,26 @@ def test_a_verified_host_gets_only_our_pauses_lifted(run, capsys):
         "observed": {"paused": False, "note": note}})]
 
 
-def test_a_host_we_never_paused_returns_without_a_check(run):
-    # A held quarantine that was resolved: nothing of ours to lift.
+def test_a_host_resolved_while_held_returns_without_a_check(run):
+    # It never went out, so there is nothing to check or lift.
     bk = FakeBuildkite([agent(1), agent(2, job=True)])
-    dash = FakeDashboard([want("mithril-h200-1", "resolving")])
+    dash = FakeDashboard([want("mithril-h200-1", "resolving", held=True)])
     assert run(bk, dash) == 0
     assert bk.writes == []
     assert dash.posts == [("mithril-h200-1", {
         "alertId": 7, "state": "returned", "observed": {"paused": False}})]
+
+
+@pytest.mark.parametrize("state", [None, "verifying"])
+def test_agents_that_restart_during_a_resolve_are_paused_again(run, state):
+    # Every agent restarted, so none carries our pause; the host still
+    # returns only through its check.
+    bk = FakeBuildkite([agent(1), agent(2)])
+    dash = FakeDashboard([want("mithril-h200-1", "resolving", state)])
+    assert run(bk, dash) == 0
+    assert bk.writes == [("pause", "mithril-h200-1-1", PAUSE),
+                         ("pause", "mithril-h200-1-2", PAUSE)]
+    assert [p[1]["state"] for p in dash.posts] == ([] if state else ["drained"])
 
 
 def test_dry_run_changes_nothing(run, capsys):
