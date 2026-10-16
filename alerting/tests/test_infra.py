@@ -1397,6 +1397,17 @@ def test_a_resolve_waiting_on_ci_jobs_whose_reports_stop_is_stuck() -> None:
     scan_and_post(runtime, clock)  # 10 min since its last report
     assert len(slack.deliveries) == 3
     assert "has not confirmed returning" in slack.deliveries[-1].payload["text"]
+    # An actuator that recovers still gets its CI wait named, at the hour.
+    for _ in range(10):
+        store.update_details(
+            "quarantine",
+            "gpu-node-7",
+            actuator_state="out",
+            actuator_state_at=clock.now().isoformat(),
+        )
+        scan_and_post(runtime, clock)
+    assert len(slack.deliveries) == 4
+    assert slack.deliveries[-1].payload["text"].startswith(":hourglass:")
 
 
 def test_a_resolve_waits_for_a_clean_reading_before_the_host_returns() -> None:

@@ -1153,17 +1153,21 @@ def _actuator_stuck(
     episode: InfraAlertEpisode, stage: Any, actuator: Any, now: datetime
 ) -> str | None:
     """Why the actuator needs a post: 'actuator', 'ci', or None."""
-    if episode.details.get("actuator_stuck") == stage:
+    # Each is posted once per stage, and neither mutes the other.
+    stuck_posted = episode.details.get("actuator_stuck") == stage
+    if stuck_posted and not (stage == "resolving" and actuator == "out"):
         return None
     timeout, kind = ACTUATOR_CONFIRM_TIMEOUT, "actuator"
     if stage == "quarantining" and actuator not in ("out", "drained"):
         since = episode.details.get("commanded_at")
     elif stage == "resolving" and actuator == "out":
         reported = episode.details.get("actuator_state_at")
-        if reported and now - datetime.fromisoformat(str(reported)) >= timeout:
+        if (
+            not stuck_posted
+            and reported
+            and now - datetime.fromisoformat(str(reported)) >= timeout
+        ):
             return kind
-        # Tracked apart from actuator_stuck, so the notice can't mute a
-        # later stuck alert.
         if episode.details.get("ci_wait_noticed"):
             return None
         since = episode.details.get("resolving_at") or episode.details.get(
