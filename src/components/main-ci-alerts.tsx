@@ -67,7 +67,7 @@ const UNANALYZED_DOT = "bg-zinc-300 dark:bg-zinc-600";
 const UNANALYZED_RAIL = "border-l-zinc-300 dark:border-l-zinc-700";
 const RESOLVED_RAIL = "border-l-emerald-300 dark:border-l-emerald-800";
 
-type StatusFilter = "open" | "resolved" | "all";
+export type StatusFilter = "open" | "resolved" | "all" | "recurring";
 /** A classification, or the pseudo-value for alerts with no analysis yet. */
 type ReasonFilter = MainCiAnalysisClassification | "unanalyzed";
 
@@ -75,7 +75,109 @@ const STATUS_FILTERS: readonly { value: StatusFilter; label: string }[] = [
   { value: "open", label: "Open" },
   { value: "resolved", label: "Resolved" },
   { value: "all", label: "All" },
+  { value: "recurring", label: "Recurring" },
 ];
+
+/**
+ * A job whose failures opened at least this many separate episodes in the
+ * loaded window is recurring: an intermittent failure that keeps auto-resolving
+ * on an occasional pass and so never stays under the Open filter.
+ */
+export const RECURRING_MIN_EPISODES = 2;
+
+/** Every episode of one job key in the loaded window. */
+export interface MainCiJobEpisodes {
+  jobKey: string;
+  /** The newest episode's job name. */
+  jobName: string;
+  /** Newest episode first. */
+  episodes: MainCiJobAlert[];
+  totalFailures: number;
+  firstFailedAt: string;
+  lastFailedAt: string;
+  hasOpenEpisode: boolean;
+}
+
+/**
+ * Groups alert episodes by job key, keeping jobs with at least `minEpisodes`
+ * episodes. Jobs with the most episodes come first, then the most failures,
+ * then the most recent failure.
+ */
+export function findRecurringMainCiJobs(
+  alerts: readonly MainCiJobAlert[],
+  minEpisodes: number = RECURRING_MIN_EPISODES,
+): MainCiJobEpisodes[] {
+  const byJob = new Map<string, MainCiJobAlert[]>();
+  for (const alert of alerts) {
+    const episodes = byJob.get(alert.jobKey);
+    if (episodes) episodes.push(alert);
+    else byJob.set(alert.jobKey, [alert]);
+  }
+
+  const jobs: MainCiJobEpisodes[] = [];
+  for (const [jobKey, episodes] of byJob) {
+    if (episodes.length < minEpisodes) continue;
+    const newestFirst = [...episodes].sort(
+      (a, b) => Date.parse(b.openedAt) - Date.parse(a.openedAt),
+    );
+    const firstFailedAt = episodes
+      .map((episode) => episode.firstFailure.finishedAt)
+      .reduce((min, at) => (Date.parse(at) < Date.parse(min) ? at : min));
+    const lastFailedAt = episodes
+      .map((episode) => episode.lastFailure.finishedAt)
+      .reduce((max, at) => (Date.parse(at) > Date.parse(max) ? at : max));
+    jobs.push({
+      jobKey,
+      jobName: newestFirst[0].jobName,
+      episodes: newestFirst,
+      totalFailures: episodes.reduce(
+        (sum, episode) => sum + episode.failureCount,
+        0,
+      ),
+      firstFailedAt,
+      lastFailedAt,
+      hasOpenEpisode: episodes.some((episode) => episode.status === "open"),
+    });
+  }
+
+  return jobs.sort(
+    (a, b) =>
+      b.episodes.length - a.episodes.length ||
+      b.totalFailures - a.totalFailures ||
+      Date.parse(b.lastFailedAt) - Date.parse(a.lastFailedAt),
+  );
+}
+
+function compareRecurringBy(
+  key: SortKey,
+  a: MainCiJobEpisodes,
+  b: MainCiJobEpisodes,
+): number {
+  switch (key) {
+    case "job":
+      return compareJobNames(a.episodes[0], b.episodes[0]);
+    case "failures":
+      return a.totalFailures - b.totalFailures;
+    case "opened":
+      return Date.parse(a.firstFailedAt) - Date.parse(b.firstFailedAt);
+    case "lastFailed":
+      return Date.parse(a.lastFailedAt) - Date.parse(b.lastFailedAt);
+  }
+}
+
+/** The column sort applied to recurring jobs; null keeps the ranked order. */
+export function sortRecurringMainCiJobs(
+  jobs: readonly MainCiJobEpisodes[],
+  sort: AlertSort | null,
+): MainCiJobEpisodes[] {
+  if (sort === null) return [...jobs];
+  const sign = sort.direction === "asc" ? 1 : -1;
+  return [...jobs].sort(
+    (a, b) =>
+      sign * compareRecurringBy(sort.key, a, b) ||
+      compareJobNames(a.episodes[0], b.episodes[0]),
+  );
+}
 
 /** The reasons a responder can narrow the list to, in the order they appear. */
 const REASON_FILTERS: readonly { value: ReasonFilter; label: string }[] = [
@@ -821,17 +923,34 @@ function UpdatesPanel({ updates }: { updates: MainCiAlertUpdate[] }) {
   );
 }
 
+const EPISODES_BADGE =
+  "shrink-0 rounded bg-violet-50 px-1 py-px text-[10px] font-semibold tracking-wide whitespace-nowrap text-violet-700 uppercase ring-1 ring-violet-200/80 ring-inset dark:bg-violet-900/30 dark:text-violet-200 dark:ring-violet-800/60";
+
+function EpisodesBadge({ count }: { count: number }) {
+  return (
+    <span
+      className={EPISODES_BADGE}
+      title={`This job failed in ${count} separate episodes in this window, each closed by a later pass`}
+    >
+      {count} episodes
+    </span>
+  );
+}
+
 export function MainCiAlertRow({
   alert,
   onResolve,
   now = new Date(),
   groupFixPrUrl,
+  episodeCount = 1,
 }: {
   alert: MainCiJobAlert;
   onResolve?: (alertId: string) => Promise<void>;
   now?: Date;
   /** The fix PR this row is grouped under, if any. */
   groupFixPrUrl?: string;
+  /** How many episodes this job has in the window, this one included. */
+  episodeCount?: number;
 }) {
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState(false);
@@ -881,6 +1000,9 @@ export function MainCiAlertRow({
           >
             <JobName name={alert.jobName} />
           </span>
+          {episodeCount >= RECURRING_MIN_EPISODES && (
+            <EpisodesBadge count={episodeCount} />
+          )}
           {resolved && (
             <span
               className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-emerald-600 dark:text-emerald-400"
@@ -1163,11 +1285,13 @@ function AlertGroup({
   showBand,
   onResolve,
   now,
+  episodeCounts,
 }: {
   group: MainCiAlertGroup;
   showBand: boolean;
   onResolve?: (alertId: string) => Promise<void>;
   now: Date;
+  episodeCounts: ReadonlyMap<string, number>;
 }) {
   const jobLabel = `${group.alerts.length} ${
     group.alerts.length === 1 ? "job" : "jobs"
@@ -1183,10 +1307,128 @@ function AlertGroup({
             onResolve={onResolve}
             now={now}
             groupFixPrUrl={group.fixPr?.url}
+            episodeCount={episodeCounts.get(alert.jobKey)}
           />
         ))}
       </div>
     </section>
+  );
+}
+
+/**
+ * One recurring job: its episodes folded into a single row with the totals
+ * across them, expanding to every episode's own row.
+ */
+export function RecurringJobRow({
+  job,
+  onResolve,
+  now = new Date(),
+}: {
+  job: MainCiJobEpisodes;
+  onResolve?: (alertId: string) => Promise<void>;
+  now?: Date;
+}) {
+  const latest = job.episodes[0];
+  const analysis =
+    job.episodes.find((episode) => episode.analysis !== null)?.analysis ?? null;
+  const rail = analysis
+    ? CLASSIFICATION_STYLES[analysis.classification].rail
+    : UNANALYZED_RAIL;
+  const runsLabel = `${job.totalFailures} failed ${
+    job.totalFailures === 1 ? "run" : "runs"
+  } across ${job.episodes.length} episodes`;
+  return (
+    <details className={`group border-l-[3px] ${rail}`}>
+      <summary
+        className={`${ROW_GRID} cursor-pointer list-none px-3 py-2.5 hover:bg-zinc-50 dark:hover:bg-zinc-900/60 [&::-webkit-details-marker]:hidden`}
+      >
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 16 16"
+          className="row-span-2 h-3.5 w-3.5 text-zinc-400 transition-transform duration-150 group-open:rotate-90 motion-reduce:transition-none sm:row-span-1"
+        >
+          <path
+            d="M6 3l5 5-5 5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span className="col-start-2 row-start-1 flex min-w-0 items-center gap-2">
+          <span className="min-w-0 truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
+            <JobName name={job.jobName} />
+          </span>
+          <EpisodesBadge count={job.episodes.length} />
+        </span>
+        <span className="col-start-2 row-start-2 flex min-w-0 items-center gap-1.5 sm:col-start-3 sm:row-start-1">
+          {analysis ? (
+            <ReasonBadge analysis={analysis} />
+          ) : (
+            <span
+              className="text-xs text-zinc-400 dark:text-zinc-500"
+              title="Not analyzed yet"
+            >
+              —
+            </span>
+          )}
+        </span>
+        <span className="hidden min-w-0 truncate text-xs sm:block">
+          {job.hasOpenEpisode ? (
+            <span className="font-medium text-red-600 dark:text-red-400">
+              Failing now
+            </span>
+          ) : (
+            <span className="font-medium text-emerald-600 dark:text-emerald-400">
+              Latest episode resolved
+            </span>
+          )}
+          <span className="text-zinc-400 dark:text-zinc-500">
+            {" "}
+            · last opened{" "}
+            <time
+              dateTime={latest.openedAt}
+              title={formatAlertDateTime(latest.openedAt)}
+            >
+              {formatRelativeTime(latest.openedAt, now)}
+            </time>
+          </span>
+        </span>
+        <span
+          className={`col-start-3 row-start-1 text-right text-xs font-medium tabular-nums sm:col-start-5 ${failureCountClasses(job.totalFailures)}`}
+          title={runsLabel}
+          aria-label={runsLabel}
+        >
+          {job.totalFailures}
+        </span>
+        <time
+          dateTime={job.firstFailedAt}
+          title={`first failed ${formatAlertDateTime(job.firstFailedAt)}`}
+          className="hidden text-right text-xs tabular-nums text-zinc-500 sm:block dark:text-zinc-400"
+        >
+          {formatRelativeTime(job.firstFailedAt, now)}
+        </time>
+        <time
+          dateTime={job.lastFailedAt}
+          title={`last failed ${formatAlertDateTime(job.lastFailedAt)}`}
+          className="hidden text-right text-xs tabular-nums text-zinc-500 sm:block dark:text-zinc-400"
+        >
+          {formatRelativeTime(job.lastFailedAt, now)}
+        </time>
+        <span className="col-start-4 row-start-1 sm:col-start-8" />
+      </summary>
+      <div className="divide-y divide-zinc-100 border-t border-zinc-100 bg-zinc-50/70 pl-4 dark:divide-zinc-800/70 dark:border-zinc-800/70 dark:bg-zinc-900/30">
+        {job.episodes.map((episode) => (
+          <MainCiAlertRow
+            key={episode.alertId}
+            alert={episode}
+            onResolve={onResolve}
+            now={now}
+          />
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -1196,14 +1438,16 @@ export function MainCIAlerts({
   hideSoftFail = false,
   hideOptional = false,
   hideAmd = false,
+  initialStatus = "open",
 }: {
   alerts: MainCiJobAlert[];
   onResolve?: (alertId: string) => Promise<void>;
   hideSoftFail?: boolean;
   hideOptional?: boolean;
   hideAmd?: boolean;
+  initialStatus?: StatusFilter;
 }) {
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("open");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialStatus);
   const [reasonFilter, setReasonFilter] = useState<ReasonFilter | null>(null);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<AlertSort | null>(null);
@@ -1215,6 +1459,20 @@ export function MainCIAlerts({
     () => alerts.filter((alert) => alert.status === "open").length,
     [alerts],
   );
+  const episodeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const alert of alerts) {
+      counts.set(alert.jobKey, (counts.get(alert.jobKey) ?? 0) + 1);
+    }
+    return counts;
+  }, [alerts]);
+  const recurringCount = useMemo(
+    () =>
+      [...episodeCounts.values()].filter(
+        (count) => count >= RECURRING_MIN_EPISODES,
+      ).length,
+    [episodeCounts],
+  );
   const statusOptions = STATUS_FILTERS.map((item) => ({
     ...item,
     count:
@@ -1222,7 +1480,9 @@ export function MainCIAlerts({
         ? openCount
         : item.value === "resolved"
           ? alerts.length - openCount
-          : alerts.length,
+          : item.value === "recurring"
+            ? recurringCount
+            : alerts.length,
   }));
   const hasAnalysis = useMemo(
     () => alerts.some((alert) => alert.analysis !== null),
@@ -1234,7 +1494,10 @@ export function MainCIAlerts({
   const inScope = useMemo(
     () =>
       alerts.filter((alert) => {
-        if (statusFilter !== "all" && alert.status !== statusFilter) {
+        if (
+          (statusFilter === "open" || statusFilter === "resolved") &&
+          alert.status !== statusFilter
+        ) {
           return false;
         }
         if (hideSoftFail && isSoftFailJobName(alert.jobName)) return false;
@@ -1273,6 +1536,21 @@ export function MainCIAlerts({
     return sortMainCiAlerts(matching, sort);
   }, [inScope, reasonFilter, query, sort]);
   const groups = useMemo(() => groupMainCiAlertsByFixPr(visible), [visible]);
+
+  // Recurrence is judged on every episode in scope; the name and reason
+  // filters then keep a job when any of its episodes match.
+  const recurringJobs = useMemo(() => {
+    if (statusFilter !== "recurring") return [];
+    const matchingIds = new Set(visible.map((alert) => alert.alertId));
+    const jobs = findRecurringMainCiJobs(inScope).filter((job) =>
+      job.episodes.some((episode) => matchingIds.has(episode.alertId)),
+    );
+    return sortRecurringMainCiJobs(jobs, sort);
+  }, [statusFilter, inScope, visible, sort]);
+  const showRecurring = statusFilter === "recurring";
+  const nothingVisible = showRecurring
+    ? recurringJobs.length === 0
+    : visible.length === 0;
 
   if (alerts.length === 0) {
     return (
@@ -1331,8 +1609,12 @@ export function MainCIAlerts({
         </label>
       </div>
 
-      {visible.length === 0 ? (
-        <EmptyState>No Main CI job alerts match these filters.</EmptyState>
+      {nothingVisible ? (
+        <EmptyState>
+          {showRecurring
+            ? "No job failed in more than one episode with these filters."
+            : "No Main CI job alerts match these filters."}
+        </EmptyState>
       ) : (
         <div className="overflow-hidden rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
           <div
@@ -1364,19 +1646,33 @@ export function MainCIAlerts({
             />
             <span />
           </div>
-          <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
-            {groups.map((group) => (
-              <AlertGroup
-                key={group.key}
-                group={group}
-                // A lone unlinked group is just the list; the band would only
-                // say what the absence of PR bands already shows.
-                showBand={groups.length > 1 || group.fixPr !== null}
-                onResolve={onResolve}
-                now={now}
-              />
-            ))}
-          </div>
+          {showRecurring ? (
+            <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
+              {recurringJobs.map((job) => (
+                <RecurringJobRow
+                  key={job.jobKey}
+                  job={job}
+                  onResolve={onResolve}
+                  now={now}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="divide-y divide-zinc-200 dark:divide-zinc-800">
+              {groups.map((group) => (
+                <AlertGroup
+                  key={group.key}
+                  group={group}
+                  // A lone unlinked group is just the list; the band would only
+                  // say what the absence of PR bands already shows.
+                  showBand={groups.length > 1 || group.fixPr !== null}
+                  onResolve={onResolve}
+                  now={now}
+                  episodeCounts={episodeCounts}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
