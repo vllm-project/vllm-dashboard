@@ -1375,6 +1375,31 @@ def test_a_resolve_waiting_on_ci_jobs_names_them_once_after_an_hour(
     assert slack.deliveries[-1].payload["text"].startswith(":hourglass:")
 
 
+def test_a_verified_h200_host_is_timed_from_its_check_not_its_resolve() -> None:
+    # The H200 host check can run past 10 minutes; its "verified" starts the
+    # pauser's confirm timer.
+    decisions = [quarantine_decision()]
+    runtime, store, slack, clock = quarantine_runtime(decisions, live=True)
+    scan_and_post(runtime, clock)
+    store.update_details("quarantine", "gpu-node-7", actuator_state="drained")
+    scan_and_post(runtime, clock)
+    store.update_details(
+        "quarantine",
+        "gpu-node-7",
+        stage="resolving",
+        resolved_by="oncall",
+        resolve_requested_at=(clock.now() - timedelta(minutes=60)).isoformat(),
+        resolving_at=(clock.now() - timedelta(minutes=50)).isoformat(),
+        actuator_state="verified",
+        actuator_state_at=clock.now().isoformat(),
+    )
+    scan_and_post(runtime, clock)
+    assert len(slack.deliveries) == 2
+    scan_and_post(runtime, clock)  # 10 min since "verified", still not returned
+    assert len(slack.deliveries) == 3
+    assert "has not confirmed returning" in slack.deliveries[-1].payload["text"]
+
+
 def test_a_resolve_waiting_on_ci_jobs_whose_reports_stop_is_stuck() -> None:
     decisions = [quarantine_decision()]
     runtime, store, slack, clock = quarantine_runtime(decisions, live=True)

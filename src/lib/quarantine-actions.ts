@@ -237,6 +237,8 @@ export const ACTUATOR_STATES = [
   "drained",
   "verifying",
   "verify_failed",
+  // H200: the host's own check passed; the pauser then lifts the pauses.
+  "verified",
   "returned",
 ] as const;
 export type ActuatorState = (typeof ACTUATOR_STATES)[number];
