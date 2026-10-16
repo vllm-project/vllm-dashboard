@@ -83,6 +83,26 @@ A merged code change does **not** need a stack update at all: pull the repo on
 the worker and re-run `install.sh` over SSM Run Command — see
 [disaster-recovery.md](disaster-recovery.md#in-place-code-updates-ssm).
 
+## H200 quarantine pauser
+
+`alerting-h200-pauser.timer` runs
+`scripts/gpu-reporter/quarantine-pauser-h200.py` every minute. It pauses the
+Buildkite agents of quarantined H200 hosts (see `alerting/docs/infra.md`).
+`install.sh` installs it but doesn't enable it. Before enabling:
+
+1. Add `GPU_REPORT_URL` and `GPU_REPORT_SECRET` (the reporters' dashboard
+   endpoint and bearer secret) to the worker secret. It already has
+   `BUILDKITE_WRITE_TOKEN`, which needs `read_agents` and `write_agents` and
+   must belong to an org admin.
+2. Install `quarantine-check-host.service` and `.timer` on every H200 host
+   (from `scripts/gpu-reporter`, next to gpu-reporter, which provides
+   `/etc/gpu-reporter.env`).
+3. `sudo systemctl enable --now alerting-h200-pauser.timer`. The unit passes
+   `--dry-run`, so it only logs what it would pause. Its output goes to the
+   journal (`journalctl -u alerting-h200-pauser`): hosts, agent names and
+   posts, never a token. A failed run DMs the worker-failure destination.
+4. To go live, drop `--dry-run` from the unit (and from the host check's).
+
 ## Shadow, cutover, and rollback
 
 All three paths start in shadow mode. Durable controls live at

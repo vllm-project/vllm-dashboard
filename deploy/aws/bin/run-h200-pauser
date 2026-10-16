@@ -1,0 +1,23 @@
+#!/bin/bash
+# Runs the H200 quarantine pauser (scripts/gpu-reporter/quarantine-pauser-h200.py)
+# with the worker secret, which must carry BUILDKITE_WRITE_TOKEN,
+# GPU_REPORT_URL and GPU_REPORT_SECRET. Arguments pass through (--dry-run).
+set -euo pipefail
+
+credentials_path="/run/alerting/h200-pauser.env"
+
+cleanup() {
+  rm -f "$credentials_path"
+}
+trap cleanup EXIT HUP INT TERM
+
+/opt/alerting/bin/load-secrets "$credentials_path"
+set -a
+# Generated from validated Secrets Manager JSON.
+# shellcheck disable=SC1090
+source "$credentials_path"
+set +a
+rm -f "$credentials_path"
+trap - EXIT HUP INT TERM
+
+exec /opt/alerting/venv/bin/python /opt/alerting/bin/quarantine-pauser-h200.py "$@"
