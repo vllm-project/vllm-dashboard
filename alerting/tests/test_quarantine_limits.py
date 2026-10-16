@@ -11,6 +11,7 @@ from alerting.infra import (
     InfraSubjectState,
     QuarantineDecision,
     infra_notifications,
+    plan_infra_scan,
     plan_quarantine,
 )
 from alerting.ports import DeliveryMode
@@ -133,6 +134,29 @@ def test_a_small_pool_still_allows_one() -> None:
         "host-1": ("quarantining", None),
         "host-2": ("held", "pool_cap"),
     }
+
+
+def test_a_host_out_of_ci_still_counts_toward_its_pool() -> None:
+    # Eight hosts; host-8 is quarantined and its agents have gone, so it no
+    # longer maps to the pool. The cap stays at two, so host-1 still goes.
+    pools = {f"host-{n}": ("h200", "pool-a") for n in range(1, 8)}
+    out = episode("host-8", "quarantined")
+    result = plan_infra_scan(
+        now=NOW,
+        thresholds={},
+        expected_hosts=frozenset(),
+        latest_reports={},
+        disk_mounts=[],
+        gpu_temperatures=[],
+        gpu_dead_memory=[],
+        gpu_counts=[],
+        states={},
+        open_episodes={("quarantine", "host-8"): out},
+        quarantine_decisions=[decision("host-1")],
+        quarantine_live=True,
+        pools=pools,
+    )
+    assert opened(result) == {"host-1": ("quarantining", None)}
 
 
 def test_held_hosts_then_hardware_faults_take_a_slot_first() -> None:

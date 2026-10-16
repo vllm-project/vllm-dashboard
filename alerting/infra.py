@@ -1440,6 +1440,23 @@ def plan_quarantine(
     )
 
 
+def _pool_sizes(
+    pools: Mapping[str, tuple[str, str]],
+    open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
+) -> Counter[str]:
+    """Hosts per pool: every mapped host, plus a host out of CI that no longer
+    maps (a quarantined bare-metal host whose agents went away), so taking a
+    host out never shrinks its own pool's cap."""
+    members = {host: pool for host, (_, pool) in pools.items()}
+    for (alert_type, host), episode in open_episodes.items():
+        if (
+            alert_type == InfraAlertType.QUARANTINE.value
+            and episode.details.get("stage") in OUT_STAGES
+        ):
+            members.setdefault(host, str(episode.details.get("pool")))
+    return Counter(members.values())
+
+
 def plan_infra_scan(
     *,
     now: datetime,
@@ -1487,7 +1504,7 @@ def plan_infra_scan(
             decisions=[*rule_decisions, *quarantine_decisions],
             states=states,
             open_episodes=open_episodes,
-            pool_sizes=Counter(pool for _, pool in (pools or {}).values()),
+            pool_sizes=_pool_sizes(pools or {}, open_episodes),
         ),
     ]
     unreporting = thresholds.get(InfraAlertType.UNREPORTING.value)
