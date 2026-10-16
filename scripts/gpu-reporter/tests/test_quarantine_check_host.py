@@ -70,6 +70,8 @@ class FakeHost:
                     wanted = wanted[:-1]
                 self.layout[gpu] = ["7g.141gb" if p == "0" else p for p in wanted]
                 return 0, ""
+        if cmd[:3] == ["docker", "rm", "-f"]:
+            return 0, ""
         if cmd[:2] == ["docker", "run"]:
             device = cmd[cmd.index("--gpus") + 1]
             key = "all" if device == "all" else int(device.rsplit("-", 1)[1])
@@ -125,7 +127,6 @@ def states(dash):
     [want(host="h200-ci-2")],
     [want(stage="quarantined")],
     [want(actuator_state="out")],
-    [want(actuator_state="verifying")],
 ])
 def test_it_checks_only_its_own_drained_resolve(run, desired):
     host, dash = FakeHost(), FakeDashboard(desired)
@@ -137,10 +138,13 @@ def test_a_host_without_mig_runs_one_diag_on_all_gpus(run):
     host, dash = FakeHost(mig=False), FakeDashboard([want()])
     assert run(host, dash) == 0
     assert states(dash) == ["verifying", "verified"]
-    [diag] = [c for c in host.calls if c[0] == "docker"]
-    assert diag == ["docker", "run", "--rm", "--gpus", "all", "--cap-add",
-                    "SYS_ADMIN", IMAGE, "bash", "-c",
-                    "nv-hostengine && sleep 3 && dcgmi diag -r 2"]
+    docker = [c for c in host.calls if c[0] == "docker"]
+    assert docker == [
+        ["docker", "run", "--rm", "--name", "vllm-quarantine-check", "--gpus",
+         "all", "--cap-add", "SYS_ADMIN", IMAGE, "bash", "-c",
+         "nv-hostengine && sleep 3 && dcgmi diag -r 2"],
+        ["docker", "rm", "-f", "vllm-quarantine-check"],
+    ]
     assert not any(c[:2] == ["nvidia-smi", "mig"] for c in host.calls)
 
 
@@ -148,7 +152,7 @@ def test_a_mig_host_gets_each_gpu_whole_for_its_diag_then_its_slices_back(run):
     host, dash = FakeHost(gpus=2), FakeDashboard([want()])
     assert run(host, dash) == 0
     assert states(dash) == ["verifying", "verified"]
-    mig = [c for c in host.calls if c[:2] == ["nvidia-smi", "mig"] or c[0] == "docker"]
+    mig = [c for c in host.calls if c[:2] == ["nvidia-smi", "mig"] or c[:2] == ["docker", "run"]]
     slices = "1g.35gb,1g.35gb,1g.35gb,1g.35gb"
     for gpu in ("0", "1"):
         steps = [c for c in mig if gpu == c[-1] or f"device=GPU-{gpu}" in c]
@@ -271,7 +275,7 @@ def test_a_host_without_mig_runs_exactly_these_commands(run):
         ["nvidia-smi", "--query-gpu=index,uuid,mig.mode.current",
          "--format=csv,noheader"],
     ]
-    assert host.timeouts == [120, 120, 120, 1800]
+    assert host.timeouts == [120, 120, 120, 1800, 120]
     assert dash.posts[0] == {"alertId": 7, "state": "verifying",
                              "observed": {"phase": "Started"}}
 
@@ -492,11 +496,68 @@ def test_a_check_cut_off_midway_fails_so_the_host_isnt_stuck(run):
                 "check the MIG layout with nvidia-smi -L before resolving again"}}]
 
 
-def test_verifying_for_another_episode_is_left_alone(run):
-    host, dash = FakeHost(), FakeDashboard([dict(want(actuator_state="verifying"),
-                                                 alertId=8)])
+@pytest.mark.parametrize("saved", [None, "{not json", '{"alertId": 8, "result": null}'])
+def test_verifying_without_this_episodes_state_is_a_cut_off_check(run, saved):
+    # Only this host's check moves its episode to verifying, so missing,
+    # unreadable or another episode's state means the check was cut off.
+    if saved is not None:
+        with open(run.mod.STATE_PATH, "w") as f:
+            f.write(saved)
+    host, dash = FakeHost(), FakeDashboard([want(actuator_state="verifying")])
     assert run(host, dash) == 0
-    assert host.calls == [] and dash.posts == []
+    assert host.calls == []
+    assert dash.posts == [{"alertId": 7, "state": "verify_failed",
+                           "observed": {"note": run.mod.INTERRUPTED}}]
+
+
+def test_no_gpu_is_touched_until_the_dashboard_has_verifying(run):
+    host = FakeHost(gpus=1)
+
+    def posts_fail(method, path, body=None):
+        if method == "POST":
+            raise urllib.error.URLError("connection refused")
+        return {"nodes": [want()]}
+    assert run(host, posts_fail) == 1
+    assert host.calls == []
+
+
+def test_a_timed_out_diag_has_its_container_removed_before_slices_return(run):
+    host, dash = FakeHost(gpus=1), FakeDashboard([want()])
+    real = host.__call__
+
+    def hangs(cmd, timeout):
+        if cmd[:2] == ["docker", "run"]:
+            host.calls.append(cmd)
+            raise TimeoutError("docker timed out after 1800s")
+        return real(cmd, timeout)
+    assert run(hangs, dash) == 0
+    after_run = host.calls[host.calls.index(next(
+        c for c in host.calls if c[:2] == ["docker", "run"])) + 1:]
+    assert after_run[0] == ["docker", "rm", "-f", "vllm-quarantine-check"]
+    assert host.layout == {0: ["1g.35gb"] * 4}
+
+
+def test_a_failed_container_removal_doesnt_stop_the_restore(run):
+    host, dash = FakeHost(gpus=1), FakeDashboard([want()])
+    real = host.__call__
+
+    def rm_hangs(cmd, timeout):
+        if cmd[:2] == ["docker", "rm"]:
+            raise TimeoutError("docker timed out after 120s")
+        return real(cmd, timeout)
+    assert run(rm_hangs, dash) == 0
+    assert dash.posts[-1]["state"] == "verified"
+    assert host.layout == {0: ["1g.35gb"] * 4}
+
+
+def test_state_is_replaced_whole_never_written_in_place(run, monkeypatch):
+    replaced = []
+    real_replace = run.mod.os.replace
+    monkeypatch.setattr(run.mod.os, "replace",
+                        lambda a, b: (replaced.append(b), real_replace(a, b)))
+    run.mod.save_state(7, ["verified", {}])
+    assert replaced == [run.mod.STATE_PATH]
+    assert run.mod.load_state() == {"alertId": 7, "result": ["verified", {}]}
 
 
 def test_a_new_resolve_of_the_same_episode_checks_again(run):

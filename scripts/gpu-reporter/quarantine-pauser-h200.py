@@ -26,7 +26,8 @@ its running job and takes no new one. No host access is needed.
           "drained" once none is, which starts the host check;
         - "drained", "verifying", "verify_failed": post nothing, so the host
           check's state is never overwritten, but keep renewing our pauses;
-        - "verified": resume our pauses only, then post "returned".
+        - "verified": resume our pauses only, then post "returned", after
+          which it leaves the host alone until the worker closes it.
   would
       Dry-run stage: log only.
 
@@ -182,6 +183,9 @@ class Pauser:
 
     def bring_back(self, host, want, agents):
         state = want.get("actuatorState")
+        if state == "returned":
+            # Done; the worker closes the episode on its next scan.
+            return
         # A host resolved while held never went out; one that passed its
         # check is done. Our pauses are lifted only then.
         if want.get("resolvedWhileHeld") or state == "verified":

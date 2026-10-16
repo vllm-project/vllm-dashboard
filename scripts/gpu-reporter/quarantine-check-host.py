@@ -64,6 +64,9 @@ HEARTBEAT_SECONDS = 60
 COMMAND_TIMEOUT = 120
 DIAG_TIMEOUT = 30 * 60
 FULL_GPU_PROFILE = "0"
+# The diag container's name, so one a timed-out docker client left running
+# can be removed before the MIG slices are rebuilt.
+CONTAINER = "vllm-quarantine-check"
 # The episode being checked and, once known, its result: a result the
 # dashboard didn't get is sent again, and a check with none was cut off.
 STATE_PATH = "/var/lib/gpu-reporter/quarantine-check.json"
@@ -113,11 +116,18 @@ def tail(out, lines=3):
 
 def diag(device):
     """Runs the DCGM diag on `device` (all, or device=<GPU UUID>)."""
-    code, out = run_cmd(
-        ["docker", "run", "--rm", "--gpus", device, "--cap-add", "SYS_ADMIN",
-         VERIFY_IMAGE, "bash", "-c",
-         f"nv-hostengine && sleep 3 && dcgmi diag -r {VERIFY_LEVEL}"],
-        DIAG_TIMEOUT)
+    try:
+        code, out = run_cmd(
+            ["docker", "run", "--rm", "--name", CONTAINER, "--gpus", device,
+             "--cap-add", "SYS_ADMIN", VERIFY_IMAGE, "bash", "-c",
+             f"nv-hostengine && sleep 3 && dcgmi diag -r {VERIFY_LEVEL}"],
+            DIAG_TIMEOUT)
+    finally:
+        # A timeout kills only the docker client, not the container.
+        try:
+            run_cmd(["docker", "rm", "-f", CONTAINER], COMMAND_TIMEOUT)
+        except Exception as e:
+            print(f"WARNING: removing {CONTAINER} failed: {e}", file=sys.stderr)
     if code != 0 or "fail" in out.lower():
         raise CheckFailed(tail(out))
 
@@ -212,9 +222,14 @@ def load_state():
 
 
 def save_state(alert_id, result):
+    """Replaces the state file whole, so a reboot can't leave half of it."""
     os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
-    with open(STATE_PATH, "w") as f:
+    tmp = f"{STATE_PATH}.tmp"
+    with open(tmp, "w") as f:
         json.dump({"alertId": alert_id, "result": result}, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, STATE_PATH)
 
 
 class Reporter:
@@ -265,13 +280,13 @@ def main(argv=None):
         return 0
     reporter = Reporter(want["alertId"])
     if state == "verifying":
-        # No check runs now (systemd starts one run at a time), so this
-        # one's result never reached the dashboard, or it was cut off.
+        # Only this host's check moves its episode to verifying, and none
+        # runs now (systemd starts one run at a time): its result never
+        # reached the dashboard, or it was cut off. State that is missing,
+        # unreadable or another episode's counts as cut off.
         saved = load_state()
-        if saved.get("alertId") != want["alertId"]:
-            print(f"{HOST}: verifying, but not by this host's check")
-            return 0
-        result = saved.get("result") or ["verify_failed", {"note": INTERRUPTED}]
+        result = (saved.get("result") if saved.get("alertId") == want["alertId"]
+                  else None) or ["verify_failed", {"note": INTERRUPTED}]
         save_state(want["alertId"], result)
         reporter.post(*result)
         return 0 if reporter.ok else 1
@@ -279,7 +294,11 @@ def main(argv=None):
         reporter.post("verified", {"note": "QUARANTINE_VERIFY_LEVEL=0"})
         return 0 if reporter.ok else 1
     save_state(want["alertId"], None)
+    # No GPU is touched until the dashboard has "verifying": from then on a
+    # lost result or a cut-off check is recovered by the branch above.
     reporter.post("verifying", {"phase": "Started"})
+    if not reporter.ok:
+        return 1
     beat = threading.Thread(target=reporter.beat, daemon=True)
     beat.start()
     try:

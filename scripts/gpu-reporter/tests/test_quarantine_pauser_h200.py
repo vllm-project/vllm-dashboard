@@ -432,3 +432,12 @@ def test_the_failure_dm_says_what_went_wrong(run, monkeypatch, tmp_path):
 def test_errors_go_where_the_worker_failure_notifier_reads_them():
     mod = load_module("pauser_paths", "quarantine-pauser-h200.py")
     assert mod.FAILURE_DIR == "/run/alerting/failures"
+
+
+def test_a_returned_host_stays_returned_until_the_worker_closes_it(run):
+    # The worker closes the episode within 5 minutes; the pauser runs every
+    # minute and must not pause the host again meanwhile.
+    bk = FakeBuildkite([agent(1), agent(2)])
+    dash = FakeDashboard([want("mithril-h200-1", "resolving", "returned")])
+    assert run(bk, dash) == 0
+    assert bk.writes == [] and dash.posts == []
