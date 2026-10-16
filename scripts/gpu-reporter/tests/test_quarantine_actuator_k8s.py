@@ -86,7 +86,10 @@ class FakeKube:
             assert args[2:4] == ("-n", "buildkite")
             node = args[5].split("=", 1)[1]
             return json.dumps({"items": [
-                {"status": {"phase": p}} for p in self.pods.get(node, [])]})
+                {"metadata": {"name": f"ci-{i}", "annotations": {
+                    "buildkite.com/job-url": f"https://buildkite.com/j/{i}"}},
+                 "status": {"phase": p}}
+                for i, p in enumerate(self.pods.get(node, []))]})
         verb = args[0]
         if verb in self.fail:
             raise RuntimeError(f"kubectl {verb} failed: injected")
@@ -479,15 +482,38 @@ def test_a_check_pod_the_kubelet_rejected_fails_with_its_reason(run):
     assert dash.posts[-1][1]["observed"] == {"note": "no output"}
 
 
-def test_the_check_waits_for_ci_pods_to_finish(run, capsys):
-    # It posts nothing while it waits, so a wait that never ends shows as an
-    # actuator that hasn't confirmed returning.
-    kube = FakeKube({"n1": node(True, True)}, pods={"n1": ["Running", "Failed"]})
+def test_the_check_waits_for_ci_pods_to_finish_and_names_them(run, capsys):
+    # It reports the wait every run, so the dashboard can name a job that
+    # holds the node too long.
+    kube = FakeKube({"n1": node(True, True)},
+                    pods={"n1": ["Running", "Failed", "Pending"]})
     dash = FakeDashboard([want("n1", "resolving")])
     assert run(kube, dash) == 0
-    assert kube.created == [] and kube.writes == [] and dash.posts == []
-    assert ("  n1: waiting for 1 CI pod(s) before the return check\n"
-            in capsys.readouterr().out)
+    assert kube.created == [] and kube.writes == []
+    note = ("waiting for 2 CI job(s) to finish: https://buildkite.com/j/0, "
+            "https://buildkite.com/j/2")
+    assert dash.posts == [("n1", {"alertId": 7, "state": "out",
+                                  "observed": {"ciPods": 2, "note": note}})]
+    assert f"  n1: {note}\n" in capsys.readouterr().out
+
+
+def test_a_long_ci_wait_note_names_three_jobs_and_fits(run):
+    kube = FakeKube({"n1": node(True, True)}, pods={"n1": ["Running"] * 4})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    note = dash.posts[0][1]["observed"]["note"]
+    assert note == ("waiting for 4 CI job(s) to finish: https://buildkite.com/j/0, "
+                    "https://buildkite.com/j/1, https://buildkite.com/j/2, ...")
+
+
+def test_a_ci_wait_note_lists_up_to_three_jobs_by_url_or_pod_name():
+    mod = load_module("quarantine_actuator_k8s", "quarantine-actuator-k8s.py")
+    url = {"buildkite.com/job-url": "https://buildkite.com/j/0"}
+    pods = [{"metadata": {"name": "ci-0", "annotations": url}},
+            {"metadata": {"name": "ci-1", "annotations": None}},
+            {"metadata": {"name": "ci-2"}}]
+    assert mod.ci_wait_note(pods) == (
+        "waiting for 3 CI job(s) to finish: https://buildkite.com/j/0, ci-1, ci-2")
 
 
 def test_a_failed_check_keeps_its_pod_until_the_dashboard_has_it(run):

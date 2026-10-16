@@ -1299,6 +1299,79 @@ def test_a_failed_return_check_sends_a_resolve_back_to_quarantined() -> None:
     assert store.open_episodes() == []
 
 
+@pytest.mark.parametrize("forced", [False, True])
+def test_a_resolve_waiting_on_ci_jobs_names_them_once_after_an_hour(
+    forced: bool,
+) -> None:
+    decisions = [quarantine_decision()]
+    runtime, store, slack, clock = quarantine_runtime(decisions, live=True)
+    scan_and_post(runtime, clock)
+    store.update_details("quarantine", "gpu-node-7", actuator_state="drained")
+    scan_and_post(runtime, clock)
+    # The hour runs from the clean reading, or from the request when a person
+    # skipped the reading check.
+    requested = clock.now() - (timedelta(0) if forced else timedelta(minutes=30))
+    store.update_details(
+        "quarantine",
+        "gpu-node-7",
+        stage="resolving",
+        resolved_by="oncall",
+        resolve_requested_at=requested.isoformat(),
+        resolving_at=None if forced else clock.now().isoformat(),
+    )
+    note = "waiting for 1 CI job(s) to finish: https://buildkite.com/vllm/ci/builds/1#j"
+
+    def waiting() -> None:
+        store.update_details(
+            "quarantine",
+            "gpu-node-7",
+            actuator_state="out",
+            actuator_state_at=clock.now().isoformat(),
+            actuator_observed={"ciPods": 1, "note": note},
+        )
+        scan_and_post(runtime, clock)
+
+    # The actuator reports the wait every run, so it isn't stuck at 10 min.
+    for _ in range(11):
+        waiting()
+    assert len(slack.deliveries) == 2
+    waiting()  # an hour since the resolve
+    assert len(slack.deliveries) == 3
+    assert slack.deliveries[-1].payload["text"] == (
+        ":hourglass: *Quarantine* — `gpu-node-7` has waited 60 min for CI jobs "
+        "still on it to finish before its return check, so it stays out: "
+        f"{note}"
+    )
+    for _ in range(3):
+        waiting()
+    assert len(slack.deliveries) == 3
+    assert store.open_episodes()[0].details["stage"] == "resolving"
+
+
+def test_a_resolve_waiting_on_ci_jobs_whose_reports_stop_is_stuck() -> None:
+    decisions = [quarantine_decision()]
+    runtime, store, slack, clock = quarantine_runtime(decisions, live=True)
+    scan_and_post(runtime, clock)
+    store.update_details("quarantine", "gpu-node-7", actuator_state="drained")
+    scan_and_post(runtime, clock)
+    store.update_details(
+        "quarantine",
+        "gpu-node-7",
+        stage="resolving",
+        resolved_by="oncall",
+        resolve_requested_at=clock.now().isoformat(),
+        resolving_at=clock.now().isoformat(),
+        actuator_state="out",
+        actuator_state_at=clock.now().isoformat(),
+        actuator_observed={"ciPods": 1, "note": "waiting"},
+    )
+    scan_and_post(runtime, clock)
+    assert len(slack.deliveries) == 2
+    scan_and_post(runtime, clock)  # 10 min since its last report
+    assert len(slack.deliveries) == 3
+    assert "has not confirmed returning" in slack.deliveries[-1].payload["text"]
+
+
 def test_a_resolve_waits_for_a_clean_reading_before_the_host_returns() -> None:
     # The job-failure style decision stands throughout: only fresh readings
     # gate the return, since a quarantined host runs no jobs to clear it.

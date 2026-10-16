@@ -158,10 +158,12 @@ quarantining ──drained──▶ quarantined ──resolve──▶ resolve_r
   built yet; it needs the same check on the host.
 - A host quarantined again within 7 days of a resolve still goes out, and
   its post says the fix may not have held and pages a person.
-- An actuator that hasn't confirmed 10 minutes after a command (including
-  one still waiting for CI pods before the return check), a return check
-  that stopped reporting for 10 minutes, or a resolve with no fresh reading
-  for 10 minutes, posts once per stage.
+- An actuator that hasn't confirmed 10 minutes after a command, a return
+  check or CI wait that stopped reporting for 10 minutes, or a resolve with
+  no fresh reading for 10 minutes, posts once per stage.
+- A resolve still waiting for CI jobs on the host an hour after it was
+  resolved posts once, naming the jobs (the actuator reports them each run
+  as `out` with a note), so a hung job doesn't hold a host out unexplained.
 
 Posts never say how to resolve. Delivery ids add the scan time for the
 posts that can repeat in one episode (a failed return, a stuck actuator).

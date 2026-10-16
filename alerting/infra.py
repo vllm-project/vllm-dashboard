@@ -1143,15 +1143,29 @@ DRY_RUN_EXPIRY_SCANS = 2
 # still in the return check, which the actuator reports every run and times
 # out itself, so only reports that stop count.
 ACTUATOR_CONFIRM_TIMEOUT = timedelta(minutes=10)
+# A resolve waits for CI jobs still on the host before its return check, and
+# the actuator reports that wait ('out') every run. Past this long, one post
+# names the jobs, so a hung job doesn't hold the host out unexplained.
+CI_WAIT_NOTICE = timedelta(minutes=60)
 
 
 def _actuator_stuck(
     episode: InfraAlertEpisode, stage: Any, actuator: Any, now: datetime
-) -> bool:
+) -> str | None:
+    """Why the actuator needs a post: 'actuator', 'ci', or None."""
     if episode.details.get("actuator_stuck") == stage:
-        return False
+        return None
+    timeout, kind = ACTUATOR_CONFIRM_TIMEOUT, "actuator"
     if stage == "quarantining" and actuator not in ("out", "drained"):
         since = episode.details.get("commanded_at")
+    elif stage == "resolving" and actuator == "out":
+        reported = episode.details.get("actuator_state_at")
+        if reported and now - datetime.fromisoformat(str(reported)) >= timeout:
+            return kind
+        since = episode.details.get("resolving_at") or episode.details.get(
+            "resolve_requested_at"
+        )
+        timeout, kind = CI_WAIT_NOTICE, "ci"
     elif stage == "resolving" and actuator == "verifying":
         since = episode.details.get("actuator_state_at")
     elif stage == "resolving":
@@ -1162,9 +1176,9 @@ def _actuator_stuck(
         # No fresh reading since the resolve: the reporter may be down.
         since = episode.details.get("resolve_requested_at")
     else:
-        return False
+        return None
     started = datetime.fromisoformat(str(since)) if since else episode.opened_at
-    return now - started >= ACTUATOR_CONFIRM_TIMEOUT
+    return kind if now - started >= timeout else None
 
 
 def _read_since_resolve(episode: InfraAlertEpisode, read_at: datetime | None) -> bool:
@@ -1502,8 +1516,12 @@ def plan_quarantine(
                 },
             )
             changes.append(replace(change, notice=f"verify_failed:{now.isoformat()}"))
-        elif episode is not None and _actuator_stuck(episode, stage, actuator, now):
-            change = _stage_change(episode, {"actuator_stuck": stage})
+        elif episode is not None and (
+            stuck := _actuator_stuck(episode, stage, actuator, now)
+        ):
+            change = _stage_change(
+                episode, {"actuator_stuck": stage, "waiting_on_ci": stuck == "ci"}
+            )
             changes.append(
                 replace(change, notice=f"actuator_stuck:{now.isoformat()}")
             )
@@ -1880,6 +1898,15 @@ def _render_actuator_stuck(episode: InfraAlertEpisode) -> str:
             f":warning: *Quarantine* — {host} has had no fresh reading for "
             f"{minutes} min since it was resolved, so it stays out. Check its "
             "reporter."
+        )
+    if episode.details.get("waiting_on_ci"):
+        observed = episode.details.get("actuator_observed")
+        note = observed.get("note") if isinstance(observed, dict) else None
+        waited = CI_WAIT_NOTICE // timedelta(minutes=1)
+        return (
+            f":hourglass: *Quarantine* — {host} has waited {waited} min for CI "
+            "jobs still on it to finish before its return check, so it stays "
+            f"out: {_escape(note)}"
         )
     if episode.details.get("stage") == "resolving":
         doing = "has not confirmed returning"

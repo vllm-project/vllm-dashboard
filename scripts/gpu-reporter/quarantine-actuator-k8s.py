@@ -16,7 +16,9 @@ this cluster from the dashboard and reconciles each node:
       Pending. A quarantined node that lost the cordon or our taint (by hand)
       gets both back and the post carries reapplied: true.
   resolving
-      First the return check, on a node we took out: a one-off pod holding
+      First the return check, on a node we took out. While CI pods are
+      still on the node it posts "out" with a note naming their jobs. Then
+      a one-off pod holding
       every GPU on the node checks nvidia-smi's recovery action and row
       remapping, then runs `dcgmi diag -r QUARANTINE_VERIFY_LEVEL`. While it
       runs the post is "verifying"; if it fails, or doesn't finish within
@@ -143,13 +145,23 @@ def our_taint(node):
     return None
 
 
-def ci_pod_count(name):
+def ci_pods(name):
+    """CI pods still Running or Pending on the node."""
     pods = json.loads(kubectl(
         "get", "pods", "-n", CI_NAMESPACE,
         "--field-selector", f"spec.nodeName={name}", "-o", "json",
     ))["items"]
-    return sum(p["status"].get("phase") in ("Running", "Pending")
-               for p in pods)
+    return [p for p in pods
+            if p["status"].get("phase") in ("Running", "Pending")]
+
+
+def ci_wait_note(pods):
+    """Names the jobs a return check waits on, by Buildkite URL."""
+    jobs = [(p["metadata"].get("annotations") or {}).get(
+                "buildkite.com/job-url") or p["metadata"]["name"]
+            for p in pods]
+    return (f"waiting for {len(pods)} CI job(s) to finish: "
+            + ", ".join(jobs[:3]) + (", ..." if len(jobs) > 3 else ""))
 
 
 def verify_pod_name(node_name):
@@ -241,7 +253,7 @@ class Actuator:
         if reapplied:
             print(f"  DRIFT: {name} had lost its "
                   f"{'cordon' if tainted else 'taint'}; re-applied")
-        pods = ci_pod_count(name)
+        pods = len(ci_pods(name))
         self.post(name, want["alertId"], "drained" if pods == 0 else "out",
                   {"cordoned": True, "tainted": True, "ciPods": pods,
                    "reapplied": reapplied})
@@ -270,12 +282,14 @@ class Actuator:
             # nodeName skips the scheduler, so the kubelet fails the pod at
             # once if a GPU is still held or unhealthy: wait out the CI pods,
             # and treat a GPU the device plugin dropped as a failed check.
-            # The wait posts nothing, so one that never ends shows on the
-            # dashboard as an actuator that hasn't confirmed returning.
-            pods = ci_pod_count(name)
+            # The wait is posted as 'out' every run, naming the jobs, so the
+            # dashboard can say which one holds the node.
+            pods = ci_pods(name)
             if pods:
-                print(f"  {name}: waiting for {pods} CI pod(s) before the "
-                      "return check")
+                note = ci_wait_note(pods)
+                print(f"  {name}: {note}")
+                self.post(name, want["alertId"], "out",
+                          {"ciPods": len(pods), "note": note})
                 return False
             # The device plugin may drop the resource entirely.
             status = node["status"]
