@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
-import { aggregateJobsByGroup, resolveGroupsToJobConditions } from "@/lib/test-groups";
+import {
+  aggregateJobsByGroup,
+  foldRuntimeShards,
+  resolveGroupsToJobConditions,
+} from "@/lib/test-groups";
+import { SHARD_SUFFIX_SQL } from "@/lib/job-shards";
 import {
   ensureTestAreaMapping,
   getTestAreaMappingForCommit,
@@ -16,20 +21,22 @@ const TTL = 30_000;
 
 function buildJobFilterSubquery(jobGroups: string[], jobNames: string[]): string {
   const nameConditions: string[] = [];
+  // Match a runtime-sharded step by its shards too (see job-shards.ts).
+  const step = `regexp_replace(jf.name, '${SHARD_SUFFIX_SQL}', '')`;
 
   if (jobNames.length > 0) {
     const escaped = jobNames.map((n) => `'${n.replace(/'/g, "''")}'`);
-    nameConditions.push(`jf.name IN (${escaped.join(",")})`);
+    nameConditions.push(`${step} IN (${escaped.join(",")})`);
   }
 
   if (jobGroups.length > 0) {
     const { exactNames, regexPatterns } = resolveGroupsToJobConditions(jobGroups);
     if (exactNames.length > 0) {
       const escaped = exactNames.map((n) => `'${n.replace(/'/g, "''")}'`);
-      nameConditions.push(`jf.name IN (${escaped.join(",")})`);
+      nameConditions.push(`${step} IN (${escaped.join(",")})`);
     }
     for (const pattern of regexPatterns) {
-      nameConditions.push(`jf.name RLIKE '${pattern.replace(/'/g, "''")}'`);
+      nameConditions.push(`${step} RLIKE '${pattern.replace(/'/g, "''")}'`);
     }
   }
 
@@ -233,7 +240,7 @@ export async function GET(request: NextRequest) {
         const buildJobs = jobsByBuild.get(b.id as string) ?? [];
         const testGroups = aggregateJobsByGroup(buildJobs);
         const matchedJobs = jobNames.length > 0
-          ? buildJobs.filter((j) => jobNames.some((n) => j.name === n))
+          ? foldRuntimeShards(buildJobs).filter((j) => jobNames.includes(j.name))
           : undefined;
         return {
           ...(b as unknown as BuildRow),
@@ -384,7 +391,7 @@ export async function GET(request: NextRequest) {
         if (match) prNumber = match[1];
       }
       const matchedJobs = jobNames.length > 0
-        ? buildJobs.filter((j) => jobNames.some((n) => j.name === n))
+        ? foldRuntimeShards(buildJobs).filter((j) => jobNames.includes(j.name))
         : undefined;
       return { ...b, pr_number: prNumber, testGroups, matchedJobs };
     }));

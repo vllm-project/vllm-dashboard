@@ -108,16 +108,18 @@ function jobDateClauses(sql: Sql, f: CiFilter) {
  */
 function jobFilterClause(sql: Sql, f: CiFilter, jobGroups: string[], jobNames: string[]) {
   const conditions = [];
+  // Match a runtime-sharded step by its shards too (see job-shards.ts).
+  const step = sql`regexp_replace(jf.job_label, ${SHARD_SUFFIX_SQL}, '')`;
   if (jobNames.length > 0) {
-    conditions.push(sql`jf.job_label IN ${sql(jobNames)}`);
+    conditions.push(sql`${step} IN ${sql(jobNames)}`);
   }
   if (jobGroups.length > 0) {
     const { exactNames, regexPatterns } = resolveGroupsToJobConditions(jobGroups);
     if (exactNames.length > 0) {
-      conditions.push(sql`jf.job_label IN ${sql(exactNames)}`);
+      conditions.push(sql`${step} IN ${sql(exactNames)}`);
     }
     for (const pattern of regexPatterns) {
-      conditions.push(sql`jf.job_label ~ ${pattern}`);
+      conditions.push(sql`${step} ~ ${pattern}`);
     }
   }
   if (conditions.length === 0) return sql``;

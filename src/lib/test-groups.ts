@@ -1,4 +1,5 @@
 import { getTestAreaMapping, type TestAreaMapping } from "./test-areas";
+import { runtimeShard, stepName } from "./job-shards";
 
 // Strip device prefix from AMD CI pipeline jobs
 // e.g. "mi325_1: Basic Correctness" -> "Basic Correctness"
@@ -232,7 +233,7 @@ export function summarizeGroupJobs(group: string, jobs: JobInfo[]): GroupStatus 
   for (const { state } of jobs) {
     if (state === "passed") passed++;
     else if (isFailedJobState(state)) failed++;
-    else if (state === "running" || state === "scheduled" || state === "reserved") running++;
+    else if (isRunningJobState(state)) running++;
     else blocked++;
   }
 
@@ -246,13 +247,60 @@ export function summarizeGroupJobs(group: string, jobs: JobInfo[]): GroupStatus 
   return { group, state, passed, failed, running, blocked, total: jobs.length, jobs };
 }
 
+function isRunningJobState(state: string): boolean {
+  return state === "running" || state === "scheduled" || state === "reserved";
+}
+
+/**
+ * Roll the runtime shards of a step ("<label> shard N/M", see job-shards.ts)
+ * up into one job named after the step, so it keeps its place in the group
+ * columns and the job picker however the generator re-plans it. The step
+ * failed if any shard failed, is running while any shard runs, and passed only
+ * when every shard passed. It links to its first failing shard, else shard 1.
+ */
+export function foldRuntimeShards(jobs: JobInfo[]): JobInfo[] {
+  const shardsByStep = new Map<string, JobInfo[]>();
+  const folded: JobInfo[] = [];
+  for (const job of jobs) {
+    if (!runtimeShard(job.name)) {
+      folded.push(job);
+      continue;
+    }
+    const step = stepName(job.name);
+    const shards = shardsByStep.get(step);
+    if (shards) {
+      shards.push(job);
+    } else {
+      shardsByStep.set(step, [job]);
+      // Holds the step's place in the original order; filled in below.
+      folded.push({ name: step, state: "" });
+    }
+  }
+  if (shardsByStep.size === 0) return jobs;
+
+  return folded.map((job) => {
+    const shards = shardsByStep.get(job.name);
+    if (!shards || job.state !== "") return job;
+    shards.sort((a, b) => runtimeShard(a.name)!.index - runtimeShard(b.name)!.index);
+    const failing = shards.find((shard) => isFailedJobState(shard.state));
+    const running = shards.find((shard) => isRunningJobState(shard.state));
+    const unfinished = shards.find((shard) => shard.state !== "passed");
+    const representative = failing ?? running ?? unfinished ?? shards[0];
+    return {
+      name: job.name,
+      state: failing ? "failed" : representative.state,
+      web_url: (failing ?? shards[0]).web_url,
+    };
+  });
+}
+
 export function aggregateJobsByGroup(
   jobs: { name: string; state: string; web_url?: string }[],
   mapping: TestAreaMapping = getTestAreaMapping(),
 ): GroupStatus[] {
   const groupMap = new Map<string, JobInfo[]>();
 
-  for (const job of jobs) {
+  for (const job of foldRuntimeShards(jobs)) {
     const group = getTestGroup(job.name, mapping);
     if (!group) continue;
 
