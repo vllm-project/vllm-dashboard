@@ -1162,6 +1162,10 @@ def _actuator_stuck(
         reported = episode.details.get("actuator_state_at")
         if reported and now - datetime.fromisoformat(str(reported)) >= timeout:
             return kind
+        # Tracked apart from actuator_stuck, so the notice can't mute a
+        # later stuck alert.
+        if episode.details.get("ci_wait_noticed"):
+            return None
         since = episode.details.get("resolving_at") or episode.details.get(
             "resolve_requested_at"
         )
@@ -1513,6 +1517,7 @@ def plan_quarantine(
                     "verify_check": "return_check",
                     # The next resolve gets its own confirm timer.
                     "actuator_stuck": None,
+                    "ci_wait_noticed": None,
                 },
             )
             changes.append(replace(change, notice=f"verify_failed:{now.isoformat()}"))
@@ -1520,7 +1525,10 @@ def plan_quarantine(
             stuck := _actuator_stuck(episode, stage, actuator, now)
         ):
             change = _stage_change(
-                episode, {"actuator_stuck": stage, "waiting_on_ci": stuck == "ci"}
+                episode,
+                {"ci_wait_noticed": True, "waiting_on_ci": True}
+                if stuck == "ci"
+                else {"actuator_stuck": stage, "waiting_on_ci": False},
             )
             changes.append(
                 replace(change, notice=f"actuator_stuck:{now.isoformat()}")

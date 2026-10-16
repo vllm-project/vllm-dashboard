@@ -1346,6 +1346,33 @@ def test_a_resolve_waiting_on_ci_jobs_names_them_once_after_an_hour(
         waiting()
     assert len(slack.deliveries) == 3
     assert store.open_episodes()[0].details["stage"] == "resolving"
+    # The notice doesn't mute the stuck alert: reports that stop still post.
+    scan_and_post(runtime, clock)
+    scan_and_post(runtime, clock)
+    assert len(slack.deliveries) == 4
+    assert "has not confirmed returning" in slack.deliveries[-1].payload["text"]
+
+    # After a failed check, the next resolve gets its own notice.
+    store.update_details(
+        "quarantine",
+        "gpu-node-7",
+        actuator_state="verify_failed",
+        actuator_observed={"note": "diag failed"},
+    )
+    scan_and_post(runtime, clock)
+    assert store.open_episodes()[0].details["stage"] == "quarantined"
+    store.update_details(
+        "quarantine",
+        "gpu-node-7",
+        stage="resolving",
+        resolve_requested_at=clock.now().isoformat(),
+        resolving_at=clock.now().isoformat(),
+        actuator_state=None,
+    )
+    for _ in range(12):
+        waiting()
+    assert len(slack.deliveries) == 6
+    assert slack.deliveries[-1].payload["text"].startswith(":hourglass:")
 
 
 def test_a_resolve_waiting_on_ci_jobs_whose_reports_stop_is_stuck() -> None:
