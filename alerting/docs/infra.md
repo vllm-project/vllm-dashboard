@@ -174,10 +174,13 @@ quarantining ──drained──▶ quarantined ──resolve──▶ resolve_r
     own pauses and posts `returned`. The pauser never posts over the host
     check's states.
   - The check: no process on a GPU, clean recovery action and row remap,
-    then `dcgmi diag -r 2` in the DCGM container. DCGM refuses a GPU split
-    into MIG slices, so on a MIG host each GPU in turn gets its slices
-    removed, one whole-GPU instance for its diag, and its slices recreated;
-    MIG mode stays on. Slices that don't come back fail the check, and the
+    then `dcgmi diag -r 2` in the DCGM container (`--network none`, with
+    bash as its entrypoint, since the image's is nv-hostengine). DCGM
+    refuses a GPU split into MIG slices, and with MIG on it can read the
+    layout only from a privileged container, which sees every GPU. So on a
+    MIG host every GPU gets its slices removed and one whole-GPU instance,
+    each GPU gets its own diag (`-i N`), and every GPU's slices are
+    recreated; MIG mode stays on. Slices that don't come back fail the check, and the
     host stays out. Its result is saved on the host, so one the dashboard
     didn't get is sent again, and a check cut off midway (a reboot) fails.
     `QUARANTINE_VERIFY_LEVEL=0` skips the whole check; a host with MIG on

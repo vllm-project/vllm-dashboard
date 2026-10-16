@@ -13,10 +13,11 @@ checks the GPUs before the pauser may lift the pauses:
   3. `dcgmi diag -r QUARANTINE_VERIFY_LEVEL` passes, in the DCGM container
      (Docker), so it doesn't depend on whatever DCGM the host has.
      - MIG off: one diag across all GPUs.
-     - MIG on: DCGM's diag refuses a GPU split into slices, so each GPU in
-       turn has its slices removed, one whole-GPU instance created (profile
-       0), its own diag run, and its original slices recreated. MIG mode
-       stays on, so nothing resets the GPU. The agents find their slice by
+     - MIG on: DCGM's diag refuses a GPU split into slices, and the
+       privileged container it needs with MIG sees every GPU. So every GPU
+       has its slices removed and one whole-GPU instance created (profile
+       0), each GPU gets its own diag, and every GPU's original slices are
+       recreated. MIG mode stays on, so nothing resets the GPU. The agents find their slice by
        order in `nvidia-smi -L` when a job starts, so new slice IDs are fine
        as long as every GPU gets its slices back, which is checked at the
        end.
@@ -114,13 +115,21 @@ def tail(out, lines=3):
     return " / ".join(out.strip().splitlines()[-lines:]) or "no output"
 
 
-def diag(device):
-    """Runs the DCGM diag on `device` (all, or device=<GPU UUID>)."""
+def diag(index=None):
+    """Runs the DCGM diag on every GPU, or with MIG on, on GPU `index`.
+
+    The image's entrypoint is nv-hostengine, so bash is set explicitly. The
+    diag needs no network. With MIG on, only a privileged container lets
+    DCGM read the MIG layout (checked on an H200 host), and it then sees
+    every GPU, so all of them must be whole-GPU instances first.
+    """
+    access = (["--cap-add", "SYS_ADMIN"] if index is None else ["--privileged"])
+    target = "" if index is None else f" -i {index}"
     try:
         code, out = run_cmd(
-            ["docker", "run", "--rm", "--name", CONTAINER, "--gpus", device,
-             "--cap-add", "SYS_ADMIN", VERIFY_IMAGE, "bash", "-c",
-             f"nv-hostengine && sleep 3 && dcgmi diag -r {VERIFY_LEVEL}"],
+            ["docker", "run", "--rm", "--name", CONTAINER, "--network", "none",
+             "--gpus", "all", *access, "--entrypoint", "bash", VERIFY_IMAGE,
+             "-c", f"nv-hostengine && sleep 3 && dcgmi diag -r {VERIFY_LEVEL}{target}"],
             DIAG_TIMEOUT)
     finally:
         # A timeout kills only the docker client, not the container.
@@ -150,23 +159,38 @@ def clear_mig(index):
     must(["nvidia-smi", "mig", "-dgi", "-i", index])
 
 
-def check_mig_gpu(index, uuid, profiles):
-    """Diag one GPU whole, then put its slices back whatever happened."""
+def check_mig(indexes):
+    """Makes every GPU one whole-GPU instance, diags each, then puts every
+    GPU's slices back whatever happened."""
+    before = mig_layout()
+    failures = []
     try:
-        clear_mig(index)
-        must(["nvidia-smi", "mig", "-cgi", FULL_GPU_PROFILE, "-C", "-i", index])
-        diag(f"device={uuid}")
+        for index in indexes:
+            clear_mig(index)
+            must(["nvidia-smi", "mig", "-cgi", FULL_GPU_PROFILE, "-C", "-i", index])
+        for index in indexes:
+            try:
+                diag(index)
+            except Exception as e:
+                failures.append(f"GPU {index}: {e}")
     except Exception as e:
-        failure = f"GPU {index}: {e}"
-    else:
-        failure = None
-    try:
-        clear_mig(index)
-        must(["nvidia-smi", "mig", "-cgi", ",".join(profiles), "-C", "-i", index])
-    except Exception as e:
-        raise CheckFailed(f"MIG layout not restored on GPU {index}: {e}") from None
-    if failure:
-        raise CheckFailed(failure)
+        failures.append(str(e))
+    not_restored = []
+    for index in indexes:
+        try:
+            clear_mig(index)
+            must(["nvidia-smi", "mig", "-cgi", ",".join(before[int(index)]),
+                  "-C", "-i", index])
+        except Exception as e:
+            not_restored.append(f"GPU {index}: {e}")
+    if not_restored:
+        raise CheckFailed("MIG layout not restored on " + " / ".join(not_restored))
+    after = mig_layout()
+    if after != before:
+        changed = [str(g) for g in before if after.get(g) != before[g]]
+        raise CheckFailed(f"MIG layout not restored on GPU {', '.join(changed)}")
+    if failures:
+        raise CheckFailed(" / ".join(failures))
 
 
 def check():
@@ -192,25 +216,11 @@ def check():
          "--format=csv,noheader"]).strip().splitlines()]
     modes = {mode for _, _, mode in gpus}
     if modes == {"Disabled"}:
-        diag("all")
+        diag()
         return
     if modes != {"Enabled"}:
         raise CheckFailed("some GPUs have MIG on and some off; fix the layout by hand")
-    before = mig_layout()
-    failures = []
-    for index, uuid, _ in gpus:
-        try:
-            check_mig_gpu(index, uuid, before[int(index)])
-        except CheckFailed as e:
-            if str(e).startswith("MIG layout not restored"):
-                raise
-            failures.append(str(e))
-    after = mig_layout()
-    if after != before:
-        changed = [str(g) for g in before if after.get(g) != before[g]]
-        raise CheckFailed(f"MIG layout not restored on GPU {', '.join(changed)}")
-    if failures:
-        raise CheckFailed(" / ".join(failures))
+    check_mig([index for index, _, _ in gpus])
 
 
 def load_state():

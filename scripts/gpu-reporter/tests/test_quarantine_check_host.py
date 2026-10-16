@@ -73,8 +73,8 @@ class FakeHost:
         if cmd[:3] == ["docker", "rm", "-f"]:
             return 0, ""
         if cmd[:2] == ["docker", "run"]:
-            device = cmd[cmd.index("--gpus") + 1]
-            key = "all" if device == "all" else int(device.rsplit("-", 1)[1])
+            script = cmd[-1]
+            key = int(script.rsplit(" -i ", 1)[1]) if " -i " in script else "all"
             out = self.diag.get(key, DIAG_PASS)
             if isinstance(out, tuple):
                 return out
@@ -139,27 +139,37 @@ def test_a_host_without_mig_runs_one_diag_on_all_gpus(run):
     assert run(host, dash) == 0
     assert states(dash) == ["verifying", "verified"]
     docker = [c for c in host.calls if c[0] == "docker"]
+    # The image's entrypoint is nv-hostengine, so bash is set explicitly.
     assert docker == [
-        ["docker", "run", "--rm", "--name", "vllm-quarantine-check", "--gpus",
-         "all", "--cap-add", "SYS_ADMIN", IMAGE, "bash", "-c",
+        ["docker", "run", "--rm", "--name", "vllm-quarantine-check",
+         "--network", "none", "--gpus", "all", "--cap-add", "SYS_ADMIN",
+         "--entrypoint", "bash", IMAGE, "-c",
          "nv-hostengine && sleep 3 && dcgmi diag -r 2"],
         ["docker", "rm", "-f", "vllm-quarantine-check"],
     ]
     assert not any(c[:2] == ["nvidia-smi", "mig"] for c in host.calls)
 
 
-def test_a_mig_host_gets_each_gpu_whole_for_its_diag_then_its_slices_back(run):
+def test_a_mig_host_gets_every_gpu_whole_then_its_slices_back(run):
+    # DCGM needs a privileged container with MIG on, which sees every GPU,
+    # and refuses to run while any visible GPU is still sliced.
     host, dash = FakeHost(gpus=2), FakeDashboard([want()])
     assert run(host, dash) == 0
     assert states(dash) == ["verifying", "verified"]
-    mig = [c for c in host.calls if c[:2] == ["nvidia-smi", "mig"] or c[:2] == ["docker", "run"]]
+    steps = [c[2:] if c[0] == "nvidia-smi" else ["diag", c[-1]]
+             for c in host.calls
+             if c[:2] in (["nvidia-smi", "mig"], ["docker", "run"])]
     slices = "1g.35gb,1g.35gb,1g.35gb,1g.35gb"
-    for gpu in ("0", "1"):
-        steps = [c for c in mig if gpu == c[-1] or f"device=GPU-{gpu}" in c]
-        assert [s[2] if s[0] == "nvidia-smi" else "diag" for s in steps] == [
-            "-dci", "-dgi", "-cgi", "diag", "-dci", "-dgi", "-cgi"]
-        assert steps[2][3:6] == ["0", "-C", "-i"]
-        assert steps[6][3] == slices
+    assert steps == [
+        ["-dci", "-i", "0"], ["-dgi", "-i", "0"], ["-cgi", "0", "-C", "-i", "0"],
+        ["-dci", "-i", "1"], ["-dgi", "-i", "1"], ["-cgi", "0", "-C", "-i", "1"],
+        ["diag", "nv-hostengine && sleep 3 && dcgmi diag -r 2 -i 0"],
+        ["diag", "nv-hostengine && sleep 3 && dcgmi diag -r 2 -i 1"],
+        ["-dci", "-i", "0"], ["-dgi", "-i", "0"], ["-cgi", slices, "-C", "-i", "0"],
+        ["-dci", "-i", "1"], ["-dgi", "-i", "1"], ["-cgi", slices, "-C", "-i", "1"],
+    ]
+    [run_cmd] = [c for c in host.calls if c[:2] == ["docker", "run"]][:1]
+    assert "--privileged" in run_cmd and "--cap-add" not in run_cmd
     assert host.layout == {0: ["1g.35gb"] * 4, 1: ["1g.35gb"] * 4}
 
 
@@ -318,14 +328,29 @@ def test_out_of_spare_rows_fails_and_every_bad_gpu_is_named(run):
         "0, None, Yes / 1, Reset, No")
 
 
-def test_a_gpu_whose_slices_dont_come_back_stops_the_check_there(run):
+def test_every_gpu_whose_slices_dont_come_back_is_named(run):
     host, dash = FakeHost(gpus=2), FakeDashboard([want()])
     host.restore_fails = True
     assert run(host, dash) == 0
     assert dash.posts[-1]["observed"]["note"] == (
         "MIG layout not restored on GPU 0: nvidia-smi mig -cgi failed: "
+        "Insufficient resources / GPU 1: nvidia-smi mig -cgi failed: "
         "Insufficient resources")
-    assert not any(c[-1] == "1" for c in host.calls if c[:2] == ["nvidia-smi", "mig"])
+
+
+def test_a_failure_making_whole_gpus_still_restores_every_gpu(run):
+    host, dash = FakeHost(gpus=2), FakeDashboard([want()])
+    real = host.__call__
+
+    def second_fails(cmd, timeout):
+        if cmd[:4] == ["nvidia-smi", "mig", "-cgi", "0"] and cmd[-1] == "1":
+            return 1, "In use by another client"
+        return real(cmd, timeout)
+    assert run(second_fails, dash) == 0
+    assert dash.posts[-1]["observed"]["note"] == (
+        "nvidia-smi mig -cgi failed: In use by another client")
+    assert not any(c[:2] == ["docker", "run"] for c in host.calls)
+    assert host.layout == {0: ["1g.35gb"] * 4, 1: ["1g.35gb"] * 4}
 
 
 def test_a_layout_that_comes_back_different_fails(run):
