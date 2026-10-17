@@ -90,6 +90,8 @@ export async function storeGpuReport(
     capacity_gpus: report.capacity_gpus,
     gpu_query_hung: report.gpu_query_hung,
     gpu_query_error: report.gpu_query_error,
+    docker_ok: report.docker_ok,
+    docker_error: report.docker_error,
     network_probes:
       report.network_probes == null
         ? null
@@ -192,6 +194,8 @@ export async function storeGpuReport(
         "gpu_query_hung",
         "gpu_query_error",
         "network_probes",
+        "docker_ok",
+        "docker_error",
       )}
     `;
     await tx`

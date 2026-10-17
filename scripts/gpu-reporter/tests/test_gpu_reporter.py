@@ -6,6 +6,7 @@ path.
 """
 
 import shutil
+import subprocess
 import time
 
 HOST_KEYS = {
@@ -170,6 +171,8 @@ def test_nvidia_smi_failure_posts_degraded_payload(reporter, monkeypatch):
     monkeypatch.setattr(reporter, "query_xids", lambda path: ([], None))
     monkeypatch.setattr(reporter, "query_mig_slices", lambda: 0)
     monkeypatch.setattr(reporter, "find_root_owned_slots", lambda: [])
+    monkeypatch.setattr(reporter, "check_docker",
+                        lambda: (False, "the docker0 bridge is missing"))
     monkeypatch.setattr(reporter, "NETWORK_PROBES", ())
     monkeypatch.setattr(reporter, "collect_host_metrics", lambda: {
         "cpu_util": 1.0, "cpu_count": 8, "ram_used_bytes": 1,
@@ -187,6 +190,7 @@ def test_nvidia_smi_failure_posts_degraded_payload(reporter, monkeypatch):
     assert calls["faults"] == {
         "xids": [], "mig_slices": None, "root_owned_slots": [],
         "gpu_query_hung": True, "gpu_query_error": "nvidia-smi failed: not found",
+        "docker_ok": False, "docker_error": "the docker0 bridge is missing",
         "network_probes": [],
     }
 
@@ -413,6 +417,7 @@ def run_main(reporter, monkeypatch, tmp_path, post_ok=True, **queries):
     monkeypatch.setattr(reporter, "query_xids", queries.get("xids", boom))
     monkeypatch.setattr(reporter, "query_mig_slices", queries.get("mig", boom))
     monkeypatch.setattr(reporter, "find_root_owned_slots", queries.get("slots", boom))
+    monkeypatch.setattr(reporter, "check_docker", queries.get("docker", boom))
     try:
         reporter.main()
     except SystemExit:
@@ -425,9 +430,10 @@ def test_each_failed_query_reports_null_independently(reporter, monkeypatch, tmp
         raise RuntimeError("query failed")
 
     sent = run_main(reporter, monkeypatch, tmp_path, fault=boom,
-                    mig=lambda: 12)  # xids and slots fail
+                    mig=lambda: 12)  # xids, slots and the Docker check fail
     assert sent["faults"] == {"xids": None, "mig_slices": 12, "root_owned_slots": None,
                               "gpu_query_hung": False, "gpu_query_error": None,
+                              "docker_ok": None, "docker_error": None,
                               "network_probes": []}
     gpu = sent["gpus"][0]
     assert gpu["recovery_action"] is None
@@ -472,6 +478,7 @@ def test_gpu_query_past_the_hang_timeout_reports_hung(reporter, monkeypatch, tmp
     monkeypatch.setattr(reporter, "collect_host_metrics", lambda: {})
     monkeypatch.setattr(reporter, "query_xids", lambda path: ([], None))
     monkeypatch.setattr(reporter, "find_root_owned_slots", lambda: [])
+    monkeypatch.setattr(reporter, "check_docker", lambda: (True, None))
     monkeypatch.setattr(reporter, "report",
                         lambda gpus, host, status, err, faults: sent.update(faults))
     reporter.main()
@@ -524,3 +531,36 @@ def test_network_probes_run_together_and_stuck_ones_time_out(reporter, monkeypat
         {"target": "b", "ok": False, "error": "dns", "latency_ms": None},
         {"target": "c", "ok": False, "error": "timeout", "latency_ms": None},
     ]
+
+
+def test_check_docker(reporter, monkeypatch, tmp_path):
+    assert reporter.DOCKER_BRIDGE == "/sys/class/net/docker0"
+    bridge = tmp_path / "docker0"
+    monkeypatch.setattr(reporter, "DOCKER_BRIDGE", str(bridge))
+    monkeypatch.setattr(reporter.shutil, "which",
+                        lambda name: "/usr/bin/docker" if name != "docker" else None)
+    # A host without Docker has nothing to report.
+    assert reporter.check_docker() == (None, None)
+    monkeypatch.setattr(reporter.shutil, "which", lambda name: "/usr/bin/docker")
+    # h200-ci-1 on 2026-10-16: the daemon answered, the bridge was gone.
+    assert reporter.check_docker() == (False, "the docker0 bridge is missing")
+    bridge.mkdir()
+    calls = []
+
+    def run(answer):
+        def fake_run(cmd, **kw):
+            assert kw["capture_output"] is True and kw["text"] is True
+            calls.append((cmd, kw["timeout"]))
+            if answer == "hang":
+                raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+            return subprocess.CompletedProcess(cmd, answer[0], "", answer[1])
+        monkeypatch.setattr(reporter.subprocess, "run", fake_run)
+        return reporter.check_docker()
+
+    assert run((0, "")) == (True, None)
+    assert calls[0] == (["docker", "info", "--format", "{{.ServerVersion}}"], 10)
+    assert run("hang") == (False, "docker info did not answer in 10 s")
+    assert run((1, "warn\nCannot connect to the Docker daemon\n")) == (
+        False, "docker info failed: Cannot connect to the Docker daemon")
+    assert run((1, "")) == (False, "docker info failed: no output")
+    assert run((1, "x" * 400)) == (False, ("docker info failed: " + "x" * 400)[:300])

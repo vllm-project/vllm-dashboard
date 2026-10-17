@@ -164,6 +164,10 @@ class HostFaultObservation:
     network_probes: list[dict[str, Any]] | None
     root_owned_slots: list[str] | None
     reported_at: datetime
+    # H200 only: whether Docker can start a container (its docker0 bridge
+    # exists and the daemon answers), and why not.
+    docker_ok: bool | None = None
+    docker_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1100,6 +1104,22 @@ def plan_trigger_rules(
                     slots=len(slots or []),
                     reading_at=reading.reported_at.isoformat(),
                 )
+            # Every job runs in a container; without Docker each fails in
+            # seconds (h200-ci-1 lost its docker0 bridge on 2026-10-16).
+            if check(
+                host,
+                "docker",
+                (not reading.docker_ok) if reading.docker_ok is not None else None,
+                reading.reported_at,
+            ):
+                decide(
+                    host,
+                    "docker",
+                    f"Docker can't start containers ({reading.docker_error}) "
+                    f"{checks}",
+                    error=reading.docker_error,
+                    reading_at=reading.reported_at.isoformat(),
+                )
         observed = next((r for r in gpu_counts if r.hostname == host), None)
         if count is not None and count.enabled and observed is not None:
             # The same ratcheting baseline the GPU-count alert keeps.
@@ -1671,6 +1691,12 @@ def plan_infra_scan(
             seen = (
                 [host_reading.reported_at]
                 if host_reading and host_reading.root_owned_slots is not None
+                else []
+            )
+        elif rule == "docker":
+            seen = (
+                [host_reading.reported_at]
+                if host_reading and host_reading.docker_ok is not None
                 else []
             )
         elif rule == "gpu_count":

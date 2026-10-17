@@ -317,3 +317,24 @@ test("rejects malformed GPU-hang and network probe fields", () => {
     /network_probes must be an array/,
   );
 });
+
+test("accepts the Docker health fields, and leaves them null when absent", () => {
+  const report = parseGpuReportPayload({
+    ...legacyPayload,
+    docker_ok: false,
+    docker_error: "the docker0 bridge is missing",
+  });
+  assert.equal(report.docker_ok, false);
+  assert.equal(report.docker_error, "the docker0 bridge is missing");
+  const legacy = parseGpuReportPayload(legacyPayload);
+  assert.equal(legacy.docker_ok, null);
+  assert.equal(legacy.docker_error, null);
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, docker_ok: "no" }),
+    /docker_ok/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, docker_error: "x".repeat(5000) }),
+    /docker_error/,
+  );
+});

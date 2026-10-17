@@ -712,6 +712,7 @@ def waiting(
     rule: str | None = None,
     probes: list[dict[str, Any]] | None = None,
     slots: list[str] | None = None,
+    docker: bool | None = None,
     **scan: Any,
 ) -> str:
     """The stage after one scan of a resolve waiting on a host reading.
@@ -729,6 +730,7 @@ def waiting(
         gpu_query_hung=hung,
         network_probes=probes,
         root_owned_slots=slots,
+        docker_ok=docker,
         reported_at=NOW - read_age,
     )
     gpu = GpuFaultObservation(
@@ -786,6 +788,10 @@ def test_a_clean_reading_measures_the_fault_again_and_every_gpu() -> None:
     assert wait("network", probes=[{"ok": True}]) == "resolving"
     assert wait("root_owned") == "unchanged"
     assert wait("root_owned", slots=[]) == "resolving"
+    assert wait("docker") == "unchanged"
+    # Still broken after the resolve sends it back.
+    assert wait("docker", docker=False) == "quarantined"
+    assert wait("docker", docker=True) == "resolving"
     mount = DiskMountObservation(
         "host-1", "/", "/dev/sda1", "ext4", "system", 10, 100, None, NOW - m
     )

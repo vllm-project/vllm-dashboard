@@ -383,6 +383,35 @@ def query_xids(cursor_path=JOURNAL_CURSOR_FILE):
     )
 
 
+DOCKER_BRIDGE = "/sys/class/net/docker0"
+DOCKER_TIMEOUT = 10
+
+
+def check_docker():
+    """(docker_ok, error): can Docker start a container here?
+
+    Every CI job runs in a container on the default bridge. On 2026-10-16
+    h200-ci-1 lost its docker0 bridge while `docker info` still answered,
+    so every job failed at `docker run` in seconds. (None, None) on a host
+    without Docker.
+    """
+    if shutil.which("docker") is None:
+        return None, None
+    if not os.path.exists(DOCKER_BRIDGE):
+        return False, "the docker0 bridge is missing"
+    try:
+        r = subprocess.run(
+            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True, text=True, timeout=DOCKER_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"docker info did not answer in {DOCKER_TIMEOUT} s"
+    if r.returncode != 0:
+        last = (r.stderr.strip().splitlines() or ["no output"])[-1]
+        return False, f"docker info failed: {last}"[:300]
+    return True, None
+
+
 def find_root_owned_slots(patterns=CHECKOUT_GLOBS, root_uid=0):
     """Checkout dirs holding at least one root-owned top-level entry.
 
@@ -615,7 +644,8 @@ def main():
     probes = start_network_probes(NETWORK_PROBES)
     host = collect_host_metrics()
     faults = {"xids": None, "mig_slices": None, "root_owned_slots": None,
-              "gpu_query_hung": False, "gpu_query_error": None}
+              "gpu_query_hung": False, "gpu_query_error": None,
+              "docker_ok": None, "docker_error": None}
 
     try:
         gpus = query_gpus()
@@ -670,6 +700,10 @@ def main():
         faults["root_owned_slots"] = find_root_owned_slots()
     except Exception as e:
         print(f"root-owned checkout scan failed: {e}", file=sys.stderr)
+    try:
+        faults["docker_ok"], faults["docker_error"] = check_docker()
+    except Exception as e:
+        print(f"Docker check failed: {e}", file=sys.stderr)
 
     faults["network_probes"] = finish_network_probes(probes)
 
