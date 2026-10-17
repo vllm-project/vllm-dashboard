@@ -141,7 +141,8 @@ export async function resolveQuarantine(
           'resolving_at', NULL::text,
           'actuator_state', NULL::text,
           'verify_note', NULL::text,
-          'verify_check', NULL::text
+          'verify_check', NULL::text,
+          'resolved_while_held', (details->>'stage' = 'held')
         ),
         updated_at = now()
     WHERE alert_type = 'quarantine'
@@ -204,11 +205,13 @@ export async function desiredQuarantines(
       stage: string;
       reason: string | null;
       actuator_state: string | null;
+      resolved_while_held: string | null;
     }[]
   >`
     SELECT subject_key AS host, alert_id, details->>'stage' AS stage,
            details->>'reason' AS reason,
-           details->>'actuator_state' AS actuator_state
+           details->>'actuator_state' AS actuator_state,
+           details->>'resolved_while_held' AS resolved_while_held
     FROM alerting_infra_alerts
     WHERE alert_type = 'quarantine'
       AND status = 'open'
@@ -227,6 +230,9 @@ export async function desiredQuarantines(
         // Its own last report: after 'verify_failed' it starts no new
         // return check until a person resolves again.
         actuatorState: row.actuator_state,
+        // A host resolved while held was never taken out: the H200 pauser
+        // returns it without a check.
+        resolvedWhileHeld: row.resolved_while_held === "true",
       })),
     },
   };
@@ -237,6 +243,8 @@ export const ACTUATOR_STATES = [
   "drained",
   "verifying",
   "verify_failed",
+  // H200: the host's own check passed; the pauser then lifts the pauses.
+  "verified",
   "returned",
 ] as const;
 export type ActuatorState = (typeof ACTUATOR_STATES)[number];

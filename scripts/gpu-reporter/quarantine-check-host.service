@@ -1,0 +1,14 @@
+[Unit]
+Description=Check this H200 host's GPUs before a resolved quarantine returns it to CI
+
+[Service]
+Type=oneshot
+# Same env file as gpu-reporter.service (GPU_REPORT_URL, GPU_REPORT_SECRET).
+# Runs as root: it rebuilds MIG instances and runs the DCGM container.
+EnvironmentFile=/etc/gpu-reporter.env
+# Roll out with --dry-run first; drop it when the pool goes live.
+ExecStart=/usr/bin/python3 /opt/gpu-reporter/quarantine-check-host.py --dry-run
+# A MIG host diags its GPUs one at a time, each capped at 30 min.
+TimeoutSec=5h
+# /var/lib/gpu-reporter keeps the episode being checked and its result.
+StateDirectory=gpu-reporter

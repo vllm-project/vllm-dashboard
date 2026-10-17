@@ -130,7 +130,8 @@ quarantining ──drained──▶ quarantined ──resolve──▶ resolve_r
 - The actuators pull their cluster's desired set
   (`/api/alerts/quarantine/desired`) every minute and report what they did
   (`/api/alerts/quarantine/<host>/applied`): `out`, `drained`, `verifying`,
-  `verify_failed`, `returned`. The worker moves the stage on those reports.
+  `verify_failed`, `verified` (H200 only), `returned`. The worker moves the
+  stage on those reports.
 - **Resolve** (`POST /api/alerts/quarantine/<host>/resolve {by, reason,
   force?}`, operator token, or the Resolve button) moves the episode to
   `resolve_requested`. The host stays out until a full reading taken after
@@ -154,8 +155,40 @@ quarantining ──drained──▶ quarantined ──resolve──▶ resolve_r
   failure, or no finish in 30 min reports `verify_failed` and the episode
   goes back to `quarantined`. A failed check pod stays until the dashboard
   has the failure, so a lost post can't start a fresh check.
-  `QUARANTINE_VERIFY_LEVEL=0` skips it. The H200 bare-metal actuator is not
-  built yet; it needs the same check on the host.
+  `QUARANTINE_VERIFY_LEVEL=0` skips it.
+- **H200 bare metal** has two parts.
+  - The pauser (`scripts/gpu-reporter/quarantine-pauser-h200.py`, the
+    `alerting-h200-pauser` timer on the worker's EC2 host) pauses every
+    Buildkite agent on a quarantined host through the API, with a 12-hour
+    timeout so a pause a dead pauser leaves behind lifts by itself. Each
+    minute it pauses agents a restart registered (drift once the host is
+    quarantined) and renews its pauses in their last hour. Buildkite refuses
+    to pause a paused agent, so a renewal resumes and pauses again at once.
+    It leaves a person's pause alone; pauses are told apart by their note,
+    `vllm-quarantine <alert id>: <reason>`.
+  - The host check (`quarantine-check-host.py`, a root timer next to
+    gpu-reporter on each host) runs the return check. When resolving, the
+    pauser posts `out` naming the jobs still running, then `drained`; the
+    host check starts on `drained`, posts `verifying` every minute, then
+    `verified` or `verify_failed`. On `verified` the pauser lifts only its
+    own pauses and posts `returned`. The pauser never posts over the host
+    check's states.
+  - The check: no process on a GPU, clean recovery action and row remap,
+    then `dcgmi diag -r 2` in the DCGM container (`--network none`, with
+    bash as its entrypoint, since the image's is nv-hostengine). DCGM
+    refuses a GPU split into MIG slices, and with MIG on it can read the
+    layout only from a privileged container, which sees every GPU. So on a
+    MIG host every GPU gets its slices removed and one whole-GPU instance,
+    each GPU gets its own diag (`-i N`), and every GPU's slices are
+    recreated; MIG mode stays on. Slices that don't come back fail the check, and the
+    host stays out. Its result is saved on the host, so one the dashboard
+    didn't get is sent again, and a check cut off midway (a reboot) fails.
+    `QUARANTINE_VERIFY_LEVEL=0` skips the whole check; a host with MIG on
+    some GPUs and off on others fails it.
+  - Only a host resolved while held (it never went out, recorded as
+    `resolved_while_held` at resolve time) returns without a check. Any
+    other resolving host stays paused, agents a restart registered
+    included, until its check passes.
 - A host quarantined again within 7 days of a resolve still goes out, and
   its post says the fix may not have held and pages a person.
 - An actuator that hasn't confirmed 10 minutes after a command, a return

@@ -1174,7 +1174,9 @@ def _actuator_stuck(
             "resolve_requested_at"
         )
         timeout, kind = CI_WAIT_NOTICE, "ci"
-    elif stage == "resolving" and actuator == "verifying":
+    elif stage == "resolving" and actuator in ("verifying", "verified"):
+        # 'verified' is the H200 host check's pass, which can come long
+        # after the resolve; the pauser has 10 minutes from it.
         since = episode.details.get("actuator_state_at")
     elif stage == "resolving":
         since = episode.details.get("resolving_at") or episode.details.get(

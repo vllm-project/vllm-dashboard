@@ -83,3 +83,11 @@ test("applied: 400 for bad bodies and fields, without a DB call", async () => {
     assert.equal((await post(body, auth, "bad host!")).status, 400);
   });
 });
+
+test("applied: the H200 host check's verified is an actuator state", async () => {
+  await withSecret("secret", async () => {
+    const res = await post(JSON.stringify({ ...valid, state: "nope" }), auth);
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /\bverified\b/);
+  });
+});

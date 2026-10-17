@@ -492,3 +492,23 @@ def test_secret_renderer_skips_a_bad_key_instead_of_refusing_the_secret() -> Non
     assert "bkua_x" not in result.stderr
     assert "BUILDKITE_WRITE_TOKEN," not in result.stderr
     assert "skipping NESTED" in result.stderr
+
+
+def test_h200_pauser_runs_every_minute_in_dry_run_without_sensitive_data() -> None:
+    service = read("systemd/alerting-h200-pauser.service")
+    timer = read("systemd/alerting-h200-pauser.timer")
+    wrapper = read("bin/run-h200-pauser")
+    installer = read("install.sh")
+
+    assert "ExecStart=/opt/alerting/bin/run-h200-pauser --dry-run" in service
+    assert "ReadWritePaths=/run/alerting" in service
+    assert "OnUnitActiveSec=60" in timer
+    assert "Unit=alerting-h200-pauser.service" in timer
+    assert "/opt/alerting/bin/load-secrets" in wrapper
+    assert 'quarantine-pauser-h200.py "$@"' in wrapper
+    assert "bin/run-h200-pauser /opt/alerting/bin/run-h200-pauser" in installer
+    assert "quarantine-pauser-h200.py /opt/alerting/bin/quarantine-pauser-h200.py" in installer
+    # Enabled by hand per rollout, not by install or the S3 controls.
+    assert "alerting-h200-pauser.timer" not in installer
+    for sensitive_name in ("DATABASE_URL", "TOKEN", "SECRET", "PASSWORD"):
+        assert sensitive_name not in service + timer

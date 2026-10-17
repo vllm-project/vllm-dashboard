@@ -1,0 +1,9 @@
+[Unit]
+Description=Look every minute for a resolved quarantine to check on this host
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+
+[Install]
+WantedBy=timers.target

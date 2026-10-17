@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the H200 quarantine pauser every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60
+AccuracySec=5s
+Unit=alerting-h200-pauser.service
+
+[Install]
+WantedBy=timers.target
