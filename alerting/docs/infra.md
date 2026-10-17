@@ -98,7 +98,9 @@ and nothing changes on a host.
 - Host faults, on 2 consecutive scans that each read a fresh (≤ 60 s),
   unused reading: GPU hang, all network probes failing while most of the
   pool passes, disk and dead-process GPU memory at the alert thresholds,
-  and on H200 only root-owned checkout slots and a short GPU count.
+  and on H200 only root-owned checkout slots, a short GPU count, and Docker
+  unable to start containers (the reporter's `docker_ok`: the `docker0`
+  bridge is present and `docker info` answers within 10 s).
 - Job failures (`job_failure_trigger.py`), at most every 15 minutes. These
   stay dry run (`would` only) even when quarantine is live; the trigger
   goes live only after its own review.

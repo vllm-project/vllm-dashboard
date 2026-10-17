@@ -103,6 +103,8 @@ def host(scans: Scans, name: str = "gpu-node-7", **fields: Any) -> HostFaultObse
         network_probes=fields.get("network_probes", [{"target": "a", "ok": True}]),
         root_owned_slots=fields.get("root_owned_slots", []),
         reported_at=fields.get("reported_at", scans.reading_at()),
+        docker_ok=fields.get("docker_ok", True),
+        docker_error=fields.get("docker_error"),
     )
 
 
@@ -535,6 +537,37 @@ def test_root_owned_slots_trip_on_bare_metal_only() -> None:
     assert decisions[0].evidence["slots"] == 1
 
 
+def test_broken_docker_trips_on_bare_metal_only() -> None:
+    scans = Scans()
+    broken = {"docker_ok": False, "docker_error": "the docker0 bridge is missing"}
+    for _ in range(2):
+        decisions = scans.run(
+            host_faults=[host(scans, **broken), host(scans, "k8s-node-1", **broken)]
+        )
+    assert rules(decisions) == [("gpu-node-7", "docker")]
+    assert decisions[0].reason == (
+        "Docker can't start containers (the docker0 bridge is missing) "
+        "on 2 consecutive checks"
+    )
+    assert decisions[0].evidence["error"] == "the docker0 bridge is missing"
+    assert not decisions[0].hardware
+
+
+def test_a_docker_reading_that_wasnt_taken_neither_trips_nor_resets() -> None:
+    scans = Scans()
+    broken = {"docker_ok": False, "docker_error": "docker info timed out"}
+    assert scans.run(host_faults=[host(scans, **broken)]) == []
+    assert scans.run(host_faults=[host(scans, docker_ok=None)]) == []
+    assert rules(scans.run(host_faults=[host(scans, **broken)])) == [
+        ("gpu-node-7", "docker")
+    ]
+    # A passing reading starts the streak over.
+    scans = Scans()
+    assert scans.run(host_faults=[host(scans, **broken)]) == []
+    assert scans.run(host_faults=[host(scans)]) == []
+    assert scans.run(host_faults=[host(scans, **broken)]) == []
+
+
 def test_a_kubernetes_node_never_hides_the_bare_metal_hosts_after_it() -> None:
     scans = Scans(
         {"b200-node-1": ("b200", "b200-k8s"), "gpu-node-7": ("h200", "h200_35gb")}
@@ -648,6 +681,8 @@ def test_streaks_persist_under_stable_per_rule_subject_keys() -> None:
         gpu_query_hung=True,
         network_probes=[{"target": "a", "ok": False}],
         root_owned_slots=["agent-1"],
+        docker_ok=False,
+        docker_error="the docker0 bridge is missing",
     )
     scans.run(
         host_faults=failing,
@@ -660,6 +695,7 @@ def test_streaks_persist_under_stable_per_rule_subject_keys() -> None:
     assert sorted(key for kind, key in scans.states if kind == "quarantine") == [
         "rule:dead_memory:gpu-node-7",
         "rule:disk:gpu-node-7",
+        "rule:docker:gpu-node-7",
         "rule:gpu_count:gpu-node-7",
         "rule:gpu_hang:gpu-node-7",
         "rule:network:gpu-node-7",
