@@ -423,11 +423,37 @@ def test_find_root_owned_slots(reporter, tmp_path):
     linked.mkdir(parents=True)
     (linked / "link").symlink_to(outside / "d")
 
+    # Writable but not searchable: the agent can't reach what's inside.
+    no_search = slot("no-search", ".cache", mode=0o766)
+    # Sticky: only an entry's owner may delete it, and root owns these.
+    sticky = slot("sticky", ".tmp", mode=0o1777)
+
     # The test user stands in for root.
     assert reporter.find_root_owned_slots((pattern,), root_uid=os.getuid()) == [
-        str(deep), str(stuck)]
+        str(deep), str(no_search), str(sticky), str(stuck)]
     assert reporter.find_root_owned_slots((pattern,), root_uid=os.getuid() + 1) == []
     assert reporter.find_root_owned_slots((str(tmp_path / "nope" / "*"),)) == []
+
+
+def test_a_root_owned_directory_that_cant_be_read_is_an_unknown_reading(
+        reporter, tmp_path):
+    import os
+
+    import pytest
+
+    ci = tmp_path / "builds" / "s1" / "vllm" / "ci"
+    locked = ci / ".fnrec" / "locked"
+    locked.mkdir(parents=True)
+    os.chmod(ci / ".fnrec", 0o777)
+    os.chmod(locked, 0o000)
+    try:
+        # The caller turns the error into a null reading, never a clean one.
+        with pytest.raises(PermissionError):
+            reporter.find_root_owned_slots(
+                (str(tmp_path / "builds" / "*" / "vllm" / "ci"),),
+                root_uid=os.getuid())
+    finally:
+        os.chmod(locked, 0o755)
 
 
 def run_main(reporter, monkeypatch, tmp_path, post_ok=True, **queries):

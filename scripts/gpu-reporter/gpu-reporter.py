@@ -413,18 +413,32 @@ def check_docker():
     return True, None
 
 
-def _agent_cant_empty(path, root_uid):
-    """A directory at or below `path` that is root-owned, not writable by
-    others, and holds something: the agent can't delete what's inside.
+def _raise(error):
+    raise error
 
-    A root-owned file, or an empty directory, goes when the agent deletes its
-    parent. The recorders make their directories 0777 all the way down for
-    exactly this reason (ci-infra#701), so those don't count.
+
+def _agent_cant_empty(path, root_uid):
+    """A directory at or below `path` that is root-owned, holds something,
+    and keeps the agent from deleting what's inside.
+
+    Deleting an entry needs write and search permission on its directory,
+    and in a sticky directory it also needs owning the entry. A root-owned
+    file, or an empty directory, goes when the agent deletes its parent. The
+    recorders make their directories 0777 all the way down for exactly this
+    reason (ci-infra#701), so those don't count. A directory that can't be
+    read raises, so the reading is unknown rather than clean.
     """
-    for dirpath, dirnames, filenames in os.walk(path):
+    needed = stat.S_IWOTH | stat.S_IXOTH
+    for dirpath, dirnames, filenames in os.walk(path, onerror=_raise):
         st = os.lstat(dirpath)
-        if (st.st_uid == root_uid and not st.st_mode & stat.S_IWOTH
-                and (dirnames or filenames)):
+        names = dirnames + filenames
+        if st.st_uid != root_uid or not names:
+            continue
+        if st.st_mode & needed != needed:
+            return True
+        if st.st_mode & stat.S_ISVTX and any(
+                os.lstat(os.path.join(dirpath, n)).st_uid == root_uid
+                for n in names):
             return True
     return False
 
