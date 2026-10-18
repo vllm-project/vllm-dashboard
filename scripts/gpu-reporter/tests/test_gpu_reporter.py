@@ -425,12 +425,14 @@ def test_find_root_owned_slots(reporter, tmp_path):
 
     # Writable but not searchable: the agent can't reach what's inside.
     no_search = slot("no-search", ".cache", mode=0o766)
+    # Writable and searchable but not readable: rm -rf can't list it.
+    no_read = slot("no-read", ".cache", mode=0o733)
     # Sticky: only an entry's owner may delete it, and root owns these.
     sticky = slot("sticky", ".tmp", mode=0o1777)
 
     # The test user stands in for root.
     assert reporter.find_root_owned_slots((pattern,), root_uid=os.getuid()) == [
-        str(deep), str(no_search), str(sticky), str(stuck)]
+        str(deep), str(no_read), str(no_search), str(sticky), str(stuck)]
     assert reporter.find_root_owned_slots((pattern,), root_uid=os.getuid() + 1) == []
     assert reporter.find_root_owned_slots((str(tmp_path / "nope" / "*"),)) == []
 

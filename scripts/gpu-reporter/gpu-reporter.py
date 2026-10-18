@@ -421,14 +421,14 @@ def _agent_cant_empty(path, root_uid):
     """A directory at or below `path` that is root-owned, holds something,
     and keeps the agent from deleting what's inside.
 
-    Deleting an entry needs write and search permission on its directory,
-    and in a sticky directory it also needs owning the entry. A root-owned
+    Emptying a directory needs read (to list it), write and search
+    permission on it, and in a sticky directory also owning each entry. A root-owned
     file, or an empty directory, goes when the agent deletes its parent. The
     recorders make their directories 0777 all the way down for exactly this
     reason (ci-infra#701), so those don't count. A directory that can't be
     read raises, so the reading is unknown rather than clean.
     """
-    needed = stat.S_IWOTH | stat.S_IXOTH
+    needed = stat.S_IROTH | stat.S_IWOTH | stat.S_IXOTH
     for dirpath, dirnames, filenames in os.walk(path, onerror=_raise):
         st = os.lstat(dirpath)
         names = dirnames + filenames
