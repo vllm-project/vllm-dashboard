@@ -45,6 +45,7 @@ import re
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import threading
@@ -412,19 +413,40 @@ def check_docker():
     return True, None
 
 
+def _agent_cant_empty(path, root_uid):
+    """A directory at or below `path` that is root-owned, not writable by
+    others, and holds something: the agent can't delete what's inside.
+
+    A root-owned file, or an empty directory, goes when the agent deletes its
+    parent. The recorders make their directories 0777 all the way down for
+    exactly this reason (ci-infra#701), so those don't count.
+    """
+    for dirpath, dirnames, filenames in os.walk(path):
+        st = os.lstat(dirpath)
+        if (st.st_uid == root_uid and not st.st_mode & stat.S_IWOTH
+                and (dirnames or filenames)):
+            return True
+    return False
+
+
 def find_root_owned_slots(patterns=CHECKOUT_GLOBS, root_uid=0):
-    """Checkout dirs holding at least one root-owned top-level entry.
+    """Checkout dirs the agent can't delete because of root-owned files.
 
     Job containers run as root, so a directory created in the bind-mounted
-    checkout comes out root:root and the agent can't delete it. Raises on an
-    unreadable checkout; the caller reports null rather than an empty list.
+    checkout comes out root:root 0755 and the agent can't empty it; the next
+    clone on that slot fails. Only root-owned top-level directories are
+    walked, so a normal checkout costs one scandir. Raises on an unreadable
+    checkout; the caller reports null rather than an empty list.
     """
     slots = []
     for pattern in patterns:
         for checkout in sorted(glob.glob(pattern)):
             try:
                 with os.scandir(checkout) as entries:
-                    if any(e.stat(follow_symlinks=False).st_uid == root_uid for e in entries):
+                    if any(e.is_dir(follow_symlinks=False)
+                           and e.stat(follow_symlinks=False).st_uid == root_uid
+                           and _agent_cant_empty(e.path, root_uid)
+                           for e in entries):
                         slots.append(checkout)
             except FileNotFoundError:
                 continue  # slot was cleaned up mid-scan
