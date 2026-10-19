@@ -321,6 +321,39 @@ def test_runtime_shards_report_a_pass_only_once_every_shard_passed() -> None:
     ]
 
 
+def _parallel_job(
+    job_id: str, index: int, state: str, minute: int
+) -> dict[str, Any]:
+    return {
+        "id": job_id,
+        "name": "BMG V1 test",
+        "type": "script",
+        "step_key": "xpu-v1-test",
+        "state": state,
+        "soft_failed": False,
+        "finished_at": f"2026-08-29T09:{minute:02d}:00Z",
+        "parallel_group_index": index,
+        "parallel_group_total": 2,
+    }
+
+
+def test_native_parallel_pass_cannot_resolve_a_failed_sibling() -> None:
+    rows = _shard_rows(
+        [
+            _parallel_job("s0-timeout", 0, "timed_out", 40),
+            _parallel_job("s0-retry", 0, "failed", 50),
+            _parallel_job("s1-timeout", 1, "timed_out", 42),
+            _parallel_job("s1-retry", 1, "passed", 55),
+        ]
+    )
+
+    assert [(row.job_id, row.failed) for row in rows] == [
+        ("s0-timeout", True),
+        ("s1-timeout", True),
+        ("s0-retry", True),
+    ]
+
+
 def test_buildkite_client_unions_active_and_recently_finished_builds() -> None:
     client = RecordingRestClient()
     observed_from = START - timedelta(minutes=30)
