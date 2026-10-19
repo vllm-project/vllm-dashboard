@@ -72,9 +72,9 @@ class DailySummarySource(Protocol):
         that had one in the day before the window."""
         ...
 
-    def agent_queues_since(self, since: datetime) -> list[tuple[str, str]]:
-        """(hostname, queue) for every Buildkite agent connected at any poll
-        since `since`, so a host whose agents just went away keeps its pool."""
+    def last_agent_queues(self) -> list[tuple[str, str]]:
+        """(hostname, queue) from each host's most recent agent snapshot,
+        however old, so a host whose agents are gone keeps its pool."""
         ...
 
     def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
@@ -143,7 +143,8 @@ def render_summary(inputs: SummaryInputs) -> str:
             if episode.opened_at >= since:
                 changes.append(f"• 🧪 would have quarantined {host}: {_reason(episode)}")
         elif stage == "held":
-            if episode.opened_at >= since:
+            # A dry-run episode moving to held has an old opened_at.
+            if _out_at(episode) >= since:
                 cap = str(episode.details.get("held_reason") or "").replace("_", " ")
                 changes.append(
                     f"• ⏸ held {host}{f' ({_escape(cap)})' if cap else ''}: {_reason(episode)}"
@@ -288,11 +289,23 @@ class DailySummaryHandler:
             | buckets.keys()
             | {e.subject_key.removeprefix("gpu-count:") for e in episodes}
         )
+        # Past the agent table's retention a bare-metal host is still named by
+        # its quarantine episode.
+        queues = [
+            *self._source.last_agent_queues(),
+            *(
+                (e.subject_key, str(e.details["pool"]))
+                for e in episodes
+                if e.alert_type == InfraAlertType.QUARANTINE.value
+                and e.details.get("cluster") == "h200"
+                and e.details.get("pool")
+            ),
+        ]
         text = render_summary(
             SummaryInputs(
                 now=now,
                 live=self._quarantine_live,
-                pools=pilot_pools(roster, self._source.agent_queues_since(since)),
+                pools=pilot_pools(roster, queues),
                 gpu_counts=counts,
                 baselines={
                     state.subject_key.removeprefix("gpu-count:"): int(

@@ -1483,15 +1483,38 @@ class PostgresAlertStore:
             ).fetchall()
         return {str(row[0]).lower(): int(row[1]) for row in rows}
 
-    def agent_queues_since(self, since: datetime) -> list[tuple[str, str]]:
+    def last_agent_queues(self) -> list[tuple[str, str]]:
         with self._connection_factory() as connection:
+            # Loose index scan over idx_buildkite_agent_snapshots_host
+            # (hostname, polled_at DESC): one descent per hostname to list
+            # them and one more for each host's newest row, so the table's
+            # 30 days of rows are never scanned.
             rows = connection.execute(
                 """
-                SELECT DISTINCT hostname, queue
-                FROM buildkite_agent_snapshots, unnest(queues) AS queue
-                WHERE polled_at >= %s AND hostname IS NOT NULL
-                """,
-                (since,),
+                WITH RECURSIVE hosts AS (
+                    (
+                        SELECT hostname FROM buildkite_agent_snapshots
+                        WHERE hostname IS NOT NULL
+                        ORDER BY hostname LIMIT 1
+                    )
+                    UNION ALL
+                    SELECT (
+                        SELECT hostname FROM buildkite_agent_snapshots
+                        WHERE hostname > hosts.hostname
+                        ORDER BY hostname LIMIT 1
+                    )
+                    FROM hosts WHERE hostname IS NOT NULL
+                )
+                SELECT hosts.hostname, queue
+                FROM hosts
+                CROSS JOIN LATERAL (
+                    SELECT queues FROM buildkite_agent_snapshots s
+                    WHERE s.hostname = hosts.hostname
+                    ORDER BY polled_at DESC LIMIT 1
+                ) newest,
+                unnest(newest.queues) AS queue
+                WHERE hosts.hostname IS NOT NULL
+                """
             ).fetchall()
         return [(str(row[0]), str(row[1])) for row in rows]
 

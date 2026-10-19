@@ -358,7 +358,7 @@ def test_a_closed_held_episode_does_not_hide_the_ones_after_it() -> None:
     assert "`a`" not in text
 
 
-def test_an_offline_bare_metal_host_keeps_its_pool_from_the_days_agents() -> None:
+def test_an_offline_bare_metal_host_keeps_its_pool_from_its_last_agents() -> None:
     handler, outbox, source = handler_parts()
     source.buckets = {"h200-ci-1": 200}
     source.episodes = [
@@ -371,6 +371,50 @@ def test_an_offline_bare_metal_host_keeps_its_pool_from_the_days_agents() -> Non
     assert "📉 `h200-ci-1` GPUs dropped: 7 of 8" in text
     assert "scrape failing 31%" in text
     assert "`h200-ci-1` 7/9" in text
+
+
+def test_a_host_with_no_agent_snapshot_for_days_keeps_its_pool_from_its_quarantine() -> None:
+    handler, outbox, source = handler_parts()
+    source.queues = []  # past the agent table's retention
+    source.episodes = [
+        episode(
+            "quarantine", "h200-ci-1", opened=timedelta(days=5), stage="quarantined",
+            reason="Xid 79", cluster="h200", pool="h200_35gb",
+        )
+    ]
+    handler(ScheduledCommand("daily_summary", NOW))
+    text = outbox.records()[0].payload["text"]
+    assert "Mode: h200 dry run, h100 not started, b200 not started" in text
+    assert "`h200-ci-1` (quarantined, Xid 79, 5 d)" in text
+    assert "Degraded:\n• `h200-ci-1` 7/9" in text
+
+
+def test_only_quarantine_episodes_name_a_hosts_pool() -> None:
+    handler, outbox, source = handler_parts()
+    source.queues = []
+    source.episodes = [
+        episode("unreporting", "zzz", cluster="h200", pool="h200_35gb"),
+        episode("quarantine", "h200-ci-1", stage="quarantined", reason="r", cluster="b200",
+                pool="h200_35gb"),
+    ]
+    handler(ScheduledCommand("daily_summary", NOW))
+    text = outbox.records()[0].payload["text"]
+    assert "h200 not started" in text
+
+
+def test_a_dry_run_episode_moved_to_held_today_is_a_change_with_its_hold_reason() -> None:
+    text = render_summary(
+        inputs(
+            episodes=[
+                episode(
+                    "quarantine", "a", opened=timedelta(days=4), stage="held", reason="r",
+                    held_reason="pool_cap",
+                    commanded_at=(NOW - timedelta(hours=2)).isoformat(),
+                )
+            ]
+        )
+    )
+    assert "• ⏸ held `a` (pool cap): r" in text
 
 
 def test_a_pool_that_went_dark_is_still_on_the_roster() -> None:
@@ -458,7 +502,7 @@ class FakeSource:
     buckets: dict[str, int] = {}
     queues: list[tuple[str, str]] = [("h200-ci-1", "h200_35gb")]
 
-    def agent_queues_since(self, since: datetime) -> list[tuple[str, str]]:
+    def last_agent_queues(self) -> list[tuple[str, str]]:
         return self.queues
 
     def scrape_buckets(self, since: datetime) -> dict[str, int]:
@@ -573,10 +617,9 @@ def test_postgres_reads_map_rows_and_bound_the_window() -> None:
     )
 
     recorder = Recorder([("h200-ci-1", "h200_35gb")])
-    assert PostgresAlertStore(lambda: recorder).agent_queues_since(YESTERDAY) == [
+    assert PostgresAlertStore(lambda: recorder).last_agent_queues() == [
         ("h200-ci-1", "h200_35gb")
     ]
-    assert recorder.calls[0][1] == (YESTERDAY,)
 
     recorder = Recorder([("INF-4X8H100-1", 6, 8)])
     assert PostgresAlertStore(lambda: recorder).allocatable_gpus() == {
