@@ -29,6 +29,7 @@ install -m 0755 "$source_root"/deploy/aws/bin/notify-failure /opt/alerting/bin/n
 install -m 0755 "$source_root"/deploy/aws/bin/hold-failure /opt/alerting/bin/hold-failure
 install -m 0755 "$source_root"/deploy/aws/bin/run-retention /opt/alerting/bin/run-retention
 install -m 0755 "$source_root"/deploy/aws/bin/run-h200-pauser /opt/alerting/bin/run-h200-pauser
+install -m 0755 "$source_root"/deploy/aws/bin/emit-heartbeat /opt/alerting/bin/emit-heartbeat
 install -m 0755 "$source_root"/scripts/gpu-reporter/quarantine-pauser-h200.py /opt/alerting/bin/quarantine-pauser-h200.py
 install -m 0644 "$source_root"/deploy/aws/systemd/*.service /etc/systemd/system/
 install -m 0644 "$source_root"/deploy/aws/systemd/*.timer /etc/systemd/system/

@@ -1,0 +1,17 @@
+#!/bin/bash
+# Put one CloudWatch heartbeat datapoint for a job that just succeeded.
+# Runs from ExecStartPost=, which systemd only reaches after ExecStart
+# exited 0. It uses the instance role and nothing from the worker secret, so
+# a worker that cannot load its secret stops emitting, and the off-worker
+# alarm (alerting-worker.yaml) notices.
+set -euo pipefail
+
+job=${1:?usage: emit-heartbeat <job>}
+# The aws CLI wants a writable HOME; units have none (PrivateTmp gives /tmp).
+export HOME=/tmp
+
+exec aws cloudwatch put-metric-data \
+  --namespace VllmAlerting \
+  --metric-name Heartbeat \
+  --dimensions "Job=${job}" \
+  --value 1
