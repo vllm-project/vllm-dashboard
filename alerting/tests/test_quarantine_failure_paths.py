@@ -26,6 +26,7 @@ from alerting.commands import ScheduledCommand
 from alerting.infra import (
     InfraAlertEpisode,
     InfraScanHandler,
+    InfraSubjectState,
     InfraThreshold,
     QuarantineDecision,
     XidEvent,
@@ -132,6 +133,7 @@ def test_a_restarted_worker_picks_up_where_the_last_one_stopped() -> None:
     rig = Rig()
     rig.scan()
     assert rig.details["stage"] == "quarantining"
+    assert rig.details["hostname"] == HOST
     rig.restart()
     # The same standing decision opens nothing new and posts nothing again.
     rig.scan()
@@ -142,6 +144,7 @@ def test_a_restarted_worker_picks_up_where_the_last_one_stopped() -> None:
     rig.restart()
     rig.scan()
     assert rig.details["stage"] == "quarantined"
+    assert rig.details["quarantined_at"] == rig.clock.now().isoformat()
     assert len(rig.texts) == 2
     # A restart in the middle of a resolve resumes it, too.
     rig.report(
@@ -438,3 +441,54 @@ def test_the_breaker_leaves_hosts_already_out_alone() -> None:
     )
     rig.scan()
     assert "gpu-node-1" not in {e.subject_key for e in rig.store.open_episodes()}
+
+
+def test_a_pause_that_landed_with_a_job_still_running_is_not_stuck() -> None:
+    # 'out' every minute for two hours: the actuator is alive, the job is not
+    # done. Only silence is flagged.
+    rig = Rig()
+    rig.scan()
+    for _ in range(24):
+        rig.report(actuator_state="out", actuator_state_at=at(rig))
+        rig.scan()
+    assert rig.details["stage"] == "quarantining"
+    assert len(rig.texts) == 1
+
+
+def plan_one(
+    episode: InfraAlertEpisode, **kwargs: Any
+) -> Any:
+    return plan_quarantine(
+        now=NOW,
+        live=True,
+        decisions=kwargs.pop("decisions", []),
+        states=kwargs.pop("states", {}),
+        open_episodes={("quarantine", HOST): episode},
+        pool_sizes={"pool-a": 8},
+        **kwargs,
+    )
+
+
+def test_a_quiet_scan_of_a_steady_episode_writes_no_state() -> None:
+    plan = plan_one(quarantined("quarantined", None))
+    assert plan.states == () and plan.stage_changes == ()
+
+
+def test_a_fault_after_the_resolve_records_when_the_check_failed() -> None:
+    plan = plan_one(
+        quarantined("resolve_requested", None), faults={HOST: "still hung"}
+    )
+    [change] = plan.stage_changes
+    assert change.patch["stage"] == "quarantined"
+    assert change.patch["verify_failed_at"] == NOW.isoformat()
+    assert change.patch["verify_note"] == "still hung"
+
+
+def test_a_closed_dry_run_resets_its_absence_count_to_zero() -> None:
+    episode = quarantined("would", None)
+    state = InfraSubjectState("quarantine", HOST, details={"absent_scans": 1})
+    plan = plan_one(episode, states={("quarantine", HOST): state})
+    [change] = plan.stage_changes
+    assert change.patch["resolution"] == "decision_cleared"
+    [written] = plan.states
+    assert written.details["absent_scans"] == 0

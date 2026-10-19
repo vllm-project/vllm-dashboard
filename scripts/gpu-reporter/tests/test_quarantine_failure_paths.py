@@ -116,7 +116,8 @@ def test_an_actuator_restarted_mid_check_neither_repeats_nor_skips_it(kube_run):
     assert kube.nodes["n1"]["unschedulable"] is True
     kube.checks[k8s.CHECK]["phase"] = "Succeeded"
     assert kube_run(kube, dash) == 0
-    assert dash.posts[-1][1]["state"] == "returned"
+    assert dash.posts[-1][1] == {"alertId": 7, "state": "returned",
+                                 "observed": {"cordoned": False, "tainted": False}}
     assert len(kube.created) == 1
 
 
@@ -128,6 +129,31 @@ def test_a_node_that_leaves_the_cluster_is_never_reported_back(kube_run, stage):
     # The other node is still handled, and the missing one says nothing.
     assert [h for h, _ in dash.posts] == ["n2"]
     assert all("gone" not in w for w in kube.writes)
+
+
+def test_a_stage_it_does_not_know_fails_the_run_and_touches_nothing(kube_run):
+    kube = k8s.FakeKube({"n1": k8s.node(True, True)})
+    dash = k8s.FakeDashboard([k8s.want("n1", "evicted")])
+    assert kube_run(kube, dash) == 1
+    assert kube.writes == [] and dash.posts == []
+
+
+@pytest.mark.parametrize("missing", ["REPORT_URL", "CLUSTER"])
+def test_missing_settings_fail_the_run_before_any_call(kube_run, monkeypatch, missing):
+    monkeypatch.setattr(kube_run.mod, missing, "")
+    kube = k8s.FakeKube({"n1": k8s.node()})
+    dash = k8s.FakeDashboard([k8s.want("n1", "quarantining")])
+    assert kube_run(kube, dash) == 1
+    assert kube.writes == [] and dash.posts == []
+
+
+def test_only_a_tainted_node_outside_the_desired_set_is_warned_about(kube_run, capsys):
+    kube = k8s.FakeKube({"tainted": k8s.node(True, True), "plain": k8s.node(),
+                         "wanted": k8s.node(True, True)})
+    dash = k8s.FakeDashboard([k8s.want("wanted", "quarantined")])
+    assert kube_run(kube, dash) == 0
+    err = capsys.readouterr().err
+    assert "tainted carries" in err and "plain" not in err and "wanted carries" not in err
 
 
 def test_a_malformed_desired_set_changes_nothing(kube_run):

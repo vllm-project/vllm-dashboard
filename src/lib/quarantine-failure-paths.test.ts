@@ -38,14 +38,21 @@ test("a report from an older episode of the host is a 409 and writes nothing", a
   // The write is scoped to the one episode the report names, still open.
   assert.match(calls[0].sql, /status = 'open' AND alert_id = \?/);
   assert.ok(calls[0].values.includes(7) && calls[0].values.includes("n1"));
+  // The follow-up looks only at this host's open episode, to tell 404 from 409.
+  assert.match(calls[1].sql, /subject_key = \? AND status = 'open'/);
+  assert.deepEqual(calls[1].values, ["n1"]);
+  // The observation is stored as given.
+  assert.deepEqual(calls[0].values.at(-3), { json: { ciPods: 0 } });
 });
 
 test("a late report after the host returned is a 404, not a write", async () => {
   // The worker closed the episode before the actuator's last post arrived.
   const { db } = recordingDb([], []);
   const result = await recordActuatorState(db, "n1", 7, "returned", {});
-  assert.equal(result.status, 404);
-  assert.match(String(result.body.error), /no open quarantine/);
+  assert.deepEqual(result, {
+    status: 404,
+    body: { error: "This host has no open quarantine." },
+  });
 });
 
 test("a report is recorded without moving the stage", async () => {
@@ -58,6 +65,14 @@ test("a report is recorded without moving the stage", async () => {
   assert.match(calls[0].sql, /'actuator_state_at', now\(\)/);
   // No observation is stored as SQL null, not as the JSON text "null".
   assert.equal(calls[0].values.includes(null), true);
+});
+
+test("a resolve for a host with no episode at all says it was never quarantined", async () => {
+  const result = await resolveQuarantine(recordingDb([], []).db, "n9", "oncall", "fixed");
+  assert.deepEqual(result, {
+    status: 404,
+    body: { error: "This host has never been quarantined." },
+  });
 });
 
 test("a database error during a report reaches the caller, never a 200", async () => {
@@ -85,6 +100,9 @@ test("a resolve that loses the race to the return is a 409 and never reopens it"
   // The worker closed the episode between the person's click and the write.
   const { db, calls } = recordingDb([], [{ stage: "resolved" }]);
   const result = await resolveQuarantine(db, "n1", "oncall", "fixed", true);
+  // The follow-up reads the host's latest episode, whichever way it ended.
+  assert.match(calls[1].sql, /subject_key = \? ORDER BY opened_at DESC LIMIT 1/);
+  assert.deepEqual(calls[1].values, ["n1"]);
   assert.equal(result.status, 409);
   assert.match(String(result.body.error), /already resolved/);
   // Even forced, only a held, applied or waiting episode can be resolved.
@@ -102,11 +120,15 @@ test("the desired set lists only open episodes, so a returned host drops out", a
 
 const goodAuth = { authorization: "Bearer secret" };
 
+const logged: unknown[][] = [];
+
 async function withEnv(name: string, value: string, fn: () => Promise<void>) {
   const previous = process.env[name];
   process.env[name] = value;
   const log = console.error;
-  console.error = () => {};
+  console.error = (...args: unknown[]) => {
+    logged.push(args);
+  };
   try {
     await fn();
   } finally {
@@ -133,6 +155,8 @@ test("an unexpected database failure is a generic 500 that leaks nothing", async
     const text = JSON.stringify(await res.json());
     assert.match(text, /Recording a quarantine action failed/);
     assert.doesNotMatch(text, /password|postgres/);
+    // The detail goes to the server log, under the call's name.
+    assert.equal(logged.at(-1)?.[0], "Recording a quarantine action failed:");
   });
 });
 
