@@ -116,9 +116,15 @@ dead timer, a dead instance, or a secret the worker cannot load all alarm
 without the worker, its database or its secret. Set `HeartbeatAlertEmail` and
 click SNS's confirmation link once; empty means no subscriber. A job whose
 timer is intentionally disabled (a path turned off in S3 control) will
-alarm: disable or delete its alarm first. To test, stop a timer's service
-past its window and watch the alarm go to `ALARM`, or run
-`aws cloudwatch set-alarm-state` to check delivery only.
+alarm: disable or delete its alarm first. `control` doesn't load the worker
+secret, so its alarm covers a dead instance or timers, not the secret.
+
+Deploy the code before the stack change: until the stack grants
+`PutMetricData` the emit fails quietly, and the alarms then see data as soon
+as they exist instead of firing on missing data first. Test delivery with
+`aws cloudwatch set-alarm-state --state-value ALARM`. Don't test by stopping
+a timer: while a path is live, the control service re-enables its timers
+within a minute.
 
 ## Shadow, cutover, and rollback
 
