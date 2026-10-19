@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import re
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -790,6 +791,16 @@ XID_REPEATS = 3
 PROBATION = timedelta(hours=24)
 
 
+def normalize_hostname(hostname: str) -> str:
+    """The join key for a host name: reporters send the short name, Buildkite
+    may record an FQDN or other casing. Lowercased first DNS label; an IPv4
+    address is kept whole. Mirrors normalizeHostname in the dashboard."""
+    name = hostname.strip().lower()
+    if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", name):
+        return name
+    return name.split(".", 1)[0]
+
+
 def pilot_pools(
     hosts: Iterable[str], agent_queues: Iterable[tuple[str, str]]
 ) -> dict[str, tuple[str, str]]:
@@ -802,7 +813,7 @@ def pilot_pools(
     pools: dict[str, tuple[str, str]] = {}
     for hostname, queue in sorted(agent_queues):
         if PILOT_QUEUES.get(queue) == "h200":
-            short = hostname.strip().lower().split(".", 1)[0]
+            short = normalize_hostname(hostname)
             pools.setdefault(short, ("h200", queue))
     for hostname in hosts:
         for prefix, queue in K8S_NODE_QUEUES.items():

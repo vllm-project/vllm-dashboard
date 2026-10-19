@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -15,6 +16,8 @@ from alerting.daily_summary import (
     render_summary,
 )
 from alerting.infra import (
+    normalize_hostname,
+    pilot_pools,
     GpuCountObservation,
     InfraAlertEpisode,
     InfraSubjectState,
@@ -427,6 +430,37 @@ def test_a_node_known_only_by_its_allocatable_reading_is_still_degraded() -> Non
     assert "h100 dry run" in text
 
 
+def test_only_the_summarys_own_hosts_are_looked_up_in_agent_snapshots() -> None:
+    handler, outbox, source = handler_parts()
+    source.buckets = {"h200-ci-2": 288}
+    source.episodes = [episode("gpu_count", "gpu-count:h200-ci-3")]
+    source.allocatable = {"inf-4x8h100-9": (8, 8)}
+    handler(ScheduledCommand("daily_summary", NOW))
+    assert source.asked == [
+        "h200-ci-1", "h200-ci-2", "h200-ci-3", "inf-4x8h100-9"
+    ]
+
+
+def test_an_online_host_reported_by_fqdn_is_mapped_from_fresh_agents() -> None:
+    handler, outbox, source = handler_parts()
+    source.queues = []
+    handler._snapshots.agent_queues = lambda: [  # type: ignore[method-assign]
+        ("H200-CI-1.corp.example", "h200_35gb"),
+        ("pod-7f9c", "other"),
+        ("10.1.2.3", "other"),
+    ]
+    handler(ScheduledCommand("daily_summary", NOW))
+    assert "h200 dry run" in outbox.records()[0].payload["text"]
+    # The domain is passed on so an offline FQDN host is found later.
+    assert source.suffixes == ["corp.example"]
+
+
+def test_hostnames_normalize_like_the_dashboard() -> None:
+    assert normalize_hostname(" H200-CI-3.Example.Net ") == "h200-ci-3"
+    assert normalize_hostname("10.1.2.3") == "10.1.2.3"
+    assert normalize_hostname("dgxb200-01") == "dgxb200-01"
+
+
 def test_a_pool_that_went_dark_is_still_on_the_roster() -> None:
     handler, outbox, source = handler_parts()
     source.buckets = {"inf-4x8h100-1": 100}
@@ -513,8 +547,12 @@ class FakeSource:
     allocatable: dict[str, tuple[int, int]] = {}
     queues: list[tuple[str, str]] = [("h200-ci-1", "h200_35gb")]
 
-    def last_agent_queues(self) -> list[tuple[str, str]]:
-        return self.queues
+    def last_agent_queues(
+        self, hostnames: Iterable[str], suffixes: Iterable[str]
+    ) -> list[tuple[str, str]]:
+        self.asked = sorted(hostnames)
+        self.suffixes = sorted(suffixes)
+        return [q for q in self.queues if q[0] in self.asked]
 
     def scrape_buckets(self, since: datetime) -> dict[str, int]:
         return self.buckets
@@ -627,10 +665,38 @@ def test_postgres_reads_map_rows_and_bound_the_window() -> None:
         YESTERDAY, YESTERDAY - timedelta(days=1), YESTERDAY,
     )
 
-    recorder = Recorder([("h200-ci-1", "h200_35gb")])
-    assert PostgresAlertStore(lambda: recorder).last_agent_queues() == [
-        ("h200-ci-1", "h200_35gb")
+    older, newer = YESTERDAY, NOW
+    recorder = Recorder(
+        [
+            ("h200-ci-3", older, "old_queue"),
+            ("H200-CI-3.example.net", newer, "h200_35gb"),
+            ("h200-ci-4", older, "h200_18gb"),
+        ]
+    )
+    queues = PostgresAlertStore(lambda: recorder).last_agent_queues(
+        ["h200-ci-3", "h200-ci-4"], ["example.net"]
+    )
+    # The FQDN in other case is the newest of h200-ci-3's candidates.
+    assert queues == [
+        ("H200-CI-3.example.net", "h200_35gb"),
+        ("h200-ci-4", "h200_18gb"),
     ]
+    assert [(h, q) for h, q in queues if normalize_hostname(h) == "h200-ci-3"] == [
+        ("H200-CI-3.example.net", "h200_35gb")
+    ]
+    sql, (candidates,) = recorder.calls[0]
+    assert "unnest(%s::text[])" in sql and "hostname = c.name" in sql
+    # Only variants of the given hosts are probed: never a table walk, so a
+    # pod hostname can't come back.
+    assert candidates == sorted(
+        {
+            v
+            for h in ("h200-ci-3", "h200-ci-4")
+            for b in (h, f"{h}.example.net")
+            for v in (b, b.upper())
+        }
+    )
+    assert pilot_pools(["h200-ci-3"], queues)["h200-ci-3"] == ("h200", "h200_35gb")
 
     recorder = Recorder([("INF-4X8H100-1", 6, 8)])
     assert PostgresAlertStore(lambda: recorder).allocatable_gpus() == {

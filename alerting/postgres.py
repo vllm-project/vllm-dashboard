@@ -42,6 +42,7 @@ from alerting.infra import (
     HostFaultObservation,
     HostReport,
     InfraAlertEpisode,
+    normalize_hostname,
     InfraNotificationFactory,
     InfraScanPlan,
     InfraStateSnapshot,
@@ -1483,40 +1484,45 @@ class PostgresAlertStore:
             ).fetchall()
         return {str(row[0]).lower(): int(row[1]) for row in rows}
 
-    def last_agent_queues(self) -> list[tuple[str, str]]:
+    def last_agent_queues(
+        self, hostnames: Iterable[str], suffixes: Iterable[str]
+    ) -> list[tuple[str, str]]:
+        # Candidate raw names for each host: short, upper case, and under each
+        # known domain. Each is one probe of idx_buildkite_agent_snapshots_host
+        # (hostname, polled_at DESC), so the cost is the candidate count, not
+        # the table, which holds a hostname per CI pod agent.
+        candidates = sorted(
+            {
+                variant
+                for host in hostnames
+                for base in (host, *(f"{host}.{suffix}" for suffix in suffixes))
+                for variant in (base, base.upper())
+            }
+        )
         with self._connection_factory() as connection:
-            # Loose index scan over idx_buildkite_agent_snapshots_host
-            # (hostname, polled_at DESC): one descent per hostname to list
-            # them and one more for each host's newest row, so the table's
-            # 30 days of rows are never scanned.
             rows = connection.execute(
                 """
-                WITH RECURSIVE hosts AS (
-                    (
-                        SELECT hostname FROM buildkite_agent_snapshots
-                        WHERE hostname IS NOT NULL
-                        ORDER BY hostname LIMIT 1
-                    )
-                    UNION ALL
-                    SELECT (
-                        SELECT hostname FROM buildkite_agent_snapshots
-                        WHERE hostname > hosts.hostname
-                        ORDER BY hostname LIMIT 1
-                    )
-                    FROM hosts WHERE hostname IS NOT NULL
-                )
-                SELECT hosts.hostname, queue
-                FROM hosts
+                SELECT c.name, newest.polled_at, queue
+                FROM unnest(%s::text[]) AS c(name)
                 CROSS JOIN LATERAL (
-                    SELECT queues FROM buildkite_agent_snapshots s
-                    WHERE s.hostname = hosts.hostname
+                    SELECT polled_at, queues FROM buildkite_agent_snapshots
+                    WHERE hostname = c.name
                     ORDER BY polled_at DESC LIMIT 1
                 ) newest,
                 unnest(newest.queues) AS queue
-                WHERE hosts.hostname IS NOT NULL
-                """
+                """,
+                (candidates,),
             ).fetchall()
-        return [(str(row[0]), str(row[1])) for row in rows]
+        # Of the candidates that normalize to one host, keep the newest poll.
+        newest: dict[str, datetime] = {}
+        for name, polled_at, _ in rows:
+            key = normalize_hostname(str(name))
+            newest[key] = max(polled_at, newest.get(key, polled_at))
+        return [
+            (str(name), str(queue))
+            for name, polled_at, queue in rows
+            if polled_at == newest[normalize_hostname(str(name))]
+        ]
 
     def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
         with self._connection_factory() as connection:

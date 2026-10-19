@@ -13,7 +13,7 @@ used on its own, because a host that came up short would learn the short count.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
@@ -28,6 +28,7 @@ from alerting.infra import (
     InfraStore,
     _code,
     _escape,
+    normalize_hostname,
     pilot_pools,
 )
 from alerting.ports import (
@@ -72,9 +73,14 @@ class DailySummarySource(Protocol):
         that had one in the day before the window."""
         ...
 
-    def last_agent_queues(self) -> list[tuple[str, str]]:
-        """(hostname, queue) from each host's most recent agent snapshot,
-        however old, so a host whose agents are gone keeps its pool."""
+    def last_agent_queues(
+        self, hostnames: Iterable[str], suffixes: Iterable[str]
+    ) -> list[tuple[str, str]]:
+        """(agent hostname, queue) from the newest agent snapshot of each of
+        `hostnames`, however old, so a host whose agents are gone keeps its
+        pool. An agent matches a host by normalized name, so it may be an
+        FQDN under one of `suffixes` or differ in case. Only these hosts are
+        looked up: the table holds one hostname per CI pod agent."""
         ...
 
     def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
@@ -293,8 +299,18 @@ class DailySummaryHandler:
         )
         # Past the agent table's retention a bare-metal host is still named by
         # its quarantine episode.
+        fresh = self._snapshots.agent_queues()
         queues = [
-            *self._source.last_agent_queues(),
+            *fresh,
+            *self._source.last_agent_queues(
+                sorted(roster),
+                # The domains Buildkite is using for FQDN agent names today.
+                {
+                    name.split(".", 1)[1]
+                    for name, _ in fresh
+                    if "." in name and normalize_hostname(name) != name.lower()
+                },
+            ),
             *(
                 (e.subject_key, str(e.details["pool"]))
                 for e in episodes
