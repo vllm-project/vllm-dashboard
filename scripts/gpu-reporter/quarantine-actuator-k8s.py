@@ -269,10 +269,21 @@ class Actuator:
         if self.dry_run:
             print(f"  DRY RUN: would run the return check on {name}")
             return True
+        pod_name = verify_pod_name(name)
         if want.get("actuatorState") == "verify_failed":
             print(f"  {name} failed its return check; waiting for a resolve")
+            # Its pod is deleted once the failure is posted; if that delete
+            # failed, the pod is left over and the next resolve would take it
+            # for its own check and fail at once. Finish the delete.
+            try:
+                kubectl("get", "pod", pod_name, "-n", VERIFY_NS, "-o", "json")
+            except RuntimeError as e:
+                if "NotFound" not in str(e):
+                    raise
+            else:
+                self.write("delete", "pod", pod_name, "-n", VERIFY_NS,
+                           "--wait=false")
             return False
-        pod_name = verify_pod_name(name)
         try:
             pod = json.loads(kubectl("get", "pod", pod_name, "-n", VERIFY_NS,
                                      "-o", "json"))

@@ -167,6 +167,33 @@ def test_a_person_uncordoning_our_node_is_drift_and_resolve_still_lifts_our_mark
     assert "note" not in back.posts[0][1]["observed"]
 
 
+def test_a_stale_failed_check_pod_is_not_taken_for_the_next_resolves_check(kube_run):
+    # The failure was posted, but deleting its pod then failed. A person
+    # fixes the host and resolves again (the dashboard clears the report).
+    # The old pod is a previous attempt: it must not fail this one.
+    kube = k8s.FakeKube({"n1": k8s.node(True, True)}, checks={k8s.CHECK: {
+        "phase": "Failed", "logs": "| Memory | Fail - GPU 3 |\n"}})
+    first = k8s.FakeDashboard([k8s.want("n1", "resolving")])
+    real = kube.__call__
+
+    def delete_fails(*args, input=None):
+        if args[:2] == ("delete", "pod"):
+            raise RuntimeError("kubectl delete failed: timeout")
+        return real(*args, input=input)
+
+    assert kube_run(delete_fails, first) == 1
+    assert [b["state"] for _, b in first.posts] == ["verify_failed"]
+    # While it waits for a person, the leftover pod is cleaned up.
+    waiting = k8s.FakeDashboard([dict(k8s.want("n1", "resolving"),
+                                      actuatorState="verify_failed")])
+    assert kube_run(kube, waiting) == 0
+    assert waiting.posts == []
+    again = k8s.FakeDashboard([dict(k8s.want("n1", "resolving"), actuatorState=None)])
+    assert kube_run(kube, again) == 0
+    assert [b["state"] for _, b in again.posts] == ["verifying"]
+    assert len(kube.created) == 1
+
+
 # ------------------------------------------------------------------ H200 pauser
 
 
