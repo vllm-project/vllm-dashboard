@@ -172,10 +172,19 @@ export function matchesTestQuery(
     .some((value) => value.toLowerCase().includes(needle));
 }
 
+export interface ShardInfo {
+  index: number;
+  total: number;
+  state: string;
+  web_url?: string;
+}
+
 export interface JobInfo {
   name: string;
   state: string;
   web_url?: string;
+  /** A runtime-sharded step's shards, by index; the step's state is all of theirs. */
+  shards?: ShardInfo[];
 }
 
 export interface GroupStatus {
@@ -256,7 +265,8 @@ function isRunningJobState(state: string): boolean {
  * up into one job named after the step, so it keeps its place in the group
  * columns and the job picker however the generator re-plans it. The step
  * failed if any shard failed, is running while any shard runs, and passed only
- * when every shard passed. It links to its first failing shard, else shard 1.
+ * when every shard passed. It links to its first failing shard, else shard 1,
+ * and keeps each shard's own result in `shards`.
  */
 export function foldRuntimeShards(jobs: JobInfo[]): JobInfo[] {
   const shardsByStep = new Map<string, JobInfo[]>();
@@ -290,6 +300,11 @@ export function foldRuntimeShards(jobs: JobInfo[]): JobInfo[] {
       name: job.name,
       state: failing ? "failed" : representative.state,
       web_url: (failing ?? shards[0]).web_url,
+      shards: shards.map((shard) => ({
+        ...runtimeShard(shard.name)!,
+        state: shard.state,
+        web_url: shard.web_url,
+      })),
     };
   });
 }
@@ -305,7 +320,7 @@ export function aggregateJobsByGroup(
     if (!group) continue;
 
     if (!groupMap.has(group)) groupMap.set(group, []);
-    groupMap.get(group)!.push({ name: job.name, state: job.state, web_url: job.web_url });
+    groupMap.get(group)!.push(job);
   }
 
   // Use groups from yaml (sorted alphabetically) for consistent column ordering

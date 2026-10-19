@@ -12,7 +12,11 @@ import {
 import useSWR from "swr";
 import { BuildWaterfall } from "@/components/build-waterfall";
 import { JobName, jobNameText, splitJobName } from "@/components/job-name";
-import { summarizeGroupJobs, type GroupStatus } from "@/lib/test-groups";
+import {
+  summarizeGroupJobs,
+  type GroupStatus,
+  type JobInfo,
+} from "@/lib/test-groups";
 import {
   buildDurationDisplay,
   isBuildInProgress,
@@ -125,6 +129,7 @@ function DotWithTooltip({
   onClick,
   highlight,
   onHover,
+  shardColors,
 }: {
   color: string;
   ariaLabel: string;
@@ -134,6 +139,8 @@ function DotWithTooltip({
   onClick?: () => void;
   highlight?: boolean;
   onHover?: (hovering: boolean) => void;
+  /** One color per runtime shard, drawn as a strip under the step's dot. */
+  shardColors?: string[];
 }) {
   // Viewport coordinates of the dot, so the popup can be position:fixed and
   // escape the table's overflow-x-auto clipping.
@@ -151,7 +158,19 @@ function DotWithTooltip({
     anchor !== null &&
     typeof window !== "undefined" &&
     anchor.x > window.innerWidth * 0.7;
-  const dot = <span className={`block h-3.5 w-3.5 rounded-sm ${color}`} />;
+  const dot = (
+    <span className={`relative block h-3.5 w-3.5 rounded-sm ${color}`}>
+      {shardColors && (
+        <span
+          className={`absolute inset-x-0 -bottom-[5px] flex h-[3px] ${shardColors.length <= 6 ? "gap-px" : ""}`}
+        >
+          {shardColors.map((shardColor, index) => (
+            <span key={index} className={`h-full flex-1 rounded-[1px] ${shardColor}`} />
+          ))}
+        </span>
+      )}
+    </span>
+  );
   const cls = "inline-flex h-5 w-5 items-center justify-center";
   return (
     <td
@@ -272,15 +291,12 @@ interface Column {
 }
 
 interface BuildJobsResponse {
-  jobsByBuild: Record<
-    string,
-    Record<string, Array<{ name: string; state: string; web_url?: string }>>
-  >;
+  jobsByBuild: Record<string, Record<string, JobInfo[]>>;
 }
 
 type CompactJobsByBuild = Record<
   string,
-  Record<string, Array<[nameIndex: number, state: string]>>
+  Record<string, Array<[nameIndex: number, state: string, shardStates?: string[]]>>
 >;
 
 interface BuildsTableProps {
@@ -619,16 +635,28 @@ export function BuildsTable({
                 const urlsByName = new Map(
                   details.map((job) => [job.name, job.web_url]),
                 );
+                const shardUrlsByName = new Map(
+                  details.map((job) => [
+                    job.name,
+                    job.shards?.map((shard) => shard.web_url),
+                  ]),
+                );
                 const failedUrlsByName = new Map(
                   (g.failedJobs ?? []).map((job) => [job.name, job.web_url]),
                 );
                 const jobs = (jobsByBuild[build.id]?.[g.group] ?? [])
-                  .map(([nameIndex, state]) => ({
+                  .map(([nameIndex, state, shardStates]) => ({
                     name: jobNames[nameIndex],
                     state,
                     web_url:
                       urlsByName.get(jobNames[nameIndex]) ??
                       failedUrlsByName.get(jobNames[nameIndex]),
+                    shards: shardStates?.map((shardState, index) => ({
+                      index: index + 1,
+                      total: shardStates.length,
+                      state: shardState,
+                      web_url: shardUrlsByName.get(jobNames[nameIndex])?.[index],
+                    })),
                   }))
                   .filter((job) => Boolean(job.name));
                 const visibleJobs = isFilteringJobs
@@ -926,7 +954,25 @@ export function BuildsTable({
                             <p className="text-zinc-500 dark:text-zinc-400">{col.group}</p>
                             <p className={`capitalize ${stateTextColor(job.state)}`}>
                               {job.state.replace(/_/g, " ")}
+                              {job.shards && (
+                                <span className="normal-case text-zinc-500 dark:text-zinc-400">
+                                  {` · ${job.shards.filter((shard) => shard.state === "passed").length}/${job.shards.length} shards passed`}
+                                </span>
+                              )}
                             </p>
+                            {job.shards && (
+                              <ul className="mt-1 space-y-0.5">
+                                {job.shards.map((shard) => (
+                                  <li key={shard.index} className="flex items-center gap-1.5">
+                                    <span className={`block h-2 w-2 rounded-sm ${dotColor(shard.state)}`} />
+                                    <span>Shard {shard.index}/{shard.total}</span>
+                                    <span className={stateTextColor(shard.state)}>
+                                      {shard.state.replace(/_/g, " ")}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
                             <BuildContext build={build} />
                             {job.web_url && (
                               <p className="mt-1 text-zinc-400 dark:text-zinc-500">Click to open in Buildkite ↗</p>
@@ -937,6 +983,7 @@ export function BuildsTable({
                         highlight={hoveredCol === key}
                         onHover={onHover}
                         borderClass={borderR}
+                        shardColors={job.shards?.map((shard) => dotColor(shard.state))}
                       />
                     );
                     })}

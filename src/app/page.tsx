@@ -56,7 +56,7 @@ interface BuildGroupsResponse {
   jobNames: string[];
   jobsByBuild: Record<
     string,
-    Record<string, Array<[nameIndex: number, state: string]>>
+    Record<string, Array<[nameIndex: number, state: string, shardStates?: string[]]>>
   >;
   startedJobCountsByBuild: Record<string, number>;
   /** Indexes into jobNames of jobs from `optional` / `soft_fail` YAML steps. */

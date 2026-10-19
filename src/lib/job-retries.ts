@@ -133,7 +133,7 @@ function buildOtelRetryAttempts(filters: RetryFilters, jobName?: string) {
   if (jobName !== undefined) {
     // The job, or a runtime shard of the step (see job-shards.ts).
     const name = bind(jobName);
-    conditions.push(`(j.job_label = ${name} OR (j.job_label LIKE ${name} || ' shard %'
+    conditions.push(`(j.job_label = ${name} OR (j.job_label LIKE ${name} || ' _hard %'
       AND regexp_replace(j.job_label, '${SHARD_SUFFIX_SQL}', '') = ${name}))`);
   }
   return {
@@ -249,7 +249,7 @@ function buildWarehouseRetryAttempts(filters: RetryFilters, jobName?: string) {
   if (jobName !== undefined) {
     // The job, or a runtime shard of the step (see job-shards.ts).
     const name = bind("jobName", jobName);
-    conditions.push(`(j.name = ${name} OR (j.name LIKE CONCAT(${name}, ' shard %')
+    conditions.push(`(j.name = ${name} OR (j.name LIKE CONCAT(${name}, ' _hard %')
       AND regexp_replace(j.name, '${SHARD_SUFFIX_SQL}', '') = ${name}))`);
   }
   return {

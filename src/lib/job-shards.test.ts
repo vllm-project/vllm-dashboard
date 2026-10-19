@@ -18,3 +18,11 @@ test("the SQL patterns match what the TypeScript one does", () => {
   assert.equal("Kernels shard 10/12".match(total)?.[1], "12");
   assert.equal("Kernels Shard 3".match(suffix), null);
 });
+
+test("the capitalized Shard N/M label from ci-infra#833 folds too", () => {
+  const name = ":nvidia: (H200 MIG 35GB) Model Executor Shard 2/4";
+  assert.equal(stepName(name), ":nvidia: (H200 MIG 35GB) Model Executor");
+  assert.deepEqual(runtimeShard(name), { index: 2, total: 4 });
+  assert.equal(name.replace(new RegExp(SHARD_SUFFIX_SQL), ""), stepName(name));
+  assert.equal(name.match(new RegExp(SHARD_TOTAL_SQL))?.[1], "4");
+});

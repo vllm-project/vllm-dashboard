@@ -46,7 +46,7 @@ export async function GET(request: NextRequest) {
       // The job itself, or a runtime shard of the step (see job-shards.ts).
       // LIKE only narrows the scan: a wildcard in the name over-matches, and
       // the exact comparison decides.
-      `(j.name = '${name}' OR (j.name LIKE '${name} shard %'
+      `(j.name = '${name}' OR (j.name LIKE '${name} _hard %'
         AND regexp_replace(j.name, '${SHARD_SUFFIX_SQL}', '') = '${name}'))`,
       "b._fivetran_deleted = false",
     ];

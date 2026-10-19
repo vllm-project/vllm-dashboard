@@ -378,32 +378,45 @@ test("parseBuildkiteYaml keeps the last value of a duplicated key like PyYAML", 
 test("foldRuntimeShards rolls a step's shards into one job", () => {
   const folded = foldRuntimeShards([
     { name: "Basic Correctness", state: "passed" },
-    { name: "Quantization shard 2/3", state: "failed", web_url: "u2" },
-    { name: "Quantization shard 1/3", state: "passed", web_url: "u1" },
-    { name: "Quantization shard 3/3", state: "running", web_url: "u3" },
+    { name: "Quantization Shard 2/3", state: "failed", web_url: "u2" },
+    { name: "Quantization Shard 1/3", state: "passed", web_url: "u1" },
+    { name: "Quantization Shard 3/3", state: "running", web_url: "u3" },
     { name: "Language Models Test 3", state: "passed" },
   ]);
   assert.deepEqual(folded, [
     { name: "Basic Correctness", state: "passed" },
-    { name: "Quantization", state: "failed", web_url: "u2" },
+    {
+      name: "Quantization",
+      state: "failed",
+      web_url: "u2",
+      shards: [
+        { index: 1, total: 3, state: "passed", web_url: "u1" },
+        { index: 2, total: 3, state: "failed", web_url: "u2" },
+        { index: 3, total: 3, state: "running", web_url: "u3" },
+      ],
+    },
     { name: "Language Models Test 3", state: "passed" },
   ]);
 });
 
 test("foldRuntimeShards: running beats passed, all-passed passes", () => {
+  const stepOf = (jobs: { name: string; state: string; web_url: string }[]) => {
+    const [{ name, state, web_url }] = foldRuntimeShards(jobs);
+    return { name, state, web_url };
+  };
   assert.deepEqual(
-    foldRuntimeShards([
+    stepOf([
       { name: "Q shard 1/2", state: "passed", web_url: "u1" },
       { name: "Q shard 2/2", state: "scheduled", web_url: "u2" },
     ]),
-    [{ name: "Q", state: "scheduled", web_url: "u1" }],
+    { name: "Q", state: "scheduled", web_url: "u1" },
   );
   assert.deepEqual(
-    foldRuntimeShards([
-      { name: "Q shard 2/2", state: "passed", web_url: "u2" },
-      { name: "Q shard 1/2", state: "passed", web_url: "u1" },
+    stepOf([
+      { name: "Q Shard 2/2", state: "passed", web_url: "u2" },
+      { name: "Q Shard 1/2", state: "passed", web_url: "u1" },
     ]),
-    [{ name: "Q", state: "passed", web_url: "u1" }],
+    { name: "Q", state: "passed", web_url: "u1" },
   );
 });
 
@@ -413,8 +426,8 @@ test("aggregateJobsByGroup keeps sharded steps in their group", () => {
   ]);
   const [group] = aggregateJobsByGroup(
     [
-      { name: "Quantization Test shard 1/2", state: "passed" },
-      { name: "Quantization Test shard 2/2", state: "failed" },
+      { name: "Quantization Test Shard 1/2", state: "passed" },
+      { name: "Quantization Test Shard 2/2", state: "failed" },
     ],
     mapping,
   );

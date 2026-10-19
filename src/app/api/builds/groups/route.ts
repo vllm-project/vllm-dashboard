@@ -182,16 +182,22 @@ export async function GET(request: NextRequest) {
     const groupsByBuild: Record<string, GroupSummary[]> = {};
     const compactJobsByBuild: Record<
       string,
-      Record<string, Array<[number, string]>>
+      Record<string, Array<[number, string] | [number, string, string[]]>>
     > = {};
     for (const buildId of buildIds) {
       const groups = groupedByBuild.get(buildId) ?? [];
       compactJobsByBuild[buildId] = {};
       groupsByBuild[buildId] = groups.map(({ jobs: groupJobs, ...summary }) => {
-        compactJobsByBuild[buildId][summary.group] = groupJobs.map((job) => [
-          jobNameIndex.get(job.name)!,
-          job.state,
-        ]);
+        // A runtime-sharded step carries its shards' states, by index.
+        compactJobsByBuild[buildId][summary.group] = groupJobs.map((job) =>
+          job.shards
+            ? [
+                jobNameIndex.get(job.name)!,
+                job.state,
+                job.shards.map((shard) => shard.state),
+              ]
+            : [jobNameIndex.get(job.name)!, job.state],
+        );
         const failedJobs = groupJobs
           .filter((job) => isFailedJobState(job.state) && job.web_url)
           .map((job) => ({ name: job.name, web_url: job.web_url! }));

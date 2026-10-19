@@ -440,7 +440,7 @@ export async function queryJobRunsFromOtel(
       WHERE j.span_name = 'buildkite.job'
         AND j.job_type = 'script'
         AND (j.job_label = ${f.jobName} OR (
-          j.job_label LIKE ${f.jobName + " shard %"}
+          j.job_label LIKE ${f.jobName + " _hard %"}
           AND regexp_replace(j.job_label, ${SHARD_SUFFIX_SQL}, '') = ${f.jobName}))
         ${f.pipeline ? sql`AND j.pipeline_slug = ${pipelineNameToSlug(f.pipeline)}` : sql``}
         ${f.branch ? sql`AND b.span_attributes->>'buildkite.build.branch' = ${f.branch}` : sql``}
