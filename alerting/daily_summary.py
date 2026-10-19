@@ -282,11 +282,13 @@ class DailySummaryHandler:
         counts = self._snapshots.gpu_counts()
         episodes = self._source.episodes_since(since)
         buckets = self._source.scrape_buckets(since)
+        allocatable = self._source.allocatable_gpus()
         # A pool that went dark has no fresh rows; its hosts are still in the
         # day's rollups and episodes, so a dead pool is not "not started".
         roster = (
             {obs.hostname for obs in counts}
             | buckets.keys()
+            | allocatable.keys()
             | {e.subject_key.removeprefix("gpu-count:") for e in episodes}
         )
         # Past the agent table's retention a bare-metal host is still named by
@@ -317,7 +319,7 @@ class DailySummaryHandler:
                 exceptions=self._source.expected_gpu_exceptions(),
                 episodes=episodes,
                 scrape_buckets=buckets,
-                allocatable=self._source.allocatable_gpus(),
+                allocatable=allocatable,
             )
         )
         self._outbox.enqueue(

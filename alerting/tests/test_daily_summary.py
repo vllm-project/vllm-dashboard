@@ -417,6 +417,16 @@ def test_a_dry_run_episode_moved_to_held_today_is_a_change_with_its_hold_reason(
     assert "• ⏸ held `a` (pool cap): r" in text
 
 
+def test_a_node_known_only_by_its_allocatable_reading_is_still_degraded() -> None:
+    handler, outbox, source = handler_parts()
+    source.queues = []
+    source.allocatable = {"inf-4x8h100-9": (0, 8)}
+    handler(ScheduledCommand("daily_summary", NOW))
+    text = outbox.records()[0].payload["text"]
+    assert "• `inf-4x8h100-9` allocatable 0/8" in text
+    assert "h100 dry run" in text
+
+
 def test_a_pool_that_went_dark_is_still_on_the_roster() -> None:
     handler, outbox, source = handler_parts()
     source.buckets = {"inf-4x8h100-1": 100}
@@ -500,6 +510,7 @@ class FakeSource:
         return {}
 
     buckets: dict[str, int] = {}
+    allocatable: dict[str, tuple[int, int]] = {}
     queues: list[tuple[str, str]] = [("h200-ci-1", "h200_35gb")]
 
     def last_agent_queues(self) -> list[tuple[str, str]]:
@@ -509,7 +520,7 @@ class FakeSource:
         return self.buckets
 
     def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
-        return {}
+        return self.allocatable
 
 
 class FakeSnapshots:
