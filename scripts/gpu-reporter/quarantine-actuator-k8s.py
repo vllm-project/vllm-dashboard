@@ -257,6 +257,28 @@ class Actuator:
         self.post(name, want["alertId"], "drained" if pods == 0 else "out",
                   {"cordoned": True, "tainted": True, "ciPods": pods,
                    "reapplied": reapplied})
+        # After the post, so a cleanup error never hides the report.
+        if want.get("actuatorState") == "verify_failed" and not self.dry_run:
+            self.drop_check_pod(name)
+
+    def drop_check_pod(self, name):
+        """Deletes a failed check's leftover pod, if its delete failed earlier.
+
+        The pod goes once the failure is posted. One that stayed would be
+        taken by the next resolve for its own check, failing it at once with
+        the old note. The dashboard keeps the failed report (and so this
+        runs) while the node waits in resolving, and after the worker moves
+        it back to quarantined, until a person resolves again.
+        """
+        pod_name = verify_pod_name(name)
+        try:
+            kubectl("get", "pod", pod_name, "-n", VERIFY_NS, "-o", "json")
+        except RuntimeError as e:
+            if "NotFound" not in str(e):
+                raise
+        else:
+            self.write("delete", "pod", pod_name, "-n", VERIFY_NS,
+                       "--wait=false")
 
     def verified(self, node, want):
         """Runs the return check one step per run; True once it passed.
@@ -272,17 +294,7 @@ class Actuator:
         pod_name = verify_pod_name(name)
         if want.get("actuatorState") == "verify_failed":
             print(f"  {name} failed its return check; waiting for a resolve")
-            # Its pod is deleted once the failure is posted; if that delete
-            # failed, the pod is left over and the next resolve would take it
-            # for its own check and fail at once. Finish the delete.
-            try:
-                kubectl("get", "pod", pod_name, "-n", VERIFY_NS, "-o", "json")
-            except RuntimeError as e:
-                if "NotFound" not in str(e):
-                    raise
-            else:
-                self.write("delete", "pod", pod_name, "-n", VERIFY_NS,
-                           "--wait=false")
+            self.drop_check_pod(name)
             return False
         try:
             pod = json.loads(kubectl("get", "pod", pod_name, "-n", VERIFY_NS,

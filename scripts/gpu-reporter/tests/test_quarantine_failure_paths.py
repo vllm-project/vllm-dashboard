@@ -43,7 +43,7 @@ def lose_posts(dash, states=None):
     return flaky
 
 
-def test_a_lost_out_post_is_sent_again_and_nothing_is_rewritten(kube_run):
+def test_an_actuators_lost_out_post_is_sent_again_and_nothing_is_rewritten(kube_run):
     kube = k8s.FakeKube({"n1": k8s.node()})
     dash = k8s.FakeDashboard([k8s.want("n1", "quarantining")])
     assert kube_run(kube, lose_posts(dash)) == 1
@@ -194,9 +194,10 @@ def test_a_person_uncordoning_our_node_is_drift_and_resolve_still_lifts_our_mark
 
 
 def test_a_stale_failed_check_pod_is_not_taken_for_the_next_resolves_check(kube_run):
-    # The failure was posted, but deleting its pod then failed. A person
-    # fixes the host and resolves again (the dashboard clears the report).
-    # The old pod is a previous attempt: it must not fail this one.
+    # The failure was posted, but deleting its pod then failed. The worker
+    # moved the episode back to quarantined (the report stays 'verify_failed'),
+    # and a person fixed the host and resolved again (the dashboard clears the
+    # report). The old pod is a previous attempt: it must not fail this one.
     kube = k8s.FakeKube({"n1": k8s.node(True, True)}, checks={k8s.CHECK: {
         "phase": "Failed", "logs": "| Memory | Fail - GPU 3 |\n"}})
     first = k8s.FakeDashboard([k8s.want("n1", "resolving")])
@@ -209,15 +210,35 @@ def test_a_stale_failed_check_pod_is_not_taken_for_the_next_resolves_check(kube_
 
     assert kube_run(delete_fails, first) == 1
     assert [b["state"] for _, b in first.posts] == ["verify_failed"]
-    # While it waits for a person, the leftover pod is cleaned up.
-    waiting = k8s.FakeDashboard([dict(k8s.want("n1", "resolving"),
-                                      actuatorState="verify_failed")])
-    assert kube_run(kube, waiting) == 0
-    assert waiting.posts == []
+    # Back in quarantined (still carrying the failed report), or still in
+    # resolving before the worker has moved it: the leftover pod is cleaned up.
+    for stage in ("resolving", "quarantined"):
+        kube.checks = {k8s.CHECK: {"phase": "Failed", "logs": "old\n"}}
+        waiting = k8s.FakeDashboard([dict(k8s.want("n1", stage),
+                                          actuatorState="verify_failed")])
+        assert kube_run(kube, waiting) == 0
+        assert kube.checks == {}, stage
+        assert [b["state"] for _, b in waiting.posts] == (
+            [] if stage == "resolving" else ["drained"])
     again = k8s.FakeDashboard([dict(k8s.want("n1", "resolving"), actuatorState=None)])
     assert kube_run(kube, again) == 0
     assert [b["state"] for _, b in again.posts] == ["verifying"]
     assert len(kube.created) == 1
+
+
+def test_a_cleanup_error_never_hides_the_nodes_report(kube_run):
+    kube = k8s.FakeKube({"n1": k8s.node(True, True)})
+    real = kube.__call__
+
+    def lookup_fails(*args, input=None):
+        if args[:2] == ("get", "pod"):
+            raise RuntimeError("kubectl get pod failed: connection refused")
+        return real(*args, input=input)
+
+    dash = k8s.FakeDashboard([dict(k8s.want("n1", "quarantined"),
+                                   actuatorState="verify_failed")])
+    assert kube_run(lookup_fails, dash) == 1
+    assert [b["state"] for _, b in dash.posts] == ["drained"]
 
 
 # ------------------------------------------------------------------ H200 pauser
@@ -298,7 +319,7 @@ def test_a_renewal_whose_pause_fails_leaves_the_error_and_is_repaired(pause_run)
     assert dash.posts[0][1]["observed"]["reapplied"] is True
 
 
-def test_a_lost_out_post_is_sent_again_and_nothing_is_rewritten(pause_run):
+def test_a_pausers_lost_out_post_is_sent_again_and_nothing_is_rewritten(pause_run):
     bk = h200.FakeBuildkite([h200.agent(1, job=True)])
     dash = h200.FakeDashboard([h200.want(HOST, "quarantining")])
 
