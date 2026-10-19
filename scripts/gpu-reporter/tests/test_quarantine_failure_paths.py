@@ -398,3 +398,30 @@ def test_a_hold_longer_than_the_pause_timeout_never_lets_a_job_in(pause_run, mon
     assert open_minutes == 0
     assert all(a["paused"] for a in bk.agents.values())
     assert all(b["observed"]["reapplied"] is False for _, b in dash.posts[1:])
+
+
+def test_the_actuator_sends_the_reporter_secret_to_the_dashboard_host_only(monkeypatch):
+    mod = load_module("quarantine_actuator_http", "quarantine-actuator-k8s.py")
+    monkeypatch.setattr(mod, "REPORT_URL", "https://d.example/api/gpu/report")
+    monkeypatch.setattr(mod, "REPORT_SECRET", "dash-secret")
+    sent = []
+
+    def urlopen(req, timeout):
+        sent.append((req, timeout))
+        return h200.FakeResponse(b'{"nodes": []}' if req.get_method() == "GET" else b"")
+    monkeypatch.setattr(mod.urllib.request, "urlopen", urlopen)
+    assert mod.http_json("GET", "/api/x") == {"nodes": []}
+    assert mod.http_json("POST", "/api/y", {"a": 1}) == {}
+    mod.REPORT_SECRET = ""
+    mod.http_json("GET", "/api/z")
+    (get, t), (post, _), (bare, _) = sent
+    assert (get.full_url, get.get_method(), get.data, t) == (
+        "https://d.example/api/x", "GET", None, 15)
+    assert get.headers == {"Content-type": "application/json",
+                           "Authorization": "Bearer dash-secret"}
+    assert (post.full_url, post.data) == ("https://d.example/api/y", b'{"a": 1}')
+    assert "Authorization" not in bare.headers
+
+
+def test_a_taint_value_is_cut_at_63_characters(kube_run):
+    assert len(kube_run.mod.taint_value("x" * 80)) == 63
