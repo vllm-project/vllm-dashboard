@@ -242,6 +242,8 @@ def test_events_exactly_a_day_old_still_count_as_changes() -> None:
                     "gpu_count", "gpu-count:h200-ci-1", opened=timedelta(hours=24),
                     resolved=timedelta(hours=24), observed_gpus=7, baseline_gpus=8,
                 ),
+                episode("quarantine", "w", opened=timedelta(hours=24), stage="would", reason="r"),
+                episode("quarantine", "h", opened=timedelta(hours=24), stage="held", reason="r"),
             ]
         )
     )
@@ -249,6 +251,58 @@ def test_events_exactly_a_day_old_still_count_as_changes() -> None:
     assert "✅ returned `a` (resolved by unknown)" in text
     assert "📉 `h200-ci-1`" in text
     assert "📈 `h200-ci-1`" in text
+
+
+def test_a_long_held_host_quarantined_today_is_a_change_aged_from_its_command() -> None:
+    commanded = (NOW - timedelta(hours=2)).isoformat()
+    text = render_summary(
+        inputs(
+            episodes=[
+                episode(
+                    "quarantine", "a", opened=timedelta(days=4), stage="quarantining",
+                    reason="r", commanded_at=commanded,
+                ),
+                episode(
+                    "quarantine", "b", opened=timedelta(days=4), stage="quarantined",
+                    reason="r", commanded_at=(NOW - timedelta(days=3)).isoformat(),
+                    quarantined_at=(NOW - timedelta(hours=1)).isoformat(),
+                ),
+            ]
+        )
+    )
+    assert "🔒 quarantined `a`: r (14:00 UTC)" in text
+    assert "🔒 quarantined `b`: r (15:00 UTC)" in text
+    assert "`a` (quarantining, r, 2 h)" in text
+    assert "`b` (quarantined, r, 1 h)" in text
+
+
+def test_a_quarantine_commanded_before_the_window_is_not_a_change() -> None:
+    text = render_summary(
+        inputs(
+            episodes=[
+                episode(
+                    "quarantine", "a", opened=timedelta(hours=1), stage="quarantined",
+                    reason="r", commanded_at=(NOW - timedelta(days=2)).isoformat(),
+                )
+            ]
+        )
+    )
+    assert "Changes since yesterday" not in text
+
+
+def test_a_drop_that_recovered_has_no_counts_to_report() -> None:
+    text = render_summary(
+        inputs(
+            episodes=[
+                episode(
+                    "gpu_count", "gpu-count:h200-ci-1", opened=timedelta(hours=5),
+                    resolved=timedelta(hours=1), observed_gpus=8, baseline_gpus=8,
+                )
+            ]
+        )
+    )
+    assert "• 📉 `h200-ci-1` GPUs dropped\n" in text
+    assert "📈 `h200-ci-1` GPUs recovered" in text
 
 
 def test_a_held_quarantine_without_a_reason_has_no_empty_parentheses() -> None:

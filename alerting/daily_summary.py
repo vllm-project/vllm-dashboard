@@ -94,6 +94,16 @@ def _age(since: datetime, now: datetime) -> str:
     return f"{hours // 24} d" if hours >= 48 else f"{hours} h"
 
 
+def _out_at(episode: InfraAlertEpisode) -> datetime:
+    """When the host went out: a held episode is opened long before its
+    command, so prefer the stage timestamps over `opened_at`."""
+    for key in ("quarantined_at", "commanded_at"):
+        value = episode.details.get(key)
+        if isinstance(value, str):
+            return datetime.fromisoformat(value)
+    return episode.opened_at
+
+
 def _reason(episode: InfraAlertEpisode) -> str:
     return _escape(episode.details.get("reason"))
 
@@ -113,18 +123,19 @@ def render_summary(inputs: SummaryInputs) -> str:
     for episode in quarantines:
         host, stage = _code(episode.subject_key), episode.details.get("stage")
         cleared = episode.details.get("resolution") == "decision_cleared"
-        if episode.opened_at >= since:
-            if stage == "would" or cleared:
+        if stage == "would" or cleared:
+            if episode.opened_at >= since:
                 changes.append(f"• 🧪 would have quarantined {host}: {_reason(episode)}")
-            elif stage == "held":
+        elif stage == "held":
+            if episode.opened_at >= since:
                 cap = str(episode.details.get("held_reason") or "").replace("_", " ")
                 changes.append(
                     f"• ⏸ held {host}{f' ({_escape(cap)})' if cap else ''}: {_reason(episode)}"
                 )
-            else:
-                changes.append(
-                    f"• 🔒 quarantined {host}: {_reason(episode)} ({_hm(episode.opened_at)})"
-                )
+        elif _out_at(episode) >= since:
+            changes.append(
+                f"• 🔒 quarantined {host}: {_reason(episode)} ({_hm(_out_at(episode))})"
+            )
         if (
             episode.resolved_at is not None
             and episode.resolved_at >= since
@@ -138,10 +149,14 @@ def render_summary(inputs: SummaryInputs) -> str:
         if host not in inputs.pools:
             continue
         if episode.opened_at >= since:
-            changes.append(
-                f"• 📉 {_code(host)} GPUs dropped: {_escape(episode.details.get('observed_gpus'))} "
+            # Resolving overwrites the counts with the recovered ones.
+            counts = (
+                f": {_escape(episode.details.get('observed_gpus'))} "
                 f"of {_escape(episode.details.get('baseline_gpus'))}"
+                if episode.resolved_at is None
+                else ""
             )
+            changes.append(f"• 📉 {_code(host)} GPUs dropped{counts}")
         if episode.resolved_at is not None and episode.resolved_at >= since:
             changes.append(f"• 📈 {_code(host)} GPUs recovered")
 
@@ -170,7 +185,7 @@ def render_summary(inputs: SummaryInputs) -> str:
         standing.append("Quarantined:")
         standing += [
             f"• {_code(e.subject_key)} ({e.details.get('stage')}, {_reason(e)}, "
-            f"{_age(e.opened_at, now)})"
+            f"{_age(_out_at(e), now)})"
             for e in out
         ]
     if held:
