@@ -697,8 +697,19 @@ def test_missing_heartbeat_alarms_through_sns_outside_the_worker(job: str) -> No
     block = template.split(f"AlarmName: vllm-alerting-heartbeat-{job}\n", 1)[1]
     block = block.split("\n  Heartbeat", 1)[0]
 
+    # FILL(m1, 0), not raw missing data: with missing recent periods
+    # CloudWatch reaches back for older real datapoints, which would hold the
+    # alarm at OK past its window.
+    assert "Expression: FILL(m1, 0)" in block
+    assert block.count("ReturnData: true") == 1
+    assert block.count("ReturnData: false") == 1
+    assert "Period: 300" in block
+    periods = re.search(r"EvaluationPeriods: (\d+)", block)
+    assert periods and f"DatapointsToAlarm: {periods.group(1)}" in block
     assert "TreatMissingData: breaching" in block
     assert "ComparisonOperator: LessThanThreshold" in block
     assert f"Value: {job}\n" in block
+    expected = {"control": 3, "fast-ci": 6, "main-ci": 3, "infra": 4}[job]
+    assert periods.group(1) == str(expected)  # x 5 min: 15/30/15/20
     assert block.count("Ref: HeartbeatTopic") == 2  # alarm and recovery
     assert "Condition: HasHeartbeatEmail" in template  # target is a parameter
