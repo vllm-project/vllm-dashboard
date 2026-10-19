@@ -993,6 +993,14 @@ def plan_trigger_rules(
             return None
         return not any(probe.get("ok") is True for probe in probes)
 
+    def dns_only(reading: HostFaultObservation) -> bool:
+        """True when every probe failed the way a lost DNS lookup does."""
+        return all(
+            probe.get("error") in ("dns", "timeout")
+            for probe in reading.network_probes or []
+            if isinstance(probe, dict)
+        )
+
     disk = thresholds.get(InfraAlertType.DISK_USAGE.value)
     dead = thresholds.get(InfraAlertType.GPU_DEAD_MEMORY.value)
     count = thresholds.get(InfraAlertType.GPU_COUNT.value)
@@ -1026,6 +1034,18 @@ def plan_trigger_rules(
                 if result is not None
             ]
             if 2 * peers.count(False) <= len(peers):
+                failing = None
+            # Pods resolve through cluster DNS, whose replicas can sit on a
+            # node that is down; lookups then stall on hosts that are fine.
+            elif (
+                pool in K8S_NODE_QUEUES.values()
+                and dns_only(latest[host])
+                and any(
+                    probes_failing(other) is None
+                    for other, (other_cluster, _) in pools.items()
+                    if other_cluster == cluster
+                )
+            ):
                 failing = None
         if reading is not None and check(host, "network", failing, reading.reported_at):
             decide(

@@ -407,6 +407,57 @@ def test_network_failing_across_most_of_the_pool_is_a_shared_incident() -> None:
         assert lone.run(host_faults=network(lone, {"gpu-node-7": False})) == []
 
 
+B200 = {f"dgxb200-{n}": ("b200", "b200-k8s") for n in (11, 15, 16)}
+
+
+def failed(scans: Scans, name: str, *errors: str) -> HostFaultObservation:
+    return host(
+        scans,
+        name,
+        network_probes=[
+            {"target": str(i), "ok": False, "error": e} for i, e in enumerate(errors)
+        ],
+    )
+
+
+def test_network_dns_failing_while_a_k8s_peer_is_down_is_a_shared_incident() -> None:
+    # 2026-10-19: while dgxb200-11 rebooted, its CoreDNS replica stayed in the
+    # kube-dns service, and lookups from dgxb200-16's pods stalled.
+    scans = Scans(B200)
+
+    def scan(*errors: str, at: Scans = scans) -> list[HostFaultObservation]:
+        readings = [failed(at, "dgxb200-16", *errors), host(at, "dgxb200-15")]
+        if at is not scans:
+            readings.append(host(at, "dgxb200-11"))
+        return readings
+
+    for _ in range(3):
+        assert scans.run(host_faults=scan("timeout", "dns", "timeout")) == []
+    # A failure DNS can't cause is still this host's own.
+    assert scans.run(host_faults=scan("timeout", "connect")) == []
+    assert rules(scans.run(host_faults=scan("timeout", "connect"))) == [
+        ("dgxb200-16", "network")
+    ]
+
+    # With every peer read, DNS failures count as usual, whatever the
+    # other clusters do.
+    up = Scans({**B200, "inf-4x8h100-1": ("h100", "mithril-h100-pool")})
+    assert up.run(host_faults=scan("dns", "dns", at=up)) == []
+    assert rules(up.run(host_faults=scan("dns", "dns", at=up))) == [
+        ("dgxb200-16", "network")
+    ]
+
+
+def test_network_dns_failing_on_bare_metal_ignores_unread_peers() -> None:
+    # Bare-metal hosts resolve through their own DNS, not a cluster's.
+    scans = Scans()
+    for _ in range(2):
+        decisions = scans.run(
+            host_faults=[failed(scans, "gpu-node-7", "dns"), host(scans, "gpu-node-8")]
+        )
+    assert rules(decisions) == [("gpu-node-7", "network")]
+
+
 def test_network_ignores_hosts_in_other_pools() -> None:
     scans = Scans()
     ok = {"gpu-node-7": False, "gpu-node-8": True, "gpu-node-9": True}
