@@ -252,7 +252,10 @@ class Actuator:
         # Before the post: the post overwrites the failed report this keys on,
         # so a cleanup that fails must withhold it and be retried next run.
         if want.get("actuatorState") == "verify_failed" and not self.dry_run:
-            self.drop_check_pod(name)
+            if not self.drop_check_pod(name):
+                print(f"  {name}: failed check pod still deleting; "
+                      "report held back")
+                return
         reapplied = want["stage"] != "quarantining" and not (cordoned and tainted)
         if reapplied:
             print(f"  DRIFT: {name} had lost its "
@@ -264,6 +267,7 @@ class Actuator:
 
     def drop_check_pod(self, name):
         """Deletes a failed check's leftover pod, if its delete failed earlier.
+        True once the pod is gone.
 
         The pod goes once the failure is posted. One that stayed would be
         taken by the next resolve for its own check, failing it at once with
@@ -273,14 +277,22 @@ class Actuator:
         report replaces it.
         """
         pod_name = verify_pod_name(name)
-        try:
-            kubectl("get", "pod", pod_name, "-n", VERIFY_NS, "-o", "json")
-        except RuntimeError as e:
-            if "NotFound" not in str(e):
-                raise
-        else:
-            self.write("delete", "pod", pod_name, "-n", VERIFY_NS,
-                       "--wait=false")
+
+        def present():
+            try:
+                kubectl("get", "pod", pod_name, "-n", VERIFY_NS, "-o", "json")
+            except RuntimeError as e:
+                if "NotFound" not in str(e):
+                    raise
+                return False
+            return True
+
+        if not present():
+            return True
+        self.write("delete", "pod", pod_name, "-n", VERIFY_NS, "--wait=false")
+        # The delete returns before the pod is gone. Say so, without waiting:
+        # the caller holds its post back and the next run looks again.
+        return not present()
 
     def verified(self, node, want):
         """Runs the return check one step per run; True once it passed.

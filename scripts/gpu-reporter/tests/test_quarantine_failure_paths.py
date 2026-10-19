@@ -250,6 +250,51 @@ def test_a_failed_cleanup_is_retried_until_it_works_before_the_node_reports(kube
     assert [b["state"] for _, b in dash.posts] == ["drained"]
 
 
+def test_a_pod_still_visible_after_its_delete_holds_the_report_back(kube_run):
+    # `delete --wait=false` returns before the pod is gone. The node's post
+    # would replace the failed report and end the retries while the old pod
+    # still stands, so it waits until the pod is really gone.
+    kube = k8s.FakeKube({"n1": k8s.node(True, True)}, checks={k8s.CHECK: {
+        "phase": "Failed", "logs": "old\n"}})
+    real = kube.__call__
+    pending = []
+
+    def slow_delete(*args, input=None):
+        if args[:2] == ("delete", "pod"):
+            pending.append(args)  # accepted, but the pod lingers
+            return ""
+        return real(*args, input=input)
+
+    dash = k8s.FakeDashboard([dict(k8s.want("n1", "quarantined"),
+                                   actuatorState="verify_failed")])
+    assert kube_run(slow_delete, dash) == 0
+    assert len(pending) == 1 and dash.posts == []
+    assert kube_run(slow_delete, dash) == 0  # still there: delete again, no post
+    assert dash.posts == []
+    kube.checks.clear()  # the pod finally goes
+    assert kube_run(slow_delete, dash) == 0
+    assert [b["state"] for _, b in dash.posts] == ["drained"]
+
+
+def test_a_dry_run_skips_the_leftover_pod_cleanup_and_other_nodes_still_run(kube_run):
+    kube = k8s.FakeKube({"n1": k8s.node(True, True), "n2": k8s.node()},
+                        checks={k8s.CHECK: {"phase": "Failed", "logs": "old\n"}})
+    dash = k8s.FakeDashboard([dict(k8s.want("n1", "quarantined"),
+                                   actuatorState="verify_failed")])
+    assert kube_run(kube, dash, "--dry-run") == 0
+    assert k8s.CHECK in kube.checks and kube.writes == [] and dash.posts == []
+    # A node whose cleanup lookup fails does not stop the node after it.
+    def lookup_fails(*args, input=None):
+        if args[:3] == ("get", "pod", k8s.CHECK):
+            raise RuntimeError("kubectl get pod failed: connection refused")
+        return kube(*args, input=input)
+    dash = k8s.FakeDashboard([dict(k8s.want("n1", "quarantined"),
+                                   actuatorState="verify_failed"),
+                              k8s.want("n2", "quarantining")])
+    assert kube_run(lookup_fails, dash) == 1
+    assert [h for h, _ in dash.posts] == ["n2"]
+
+
 # ------------------------------------------------------------------ H200 pauser
 
 
