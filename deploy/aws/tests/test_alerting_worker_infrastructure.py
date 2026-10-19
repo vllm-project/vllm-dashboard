@@ -681,7 +681,10 @@ def test_job_emits_heartbeat_only_after_it_succeeds(job: str) -> None:
 def test_heartbeat_emitter_needs_no_worker_secret() -> None:
     script = read("bin/emit-heartbeat")
 
-    assert "aws cloudwatch put-metric-data" in script
+    assert "cloudwatch put-metric-data" in script
+    # A stalled call must not outlive the unit's start timeout.
+    assert "timeout 20 aws" in script
+    assert "--cli-connect-timeout" in script and "AWS_MAX_ATTEMPTS=1" in script
     assert "--namespace VllmAlerting" in script
     for needle in ("load-secrets", "worker.env", "TOKEN", "DATABASE_URL"):
         assert needle not in script
