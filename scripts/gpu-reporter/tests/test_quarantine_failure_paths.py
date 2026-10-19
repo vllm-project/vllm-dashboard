@@ -226,18 +226,27 @@ def test_a_stale_failed_check_pod_is_not_taken_for_the_next_resolves_check(kube_
     assert len(kube.created) == 1
 
 
-def test_a_cleanup_error_never_hides_the_nodes_report(kube_run):
-    kube = k8s.FakeKube({"n1": k8s.node(True, True)})
+def test_a_failed_cleanup_is_retried_until_it_works_before_the_node_reports(kube_run):
+    # The node's own post replaces the failed report the cleanup keys on, so a
+    # cleanup that fails must hold the post back; otherwise it is never retried.
+    kube = k8s.FakeKube({"n1": k8s.node(True, True)}, checks={k8s.CHECK: {
+        "phase": "Failed", "logs": "old\n"}})
     real = kube.__call__
+    broken = [True]
 
     def lookup_fails(*args, input=None):
-        if args[:2] == ("get", "pod"):
+        if broken[0] and args[:2] == ("get", "pod"):
             raise RuntimeError("kubectl get pod failed: connection refused")
         return real(*args, input=input)
 
     dash = k8s.FakeDashboard([dict(k8s.want("n1", "quarantined"),
                                    actuatorState="verify_failed")])
-    assert kube_run(lookup_fails, dash) == 1
+    for _ in range(3):
+        assert kube_run(lookup_fails, dash) == 1
+    assert dash.posts == [] and k8s.CHECK in kube.checks
+    broken[0] = False
+    assert kube_run(lookup_fails, dash) == 0
+    assert kube.checks == {}
     assert [b["state"] for _, b in dash.posts] == ["drained"]
 
 

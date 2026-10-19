@@ -249,6 +249,10 @@ class Actuator:
         # ponytail: stateless, so a lost cordon/taint counts as drift only once
         # the dashboard says quarantined; a hand uncordon during quarantining
         # is re-applied without the flag.
+        # Before the post: the post overwrites the failed report this keys on,
+        # so a cleanup that fails must withhold it and be retried next run.
+        if want.get("actuatorState") == "verify_failed" and not self.dry_run:
+            self.drop_check_pod(name)
         reapplied = want["stage"] != "quarantining" and not (cordoned and tainted)
         if reapplied:
             print(f"  DRIFT: {name} had lost its "
@@ -257,9 +261,6 @@ class Actuator:
         self.post(name, want["alertId"], "drained" if pods == 0 else "out",
                   {"cordoned": True, "tainted": True, "ciPods": pods,
                    "reapplied": reapplied})
-        # After the post, so a cleanup error never hides the report.
-        if want.get("actuatorState") == "verify_failed" and not self.dry_run:
-            self.drop_check_pod(name)
 
     def drop_check_pod(self, name):
         """Deletes a failed check's leftover pod, if its delete failed earlier.
@@ -268,7 +269,8 @@ class Actuator:
         taken by the next resolve for its own check, failing it at once with
         the old note. The dashboard keeps the failed report (and so this
         runs) while the node waits in resolving, and after the worker moves
-        it back to quarantined, until a person resolves again.
+        it back to quarantined, until a person resolves again or the next
+        report replaces it.
         """
         pod_name = verify_pod_name(name)
         try:
