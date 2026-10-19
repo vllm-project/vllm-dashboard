@@ -218,7 +218,7 @@ keeps at most one open episode per `(alert_type, subject_key)`),
 `alerting/daily_summary.py`, run by `alerting-daily-summary.timer` (`run-worker
 daily-summary`) at 09:00 Pacific every day, under the Infra control and its
 delivery mode. It posts once, through the outbox, to
-`DAILY_SUMMARY_SLACK_DESTINATION`, or to `ALERTING_FAILURE_SLACK_DESTINATION`
+`SLACK_CI_INFRA_ALERT_CHANNEL`, or to `ALERTING_FAILURE_SLACK_DESTINATION`
 (the DM) when that is unset. The post lists changes in the last 24 hours
 (quarantines, would-have, held, returned, GPU count drops and recoveries,
 scrapes that missed at least 10% of their five-minute buckets), then what

@@ -145,9 +145,9 @@ def test_daily_summary_goes_to_the_failure_dm_unless_a_destination_is_set(
     monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/alerting")
     monkeypatch.setenv("ALERTING_FAILURE_SLACK_DESTINATION", "UOPS")
     if summary is None:
-        monkeypatch.delenv("DAILY_SUMMARY_SLACK_DESTINATION", raising=False)
+        monkeypatch.delenv("SLACK_CI_INFRA_ALERT_CHANNEL", raising=False)
     else:
-        monkeypatch.setenv("DAILY_SUMMARY_SLACK_DESTINATION", summary)
+        monkeypatch.setenv("SLACK_CI_INFRA_ALERT_CHANNEL", summary)
     monkeypatch.setenv("QUARANTINE_MODE", "live")
     monkeypatch.setattr(worker, "build_daily_summary_runtime", fake_build)
 

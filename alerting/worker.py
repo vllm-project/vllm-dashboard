@@ -161,10 +161,10 @@ def _runtime(
             operator_destination=os.environ.get("ALERTING_FAILURE_SLACK_DESTINATION"),
         )
     if consumer == "daily-summary":
-        # A DM to the worker-failure destination unless a channel is set.
+        # The infra alert channel; a DM to the worker-failure destination if unset.
         return build_daily_summary_runtime(
             database_url=database_url,
-            destination=os.environ.get("DAILY_SUMMARY_SLACK_DESTINATION")
+            destination=os.environ.get("SLACK_CI_INFRA_ALERT_CHANNEL")
             or _required_environment("ALERTING_FAILURE_SLACK_DESTINATION"),
             slack=_slack(),
             clock=clock,
