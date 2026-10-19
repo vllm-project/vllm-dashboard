@@ -232,7 +232,7 @@ def build_job_observations(build: dict[str, Any]) -> list[MainCIJobObservation]:
     build_id = str(build["id"])
     build_number = int(build["number"])
     shard_totals: dict[str, int] = {}
-    names: dict[str, str] = {}
+    shard_ids: dict[str, str] = {}
     build_url = str(build.get("web_url") or "")
     commit_sha = str(build.get("commit") or "")
     observations: list[MainCIJobObservation] = []
@@ -264,7 +264,17 @@ def build_job_observations(build: dict[str, Any]) -> list[MainCIJobObservation]:
         )
         if shard:
             shard_totals[job_key] = int(shard.group(2))
-            names[job_id] = name
+            shard_ids[job_id] = f"runtime:{shard.group(1)}"
+        else:
+            parallel_total = job.get("parallel_group_total")
+            parallel_index = job.get("parallel_group_index")
+            if (
+                isinstance(parallel_total, int)
+                and parallel_total > 1
+                and isinstance(parallel_index, int)
+            ):
+                shard_totals[job_key] = parallel_total
+                shard_ids[job_id] = f"parallel:{parallel_index}"
         observations.append(
             MainCIJobObservation(
                 job_key=job_key,
@@ -279,21 +289,23 @@ def build_job_observations(build: dict[str, Any]) -> list[MainCIJobObservation]:
                 commit_sha=commit_sha,
             )
         )
-    return _fold_runtime_shards(observations, shard_totals, names)
+    return _fold_shards(observations, shard_totals, shard_ids)
 
 
-def _fold_runtime_shards(
+def _fold_shards(
     observations: list[MainCIJobObservation],
     shard_totals: dict[str, int],
-    names: dict[str, str],
+    shard_ids: dict[str, str],
 ) -> list[MainCIJobObservation]:
     """Report a sharded step's outcome in one build, never one shard's.
 
-    One shard passing says nothing about the tests another shard failed, so
-    a shard's pass may not resolve the step's alert. While the latest attempt
-    of any shard has failed, the step's passes are dropped; until every shard
-    has passed, the step has no outcome yet. Once all have, its failures and
-    passes stand as an unsharded job's do, so retried shards resolve.
+    This covers both runtime-sharded job names and Buildkite's native parallel
+    groups. One shard passing says nothing about the tests another shard
+    failed, so a shard's pass may not resolve the step's alert. While the
+    latest attempt of any shard has failed, the step's passes are dropped;
+    until every shard has passed, the step has no outcome yet. Once all have,
+    its failures and passes stand as an unsharded job's do, so retried shards
+    resolve.
     """
     folded: list[MainCIJobObservation] = []
     by_key: dict[str, list[MainCIJobObservation]] = {}
@@ -305,7 +317,7 @@ def _fold_runtime_shards(
     for job_key, executions in by_key.items():
         latest: dict[str, MainCIJobObservation] = {}
         for execution in executions:
-            shard = names[execution.job_id]
+            shard = shard_ids[execution.job_id]
             if shard not in latest or execution.order > latest[shard].order:
                 latest[shard] = execution
         if any(execution.failed for execution in latest.values()):
