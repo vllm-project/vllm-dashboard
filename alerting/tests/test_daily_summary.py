@@ -358,6 +358,21 @@ def test_a_closed_held_episode_does_not_hide_the_ones_after_it() -> None:
     assert "`a`" not in text
 
 
+def test_an_offline_bare_metal_host_keeps_its_pool_from_the_days_agents() -> None:
+    handler, outbox, source = handler_parts()
+    source.buckets = {"h200-ci-1": 200}
+    source.episodes = [
+        episode("gpu_count", "gpu-count:h200-ci-1", observed_gpus=7, baseline_gpus=8)
+    ]
+    handler(ScheduledCommand("daily_summary", NOW))
+    text = outbox.records()[0].payload["text"]
+    assert "nothing changed" not in text
+    assert "h200 dry run" in text
+    assert "📉 `h200-ci-1` GPUs dropped: 7 of 8" in text
+    assert "scrape failing 31%" in text
+    assert "`h200-ci-1` 7/9" in text
+
+
 def test_a_pool_that_went_dark_is_still_on_the_roster() -> None:
     handler, outbox, source = handler_parts()
     source.buckets = {"inf-4x8h100-1": 100}
@@ -441,6 +456,10 @@ class FakeSource:
         return {}
 
     buckets: dict[str, int] = {}
+    queues: list[tuple[str, str]] = [("h200-ci-1", "h200_35gb")]
+
+    def agent_queues_since(self, since: datetime) -> list[tuple[str, str]]:
+        return self.queues
 
     def scrape_buckets(self, since: datetime) -> dict[str, int]:
         return self.buckets
@@ -454,7 +473,7 @@ class FakeSnapshots:
         return counts(h200_ci_1=7)
 
     def agent_queues(self) -> list[tuple[str, str]]:
-        return [("h200-ci-1", "h200_35gb")]
+        return []  # no fresh agent snapshot: the host's agents are offline
 
 
 def handler_parts(
@@ -552,6 +571,12 @@ def test_postgres_reads_map_rows_and_bound_the_window() -> None:
     assert recorder.calls[0][1] == (
         YESTERDAY, YESTERDAY - timedelta(days=1), YESTERDAY,
     )
+
+    recorder = Recorder([("h200-ci-1", "h200_35gb")])
+    assert PostgresAlertStore(lambda: recorder).agent_queues_since(YESTERDAY) == [
+        ("h200-ci-1", "h200_35gb")
+    ]
+    assert recorder.calls[0][1] == (YESTERDAY,)
 
     recorder = Recorder([("INF-4X8H100-1", 6, 8)])
     assert PostgresAlertStore(lambda: recorder).allocatable_gpus() == {

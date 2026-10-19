@@ -1483,6 +1483,18 @@ class PostgresAlertStore:
             ).fetchall()
         return {str(row[0]).lower(): int(row[1]) for row in rows}
 
+    def agent_queues_since(self, since: datetime) -> list[tuple[str, str]]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT hostname, queue
+                FROM buildkite_agent_snapshots, unnest(queues) AS queue
+                WHERE polled_at >= %s AND hostname IS NOT NULL
+                """,
+                (since,),
+            ).fetchall()
+        return [(str(row[0]), str(row[1])) for row in rows]
+
     def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
         with self._connection_factory() as connection:
             rows = connection.execute(

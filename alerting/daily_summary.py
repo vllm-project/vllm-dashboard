@@ -72,6 +72,11 @@ class DailySummarySource(Protocol):
         that had one in the day before the window."""
         ...
 
+    def agent_queues_since(self, since: datetime) -> list[tuple[str, str]]:
+        """(hostname, queue) for every Buildkite agent connected at any poll
+        since `since`, so a host whose agents just went away keeps its pool."""
+        ...
+
     def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
         """Kubernetes node -> (allocatable, capacity) GPUs from its latest
         fresh reading."""
@@ -287,7 +292,7 @@ class DailySummaryHandler:
             SummaryInputs(
                 now=now,
                 live=self._quarantine_live,
-                pools=pilot_pools(roster, self._snapshots.agent_queues()),
+                pools=pilot_pools(roster, self._source.agent_queues_since(since)),
                 gpu_counts=counts,
                 baselines={
                     state.subject_key.removeprefix("gpu-count:"): int(
