@@ -225,5 +225,6 @@ scrapes that missed at least 10% of their five-minute buckets), then what
 stands (quarantined, held, degraded, not reporting) and a `/gpu` link. A quiet
 day is one line. A host is degraded when its GPU count is below its
 exception-list value, or below the larger of 8 and the most GPUs the
-`gpu_count` baseline has seen. The Mode line shows the global `QUARANTINE_MODE`
+`gpu_count` baseline has seen; a Kubernetes node whose allocatable GPUs are
+below its capacity is listed too. The Mode line shows the global `QUARANTINE_MODE`
 for each pool that has hosts, and `not started` for a pool with none.

@@ -69,6 +69,7 @@ def inputs(**overrides: Any) -> SummaryInputs:
         exceptions={},
         episodes=[],
         scrape_buckets={},
+        allocatable={},
     )
     return SummaryInputs(**{**fields, **overrides})
 
@@ -251,6 +252,8 @@ def test_events_exactly_a_day_old_still_count_as_changes() -> None:
     assert "✅ returned `a` (resolved by unknown)" in text
     assert "📉 `h200-ci-1`" in text
     assert "📈 `h200-ci-1`" in text
+    assert "🧪 would have quarantined `w`" in text
+    assert "⏸ held `h`" in text
 
 
 def test_a_long_held_host_quarantined_today_is_a_change_aged_from_its_command() -> None:
@@ -303,6 +306,74 @@ def test_a_drop_that_recovered_has_no_counts_to_report() -> None:
     )
     assert "• 📉 `h200-ci-1` GPUs dropped\n" in text
     assert "📈 `h200-ci-1` GPUs recovered" in text
+
+
+def test_allocatable_below_capacity_is_degraded_on_pilot_nodes_only() -> None:
+    text = render_summary(
+        inputs(
+            allocatable={
+                "inf-4x8h100-1": (6, 8),
+                "h200-ci-1": (8, 8),
+                "stranger": (1, 8),
+            }
+        )
+    )
+    assert "Degraded:\n• `inf-4x8h100-1` allocatable 6/8" in text
+    assert "h200-ci-1" not in text
+    assert "stranger" not in text
+
+
+def test_a_held_episode_that_closed_was_never_out_of_service() -> None:
+    text = render_summary(
+        inputs(
+            episodes=[
+                episode(
+                    "quarantine", "a", opened=timedelta(hours=5), resolved=timedelta(hours=1),
+                    stage="resolved", reason="r", resolved_while_held=True, resolved_by="me",
+                ),
+                episode(
+                    "quarantine", "b", opened=timedelta(hours=5), resolved=timedelta(hours=1),
+                    stage="resolved", reason="r", resolution="decision_cleared",
+                    held_reason="pool_cap",
+                ),
+            ]
+        )
+    )
+    assert "nothing changed" in text
+
+
+def test_a_closed_held_episode_does_not_hide_the_ones_after_it() -> None:
+    text = render_summary(
+        inputs(
+            episodes=[
+                episode(
+                    "quarantine", "a", opened=timedelta(hours=5), resolved=timedelta(hours=1),
+                    stage="resolved", reason="r", resolved_while_held=True,
+                ),
+                episode("quarantine", "b", stage="quarantined", reason="r"),
+            ]
+        )
+    )
+    assert "🔒 quarantined `b`" in text
+    assert "`a`" not in text
+
+
+def test_a_pool_that_went_dark_is_still_on_the_roster() -> None:
+    handler, outbox, source = handler_parts()
+    source.buckets = {"inf-4x8h100-1": 100}
+    handler(ScheduledCommand("daily_summary", NOW))
+    assert "h100 dry run" in outbox.records()[0].payload["text"]
+
+
+def test_a_host_named_only_by_a_gpu_count_episode_is_on_the_roster() -> None:
+    handler, outbox, source = handler_parts()
+    source.episodes = [
+        episode("gpu_count", "gpu-count:inf-4x8h100-1", observed_gpus=4, baseline_gpus=8)
+    ]
+    handler(ScheduledCommand("daily_summary", NOW))
+    text = outbox.records()[0].payload["text"]
+    assert "h100 dry run" in text
+    assert "📉 `inf-4x8h100-1` GPUs dropped: 4 of 8" in text
 
 
 def test_a_held_quarantine_without_a_reason_has_no_empty_parentheses() -> None:
@@ -369,7 +440,12 @@ class FakeSource:
     def expected_gpu_exceptions(self) -> dict[str, int]:
         return {}
 
+    buckets: dict[str, int] = {}
+
     def scrape_buckets(self, since: datetime) -> dict[str, int]:
+        return self.buckets
+
+    def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
         return {}
 
 
@@ -473,4 +549,11 @@ def test_postgres_reads_map_rows_and_bound_the_window() -> None:
     recorder = Recorder([("H200-CI-1", 280)])
     store = PostgresAlertStore(lambda: recorder)
     assert store.scrape_buckets(YESTERDAY) == {"h200-ci-1": 280}
-    assert recorder.calls[0][1] == (YESTERDAY, YESTERDAY + timedelta(minutes=10))
+    assert recorder.calls[0][1] == (
+        YESTERDAY, YESTERDAY - timedelta(days=1), YESTERDAY,
+    )
+
+    recorder = Recorder([("INF-4X8H100-1", 6, 8)])
+    assert PostgresAlertStore(lambda: recorder).allocatable_gpus() == {
+        "inf-4x8h100-1": (6, 8)
+    }

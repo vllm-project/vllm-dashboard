@@ -69,7 +69,12 @@ class DailySummarySource(Protocol):
 
     def scrape_buckets(self, since: datetime) -> dict[str, int]:
         """Five-minute buckets with a GPU row since `since`, for each host
-        that already had one in the first ten minutes of the window."""
+        that had one in the day before the window."""
+        ...
+
+    def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
+        """Kubernetes node -> (allocatable, capacity) GPUs from its latest
+        fresh reading."""
         ...
 
 
@@ -83,6 +88,7 @@ class SummaryInputs:
     exceptions: Mapping[str, int]
     episodes: list[InfraAlertEpisode]
     scrape_buckets: Mapping[str, int]
+    allocatable: Mapping[str, tuple[int, int]]
 
 
 def _hm(value: datetime) -> str:
@@ -123,6 +129,11 @@ def render_summary(inputs: SummaryInputs) -> str:
     for episode in quarantines:
         host, stage = _code(episode.subject_key), episode.details.get("stage")
         cleared = episode.details.get("resolution") == "decision_cleared"
+        # A held episode that closed was never out of service.
+        if episode.details.get("resolved_while_held") or (
+            cleared and episode.details.get("held_reason")
+        ):
+            continue
         if stage == "would" or cleared:
             if episode.opened_at >= since:
                 changes.append(f"• 🧪 would have quarantined {host}: {_reason(episode)}")
@@ -179,6 +190,10 @@ def render_summary(inputs: SummaryInputs) -> str:
         if obs.observed_gpus < expected:
             tag = " (exception)" if exception else ""
             degraded.append(f"• {_code(obs.hostname)} {obs.observed_gpus}/{expected}{tag}")
+
+    for host, (allocatable, capacity) in sorted(inputs.allocatable.items()):
+        if host in inputs.pools and allocatable < capacity:
+            degraded.append(f"• {_code(host)} allocatable {allocatable}/{capacity}")
 
     standing: list[str] = []
     if out:
@@ -259,13 +274,20 @@ class DailySummaryHandler:
         now = command.target_time
         since = now - WINDOW
         counts = self._snapshots.gpu_counts()
+        episodes = self._source.episodes_since(since)
+        buckets = self._source.scrape_buckets(since)
+        # A pool that went dark has no fresh rows; its hosts are still in the
+        # day's rollups and episodes, so a dead pool is not "not started".
+        roster = (
+            {obs.hostname for obs in counts}
+            | buckets.keys()
+            | {e.subject_key.removeprefix("gpu-count:") for e in episodes}
+        )
         text = render_summary(
             SummaryInputs(
                 now=now,
                 live=self._quarantine_live,
-                pools=pilot_pools(
-                    {obs.hostname for obs in counts}, self._snapshots.agent_queues()
-                ),
+                pools=pilot_pools(roster, self._snapshots.agent_queues()),
                 gpu_counts=counts,
                 baselines={
                     state.subject_key.removeprefix("gpu-count:"): int(
@@ -275,8 +297,9 @@ class DailySummaryHandler:
                     if state.alert_type == InfraAlertType.GPU_COUNT.value
                 },
                 exceptions=self._source.expected_gpu_exceptions(),
-                episodes=self._source.episodes_since(since),
-                scrape_buckets=self._source.scrape_buckets(since),
+                episodes=episodes,
+                scrape_buckets=buckets,
+                allocatable=self._source.allocatable_gpus(),
             )
         )
         self._outbox.enqueue(

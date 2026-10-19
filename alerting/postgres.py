@@ -1467,18 +1467,38 @@ class PostgresAlertStore:
     def scrape_buckets(self, since: datetime) -> dict[str, int]:
         with self._connection_factory() as connection:
             # gpu_history_5m, not gpu_snapshots: one row per host per bucket
-            # is a day of 288 rows per host instead of a day of raw samples.
+            # is two days of 288 rows per host instead of raw samples. A host
+            # counts once it has a bucket before the window, so one whose
+            # scrape was down for the window's start is still measured.
             rows = connection.execute(
                 """
-                SELECT hostname, count(DISTINCT time_bucket)
+                SELECT hostname,
+                       count(DISTINCT time_bucket) FILTER (WHERE time_bucket >= %s)
                 FROM gpu_history_5m
                 WHERE time_bucket >= %s
                 GROUP BY hostname
                 HAVING min(time_bucket) < %s
                 """,
-                (since, since + timedelta(minutes=10)),
+                (since, since - timedelta(days=1), since),
             ).fetchall()
         return {str(row[0]).lower(): int(row[1]) for row in rows}
+
+    def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT ON (hostname)
+                       hostname, allocatable_gpus, capacity_gpus
+                FROM host_snapshots
+                -- Fresh readings only, as in host_faults; H200 hosts leave
+                -- both columns NULL.
+                WHERE reported_at >= now() - interval '10 minutes'
+                  AND allocatable_gpus IS NOT NULL
+                  AND capacity_gpus IS NOT NULL
+                ORDER BY hostname, reported_at DESC
+                """
+            ).fetchall()
+        return {str(row[0]).lower(): (int(row[1]), int(row[2])) for row in rows}
 
     def infra_state(self) -> InfraStateSnapshot:
         with self._connection_factory() as connection:
