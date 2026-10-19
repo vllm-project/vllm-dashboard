@@ -117,8 +117,10 @@ def render_summary(inputs: SummaryInputs) -> str:
             if stage == "would" or cleared:
                 changes.append(f"• 🧪 would have quarantined {host}: {_reason(episode)}")
             elif stage == "held":
-                cap = _escape(str(episode.details.get("held_reason") or "").replace("_", " "))
-                changes.append(f"• ⏸ held {host} ({cap}): {_reason(episode)}")
+                cap = str(episode.details.get("held_reason") or "").replace("_", " ")
+                changes.append(
+                    f"• ⏸ held {host}{f' ({_escape(cap)})' if cap else ''}: {_reason(episode)}"
+                )
             else:
                 changes.append(
                     f"• 🔒 quarantined {host}: {_reason(episode)} ({_hm(episode.opened_at)})"

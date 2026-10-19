@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+import pytest
 
 from alerting.commands import ScheduledCommand
 from alerting.daily_summary import (
@@ -192,6 +195,114 @@ def test_old_standing_quarantine_shows_days_and_is_not_a_change() -> None:
     assert "(quarantined, Xid 79, 5 d)" in text
 
 
+@pytest.mark.parametrize(
+    "stage", ["quarantining", "quarantined", "resolve_requested", "resolving"]
+)
+def test_every_out_of_service_stage_is_standing_quarantine(stage: str) -> None:
+    text = render_summary(
+        inputs(
+            episodes=[
+                episode(
+                    "quarantine", "h200-ci-1", opened=timedelta(hours=48),
+                    stage=stage, reason="r",
+                )
+            ]
+        )
+    )
+    assert f"• `h200-ci-1` ({stage}, r, 2 d)" in text
+
+
+def test_ages_switch_to_days_at_forty_eight_hours() -> None:
+    def age(hours: float) -> str:
+        return render_summary(
+            inputs(
+                episodes=[
+                    episode(
+                        "quarantine", "h200-ci-1", opened=timedelta(hours=hours),
+                        stage="quarantined", reason="r",
+                    )
+                ]
+            )
+        )
+
+    assert "r, 47 h)" in age(47.9)
+    assert "r, 2 d)" in age(48)
+    assert "r, 3 d)" in age(72)
+
+
+def test_events_exactly_a_day_old_still_count_as_changes() -> None:
+    text = render_summary(
+        inputs(
+            episodes=[
+                episode(
+                    "quarantine", "a", opened=timedelta(hours=24),
+                    resolved=timedelta(hours=24), stage="resolved", reason="r",
+                ),
+                episode(
+                    "gpu_count", "gpu-count:h200-ci-1", opened=timedelta(hours=24),
+                    resolved=timedelta(hours=24), observed_gpus=7, baseline_gpus=8,
+                ),
+            ]
+        )
+    )
+    assert "🔒 quarantined `a`" in text
+    assert "✅ returned `a` (resolved by unknown)" in text
+    assert "📉 `h200-ci-1`" in text
+    assert "📈 `h200-ci-1`" in text
+
+
+def test_a_held_quarantine_without_a_reason_has_no_empty_parentheses() -> None:
+    text = render_summary(
+        inputs(episodes=[episode("quarantine", "a", stage="held", reason="r")])
+    )
+    assert "• ⏸ held `a`: r" in text
+
+
+def test_hosts_outside_the_pools_do_not_hide_the_ones_after_them() -> None:
+    text = render_summary(
+        inputs(
+            gpu_counts=counts(aaa=1, h200_ci_1=7),
+            episodes=[
+                episode("gpu_count", "gpu-count:aaa", observed_gpus=1, baseline_gpus=8),
+                episode(
+                    "gpu_count", "gpu-count:h200-ci-1", observed_gpus=7, baseline_gpus=8
+                ),
+            ],
+        )
+    )
+    assert "📉 `h200-ci-1`" in text
+    assert "`aaa`" not in text
+    assert "`h200-ci-1` 7/8" in text
+
+
+def test_scrape_percent_is_the_share_of_missing_buckets() -> None:
+    assert "failing 100% (24 h)" in render_summary(inputs(scrape_buckets={"h200-ci-1": 0}))
+    assert "failing 50% (24 h)" in render_summary(inputs(scrape_buckets={"h200-ci-1": 144}))
+
+
+def test_dry_run_is_named_in_the_mode_line_and_pools_without_hosts_not_started() -> None:
+    text = render_summary(
+        inputs(gpu_counts=counts(h200_ci_1=7), pools={"h200-ci-1": ("h200", "q")})
+    )
+    assert "Mode: h200 dry run, h100 not started, b200 not started" in text
+
+
+def test_the_day_is_the_pacific_day_wherever_the_worker_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    try:
+        evening = datetime(2026, 10, 21, 2, 0, tzinfo=timezone.utc)  # 19:00 Pacific
+        assert "— 2026-10-20" in render_summary(inputs(now=evening))
+        handler, outbox, _ = handler_parts()
+        handler(ScheduledCommand("daily_summary", evening))
+        assert outbox.records()[0].delivery_id == "infra:daily_summary:2026-10-20"
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
 class FakeSource:
     def __init__(self, episodes: list[InfraAlertEpisode]) -> None:
         self.episodes = episodes
@@ -217,7 +328,7 @@ class FakeSnapshots:
 
 
 def handler_parts(
-    destination: str = "U123",
+    destination: str = "U123", *, live: bool | None = None
 ) -> tuple[DailySummaryHandler, InMemoryOutboxStore, FakeSource]:
     executions = InMemoryAutomationExecutionStore()
     outbox = InMemoryOutboxStore()
@@ -234,6 +345,7 @@ def handler_parts(
         clock=FixedClock(NOW),
         destination=destination,
         delivery_mode=DeliveryMode.LIVE,
+        **({} if live is None else {"quarantine_live": live}),
     )
     return handler, outbox, source
 
@@ -245,10 +357,20 @@ def test_handler_enqueues_one_post_per_pacific_day_to_the_destination() -> None:
 
     [record] = outbox.records()
     assert record.delivery_id == "infra:daily_summary:2026-10-20"
+    assert record.alert_ref == "infra:daily_summary"
+    assert record.payload["blocks"][0]["text"]["text"].startswith("📊 INFRA · ")
+    assert "h200 dry run" in record.payload["text"]  # quarantine is dry run by default
     assert record.destination == "U123"
     assert record.delivery_mode is DeliveryMode.LIVE
     assert "`h200-ci-1` 7/9" in record.payload["text"]
     assert source.since == [YESTERDAY, NOW + timedelta(minutes=7) - timedelta(hours=24)]
+
+
+def test_handler_reports_live_only_when_quarantine_is_live() -> None:
+    for live, word in ((False, "dry run"), (True, "live")):
+        handler, outbox, _ = handler_parts(live=live)
+        handler(ScheduledCommand("daily_summary", NOW))
+        assert f"h200 {word}" in outbox.records()[0].payload["text"]
 
 
 def test_each_day_gets_its_own_post() -> None:
