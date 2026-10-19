@@ -268,7 +268,7 @@ def test_a_pod_still_visible_after_its_delete_holds_the_report_back(kube_run):
     dash = k8s.FakeDashboard([dict(k8s.want("n1", "quarantined"),
                                    actuatorState="verify_failed")])
     assert kube_run(slow_delete, dash) == 0
-    assert len(pending) == 1 and dash.posts == []
+    assert pending == [k8s.DELETE_CHECK + ("--wait=false",)] and dash.posts == []
     assert kube_run(slow_delete, dash) == 0  # still there: delete again, no post
     assert dash.posts == []
     kube.checks.clear()  # the pod finally goes
