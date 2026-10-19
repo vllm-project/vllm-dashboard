@@ -10,6 +10,7 @@ Type=oneshot
 User=root
 EnvironmentFile=/etc/alerting/worker.env
 ExecStart=/opt/alerting/venv/bin/python -m alerting.control --bucket ${ALERTING_CHECKPOINT_BUCKET}
+ExecStartPost=-/opt/alerting/bin/emit-heartbeat control
 StandardOutput=null
 StandardError=null
 UMask=0077

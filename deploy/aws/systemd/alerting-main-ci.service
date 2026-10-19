@@ -10,6 +10,7 @@ Type=oneshot
 User=alerting
 Group=alerting
 ExecStart=/opt/alerting/bin/run-worker main-ci
+ExecStartPost=-/opt/alerting/bin/emit-heartbeat main-ci
 StandardOutput=null
 StandardError=null
 UMask=0077

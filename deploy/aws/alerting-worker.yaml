@@ -46,6 +46,18 @@ Parameters:
       - low
       - high
       - max
+  HeartbeatAlertEmail:
+    Type: String
+    Default: ''
+    Description: >-
+      Email address that the off-worker heartbeat alarms notify through SNS.
+      Empty creates the topic and alarms without a subscriber. SNS emails a
+      confirmation link that must be clicked once.
+
+Conditions:
+  HasHeartbeatEmail:
+    Fn::Not:
+      - Fn::Equals: [{Ref: HeartbeatAlertEmail}, '']
 
 Resources:
   CheckpointBucket:
@@ -99,6 +111,17 @@ Resources:
                     - ${BucketArn}/*
                     - BucketArn:
                         Fn::GetAtt: [CheckpointBucket, Arn]
+        - PolicyName: AlertingWorkerHeartbeat
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: VllmAlerting
         - PolicyName: AlertingWorkerSecretAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -186,6 +209,117 @@ Resources:
               KimiMainCIEffort:
                 Ref: KimiMainCIReasoningEffort
 
+  # Off-worker heartbeat: units put a VllmAlerting/Heartbeat datapoint after
+  # each successful run (bin/emit-heartbeat). Missing data breaches, so a dead
+  # timer, a dead instance, or a worker that cannot load its secret all alarm,
+  # and delivery goes SNS -> email without the worker, its database or secret.
+  HeartbeatTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: vllm-alerting-heartbeat
+
+  HeartbeatSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasHeartbeatEmail
+    Properties:
+      TopicArn:
+        Ref: HeartbeatTopic
+      Protocol: email
+      Endpoint:
+        Ref: HeartbeatAlertEmail
+
+  HeartbeatControlAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: vllm-alerting-heartbeat-control
+      AlarmDescription: >-
+        No successful control run for 15 minutes. Check the worker's timers and
+        its secret (Operations Handbook, Off-worker heartbeat).
+      Namespace: VllmAlerting
+      MetricName: Heartbeat
+      Dimensions:
+        - Name: Job
+          Value: control
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - Ref: HeartbeatTopic
+      OKActions:
+        - Ref: HeartbeatTopic
+
+  HeartbeatFastCiAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: vllm-alerting-heartbeat-fast-ci
+      AlarmDescription: >-
+        No successful fast-ci run for 30 minutes. Check the worker's timers and
+        its secret (Operations Handbook, Off-worker heartbeat).
+      Namespace: VllmAlerting
+      MetricName: Heartbeat
+      Dimensions:
+        - Name: Job
+          Value: fast-ci
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 6
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - Ref: HeartbeatTopic
+      OKActions:
+        - Ref: HeartbeatTopic
+
+  HeartbeatMainCiAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: vllm-alerting-heartbeat-main-ci
+      AlarmDescription: >-
+        No successful main-ci run for 15 minutes. Check the worker's timers and
+        its secret (Operations Handbook, Off-worker heartbeat).
+      Namespace: VllmAlerting
+      MetricName: Heartbeat
+      Dimensions:
+        - Name: Job
+          Value: main-ci
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - Ref: HeartbeatTopic
+      OKActions:
+        - Ref: HeartbeatTopic
+
+  HeartbeatInfraAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: vllm-alerting-heartbeat-infra
+      AlarmDescription: >-
+        No successful infra run for 20 minutes. Check the worker's timers and
+        its secret (Operations Handbook, Off-worker heartbeat).
+      Namespace: VllmAlerting
+      MetricName: Heartbeat
+      Dimensions:
+        - Name: Job
+          Value: infra
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 4
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - Ref: HeartbeatTopic
+      OKActions:
+        - Ref: HeartbeatTopic
+
 Outputs:
   CheckpointBucketName:
     Value:
@@ -193,3 +327,6 @@ Outputs:
   WorkerInstanceId:
     Value:
       Ref: WorkerInstance
+  HeartbeatTopicArn:
+    Value:
+      Ref: HeartbeatTopic

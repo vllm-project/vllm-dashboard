@@ -105,6 +105,21 @@ Buildkite agents of quarantined H200 hosts (see `alerting/docs/infra.md`).
    posts, never a token. A failed run DMs the worker-failure destination.
 4. To go live, drop `--dry-run` from the unit (and from the host check's).
 
+## Off-worker heartbeat
+
+`control`, `fast-ci`, `main-ci` and `infra` each run
+`bin/emit-heartbeat` after a successful run (`ExecStartPost=`), which puts a
+`VllmAlerting/Heartbeat` datapoint (dimension `Job`) using the instance role
+only, never the worker secret. The stack's CloudWatch alarms treat missing
+data as breaching and notify the SNS topic `vllm-alerting-heartbeat`, so a
+dead timer, a dead instance, or a secret the worker cannot load all alarm
+without the worker, its database or its secret. Set `HeartbeatAlertEmail` and
+click SNS's confirmation link once; empty means no subscriber. A job whose
+timer is intentionally disabled (a path turned off in S3 control) will
+alarm: disable or delete its alarm first. To test, stop a timer's service
+past its window and watch the alarm go to `ALARM`, or run
+`aws cloudwatch set-alarm-state` to check delivery only.
+
 ## Shadow, cutover, and rollback
 
 All three paths start in shadow mode. Durable controls live at

@@ -39,7 +39,10 @@ def test_instance_role_is_scoped_to_checkpoint_bucket_and_named_secrets() -> Non
     assert "- secretsmanager:GetSecretValue" in template
     assert "Ref: WorkerSecretArn" in template
     assert "Ref: GitHubReadOnlySecretArn" in template
-    assert "Resource: '*'" not in template
+    # PutMetricData has no resource-level permissions; the one wildcard is
+    # pinned to the heartbeat namespace by a condition.
+    assert template.count("Resource: '*'") == 1
+    assert "cloudwatch:PutMetricData" in template.split("Resource: '*'")[0].rsplit("- Effect", 1)[1]
 
 
 def test_instance_role_is_ssm_managed_for_in_place_ops() -> None:
@@ -292,7 +295,7 @@ def test_main_ci_kimi_effort_is_an_independent_deploy_knob() -> None:
     assert "Default: high" in main_ci_parameter.split("Resources:", 1)[0]
 
 
-def test_s3_control_reconciles_each_path_without_cloudwatch_or_sqs() -> None:
+def test_s3_control_reconciles_each_path_without_sqs() -> None:
     service = read("systemd/alerting-control.service")
     timer = read("systemd/alerting-control.timer")
     template = read("alerting-worker.yaml")
@@ -300,7 +303,6 @@ def test_s3_control_reconciles_each_path_without_cloudwatch_or_sqs() -> None:
     assert "alerting.control" in service
     assert "ALERTING_CHECKPOINT_BUCKET" in service
     assert "OnUnitActiveSec=1min" in timer
-    assert "AWS::CloudWatch" not in template
     assert "AWS::SQS" not in template
 
 
@@ -660,3 +662,40 @@ def test_triage_consumers_run_the_triage_module_under_their_own_control() -> Non
         assert "User=alerting" in service
         assert "StandardOutput=null" in service
         assert f"Unit=alerting-triage-{consumer}.service" in timer
+
+
+HEARTBEAT_JOBS = ["control", "fast-ci", "main-ci", "infra"]
+
+
+@pytest.mark.parametrize("job", HEARTBEAT_JOBS)
+def test_job_emits_heartbeat_only_after_it_succeeds(job: str) -> None:
+    """ExecStartPost= runs only after ExecStart= exits 0; the leading "-"
+    keeps a CloudWatch hiccup from raising a worker failure."""
+    unit = read(f"systemd/alerting-{job}.service")
+
+    assert f"ExecStartPost=-/opt/alerting/bin/emit-heartbeat {job}\n" in unit
+    assert unit.index("ExecStart=") < unit.index("ExecStartPost=")
+    assert "emit-heartbeat /opt/alerting/bin/emit-heartbeat" in read("install.sh")
+
+
+def test_heartbeat_emitter_needs_no_worker_secret() -> None:
+    script = read("bin/emit-heartbeat")
+
+    assert "aws cloudwatch put-metric-data" in script
+    assert "--namespace VllmAlerting" in script
+    for needle in ("load-secrets", "worker.env", "TOKEN", "DATABASE_URL"):
+        assert needle not in script
+    assert "cloudwatch:namespace: VllmAlerting" in read("alerting-worker.yaml")
+
+
+@pytest.mark.parametrize("job", HEARTBEAT_JOBS)
+def test_missing_heartbeat_alarms_through_sns_outside_the_worker(job: str) -> None:
+    template = read("alerting-worker.yaml")
+    block = template.split(f"AlarmName: vllm-alerting-heartbeat-{job}\n", 1)[1]
+    block = block.split("\n  Heartbeat", 1)[0]
+
+    assert "TreatMissingData: breaching" in block
+    assert "ComparisonOperator: LessThanThreshold" in block
+    assert f"Value: {job}\n" in block
+    assert block.count("Ref: HeartbeatTopic") == 2  # alarm and recovery
+    assert "Condition: HasHeartbeatEmail" in template  # target is a parameter

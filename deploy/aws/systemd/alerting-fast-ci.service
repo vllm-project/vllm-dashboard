@@ -10,6 +10,7 @@ Type=oneshot
 User=alerting
 Group=alerting
 ExecStart=/opt/alerting/bin/run-worker fast-ci
+ExecStartPost=-/opt/alerting/bin/emit-heartbeat fast-ci
 StandardOutput=null
 StandardError=null
 UMask=0077
