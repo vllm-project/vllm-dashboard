@@ -150,7 +150,21 @@ def test_infra_timer_scans_every_five_minutes_without_sensitive_data() -> None:
 def test_run_worker_maps_infra_consumer_to_its_own_control_path() -> None:
     runner = read("bin/run-worker")
 
-    assert "infra) alert_path=infra ;;" in runner
+    assert "infra|daily-summary) alert_path=infra ;;" in runner
+
+
+def test_daily_summary_timer_posts_at_nine_pacific_without_sensitive_data() -> None:
+    timer = read("systemd/alerting-daily-summary.timer")
+    service = read("systemd/alerting-daily-summary.service")
+
+    assert "OnCalendar=*-*-* 09:00:00 America/Los_Angeles" in timer
+    assert "Persistent=true" in timer
+    assert "Unit=alerting-daily-summary.service" in timer
+    assert "run-worker daily-summary" in service
+    assert "StandardOutput=null" in service
+    assert "OnFailure=alerting-failure-notify@%n.service" in service
+    for sensitive_name in ("DATABASE_URL", "TOKEN", "PASSWORD"):
+        assert sensitive_name not in service + timer
 
 
 def test_main_ci_analysis_timer_runs_every_ten_minutes() -> None:

@@ -200,6 +200,6 @@ enabling the new path, and preserves Postgres and S3 baselines on rollback.
 cd alerting
 uv sync --extra dev
 uv run pytest
-uv run mypy __init__.py analyzer.py commands.py control.py cutover.py fast_ci.py full_ci.py infra.py kimi.py main_ci.py main_ci_analysis.py memory.py migration.py ports.py postgres.py retention.py runtime.py slack.py worker.py tests
+uv run mypy __init__.py analyzer.py commands.py control.py cutover.py daily_summary.py fast_ci.py full_ci.py infra.py kimi.py main_ci.py main_ci_analysis.py memory.py migration.py ports.py postgres.py retention.py runtime.py slack.py worker.py tests
 uv run ruff check .
 ```

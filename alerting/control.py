@@ -49,7 +49,11 @@ _UNITS = {
         ("alerting-main-ci-analysis.timer", "alerting-main-ci-analysis.service"),
         ("alerting-main-ci-backstop.timer", "alerting-main-ci-backstop.service"),
     ),
-    AlertPath.INFRA: (("alerting-infra.timer", "alerting-infra.service"),),
+    # The daily summary follows the Infra control and its delivery mode.
+    AlertPath.INFRA: (
+        ("alerting-infra.timer", "alerting-infra.service"),
+        ("alerting-daily-summary.timer", "alerting-daily-summary.service"),
+    ),
 }
 _MODE_FILES = {
     AlertPath.FAST_CI: "fast-ci.mode",

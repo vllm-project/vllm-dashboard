@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from alerting.analyzer import (
@@ -1433,6 +1433,53 @@ class PostgresAlertStore:
             ).fetchall()
         return [(str(row[0]), str(row[1])) for row in rows]
 
+    def episodes_since(self, since: datetime) -> list[InfraAlertEpisode]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                """
+                SELECT alert_id, alert_type, subject_key, opened_at,
+                       resolved_at, details
+                FROM alerting_infra_alerts
+                WHERE alert_type IN ('quarantine', 'gpu_count', 'unreporting')
+                  AND (status = 'open' OR opened_at >= %s OR resolved_at >= %s)
+                """,
+                (since, since),
+            ).fetchall()
+        return [
+            InfraAlertEpisode(
+                alert_id=int(row[0]),
+                alert_type=row[1],
+                subject_key=row[2],
+                opened_at=row[3],
+                resolved_at=row[4],
+                details=dict(row[5]),
+            )
+            for row in rows
+        ]
+
+    def expected_gpu_exceptions(self) -> dict[str, int]:
+        with self._connection_factory() as connection:
+            rows = connection.execute(
+                "SELECT host, expected_gpus FROM alerting_expected_gpu_exceptions"
+            ).fetchall()
+        return {str(row[0]).lower(): int(row[1]) for row in rows}
+
+    def scrape_buckets(self, since: datetime) -> dict[str, int]:
+        with self._connection_factory() as connection:
+            # gpu_history_5m, not gpu_snapshots: one row per host per bucket
+            # is a day of 288 rows per host instead of a day of raw samples.
+            rows = connection.execute(
+                """
+                SELECT hostname, count(DISTINCT time_bucket)
+                FROM gpu_history_5m
+                WHERE time_bucket >= %s
+                GROUP BY hostname
+                HAVING min(time_bucket) < %s
+                """,
+                (since, since + timedelta(minutes=10)),
+            ).fetchall()
+        return {str(row[0]).lower(): int(row[1]) for row in rows}
+
     def infra_state(self) -> InfraStateSnapshot:
         with self._connection_factory() as connection:
             state_rows = connection.execute(
@@ -2253,6 +2300,39 @@ def build_infra_runtime(
         slack=slack,
         clock=clock,
         handlers={"infra_scan": handler},
+        alert_path=AlertPath.INFRA,
+    )
+
+
+def build_daily_summary_runtime(
+    *,
+    database_url: str,
+    destination: str,
+    slack: SlackPort,
+    clock: Clock,
+    delivery_mode: DeliveryMode = DeliveryMode.LIVE,
+    quarantine_live: bool = False,
+) -> AlertingRuntime:
+    """Wire the daily infra summary: Postgres reads, one outbox post."""
+    from alerting.daily_summary import DailySummaryHandler
+
+    store = PostgresAlertStore.from_database_url(database_url)
+    handler = DailySummaryHandler(
+        source=store,
+        snapshots=store,
+        store=store,
+        outbox=store,
+        clock=clock,
+        destination=destination,
+        delivery_mode=delivery_mode,
+        quarantine_live=quarantine_live,
+    )
+    return AlertingRuntime(
+        executions=store,
+        outbox=store,
+        slack=slack,
+        clock=clock,
+        handlers={"daily_summary": handler},
         alert_path=AlertPath.INFRA,
     )
 

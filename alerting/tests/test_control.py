@@ -74,6 +74,7 @@ def test_reconcile_controls_defaults_missing_path_to_shadow_and_disables_one_pat
         "alerting-main-ci-analysis.timer",
         "alerting-main-ci-backstop.timer",
         "alerting-infra.timer",
+        "alerting-daily-summary.timer",
     ]
     assert units.stopped == [
         "alerting-full-ci.service",
@@ -82,6 +83,7 @@ def test_reconcile_controls_defaults_missing_path_to_shadow_and_disables_one_pat
         "alerting-main-ci-analysis.service",
         "alerting-main-ci-backstop.service",
         "alerting-infra.service",
+        "alerting-daily-summary.service",
     ]
 
 
@@ -142,7 +144,10 @@ def test_infra_live_control_enables_its_timer_and_mode(tmp_path: Path) -> None:
     reconcile_controls(controls=controls, units=units, mode_dir=tmp_path)
 
     assert (tmp_path / "infra.mode").read_text() == "ALERTING_DELIVERY_MODE=live\n"
-    assert units.enabled == ["alerting-infra.timer"]
+    assert units.enabled == [
+        "alerting-infra.timer",
+        "alerting-daily-summary.timer",
+    ]
 
 
 def test_missing_infra_control_defaults_to_shadow(tmp_path: Path) -> None:
@@ -160,4 +165,7 @@ def test_missing_infra_control_defaults_to_shadow(tmp_path: Path) -> None:
 
     assert controls.writes == [(AlertPath.INFRA, ControlMode.SHADOW)]
     assert (tmp_path / "infra.mode").read_text() == "ALERTING_DELIVERY_MODE=shadow\n"
-    assert units.enabled == ["alerting-infra.timer"]
+    assert units.enabled == [
+        "alerting-infra.timer",
+        "alerting-daily-summary.timer",
+    ]

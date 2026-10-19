@@ -118,6 +118,46 @@ def test_infra_timer_uses_its_scan_command(
     assert [command.command_type for command in runtime.commands] == ["infra_scan"]
 
 
+def test_daily_summary_timer_uses_its_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = RecordingRuntime()
+    monkeypatch.setattr(worker, "_runtime", lambda *args: runtime)
+
+    assert worker.main(["daily-summary"]) == 0
+    assert [command.command_type for command in runtime.commands] == [
+        "daily_summary"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"), [(None, "UOPS"), ("C0CHANNEL", "C0CHANNEL")]
+)
+def test_daily_summary_goes_to_the_failure_dm_unless_a_destination_is_set(
+    monkeypatch: pytest.MonkeyPatch, summary: str | None, expected: str
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_build(**kwargs: object) -> RecordingRuntime:
+        captured.update(kwargs)
+        return RecordingRuntime()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/alerting")
+    monkeypatch.setenv("ALERTING_FAILURE_SLACK_DESTINATION", "UOPS")
+    if summary is None:
+        monkeypatch.delenv("DAILY_SUMMARY_SLACK_DESTINATION", raising=False)
+    else:
+        monkeypatch.setenv("DAILY_SUMMARY_SLACK_DESTINATION", summary)
+    monkeypatch.setenv("QUARANTINE_MODE", "live")
+    monkeypatch.setattr(worker, "build_daily_summary_runtime", fake_build)
+
+    worker._runtime("daily-summary", worker.SystemClock(), DeliveryMode.SHADOW)
+
+    assert captured["destination"] == expected
+    assert captured["delivery_mode"] is DeliveryMode.SHADOW
+    assert captured["quarantine_live"] is True
+
+
 def test_infra_runtime_passes_kubeconfigs_and_delivery_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

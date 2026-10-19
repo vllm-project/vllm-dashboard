@@ -1,0 +1,24 @@
+[Unit]
+Description=Post the daily CI infra summary
+After=network-online.target
+Wants=network-online.target
+OnFailure=alerting-failure-notify@%n.service
+OnSuccess=alerting-failure-resolve@%n.service
+
+[Service]
+Type=oneshot
+User=alerting
+Group=alerting
+ExecStart=/opt/alerting/bin/run-worker daily-summary
+StandardOutput=null
+StandardError=null
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+TimeoutStartSec=10min

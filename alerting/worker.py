@@ -11,6 +11,7 @@ from pathlib import Path
 from alerting.commands import ScheduledCommand
 from alerting.ports import Clock, DeliveryMode
 from alerting.postgres import (
+    build_daily_summary_runtime,
     build_fast_ci_runtime,
     build_full_ci_analysis_runtime,
     build_full_ci_runtime,
@@ -159,6 +160,17 @@ def _runtime(
             # the worker-failure alert uses.
             operator_destination=os.environ.get("ALERTING_FAILURE_SLACK_DESTINATION"),
         )
+    if consumer == "daily-summary":
+        # A DM to the worker-failure destination unless a channel is set.
+        return build_daily_summary_runtime(
+            database_url=database_url,
+            destination=os.environ.get("DAILY_SUMMARY_SLACK_DESTINATION")
+            or _required_environment("ALERTING_FAILURE_SLACK_DESTINATION"),
+            slack=_slack(),
+            clock=clock,
+            delivery_mode=delivery_mode,
+            quarantine_live=_quarantine_live(),
+        )
     if consumer == "main-ci-analyze":
         return build_main_ci_analysis_runtime(
             database_url=database_url,
@@ -198,6 +210,7 @@ def scheduled_command(consumer: str, target_time: datetime) -> ScheduledCommand:
         "main-ci-backstop": "main_ci_backstop",
         "main-ci-analyze": "main_ci_analyze",
         "infra": "infra_scan",
+        "daily-summary": "daily_summary",
     }
     try:
         command_type = command_types[consumer]
@@ -217,6 +230,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "main-ci-backstop",
         "main-ci-analyze",
         "infra",
+        "daily-summary",
     }:
         return 2
 

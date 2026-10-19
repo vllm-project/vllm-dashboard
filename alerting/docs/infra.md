@@ -212,3 +212,18 @@ Writes: `alerting_infra_host_states` (per-subject consecutive-breach counts
 and retirement), `alerting_infra_alerts` (episodes; partial unique index
 keeps at most one open episode per `(alert_type, subject_key)`),
 `alerting_notification_outbox`, `alerting_automation_executions`.
+
+## Daily summary
+
+`alerting/daily_summary.py`, run by `alerting-daily-summary.timer` (`run-worker
+daily-summary`) at 09:00 Pacific every day, under the Infra control and its
+delivery mode. It posts once, through the outbox, to
+`DAILY_SUMMARY_SLACK_DESTINATION`, or to `ALERTING_FAILURE_SLACK_DESTINATION`
+(the DM) when that is unset. The post lists changes in the last 24 hours
+(quarantines, would-have, held, returned, GPU count drops and recoveries,
+scrapes that missed at least 10% of their five-minute buckets), then what
+stands (quarantined, held, degraded, not reporting) and a `/gpu` link. A quiet
+day is one line. A host is degraded when its GPU count is below its
+exception-list value, or below the larger of 8 and the most GPUs the
+`gpu_count` baseline has seen. The Mode line shows the global `QUARANTINE_MODE`
+for each pool that has hosts, and `not started` for a pool with none.

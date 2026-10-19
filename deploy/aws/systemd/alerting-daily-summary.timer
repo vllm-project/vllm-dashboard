@@ -1,0 +1,12 @@
+[Unit]
+Description=Post the daily CI infra summary at 09:00 Pacific time
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 America/Los_Angeles
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+Unit=alerting-daily-summary.service
+
+[Install]
+WantedBy=timers.target
