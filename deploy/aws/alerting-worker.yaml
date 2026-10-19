@@ -235,14 +235,27 @@ Resources:
       AlarmDescription: >-
         No successful control run for 15 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).
-      Namespace: VllmAlerting
-      MetricName: Heartbeat
-      Dimensions:
-        - Name: Job
-          Value: control
-      Statistic: Sum
-      Period: 300
+      # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
+      # reaches back past EvaluationPeriods for an older heartbeat that would
+      # hold the alarm at OK after the job went silent.
+      Metrics:
+        - Id: m1
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: VllmAlerting
+              MetricName: Heartbeat
+              Dimensions:
+                - Name: Job
+                  Value: control
+            Period: 300
+            Stat: Sum
+        - Id: e1
+          Expression: FILL(m1, 0)
+          Label: Heartbeats per 5 minutes
+          ReturnData: true
       EvaluationPeriods: 3
+      DatapointsToAlarm: 3
       Threshold: 1
       ComparisonOperator: LessThanThreshold
       TreatMissingData: breaching
@@ -258,14 +271,27 @@ Resources:
       AlarmDescription: >-
         No successful fast-ci run for 30 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).
-      Namespace: VllmAlerting
-      MetricName: Heartbeat
-      Dimensions:
-        - Name: Job
-          Value: fast-ci
-      Statistic: Sum
-      Period: 300
+      # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
+      # reaches back past EvaluationPeriods for an older heartbeat that would
+      # hold the alarm at OK after the job went silent.
+      Metrics:
+        - Id: m1
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: VllmAlerting
+              MetricName: Heartbeat
+              Dimensions:
+                - Name: Job
+                  Value: fast-ci
+            Period: 300
+            Stat: Sum
+        - Id: e1
+          Expression: FILL(m1, 0)
+          Label: Heartbeats per 5 minutes
+          ReturnData: true
       EvaluationPeriods: 6
+      DatapointsToAlarm: 6
       Threshold: 1
       ComparisonOperator: LessThanThreshold
       TreatMissingData: breaching
@@ -281,14 +307,27 @@ Resources:
       AlarmDescription: >-
         No successful main-ci run for 15 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).
-      Namespace: VllmAlerting
-      MetricName: Heartbeat
-      Dimensions:
-        - Name: Job
-          Value: main-ci
-      Statistic: Sum
-      Period: 300
+      # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
+      # reaches back past EvaluationPeriods for an older heartbeat that would
+      # hold the alarm at OK after the job went silent.
+      Metrics:
+        - Id: m1
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: VllmAlerting
+              MetricName: Heartbeat
+              Dimensions:
+                - Name: Job
+                  Value: main-ci
+            Period: 300
+            Stat: Sum
+        - Id: e1
+          Expression: FILL(m1, 0)
+          Label: Heartbeats per 5 minutes
+          ReturnData: true
       EvaluationPeriods: 3
+      DatapointsToAlarm: 3
       Threshold: 1
       ComparisonOperator: LessThanThreshold
       TreatMissingData: breaching
@@ -304,14 +343,27 @@ Resources:
       AlarmDescription: >-
         No successful infra run for 20 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).
-      Namespace: VllmAlerting
-      MetricName: Heartbeat
-      Dimensions:
-        - Name: Job
-          Value: infra
-      Statistic: Sum
-      Period: 300
+      # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
+      # reaches back past EvaluationPeriods for an older heartbeat that would
+      # hold the alarm at OK after the job went silent.
+      Metrics:
+        - Id: m1
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: VllmAlerting
+              MetricName: Heartbeat
+              Dimensions:
+                - Name: Job
+                  Value: infra
+            Period: 300
+            Stat: Sum
+        - Id: e1
+          Expression: FILL(m1, 0)
+          Label: Heartbeats per 5 minutes
+          ReturnData: true
       EvaluationPeriods: 4
+      DatapointsToAlarm: 4
       Threshold: 1
       ComparisonOperator: LessThanThreshold
       TreatMissingData: breaching

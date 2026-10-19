@@ -110,8 +110,8 @@ Buildkite agents of quarantined H200 hosts (see `alerting/docs/infra.md`).
 `control`, `fast-ci`, `main-ci` and `infra` each run
 `bin/emit-heartbeat` after a successful run (`ExecStartPost=`), which puts a
 `VllmAlerting/Heartbeat` datapoint (dimension `Job`) using the instance role
-only, never the worker secret. The stack's CloudWatch alarms treat missing
-data as breaching and notify the SNS topic `vllm-alerting-heartbeat`, so a
+only, never the worker secret. The stack's CloudWatch alarms count a missing
+period as zero (`FILL(m1, 0)`, so an old heartbeat cannot hold an alarm at OK) and notify the SNS topic `vllm-alerting-heartbeat`, so a
 dead timer, a dead instance, or a secret the worker cannot load all alarm
 without the worker, its database or its secret. Set `HeartbeatAlertEmail` and
 click SNS's confirmation link once; empty means no subscriber. A job whose
