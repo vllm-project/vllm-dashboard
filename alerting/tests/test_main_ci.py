@@ -321,6 +321,61 @@ def test_runtime_shards_report_a_pass_only_once_every_shard_passed() -> None:
     ]
 
 
+def _parallel_job(
+    job_id: str, name: str, index: int, total: int, state: str
+) -> dict[str, Any]:
+    return {
+        **_shard_job(job_id, "", state, 50),
+        "name": name,
+        "step_key": "lora",
+        "parallel_group_index": index,
+        "parallel_group_total": total,
+    }
+
+
+@pytest.mark.parametrize(
+    ("label", "total"),
+    [
+        ("LoRA Shard {n}", 4),
+        ("LoRA Shard {n}/3", 3),
+        ("LoRA shard {n}/2", 2),
+        ("LoRA {n}", 2),
+    ],
+)
+def test_parallel_shard_relabels_keep_one_step_alert(label: str, total: int) -> None:
+    failed = _parallel_job("s1", label.format(n=1), 0, total, "failed")
+
+    rows = _shard_rows([failed])
+
+    assert [(row.job_key, row.job_name) for row in rows] == [
+        ("step:lora|name:LoRA", "LoRA")
+    ]
+
+
+def test_parallel_shard_index_inside_the_label_is_dropped() -> None:
+    rows = _shard_rows(
+        [_parallel_job("s2", "MoRIIO E2E Shard 2 (mi355_2)", 1, 3, "failed")]
+    )
+
+    assert [row.job_key for row in rows] == ["step:lora|name:MoRIIO E2E (mi355_2)"]
+
+
+def test_parallel_step_passes_only_once_every_shard_passed() -> None:
+    assert _shard_rows([_parallel_job("s1", "LoRA Shard 1", 0, 2, "passed")]) == []
+
+    rows = _shard_rows(
+        [
+            _parallel_job("s1", "LoRA Shard 1", 0, 2, "passed"),
+            _parallel_job("s2", "LoRA Shard 2", 1, 2, "passed"),
+        ]
+    )
+
+    assert [(row.job_key, row.failed) for row in rows] == [
+        ("step:lora|name:LoRA", False),
+        ("step:lora|name:LoRA", False),
+    ]
+
+
 def test_buildkite_client_unions_active_and_recently_finished_builds() -> None:
     client = RecordingRestClient()
     observed_from = START - timedelta(minutes=30)

@@ -202,6 +202,26 @@ def _parse_datetime(value: Any) -> datetime:
     return parsed
 
 
+def _parallel_shard(job: dict[str, Any], name: str) -> tuple[str, int] | None:
+    """Return (step name, shard total) for a Buildkite parallel job.
+
+    Parallel steps render their index into the label in several forms
+    ("X Shard 2", "X Shard 2/3", "X 2", "X Shard 2 (queue)"), and the form and
+    total change as steps move between fixed and automatic sharding. Dropping
+    the rendered index keeps one alert per step across those relabels.
+    """
+    total = job.get("parallel_group_total")
+    index = job.get("parallel_group_index")
+    if not isinstance(total, int) or total < 2 or not isinstance(index, int):
+        return None
+    rendered = re.compile(rf"(?i)(?:\s+shard)?\s+{index + 1}(?:/\d+)?(?!\d)")
+    matches = list(rendered.finditer(name))
+    if not matches:
+        return name, total
+    last = matches[-1]
+    return name[: last.start()] + name[last.end() :], total
+
+
 def build_job_observations(build: dict[str, Any]) -> list[MainCIJobObservation]:
     """Map one build's embedded jobs into tracked terminal outcomes.
 
@@ -255,15 +275,21 @@ def build_job_observations(build: dict[str, Any]) -> list[MainCIJobObservation]:
         step_key = str(job.get("step_key") or "").strip() or name_to_step_key.get(
             name, ""
         )
-        shard = RUNTIME_SHARD.search(name)
-        step_name = name[: shard.start()] if shard else name
+        parallel = _parallel_shard(job, name)
+        shard = None if parallel else RUNTIME_SHARD.search(name)
+        if parallel:
+            step_name, total = parallel
+        elif shard:
+            step_name, total = name[: shard.start()], int(shard.group(2))
+        else:
+            step_name, total = name, 0
         # Matrix expansions share a configured step key. Include the
         # rendered job name so one matrix cell cannot resolve another.
         job_key = (
             f"step:{step_key}|name:{step_name}" if step_key else f"name:{step_name}"
         )
-        if shard:
-            shard_totals[job_key] = int(shard.group(2))
+        if total:
+            shard_totals[job_key] = total
             names[job_id] = name
         observations.append(
             MainCIJobObservation(
