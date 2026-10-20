@@ -2,16 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { fetchBuildkiteQueueSnapshots } from "@/lib/buildkite-queue-metrics";
 import { fetchConnectedAgents } from "@/lib/buildkite-queue-jobs";
+import { cronAuthError } from "@/lib/operator-auth";
 
 export const maxDuration = 55;
 
 export async function GET(request: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const auth = request.headers.get("authorization");
-    if (auth !== `Bearer ${cronSecret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const authError = cronAuthError(request.headers.get("authorization"));
+  if (authError) {
+    return NextResponse.json(
+      { error: authError.error },
+      { status: authError.status },
+    );
   }
 
   const token = process.env.BUILDKITE_API_TOKEN;
