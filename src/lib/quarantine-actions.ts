@@ -206,12 +206,14 @@ export async function desiredQuarantines(
       reason: string | null;
       actuator_state: string | null;
       resolved_while_held: string | null;
+      resolve_requested_at: string | null;
     }[]
   >`
     SELECT subject_key AS host, alert_id, details->>'stage' AS stage,
            details->>'reason' AS reason,
            details->>'actuator_state' AS actuator_state,
-           details->>'resolved_while_held' AS resolved_while_held
+           details->>'resolved_while_held' AS resolved_while_held,
+           details->>'resolve_requested_at' AS resolve_requested_at
     FROM alerting_infra_alerts
     WHERE alert_type = 'quarantine'
       AND status = 'open'
@@ -233,6 +235,10 @@ export async function desiredQuarantines(
         // A host resolved while held was never taken out: the H200 pauser
         // returns it without a check.
         resolvedWhileHeld: row.resolved_while_held === "true",
+        // Set on every resolve: the k8s actuator stamps its return-check pod
+        // with it, so a pod left from an earlier resolve is never read as
+        // this one's result.
+        resolveRequestedAt: row.resolve_requested_at ?? null,
       })),
     },
   };

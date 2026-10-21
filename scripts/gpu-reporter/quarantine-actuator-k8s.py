@@ -168,14 +168,22 @@ def verify_pod_name(node_name):
     return f"vllm-quarantine-verify-{node_name}"
 
 
-def verify_pod(node):
+# Which resolve a return-check pod belongs to: the episode's
+# resolve_requested_at, which every resolve sets anew.
+RESOLVE_MARK = "vllm-quarantine/resolve-requested-at"
+
+
+def verify_pod(node, resolve_requested_at=None):
     """The return-check pod: pinned to the node, holding all its GPUs."""
     name = node["metadata"]["name"]
     gpus = node["status"]["allocatable"][GPU_RESOURCE]
+    metadata = {"name": verify_pod_name(name), "namespace": VERIFY_NS,
+                "labels": {"app": "vllm-quarantine-verify"}}
+    if resolve_requested_at:
+        metadata["annotations"] = {RESOLVE_MARK: resolve_requested_at}
     return {
         "apiVersion": "v1", "kind": "Pod",
-        "metadata": {"name": verify_pod_name(name), "namespace": VERIFY_NS,
-                     "labels": {"app": "vllm-quarantine-verify"}},
+        "metadata": metadata,
         "spec": {
             # nodeName skips the scheduler, so our cordon and taint don't
             # keep it off; the toleration covers the kubelet's own checks.
@@ -337,8 +345,17 @@ class Actuator:
                 print(f"  {name}: return check failed: {note}")
                 self.post(name, want["alertId"], "verify_failed", {"note": note})
                 return False
-            self.write("create", "-f", "-", input=json.dumps(verify_pod(node)))
+            self.write("create", "-f", "-", input=json.dumps(
+                verify_pod(node, want.get("resolveRequestedAt"))))
             self.post(name, want["alertId"], "verifying", {"phase": "Created"})
+            return False
+        # A pod from an earlier resolve (its failure posted, its delete lost)
+        # is not this resolve's result: remove it, and start fresh once gone.
+        stamp = (pod["metadata"].get("annotations") or {}).get(RESOLVE_MARK)
+        if stamp != want.get("resolveRequestedAt"):
+            print(f"  {name}: check pod is from an earlier resolve; removing it")
+            self.write("delete", "pod", pod_name, "-n", VERIFY_NS,
+                       "--wait=false")
             return False
         phase = pod.get("status", {}).get("phase")
         # strptime: the control planes' Python 3.10 fromisoformat rejects "Z".

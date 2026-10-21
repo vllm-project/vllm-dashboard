@@ -226,6 +226,47 @@ def test_a_stale_failed_check_pod_is_not_taken_for_the_next_resolves_check(kube_
     assert len(kube.created) == 1
 
 
+def test_a_resolve_that_lands_before_the_cleanup_never_reads_the_old_pod(kube_run, capsys):
+    # The failure was posted but its pod's delete failed, and a person resolved
+    # again before any cleanup ran: the resolve clears the failed report, so
+    # only the pod's own stamp says it belongs to the earlier resolve.
+    kube = k8s.FakeKube({"n1": k8s.node(True, True)})
+    first = k8s.FakeDashboard([dict(k8s.want("n1", "resolving"),
+                                    resolveRequestedAt="2026-10-21T10:00:00+00:00")])
+    assert kube_run(kube, first) == 0
+    assert kube.created[0]["metadata"]["annotations"] == {
+        "vllm-quarantine/resolve-requested-at": "2026-10-21T10:00:00+00:00"}
+    kube.checks[k8s.CHECK].update(phase="Failed", logs="| Memory | Fail |\n")
+    real = kube.__call__
+    broken = [True]
+
+    def delete_fails(*args, input=None):
+        if broken[0] and args[:2] == ("delete", "pod"):
+            raise RuntimeError("kubectl delete failed: timeout")
+        return real(*args, input=input)
+
+    assert kube_run(delete_fails, first) == 1
+    assert [b["state"] for _, b in first.posts] == ["verifying", "verify_failed"]
+    again = k8s.FakeDashboard([dict(k8s.want("n1", "resolving"), actuatorState=None,
+                                    resolveRequestedAt="2026-10-21T11:00:00+00:00")])
+    # While the delete keeps failing, the old result is never reported.
+    assert kube_run(delete_fails, again) == 1
+    assert again.posts == [] and k8s.CHECK in kube.checks
+    broken[0] = False
+    capsys.readouterr()
+    writes = len(kube.writes)
+    assert kube_run(delete_fails, again) == 0
+    assert again.posts == [] and k8s.CHECK not in kube.checks
+    assert kube.writes[writes:] == [k8s.DELETE_CHECK + ("--wait=false",)]
+    assert "  n1: check pod is from an earlier resolve; removing it\n" in (
+        capsys.readouterr().out)
+    # The next run starts this resolve's own check.
+    assert kube_run(delete_fails, again) == 0
+    assert [b["state"] for _, b in again.posts] == ["verifying"]
+    assert kube.created[-1]["metadata"]["annotations"] == {
+        "vllm-quarantine/resolve-requested-at": "2026-10-21T11:00:00+00:00"}
+
+
 def test_a_failed_cleanup_is_retried_until_it_works_before_the_node_reports(kube_run):
     # The node's own post replaces the failed report the cleanup keys on, so a
     # cleanup that fails must hold the post back; otherwise it is never retried.

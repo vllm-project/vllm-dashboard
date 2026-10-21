@@ -68,7 +68,7 @@ test("resolving moves an open, applied or held quarantine on", async () => {
 
 test("the desired set carries each host's last actuator report", async () => {
   // The first answer goes to the stage-list fragment, db(ACTUATED_STAGES).
-  const { db } = fakeDb([], [
+  const { db, queries } = fakeDb([], [
     {
       host: "n1",
       alert_id: "7",
@@ -76,9 +76,13 @@ test("the desired set carries each host's last actuator report", async () => {
       reason: "Xid 79",
       actuator_state: "verify_failed",
       resolved_while_held: "true",
+      resolve_requested_at: "2026-10-21T10:00:00+00:00",
     },
   ]);
   const result = await desiredQuarantines(db, "h100");
+  assert.ok(
+    queries.some((q) => q.includes("details->>'resolve_requested_at' AS resolve_requested_at")),
+  );
   // The actuator keeps a node out while its resolve waits on a reading.
   // db(ACTUATED_STAGES) is a fragment call: the list is its first argument.
   const firstArgs: unknown[] = [];
@@ -102,12 +106,15 @@ test("the desired set carries each host's last actuator report", async () => {
       reason: "Xid 79",
       actuatorState: "verify_failed",
       resolvedWhileHeld: true,
+      // Tells the actuator which resolve a return-check pod belongs to.
+      resolveRequestedAt: "2026-10-21T10:00:00+00:00",
     },
   ]);
   const notHeld = fakeDb([], [{ host: "n1", alert_id: "7", resolved_while_held: null }]);
   const plain = await desiredQuarantines(notHeld.db, "h100");
   const [node] = (plain.body as { nodes: { resolvedWhileHeld: boolean }[] }).nodes;
   assert.equal(node.resolvedWhileHeld, false);
+  assert.equal((node as { resolveRequestedAt?: unknown }).resolveRequestedAt, null);
 });
 
 test("resolving a dry-run quarantine is a 409 that says nothing was applied", async () => {

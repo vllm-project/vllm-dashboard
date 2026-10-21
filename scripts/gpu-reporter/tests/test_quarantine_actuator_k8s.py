@@ -53,7 +53,8 @@ class FakeKube:
                        - check.get("age", datetime.timedelta(minutes=2)))
             return json.dumps({
                 "metadata": {"creationTimestamp":
-                             created.strftime("%Y-%m-%dT%H:%M:%SZ")},
+                             created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                             "annotations": dict(check.get("annotations", {}))},
                 "status": {k: check[k] for k in ("phase", "reason", "message")
                            if k in check}})
         if args[0] == "logs":
@@ -65,7 +66,9 @@ class FakeKube:
             self.writes.append(args)
             spec = json.loads(input)
             self.created.append(spec)
-            self.checks[spec["metadata"]["name"]] = {"phase": "Pending"}
+            self.checks[spec["metadata"]["name"]] = {
+                "phase": "Pending",
+                "annotations": spec["metadata"].get("annotations", {})}
             return ""
         if args[:2] == ("delete", "pod"):
             self.writes.append(args)
