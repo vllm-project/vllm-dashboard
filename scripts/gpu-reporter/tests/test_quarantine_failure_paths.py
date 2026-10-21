@@ -250,7 +250,25 @@ def test_a_failed_cleanup_is_retried_until_it_works_before_the_node_reports(kube
     assert [b["state"] for _, b in dash.posts] == ["drained"]
 
 
-def test_a_pod_still_visible_after_its_delete_holds_the_report_back(kube_run):
+def test_a_node_without_a_failed_check_never_looks_for_a_check_pod(kube_run):
+    # The cleanup is for a failed check only; every other live node would pay
+    # a pod lookup per run, and a lookup error would hold back its report.
+    kube = k8s.FakeKube({"n1": k8s.node(True, True)})
+    lookups = []
+
+    def watched(*args, input=None):
+        if args[:3] == ("get", "pod", k8s.CHECK):
+            lookups.append(args)
+        return kube(*args, input=input)
+
+    for state in (None, "out", "drained"):
+        dash = k8s.FakeDashboard([dict(k8s.want("n1", "quarantined"),
+                                       actuatorState=state)])
+        assert kube_run(watched, dash) == 0
+    assert lookups == []
+
+
+def test_a_pod_still_visible_after_its_delete_holds_the_report_back(kube_run, capsys):
     # `delete --wait=false` returns before the pod is gone. The node's post
     # would replace the failed report and end the retries while the old pod
     # still stands, so it waits until the pod is really gone.
@@ -269,6 +287,8 @@ def test_a_pod_still_visible_after_its_delete_holds_the_report_back(kube_run):
                                    actuatorState="verify_failed")])
     assert kube_run(slow_delete, dash) == 0
     assert pending == [k8s.DELETE_CHECK + ("--wait=false",)] and dash.posts == []
+    assert "  n1: failed check pod still deleting; report held back\n" in (
+        capsys.readouterr().out)
     assert kube_run(slow_delete, dash) == 0  # still there: delete again, no post
     assert dash.posts == []
     kube.checks.clear()  # the pod finally goes
