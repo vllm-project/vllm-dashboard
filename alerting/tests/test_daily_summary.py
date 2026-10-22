@@ -27,8 +27,9 @@ from alerting.memory import (
     InMemoryAutomationExecutionStore,
     InMemoryInfraStore,
     InMemoryOutboxStore,
+    RecordingSlackPort,
 )
-from alerting.ports import DeliveryMode
+from alerting.ports import AlertPath, DeliveryMode
 from alerting.postgres import PostgresAlertStore
 
 # 09:00 Pacific on 2026-10-20.
@@ -645,18 +646,24 @@ class Recorder:
 
 
 def test_postgres_reads_map_rows_and_bound_the_window() -> None:
-    recorder = Recorder([(1, "quarantine", "h200-ci-1", NOW, None, {"stage": "held"})])
+    recorder = Recorder(
+        [(1, "quarantine", "h200-ci-1", YESTERDAY, NOW, {"stage": "held"})]
+    )
     store = PostgresAlertStore(lambda: recorder)
     [found] = store.episodes_since(YESTERDAY)
-    assert (found.alert_id, found.subject_key, found.details) == (
-        1, "h200-ci-1", {"stage": "held"},
-    )
+    assert (
+        found.alert_id, found.alert_type, found.subject_key,
+        found.opened_at, found.resolved_at, found.details,
+    ) == (1, "quarantine", "h200-ci-1", YESTERDAY, NOW, {"stage": "held"})
     assert recorder.calls[0][1] == (YESTERDAY, YESTERDAY)
 
     recorder = Recorder([("H200-CI-1", 7)])
     assert PostgresAlertStore(lambda: recorder).expected_gpu_exceptions() == {
         "h200-ci-1": 7
     }
+    assert recorder.calls[0][0] == (
+        "SELECT host, expected_gpus FROM alerting_expected_gpu_exceptions"
+    )
 
     recorder = Recorder([("H200-CI-1", 280)])
     store = PostgresAlertStore(lambda: recorder)
@@ -701,4 +708,39 @@ def test_postgres_reads_map_rows_and_bound_the_window() -> None:
     recorder = Recorder([("INF-4X8H100-1", 6, 8)])
     assert PostgresAlertStore(lambda: recorder).allocatable_gpus() == {
         "inf-4x8h100-1": (6, 8)
+    }
+
+
+def test_the_runtime_wires_one_handler_over_one_store(monkeypatch: Any) -> None:
+    import alerting.daily_summary as daily_summary
+    import alerting.postgres as postgres
+
+    store = PostgresAlertStore(lambda: Recorder([]))
+    built: dict[str, Any] = {}
+    monkeypatch.setattr(
+        postgres.PostgresAlertStore, "from_database_url",
+        classmethod(lambda cls, url: built.setdefault("url", url) and store),
+    )
+    monkeypatch.setattr(
+        daily_summary, "DailySummaryHandler",
+        lambda **kwargs: built.setdefault("handler", kwargs) and "handler",
+    )
+    monkeypatch.setattr(
+        postgres, "AlertingRuntime",
+        lambda **kwargs: built.setdefault("runtime", kwargs) and "runtime",
+    )
+    slack, clock = RecordingSlackPort(), FixedClock(NOW)
+    runtime: Any = postgres.build_daily_summary_runtime(
+        database_url="postgres://db", destination="C1", slack=slack, clock=clock,
+    )
+    assert runtime == "runtime"
+    assert built["url"] == "postgres://db"
+    assert built["handler"] == {
+        "source": store, "snapshots": store, "store": store, "outbox": store,
+        "clock": clock, "destination": "C1",
+        "delivery_mode": DeliveryMode.LIVE, "quarantine_live": False,
+    }
+    assert built["runtime"] == {
+        "executions": store, "outbox": store, "slack": slack, "clock": clock,
+        "handlers": {"daily_summary": "handler"}, "alert_path": AlertPath.INFRA,
     }
