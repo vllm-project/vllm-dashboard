@@ -55,6 +55,7 @@ export function normalizeHostRow(row: DbRow): HostLatest {
     node_conditions: isNodeConditions(row.node_conditions)
       ? row.node_conditions
       : null,
+    mig_slices: nullableNumber(row.mig_slices),
     reported_at: isoString(row.reported_at),
   };
 }
@@ -90,12 +91,13 @@ export async function queryHostLatest(): Promise<HostLatest[]> {
     SELECT l.hostname, l.cpu_util, l.cpu_count,
            l.ram_used_bytes, l.ram_total_bytes, l.ram_available_bytes,
            l.disks, l.reporter_status, l.last_error, l.node_conditions,
-           l.reported_at
+           l.mig_slices, l.reported_at
     FROM host_keys k
     CROSS JOIN LATERAL (
       SELECT hostname, cpu_util, cpu_count,
              ram_used_bytes, ram_total_bytes, ram_available_bytes,
-             disks, reporter_status, last_error, node_conditions, reported_at
+             disks, reporter_status, last_error, node_conditions, mig_slices,
+             reported_at
       FROM host_snapshots s
       WHERE s.hostname = k.hostname
       ORDER BY s.reported_at DESC

@@ -92,6 +92,7 @@ CPU_SAMPLE_INTERVAL = 1.0  # seconds between the two /proc/stat reads
 DISK_STAT_TIMEOUT = float(os.environ.get("GPU_REPORT_DISK_TIMEOUT", "5"))
 COMPUTE_APPS_TIMEOUT = float(os.environ.get("GPU_REPORT_COMPUTE_APPS_TIMEOUT", "10"))
 FAULT_QUERY_TIMEOUT = 5  # nvidia-smi -L, fault query and journalctl; the unit's TimeoutSec is 90
+DCGM_TIMEOUT = 30  # each dcgmi call on MIG hosts; the whole DCGM step took 10-12 s
 STATE_DIR = os.environ.get("GPU_REPORT_STATE_DIR", "/var/lib/gpu-reporter")
 JOURNAL_CURSOR_FILE = os.path.join(STATE_DIR, "journal.cursor")
 MAX_XIDS_PER_REPORT = 200  # the ingestion contract allows 500
@@ -301,6 +302,84 @@ def query_mig_slices():
     if result.returncode != 0:
         raise RuntimeError(f"nvidia-smi -L failed: {result.stderr.strip()}")
     return count_mig_slices(result.stdout)
+
+
+def parse_dcgm_instances(text):
+    """`dcgmi discovery -c` -> {GPU-instance entity id: GPU index}.
+
+    DCGM numbers GPUs in nvidia-smi index order (checked against UUIDs on
+    every MIG host), so the first part of "I <gpu>/<gi>" is the GPU index.
+    """
+    instances = {}
+    for line in text.splitlines():
+        m = re.match(r"\|\s*-> I (\d+)/\d+\s.*\(EntityID: (\d+)\)", line)
+        if m:
+            instances[int(m.group(2))] = int(m.group(1))
+    return instances
+
+
+def parse_mig_util(text, instances):
+    """`dcgmi dmon` GPU-instance rows -> {GPU index: utilization %}.
+
+    NVML has no utilization under MIG, so a GPU's figure is the mean of its
+    slices' graphics-engine activity (DCGM field 1001): 100% means every
+    slice is busy. DCGM's own whole-GPU value isn't used because it weights
+    a 1g.35gb slice as 2/7 of the GPU, so four busy slices would read 114%.
+    The first samples read N/A while DCGM sets up the watch; those, and
+    slices that never return a value, are skipped.
+    """
+    # ponytail: unweighted mean, correct while each GPU's slices share one
+    # profile (true fleet-wide); mixed profiles would need SM-count weights.
+    samples = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or parts[0] != "GPU-I" or parts[2] == "N/A":
+            continue
+        samples.setdefault(int(parts[1]), []).append(float(parts[2]))
+    per_gpu = {}
+    for entity, values in samples.items():
+        if entity in instances:
+            per_gpu.setdefault(instances[entity], []).append(sum(values) / len(values))
+    return {gpu: round(sum(v) / len(v) * 100, 2) for gpu, v in per_gpu.items()}
+
+
+def _dcgmi(*args):
+    result = subprocess.run(
+        ["dcgmi", *args], capture_output=True, text=True, timeout=DCGM_TIMEOUT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"dcgmi {args[0]} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def query_mig_util():
+    instances = parse_dcgm_instances(_dcgmi("discovery", "-c"))
+    if not instances:
+        return {}
+    ids = ",".join(f"i:{entity}" for entity in sorted(instances))
+    # Fields 1001-1005 together: watching 1001 alone stayed N/A on a GPU
+    # instance. Five 1 s samples ride out the warm-up and smooth bursts.
+    text = _dcgmi("dmon", "-e", "1001,1002,1003,1004,1005",
+                  "-c", "5", "-d", "1000", "-i", ids)
+    return parse_mig_util(text, instances)
+
+
+def fill_mig_util(gpus):
+    """Fill in utilization nvidia-smi couldn't read (MIG GPUs) from DCGM.
+
+    DCGM is only queried when some GPU lacks utilization, so non-MIG hosts
+    never pay for it. GPUs it has no reading for stay null, never 0.
+    """
+    if all(gpu["gpu_util"] is not None for gpu in gpus):
+        return
+    try:
+        mig_util = query_mig_util()
+    except Exception as e:
+        print(f"DCGM MIG utilization query failed: {e}", file=sys.stderr)
+        return
+    for gpu in gpus:
+        if gpu["gpu_util"] is None:
+            gpu["gpu_util"] = mig_util.get(gpu["index"])
 
 
 def parse_xid_events(journal_json):
@@ -725,6 +804,7 @@ def main():
             faults["mig_slices"] = query_mig_slices()
         except Exception as e:
             print(f"MIG slice query failed: {e}", file=sys.stderr)
+        fill_mig_util(gpus)
 
     # Xids are read even when nvidia-smi fails: Xid 79 (fallen off the bus)
     # is exactly when it does.

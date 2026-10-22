@@ -40,6 +40,8 @@ export interface HostLatest {
   reporter_status: ReporterStatus;
   last_error: string | null;
   node_conditions: NormalizedNodeConditions | null;
+  /** MIG slices on the host: 0 without MIG, null when unread. */
+  mig_slices: number | null;
   reported_at: string;
 }
 

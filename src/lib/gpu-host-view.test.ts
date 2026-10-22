@@ -247,6 +247,7 @@ function hostLatest(overrides: Partial<HostLatest> = {}): HostLatest {
     reporter_status: "ok",
     last_error: null,
     node_conditions: null,
+    mig_slices: null,
     reported_at: "2026-09-02T19:00:00.000Z",
     ...overrides,
   };

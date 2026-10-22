@@ -475,7 +475,7 @@ def run_main(reporter, monkeypatch, tmp_path, post_ok=True, **queries):
     monkeypatch.setattr(reporter, "NETWORK_PROBES", ())
     monkeypatch.setattr(reporter, "collect_host_metrics", lambda: {})
     monkeypatch.setattr(reporter, "query_gpus", lambda: [
-        {"index": 0, "dead_proc_mem_mb": None, "recovery_action": None,
+        {"index": 0, "gpu_util": 10.0, "dead_proc_mem_mb": None, "recovery_action": None,
          "remapped_rows_failure": None, "ecc_uncorrected": None}])
     monkeypatch.setattr(reporter, "query_dead_proc_memory", lambda: {0: 0.0})
     monkeypatch.setattr(reporter, "query_fault_fields", queries.get("fault", lambda: {
@@ -641,3 +641,151 @@ def test_query_gpus_mig_utilization_is_null_not_zero(reporter, monkeypatch):
                         lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, out, ""))
     gpus = reporter.query_gpus()
     assert [g["gpu_util"] for g in gpus] == [None, 0.0]
+
+
+DCGM_DISCOVERY_FIXTURE = """\
++-------------------+--------------------------------------------------------------------+
+| Instance Hierarchy                                                                     |
++===================+====================================================================+
+| GPU 0             | GPU GPU-5fb86225-82bd-0148-d092-f8c1dbec27bb (EntityID: 0)         |
+| -> I 0/3          | GPU Instance (EntityID: 0)                                         |
+|    -> CI 0/3/0    | Compute Instance (EntityID: 0)                                     |
+| -> I 0/4          | GPU Instance (EntityID: 1)                                         |
+|    -> CI 0/4/0    | Compute Instance (EntityID: 1)                                     |
++-------------------+--------------------------------------------------------------------+
+| GPU 1             | GPU GPU-266fe323-3792-a07d-1d36-64de604676bd (EntityID: 1)         |
+| -> I 1/3          | GPU Instance (EntityID: 21)                                        |
+|    -> CI 1/3/0    | Compute Instance (EntityID: 21)                                    |
+| -> I 1/4          | GPU Instance (EntityID: 22)                                        |
+|    -> CI 1/4/0    | Compute Instance (EntityID: 22)                                    |
++-------------------+--------------------------------------------------------------------+
+"""
+
+DCGM_DMON_FIXTURE = """\
+#Entity   GRACT        SMACT        SMOCC        TENSO        DRAMA
+ID
+GPU-I 0   N/A          N/A          N/A          N/A          N/A
+GPU-I 1   N/A          N/A          N/A          N/A          N/A
+GPU-I 21  N/A          N/A          N/A          N/A          N/A
+GPU-I 22  N/A          N/A          N/A          N/A          N/A
+GPU-I 0   1.000        0.900        0.100        0.000        0.200
+GPU-I 1   0.000        0.000        0.000        0.000        0.000
+GPU-I 21  0.400        0.300        0.100        0.000        0.100
+GPU-I 22  N/A          N/A          N/A          N/A          N/A
+GPU-I 0   0.800        0.700        0.100        0.000        0.200
+GPU-I 1   0.200        0.100        0.000        0.000        0.000
+GPU-I 21  0.600        0.500        0.100        0.000        0.100
+GPU-I 22  N/A          N/A          N/A          N/A          N/A
+"""
+
+
+def test_parse_dcgm_instances_maps_slices_to_gpus(reporter):
+    assert reporter.parse_dcgm_instances(DCGM_DISCOVERY_FIXTURE) == {
+        0: 0, 1: 0, 21: 1, 22: 1,
+    }
+
+
+def test_mig_util_averages_each_gpus_slices(reporter):
+    instances = reporter.parse_dcgm_instances(DCGM_DISCOVERY_FIXTURE)
+    # GPU 0: slices average 0.9 and 0.1 over the samples after warm-up, so
+    # the GPU is 50% busy. GPU 1: slice 22 never warmed up and is left out.
+    assert reporter.parse_mig_util(DCGM_DMON_FIXTURE, instances) == {
+        0: 50.0, 1: 50.0,
+    }
+
+
+def test_mig_util_omits_gpus_with_no_readable_slice(reporter):
+    instances = {0: 0, 21: 1}
+    text = "GPU-I 0   0.250  0 0 0 0\nGPU-I 21  N/A  N/A N/A N/A N/A\n"
+    assert reporter.parse_mig_util(text, instances) == {0: 25.0}
+
+
+def test_main_fills_mig_utilization_from_dcgm(reporter, monkeypatch):
+    gpus = [{"index": 0, "gpu_util": None}, {"index": 1, "gpu_util": 30.0},
+            {"index": 2, "gpu_util": None}]
+    monkeypatch.setattr(reporter, "query_mig_util", lambda: {0: 12.5, 1: 99.0})
+    reporter.fill_mig_util(gpus)
+    # Only unreadable GPUs are filled; one DCGM has no reading for stays null.
+    assert [g["gpu_util"] for g in gpus] == [12.5, 30.0, None]
+
+
+def test_fill_mig_util_skips_dcgm_when_every_gpu_reported(reporter, monkeypatch):
+    def boom():
+        raise AssertionError("DCGM queried on a non-MIG host")
+    monkeypatch.setattr(reporter, "query_mig_util", boom)
+    reporter.fill_mig_util([{"index": 0, "gpu_util": 5.0}])
+
+
+def test_fill_mig_util_leaves_null_when_dcgm_fails(reporter, monkeypatch):
+    def fail():
+        raise RuntimeError("dcgmi not found")
+    monkeypatch.setattr(reporter, "query_mig_util", fail)
+    gpus = [{"index": 0, "gpu_util": None}]
+    reporter.fill_mig_util(gpus)
+    assert gpus[0]["gpu_util"] is None
+
+
+def test_mig_util_skips_short_and_partial_rows(reporter):
+    text = ("GPU-I 0   0.12345 0 0 0 0\n"
+            "GPU-I 0   0.5\n"                     # truncated row still counts
+            "GPU-I 0\n"                           # no value: skipped
+            "GPU-I 0   N/A    0.900 0 0 0\n"      # GRACT unread: skipped
+            "GPU 0     0.900  0 0 0 0\n")         # whole-GPU row: ignored
+    assert reporter.parse_mig_util(text, {0: 0}) == {0: 31.17}
+
+
+def test_query_mig_util_runs_discovery_then_dmon_on_the_slices(reporter, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        assert kw["capture_output"] and kw["text"]
+        assert kw["timeout"] == reporter.DCGM_TIMEOUT is not None
+        out = DCGM_DISCOVERY_FIXTURE if cmd[1] == "discovery" else DCGM_DMON_FIXTURE
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    monkeypatch.setattr(reporter.subprocess, "run", fake_run)
+    assert reporter.query_mig_util() == {0: 50.0, 1: 50.0}
+    assert calls == [
+        ["dcgmi", "discovery", "-c"],
+        ["dcgmi", "dmon", "-e", "1001,1002,1003,1004,1005",
+         "-c", "5", "-d", "1000", "-i", "i:0,i:1,i:21,i:22"],
+    ]
+
+
+def test_query_mig_util_without_slices_skips_dmon(reporter, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "| GPU 0 | GPU GPU-x (EntityID: 0) |\n", "")
+
+    monkeypatch.setattr(reporter.subprocess, "run", fake_run)
+    assert reporter.query_mig_util() == {}
+    assert len(calls) == 1
+
+
+def test_query_mig_util_raises_when_dcgmi_fails(reporter, monkeypatch):
+    monkeypatch.setattr(reporter.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "host engine down"))
+    try:
+        reporter.query_mig_util()
+    except RuntimeError as e:
+        assert "dcgmi discovery failed: host engine down" in str(e)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+
+def test_fill_mig_util_fills_a_host_where_every_gpu_is_mig(reporter, monkeypatch, capsys):
+    monkeypatch.setattr(reporter, "query_mig_util", lambda: {0: 40.0, 1: 0.0})
+    gpus = [{"index": 0, "gpu_util": None}, {"index": 1, "gpu_util": None}]
+    reporter.fill_mig_util(gpus)
+    assert [g["gpu_util"] for g in gpus] == [40.0, 0.0]
+
+
+def test_fill_mig_util_logs_dcgm_failures(reporter, monkeypatch, capsys):
+    def fail():
+        raise RuntimeError("dcgmi not found")
+    monkeypatch.setattr(reporter, "query_mig_util", fail)
+    reporter.fill_mig_util([{"index": 0, "gpu_util": None}])
+    assert "DCGM MIG utilization query failed: dcgmi not found" in capsys.readouterr().err

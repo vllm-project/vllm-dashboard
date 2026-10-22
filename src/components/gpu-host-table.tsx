@@ -111,6 +111,18 @@ function RamBackedBadge() {
   );
 }
 
+/** Marks MIG hosts, whose utilization is slice engine activity from DCGM. */
+function MigBadge({ slices }: { slices: number }) {
+  return (
+    <span
+      title={`${slices} MIG slices. Utilization is the average graphics-engine activity of each GPU's slices, read from DCGM.`}
+      className="ml-1.5 rounded bg-sky-100 px-1 py-0.5 text-[10px] font-medium whitespace-nowrap text-sky-700 dark:bg-sky-900/40 dark:text-sky-400"
+    >
+      MIG
+    </span>
+  );
+}
+
 function mountLabel(disk: NormalizedDiskMetric): string {
   return disk.mount_point ?? disk.device ?? "unknown";
 }
@@ -500,7 +512,10 @@ export function GpuHostTable({
                         </div>
                       )}
                     </td>
-                    <td className="px-5 py-3.5 sm:px-6">{h.gpuType}</td>
+                    <td className="px-5 py-3.5 sm:px-6">
+                      {h.gpuType}
+                      {host?.mig_slices ? <MigBadge slices={host.mig_slices} /> : null}
+                    </td>
                     <td className="px-5 py-3.5 sm:px-6">
                       {h.gpuUtil == null ? <EmptyMetric /> : <Meter value={h.gpuUtil} />}
                     </td>

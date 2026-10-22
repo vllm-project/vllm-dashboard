@@ -90,3 +90,8 @@ test("normalizeHostRow keeps valid node_conditions", () => {
   const host = normalizeHostRow(row({ node_conditions: conditions }));
   assert.deepEqual(host.node_conditions, conditions);
 });
+
+test("normalizeHostRow keeps the MIG slice count, null when unread", () => {
+  assert.equal(normalizeHostRow(row({ mig_slices: 32 })).mig_slices, 32);
+  assert.equal(normalizeHostRow(row({ mig_slices: null })).mig_slices, null);
+});
