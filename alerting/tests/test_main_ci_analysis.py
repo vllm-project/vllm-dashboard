@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import http.client
+import io
 import json
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -15,7 +18,9 @@ from alerting.main_ci import MainCIJobObservation
 from alerting.main_ci_analysis import (
     ACTION_CHAR_LIMIT,
     ANALYSES_PER_TICK,
+    JOB_LOG_BYTE_LIMIT,
     SUMMARY_CHAR_LIMIT,
+    BuildkiteJobLogClient,
     MainCIAnalysisHandler,
     MainCIAnalysisTarget,
     MainCIJobAnalysis,
@@ -431,4 +436,86 @@ def test_read_analysis_requires_the_output_file(tmp_path: Path) -> None:
             tmp_path / "analysis.json",
             target=_target(),
             model_version="model",
+        )
+
+
+class _RawSocket:
+    def __init__(self, raw: bytes) -> None:
+        self._raw = raw
+
+    def makefile(self, mode: str) -> io.BytesIO:
+        return io.BytesIO(self._raw)
+
+
+class StreamingLogResponse(http.client.HTTPResponse):
+    """A real HTTP response that fails if the client reads the whole body."""
+
+    def read(self, amt: int | None = None) -> bytes:
+        assert amt is not None and amt > 0, "log must be read in chunks"
+        return super().read(amt)
+
+
+def _fetch_log(
+    monkeypatch: pytest.MonkeyPatch, body: bytes, *, headers: bytes | None = None
+) -> str:
+    if headers is None:
+        headers = b"Content-Length: %d" % len(body)
+    raw = b"HTTP/1.1 200 OK\r\n" + headers + b"\r\n\r\n" + body
+
+    def urlopen(*_: Any, **__: Any) -> StreamingLogResponse:
+        response = StreamingLogResponse(_RawSocket(raw))  # type: ignore[arg-type]
+        response.begin()
+        return response
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return BuildkiteJobLogClient(token="t").job_log_text(
+        build_number=101, job_id="job-1"
+    )
+
+
+def test_job_log_client_returns_a_small_log_whole_without_ansi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = _fetch_log(monkeypatch, b"step 1\n\x1b[31mERROR\x1b[0m: boom\n")
+
+    assert text == "step 1\nERROR: boom\n"
+
+
+def test_job_log_client_keeps_only_the_tail_of_an_oversized_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tail = b"y" * (JOB_LOG_BYTE_LIMIT - 5) + b"ERROR"
+    text = _fetch_log(monkeypatch, b"head\n" + b"x" * (3 * JOB_LOG_BYTE_LIMIT) + tail)
+
+    assert text == tail.decode()
+
+
+def test_job_log_client_tolerates_a_tail_cut_inside_a_utf8_character(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # "✓" is 3 bytes; the cut keeps only its last two.
+    tail = "✓".encode()[1:] + b"z" * (JOB_LOG_BYTE_LIMIT - 2)
+    text = _fetch_log(
+        monkeypatch, b"head\n" + b"x" * JOB_LOG_BYTE_LIMIT + "✓".encode()[:1] + tail
+    )
+
+    assert text.endswith("z" * (JOB_LOG_BYTE_LIMIT - 2))
+    assert "x" not in text
+
+
+def test_job_log_client_rejects_a_log_cut_short_by_the_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(AnalyzerError, match="ended after 5 of 100 bytes"):
+        _fetch_log(monkeypatch, b"short", headers=b"Content-Length: 100")
+
+
+def test_job_log_client_rejects_a_chunked_log_cut_short_by_the_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(AnalyzerError, match="fetch failed"):
+        _fetch_log(
+            monkeypatch,
+            b"64\r\nshort",
+            headers=b"Transfer-Encoding: chunked",
         )

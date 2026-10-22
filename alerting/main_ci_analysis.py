@@ -18,6 +18,7 @@ matches the alert's `last_failure_job_id`. Stale rows are never deleted.
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import tempfile
@@ -42,6 +43,11 @@ ANALYSIS_FILE = Path("analysis.json")
 # latency; a slow tick is fenced by the execution lease either way.
 ANALYSES_PER_TICK = 5
 JOB_LOG_CHAR_LIMIT = 200_000
+# Raw bytes kept while streaming a log: enough for JOB_LOG_CHAR_LIMIT
+# characters even when every one is a 4-byte UTF-8 sequence. Image-build logs
+# run to hundreds of MB, so the whole body must never be held in memory.
+JOB_LOG_BYTE_LIMIT = 4 * JOB_LOG_CHAR_LIMIT
+_JOB_LOG_CHUNK_BYTES = 1 << 20
 SUMMARY_CHAR_LIMIT = 1000
 ACTION_CHAR_LIMIT = 300
 
@@ -137,13 +143,26 @@ class BuildkiteJobLogClient:
             },
         )
         try:
+            tail = bytearray()
+            received = 0
             with urllib.request.urlopen(request, timeout=60) as response:
-                body = response.read().decode("utf-8", errors="replace")
-        except (urllib.error.URLError, OSError) as exc:
+                expected = response.headers.get("Content-Length")
+                while chunk := response.read(_JOB_LOG_CHUNK_BYTES):
+                    received += len(chunk)
+                    tail += chunk
+                    del tail[:-JOB_LOG_BYTE_LIMIT]
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
             raise AnalyzerError(
                 f"Buildkite job log fetch failed for build {build_number}: {exc}"
             ) from exc
-        return _ANSI_ESCAPE.sub("", body)
+        # Sized reads end quietly on a dropped connection, where a full read
+        # raised IncompleteRead; an early fragment must not pass for the tail.
+        if expected is not None and received != int(expected):
+            raise AnalyzerError(
+                f"Buildkite job log for build {build_number} ended after "
+                f"{received} of {expected} bytes"
+            )
+        return _ANSI_ESCAPE.sub("", tail.decode("utf-8", errors="replace"))
 
 
 def _task_prompt(target: MainCIAnalysisTarget) -> str:
