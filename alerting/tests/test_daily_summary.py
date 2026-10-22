@@ -74,7 +74,7 @@ def inputs(**overrides: Any) -> SummaryInputs:
         episodes=[],
         scrape_buckets={},
         allocatable={},
-        cordoned=frozenset(),
+        cordoned={},
     )
     return SummaryInputs(**{**fields, **overrides})
 
@@ -444,10 +444,10 @@ def test_a_cordoned_node_is_standing_even_on_an_otherwise_quiet_day() -> None:
     handler, outbox, source = handler_parts()
     source.queues = [("inf-4x8h100-1", "mithril-h100-pool")]
     source.allocatable = {"inf-4x8h100-1": (8, 8)}
-    source.cordoned = {"inf-4x8h100-1"}
+    source.cordoned = {"inf-4x8h100-1": NOW - timedelta(days=5)}
     handler(ScheduledCommand("daily_summary", NOW))
     text = outbox.records()[0].payload["text"]
-    assert "Cordoned:\n• `inf-4x8h100-1`" in text
+    assert "Cordoned:\n• `inf-4x8h100-1` (5 d)" in text
 
 
 def test_only_the_summarys_own_hosts_are_looked_up_in_agent_snapshots() -> None:
@@ -580,9 +580,9 @@ class FakeSource:
     def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
         return self.allocatable
 
-    cordoned: set[str] = set()
+    cordoned: dict[str, datetime] = {}
 
-    def cordoned_hosts(self) -> set[str]:
+    def cordoned_hosts(self) -> dict[str, datetime]:
         return self.cordoned
 
 
@@ -730,12 +730,17 @@ def test_postgres_reads_map_rows_and_bound_the_window() -> None:
         "inf-4x8h100-1": (6, 8)
     }
 
-    recorder = Recorder([("DGXB200-11",)])
-    assert PostgresAlertStore(lambda: recorder).cordoned_hosts() == {"dgxb200-11"}
+    recorder = Recorder([("DGXB200-11", YESTERDAY)])
+    assert PostgresAlertStore(lambda: recorder).cordoned_hosts() == {
+        "dgxb200-11": YESTERDAY
+    }
     sql, _ = recorder.calls[0]
     # The latest fresh reading decides, as on the /gpu page's Cordoned chip.
     assert "DISTINCT ON (hostname)" in sql and "interval '10 minutes'" in sql
-    assert "(node_conditions->>'unschedulable')::boolean" in sql
+    assert "WHERE (latest.node_conditions->>'unschedulable')::boolean" in sql
+    # Cordoned since the first history bucket after the last schedulable one.
+    assert "FROM host_history_5m" in sql
+    assert "(u.node_conditions->>'unschedulable')::boolean IS FALSE" in sql
 
 
 def test_the_runtime_wires_one_handler_over_one_store(monkeypatch: Any) -> None:
@@ -776,7 +781,11 @@ def test_the_runtime_wires_one_handler_over_one_store(monkeypatch: Any) -> None:
 def test_cordoned_pilot_nodes_are_standing_unless_already_quarantined() -> None:
     text = render_summary(
         inputs(
-            cordoned=frozenset({"inf-4x8h100-1", "h200-ci-2", "stranger"}),
+            cordoned={
+                "inf-4x8h100-1": NOW - timedelta(hours=7),
+                "h200-ci-2": NOW,
+                "stranger": NOW,
+            },
             episodes=[
                 episode("quarantine", "h200-ci-2", stage="quarantined", reason="r")
             ],
@@ -785,6 +794,6 @@ def test_cordoned_pilot_nodes_are_standing_unless_already_quarantined() -> None:
     # The quarantine already lists its own cordon; non-pilot nodes stay out.
     assert (
         "Quarantined:\n• `h200-ci-2` (quarantined, r, 3 h)\n"
-        "Cordoned:\n• `inf-4x8h100-1`\n\n<"
+        "Cordoned:\n• `inf-4x8h100-1` (7 h)\n\n<"
     ) in text
     assert "stranger" not in text

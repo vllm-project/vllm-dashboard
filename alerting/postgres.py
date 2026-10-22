@@ -1557,22 +1557,40 @@ class PostgresAlertStore:
             ).fetchall()
         return {str(row[0]).lower(): (int(row[1]), int(row[2])) for row in rows}
 
-    def cordoned_hosts(self) -> set[str]:
+    def cordoned_hosts(self) -> dict[str, datetime]:
         with self._connection_factory() as connection:
             rows = connection.execute(
                 """
-                SELECT hostname FROM (
-                    SELECT DISTINCT ON (hostname) hostname, node_conditions
+                SELECT latest.hostname, COALESCE(
+                    -- The cordon started in the first five-minute bucket
+                    -- after the node was last seen schedulable.
+                    (
+                        SELECT min(h.time_bucket) FROM host_history_5m h
+                        WHERE h.hostname = lower(latest.hostname)
+                          AND h.time_bucket > COALESCE(
+                              (
+                                  SELECT max(u.time_bucket) FROM host_history_5m u
+                                  WHERE u.hostname = lower(latest.hostname)
+                                    AND (u.node_conditions->>'unschedulable')::boolean IS FALSE
+                              ),
+                              '-infinity'
+                          )
+                    ),
+                    latest.reported_at
+                )
+                FROM (
+                    SELECT DISTINCT ON (hostname)
+                           hostname, reported_at, node_conditions
                     FROM host_snapshots
                     -- Only the k8s reporter sends node_conditions.
                     WHERE reported_at >= now() - interval '10 minutes'
                       AND node_conditions IS NOT NULL
                     ORDER BY hostname, reported_at DESC
                 ) latest
-                WHERE (node_conditions->>'unschedulable')::boolean
+                WHERE (latest.node_conditions->>'unschedulable')::boolean
                 """
             ).fetchall()
-        return {str(row[0]).lower() for row in rows}
+        return {str(row[0]).lower(): row[1] for row in rows}
 
     def infra_state(self) -> InfraStateSnapshot:
         with self._connection_factory() as connection:
