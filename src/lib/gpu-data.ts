@@ -77,7 +77,7 @@ function percentile(values: number[], quantile: number): number {
   return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
 }
 
-function summarizeGpuHistory(
+export function summarizeGpuHistory(
   history: GpuHistoryResponse,
 ): GpuOverviewPoint[] {
   const buckets = new Map<
@@ -121,9 +121,13 @@ function summarizeGpuHistory(
         memoryP50: Math.round(percentile(memoryValues, 0.5)),
         memoryP90: Math.round(percentile(memoryValues, 0.9)),
         memoryPeak: Math.round(Math.max(...memoryValues, 0)),
-        gpuP50: Math.round(percentile(gpuValues, 0.5)),
-        gpuP90: Math.round(percentile(gpuValues, 0.9)),
-        gpuPeak: Math.round(Math.max(...gpuValues, 0)),
+        ...(gpuValues.length > 0
+          ? {
+              gpuP50: Math.round(percentile(gpuValues, 0.5)),
+              gpuP90: Math.round(percentile(gpuValues, 0.9)),
+              gpuPeak: Math.round(Math.max(...gpuValues)),
+            }
+          : { gpuP50: null, gpuP90: null, gpuPeak: null }),
       };
     })
     .sort((a, b) => a.time - b.time);

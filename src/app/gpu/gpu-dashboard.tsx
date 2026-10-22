@@ -227,15 +227,18 @@ export function GpuDashboard({
       snapshots.length === 0
     ) {
       return {
-        data: initialOverview.map((point) => ({
-          time: point.time,
-          [OVERVIEW_SERIES[0]]:
-            metric === "memory" ? point.memoryP50 : point.gpuP50,
-          [OVERVIEW_SERIES[1]]:
-            metric === "memory" ? point.memoryP90 : point.gpuP90,
-          [OVERVIEW_SERIES[2]]:
-            metric === "memory" ? point.memoryPeak : point.gpuPeak,
-        })),
+        data: initialOverview.map((point) => {
+          const values =
+            metric === "memory"
+              ? [point.memoryP50, point.memoryP90, point.memoryPeak]
+              : [point.gpuP50, point.gpuP90, point.gpuPeak];
+          const row: Record<string, number> = { time: point.time };
+          // A bucket where no GPU reported utilization stays a gap, not 0%.
+          values.forEach((value, i) => {
+            if (value != null) row[OVERVIEW_SERIES[i]] = value;
+          });
+          return row;
+        }),
         hosts: [...OVERVIEW_SERIES],
       };
     }

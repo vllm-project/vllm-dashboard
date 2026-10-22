@@ -75,9 +75,10 @@ export interface GpuOverviewPoint {
   memoryP50: number;
   memoryP90: number;
   memoryPeak: number;
-  gpuP50: number;
-  gpuP90: number;
-  gpuPeak: number;
+  /** Null when no GPU in the bucket reported utilization (all MIG). */
+  gpuP50: number | null;
+  gpuP90: number | null;
+  gpuPeak: number | null;
 }
 
 export interface GpuLatestResponse {
