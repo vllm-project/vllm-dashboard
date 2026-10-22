@@ -1207,12 +1207,16 @@ class PostgresAlertStore:
         return [HostReport(hostname=row[0], reported_at=row[1]) for row in rows]
 
     def recent_gpu_hosts(self, *, since: datetime) -> frozenset[str]:
+        # The 5-minute rollup, not gpu_snapshots: the reporter writes both in
+        # one transaction, so they name the same hosts, but distinct over 7
+        # days of 30-second per-GPU rows read from disk and timed out first
+        # whenever the database's disk was saturated.
         with self._connection_factory() as connection:
             rows = connection.execute(
                 """
                 SELECT DISTINCT hostname
-                FROM gpu_snapshots
-                WHERE reported_at >= %s
+                FROM gpu_history_5m
+                WHERE time_bucket >= %s
                 """,
                 (since,),
             ).fetchall()

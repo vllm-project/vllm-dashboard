@@ -111,7 +111,7 @@ class FakePostgresConnection:
             return Result(rows=list(self.state["thresholds"]))
         if statement.startswith("WITH gpu AS ("):
             return Result(rows=list(self.state["reports"]))
-        if statement.startswith("SELECT DISTINCT hostname FROM gpu_snapshots"):
+        if statement.startswith("SELECT DISTINCT hostname FROM gpu_history_5m"):
             return Result(rows=list(self.state["recent_hosts"]))
         if statement.startswith("WITH RECURSIVE latest AS ("):
             return Result(rows=list(self.state["mounts"]))
@@ -408,4 +408,30 @@ def test_xid_query_reads_only_the_trigger_rule_xids() -> None:
     assert xids == [
         46, 48, 54, 62, 64, 74, 79, 95, 109, 110, 119, 120, 136, 140, 143,
         144, 145, 146, 147, 148, 149, 150, 157, 158, 171, 172,
+    ]
+
+
+def test_recent_gpu_hosts_reads_the_rollup_over_the_whole_window() -> None:
+    # gpu_snapshots holds one row per GPU every 30 s; over the 7-day roster
+    # window that read was the scan's slowest and failed first when the disk
+    # was saturated (07:20-07:40 UTC daily). The 5-minute rollup is written in
+    # the same reporter transaction, so it names the same hosts (30 of 30 on
+    # production, 2026-10-22) from a cached index. The window itself stays:
+    # it is the not-reporting roster.
+    seen: list[tuple[str, tuple[Any, ...]]] = []
+
+    class RollupConnection(FakePostgresConnection):
+        def execute(self, sql: str, params: tuple[Any, ...] = ()) -> Result:
+            seen.append((" ".join(sql.split()), params))
+            return Result(rows=[("h200-ci-1",), ("dgxb200-16",)])
+
+    store = PostgresAlertStore(lambda: RollupConnection())
+    hosts = store.recent_gpu_hosts(since=START - timedelta(days=7))
+
+    assert hosts == frozenset({"h200-ci-1", "dgxb200-16"})
+    assert seen == [
+        (
+            "SELECT DISTINCT hostname FROM gpu_history_5m WHERE time_bucket >= %s",
+            (START - timedelta(days=7),),
+        )
     ]
