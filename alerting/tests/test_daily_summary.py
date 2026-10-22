@@ -689,7 +689,7 @@ def test_postgres_reads_map_rows_and_bound_the_window() -> None:
         ]
     )
     queues = PostgresAlertStore(lambda: recorder).last_agent_queues(
-        ["h200-ci-3", "h200-ci-4"], ["example.net"]
+        ["h200-ci-3", "h200-ci-4"], ["Example.NET"]
     )
     # The FQDN in other case is the newest of h200-ci-3's candidates.
     assert queues == [
@@ -700,17 +700,13 @@ def test_postgres_reads_map_rows_and_bound_the_window() -> None:
         ("H200-CI-3.example.net", "h200_35gb")
     ]
     sql, (candidates,) = recorder.calls[0]
-    assert "unnest(%s::text[])" in sql and "hostname = c.name" in sql
-    # Only variants of the given hosts are probed: never a table walk, so a
-    # pod hostname can't come back.
-    assert candidates == sorted(
-        {
-            v
-            for h in ("h200-ci-3", "h200-ci-4")
-            for b in (h, f"{h}.example.net")
-            for v in (b, b.upper())
-        }
-    )
+    # Matched case-blind through the lower(hostname) index, so any spelling
+    # Buildkite stored is found; only the given hosts are probed, never a table
+    # walk, so a pod hostname can't come back.
+    assert "unnest(%s::text[])" in sql and "lower(hostname) = c.name" in sql
+    assert candidates == [
+        "h200-ci-3", "h200-ci-3.example.net", "h200-ci-4", "h200-ci-4.example.net",
+    ]
     assert pilot_pools(["h200-ci-3"], queues)["h200-ci-3"] == ("h200", "h200_35gb")
 
     recorder = Recorder([("INF-4X8H100-1", 6, 8)])

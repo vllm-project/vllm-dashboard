@@ -1487,16 +1487,17 @@ class PostgresAlertStore:
     def last_agent_queues(
         self, hostnames: Iterable[str], suffixes: Iterable[str]
     ) -> list[tuple[str, str]]:
-        # Candidate raw names for each host: short, upper case, and under each
-        # known domain. Each is one probe of idx_buildkite_agent_snapshots_host
-        # (hostname, polled_at DESC), so the cost is the candidate count, not
-        # the table, which holds a hostname per CI pod agent.
+        # Candidate names for each host, lower case: short, and under each
+        # known domain. Each is one probe of
+        # idx_buildkite_agent_snapshots_lower_host (lower(hostname),
+        # polled_at DESC), so any spelling Buildkite stored matches, and the
+        # cost is the candidate count, not the table, which holds a hostname
+        # per CI pod agent.
         candidates = sorted(
             {
-                variant
+                base.lower()
                 for host in hostnames
                 for base in (host, *(f"{host}.{suffix}" for suffix in suffixes))
-                for variant in (base, base.upper())
             }
         )
         with self._connection_factory() as connection:
@@ -1506,7 +1507,7 @@ class PostgresAlertStore:
                 FROM unnest(%s::text[]) AS c(name)
                 CROSS JOIN LATERAL (
                     SELECT polled_at, queues FROM buildkite_agent_snapshots
-                    WHERE hostname = c.name
+                    WHERE lower(hostname) = c.name
                     ORDER BY polled_at DESC LIMIT 1
                 ) newest,
                 unnest(newest.queues) AS queue
