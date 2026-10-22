@@ -96,6 +96,12 @@ FAULT_QUERY_TIMEOUT = 5  # nvidia-smi -L, fault query and journalctl; the unit's
 # where each dmon sample takes about 4 s. Shared, so the step can't push
 # the run past the unit's TimeoutSec of 90.
 DCGM_BUDGET = 25
+# Seconds into the run by which DCGM must be done, leaving time for the Xid,
+# Docker and slot checks and the POST; DCGM is skipped with less than
+# DCGM_MIN_TIME left.
+DCGM_RUN_DEADLINE = 50
+DCGM_MIN_TIME = 5
+RUN_START = time.monotonic()
 STATE_DIR = os.environ.get("GPU_REPORT_STATE_DIR", "/var/lib/gpu-reporter")
 JOURNAL_CURSOR_FILE = os.path.join(STATE_DIR, "journal.cursor")
 MAX_XIDS_PER_REPORT = 200  # the ingestion contract allows 500
@@ -357,7 +363,10 @@ def _dcgmi(deadline, *args):
 
 
 def query_mig_util():
-    deadline = time.monotonic() + DCGM_BUDGET
+    now = time.monotonic()
+    deadline = min(now + DCGM_BUDGET, RUN_START + DCGM_RUN_DEADLINE)
+    if deadline - now < DCGM_MIN_TIME:
+        raise RuntimeError("no time left in this run for DCGM")
     instances = parse_dcgm_instances(_dcgmi(deadline, "discovery", "-c"))
     if not instances:
         return {}

@@ -795,6 +795,7 @@ def test_query_mig_util_shares_one_deadline_across_dcgmi_calls(reporter, monkeyp
     # discovery uses 15 s of the budget, so dmon gets only what is left.
     clock = iter([100.0, 100.0, 115.0])
     monkeypatch.setattr(reporter.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(reporter, "RUN_START", 100.0)
     timeouts = []
 
     def fake_run(cmd, **kw):
@@ -805,3 +806,31 @@ def test_query_mig_util_shares_one_deadline_across_dcgmi_calls(reporter, monkeyp
     monkeypatch.setattr(reporter.subprocess, "run", fake_run)
     reporter.query_mig_util()
     assert timeouts == [reporter.DCGM_BUDGET, reporter.DCGM_BUDGET - 15]
+
+
+def test_query_mig_util_stops_at_the_run_deadline(reporter, monkeypatch):
+    # 40 s into the run, only 10 s remain before DCGM must be done.
+    monkeypatch.setattr(reporter, "RUN_START", 0.0)
+    monkeypatch.setattr(reporter.time, "monotonic", lambda: 40.0)
+    timeouts = []
+
+    def fake_run(cmd, **kw):
+        timeouts.append(kw["timeout"])
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(reporter.subprocess, "run", fake_run)
+    reporter.query_mig_util()
+    assert timeouts == [reporter.DCGM_RUN_DEADLINE - 40.0]
+
+
+def test_query_mig_util_skips_dcgm_late_in_the_run(reporter, monkeypatch):
+    monkeypatch.setattr(reporter, "RUN_START", 0.0)
+    monkeypatch.setattr(reporter.time, "monotonic",
+                        lambda: reporter.DCGM_RUN_DEADLINE - reporter.DCGM_MIN_TIME + 0.1)
+    monkeypatch.setattr(reporter.subprocess, "run", lambda *a, **k: 1 / 0)
+    try:
+        reporter.query_mig_util()
+    except RuntimeError as e:
+        assert "no time left" in str(e)
+    else:
+        raise AssertionError("expected RuntimeError")
