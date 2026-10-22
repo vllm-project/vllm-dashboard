@@ -8,7 +8,8 @@ state file, which then has no "ts"). Exit 1: post or update the message now.
 The database's disk saturates for about 20 minutes every morning, and the
 frequent scans time out once or twice and pass on the next run; each blip
 posted and resolved its own alert. A timeout of a frequent unit now posts only
-once the unit has kept failing for 10 minutes. Anything else posts at once:
+once the unit has kept failing for 10 minutes; a run holds only when every
+error it recorded is a timeout. Anything else posts at once:
 another error, a daily unit (which would otherwise wait a day), or an episode
 whose message is already open.
 """
@@ -41,15 +42,18 @@ except (OSError, ValueError):
     state = {}
 try:
     with open(failure_file) as f:
-        error = f.read()
+        # The first line is the run id; each further line is one error (the
+        # H200 pauser writes one per failed host).
+        errors = [line for line in f.read().split("\n")[1:] if line.strip()]
 except OSError:
-    error = ""
+    errors = []
 
 since_epoch = float(state.get("since_epoch", now))
 if (
     "ts" in state
     or unit not in HOLD_UNITS
-    or not any(timeout in error for timeout in TIMEOUTS)
+    or not errors
+    or not all(any(timeout in error for timeout in TIMEOUTS) for error in errors)
     or now - since_epoch >= HOLD_SECONDS
 ):
     sys.exit(1)

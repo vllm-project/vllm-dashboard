@@ -581,6 +581,14 @@ def test_only_timeouts_of_the_frequent_units_wait(tmp_path: Path) -> None:
     # A daily unit would wait until tomorrow; any other error is never a blip.
     assert _hold(tmp_path, "alerting-daily-summary.service", TIMEOUT, None, T0) == (1, None)
     assert _hold(tmp_path, "alerting-infra.service", "HTTP 401", None, T0) == (1, None)
+    # The pauser writes one line per failed host: one real error among
+    # timeouts must not be held, or a passing next run would clear it unseen.
+    mixed = f"{pauser}\nh200-ci-2: HTTP 401 Unauthorized"
+    assert _hold(tmp_path, "alerting-h200-pauser.service", mixed, None, T0) == (1, None)
+    both = f"{pauser}\n{pauser}"
+    assert _hold(tmp_path, "alerting-h200-pauser.service", both, None, T0)[0] == 0
+    # The run id on the first line is not an error.
+    assert _hold(tmp_path, "alerting-infra.service", "", None, T0) == (1, None)
     held = {"since": "2026-10-22 07:20 UTC", "since_epoch": T0, "count": 1}
     assert _hold(tmp_path, "alerting-infra.service", "HTTP 401", held, T0 + 60) == (1, held)
 
