@@ -27,6 +27,25 @@ fi
 
 install -d -m 0700 "$stamp_dir"
 
+if [ "$mode" = resolve ] && ! grep -q '"ts"' "$state"; then
+  # A held episode (below) never posted, so its recovery clears it quietly.
+  rm -f "$state" "$stamp"
+  exit 0
+fi
+
+# The worker writes its error here, named by its INVOCATION_ID, because its
+# output is discarded and this notifier must not need the database.
+failure_file=/run/alerting/failures/${MONITOR_INVOCATION_ID:-none}
+
+if [ "$mode" = notify ] \
+  && /opt/alerting/bin/hold-failure "$unit" "$failure_file" "$state"; then
+  # A frequent unit's timeout waits up to 10 minutes for its next run to pass
+  # (the database's disk saturates for ~20 minutes every morning). No secrets
+  # or Slack call for a held failure.
+  rm -f "$failure_file"
+  exit 0
+fi
+
 # load-secrets shells out to the AWS CLI, which needs a writable HOME. Under
 # the unit's sandbox there is none, so it fails before fetching anything —
 # run-worker sets this up for the same reason.
@@ -123,9 +142,6 @@ fi
 # the alerting user, which is why every message said "no journal record".
 result=${MONITOR_SERVICE_RESULT:-unknown}
 status=${MONITOR_EXIT_STATUS:-?}
-# The worker writes its error here, named by its INVOCATION_ID, because its
-# output is discarded and this notifier must not need the database.
-failure_file=/run/alerting/failures/${MONITOR_INVOCATION_ID:-none}
 
 # One message per failure episode. While one is open, each further failure
 # edits it with the latest error and a running count instead of posting

@@ -25,6 +25,7 @@ install -m 0755 "$source_root"/deploy/aws/bin/load-secrets /opt/alerting/bin/loa
 install -m 0755 "$source_root"/deploy/aws/bin/render-secret-env /opt/alerting/bin/render-secret-env
 install -m 0755 "$source_root"/deploy/aws/bin/run-worker /opt/alerting/bin/run-worker
 install -m 0755 "$source_root"/deploy/aws/bin/notify-failure /opt/alerting/bin/notify-failure
+install -m 0755 "$source_root"/deploy/aws/bin/hold-failure /opt/alerting/bin/hold-failure
 install -m 0755 "$source_root"/deploy/aws/bin/run-retention /opt/alerting/bin/run-retention
 install -m 0755 "$source_root"/deploy/aws/bin/run-h200-pauser /opt/alerting/bin/run-h200-pauser
 install -m 0755 "$source_root"/scripts/gpu-reporter/quarantine-pauser-h200.py /opt/alerting/bin/quarantine-pauser-h200.py

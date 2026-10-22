@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Decide whether a failed unit's timeout waits before it reaches Slack.
+
+usage: hold-failure <unit> <failure file> <episode state file>
+Exit 0: hold this failure (the episode's start and count are recorded in the
+state file, which then has no "ts"). Exit 1: post or update the message now.
+
+The database's disk saturates for about 20 minutes every morning, and the
+frequent scans time out once or twice and pass on the next run; each blip
+posted and resolved its own alert. A timeout of a frequent unit now posts only
+once the unit has kept failing for 10 minutes. Anything else posts at once:
+another error, a daily unit (which would otherwise wait a day), or an episode
+whose message is already open.
+"""
+
+import json
+import os
+import sys
+import time
+from datetime import datetime, timezone
+
+HOLD_SECONDS = 600
+# Units that run at least every 5 minutes, so a held timeout either clears or
+# posts within the hold.
+HOLD_UNITS = {
+    "alerting-infra.service",
+    "alerting-main-ci.service",
+    "alerting-h200-pauser.service",
+}
+TIMEOUTS = (
+    "canceling statement due to statement timeout",
+    "The read operation timed out",
+)
+
+unit, failure_file, state_path = sys.argv[1:4]
+now = float(os.environ.get("HOLD_FAILURE_NOW") or time.time())
+try:
+    with open(state_path) as f:
+        state = json.load(f)
+except (OSError, ValueError):
+    state = {}
+try:
+    with open(failure_file) as f:
+        error = f.read()
+except OSError:
+    error = ""
+
+since_epoch = float(state.get("since_epoch", now))
+if (
+    "ts" in state
+    or unit not in HOLD_UNITS
+    or not any(timeout in error for timeout in TIMEOUTS)
+    or now - since_epoch >= HOLD_SECONDS
+):
+    sys.exit(1)
+
+with open(state_path, "w") as f:
+    json.dump(
+        {
+            "since": state.get("since")
+            or datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "since_epoch": since_epoch,
+            "count": int(state.get("count", 0)) + 1,
+        },
+        f,
+    )
+sys.exit(0)

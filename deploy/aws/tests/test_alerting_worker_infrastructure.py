@@ -526,3 +526,77 @@ def test_h200_pauser_runs_every_minute_in_dry_run_without_sensitive_data() -> No
     assert "alerting-h200-pauser.timer" not in installer
     for sensitive_name in ("DATABASE_URL", "TOKEN", "SECRET", "PASSWORD"):
         assert sensitive_name not in service + timer
+
+
+def _hold(tmp_path: Path, unit: str, error: str, state: dict | None, now: float) -> tuple[int, dict | None]:
+    import json
+    import subprocess
+    import sys
+
+    failure = tmp_path / "failure"
+    failure.write_text(f"infra_scan:run\n{error}\n")
+    state_path = tmp_path / "state.json"
+    if state is None:
+        state_path.unlink(missing_ok=True)
+    else:
+        state_path.write_text(json.dumps(state))
+    result = subprocess.run(
+        [sys.executable, str(AWS_DIR / "bin/hold-failure"), unit, str(failure), str(state_path)],
+        env={"HOLD_FAILURE_NOW": str(now)},
+        capture_output=True,
+        text=True,
+    )
+    after = json.loads(state_path.read_text()) if state_path.exists() else None
+    return result.returncode, after
+
+
+TIMEOUT = "canceling statement due to statement timeout"
+T0 = 1_792_653_600.0  # 2026-10-22 07:20 UTC
+
+
+def test_a_frequent_units_timeout_waits_ten_minutes_before_posting(tmp_path: Path) -> None:
+    """The database's disk saturates for ~20 min every morning (07:17-07:45
+    UTC); the scans time out once or twice and pass on the next run, and each
+    blip posted and resolved a Slack alert. A timeout now posts only once the
+    unit has kept failing for 10 minutes; the held runs still count."""
+    code, state = _hold(tmp_path, "alerting-infra.service", TIMEOUT, None, T0)
+    assert code == 0
+    assert state == {"since": "2026-10-22 07:20 UTC", "since_epoch": T0, "count": 1}
+
+    code, state = _hold(tmp_path, "alerting-infra.service", TIMEOUT, state, T0 + 599)
+    assert code == 0
+    assert state == {"since": "2026-10-22 07:20 UTC", "since_epoch": T0, "count": 2}
+
+    # Ten minutes on: post, carrying the episode's start and count forward.
+    code, after = _hold(tmp_path, "alerting-infra.service", TIMEOUT, state, T0 + 600)
+    assert (code, after) == (1, state)
+
+
+def test_only_timeouts_of_the_frequent_units_wait(tmp_path: Path) -> None:
+    for unit in ("alerting-main-ci.service", "alerting-h200-pauser.service"):
+        assert _hold(tmp_path, unit, TIMEOUT, None, T0)[0] == 0, unit
+    pauser = "desired set unavailable, changing nothing: The read operation timed out"
+    assert _hold(tmp_path, "alerting-h200-pauser.service", pauser, None, T0)[0] == 0
+
+    # A daily unit would wait until tomorrow; any other error is never a blip.
+    assert _hold(tmp_path, "alerting-daily-summary.service", TIMEOUT, None, T0) == (1, None)
+    assert _hold(tmp_path, "alerting-infra.service", "HTTP 401", None, T0) == (1, None)
+    held = {"since": "2026-10-22 07:20 UTC", "since_epoch": T0, "count": 1}
+    assert _hold(tmp_path, "alerting-infra.service", "HTTP 401", held, T0 + 60) == (1, held)
+
+
+def test_an_open_message_is_always_updated(tmp_path: Path) -> None:
+    posted = {"ts": "1.2", "channel": "C1", "text": "x", "since": "s", "count": 3}
+    assert _hold(tmp_path, "alerting-infra.service", TIMEOUT, posted, T0) == (1, posted)
+
+
+def test_the_notifier_holds_before_secrets_and_a_held_episode_resolves_silently() -> None:
+    script = read("bin/notify-failure")
+    hold = '/opt/alerting/bin/hold-failure "$unit" "$failure_file" "$state"'
+    assert hold in script
+    assert script.index(hold) < script.index("load-secrets")
+    # A held episode never posted: its recovery clears it without Slack.
+    silent = 'if [ "$mode" = resolve ] && ! grep -q \'"ts"\' "$state"; then'
+    assert silent in script
+    assert script.index(silent) < script.index("load-secrets")
+    assert "bin/hold-failure /opt/alerting/bin/hold-failure" in read("install.sh")
