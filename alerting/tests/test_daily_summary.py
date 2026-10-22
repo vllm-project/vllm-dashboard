@@ -147,6 +147,14 @@ def test_busy_day_lists_changes_then_standing_and_hides_empty_sections() -> None
     )
 
 
+def test_an_exception_host_stays_listed_even_at_its_exception_count() -> None:
+    # The exception list accepts a host's lower count; it doesn't hide the host
+    # (decided 2026-10-09), so a quiet day with one is not an all-clear.
+    text = render_summary(inputs(exceptions={"h200-ci-2": 8}))
+    assert "Degraded:\n• `h200-ci-2` 8/8 (exception)" in text
+    assert "nothing quarantined or degraded" not in text
+
+
 def test_expected_count_is_the_most_ever_seen_floored_at_eight() -> None:
     low = render_summary(
         inputs(gpu_counts=counts(h200_ci_1=6), baselines={"h200-ci-1": 4})
@@ -156,11 +164,11 @@ def test_expected_count_is_the_most_ever_seen_floored_at_eight() -> None:
         inputs(gpu_counts=counts(h200_ci_1=8), baselines={"h200-ci-1": 10})
     )
     assert "`h200-ci-1` 8/10" in high
-    # A count at its exception value is not degraded.
-    ok = render_summary(
+    # The exception value replaces the expected count, floor included.
+    accepted = render_summary(
         inputs(gpu_counts=counts(h200_ci_1=7), exceptions={"h200-ci-1": 7})
     )
-    assert "nothing changed" in ok
+    assert "`h200-ci-1` 7/7 (exception)" in accepted
 
 
 def test_non_pilot_hosts_never_count_as_degraded() -> None:

@@ -199,8 +199,9 @@ def render_summary(inputs: SummaryInputs) -> str:
         expected = exception or max(
             MIN_EXPECTED_GPUS, inputs.baselines.get(obs.hostname, 0), obs.observed_gpus
         )
-        if obs.observed_gpus < expected:
-            tag = " (exception)" if exception else ""
+        # An exception-list host stays listed even at its accepted count.
+        if obs.observed_gpus < expected or exception is not None:
+            tag = " (exception)" if exception is not None else ""
             degraded.append(f"• {_code(obs.hostname)} {obs.observed_gpus}/{expected}{tag}")
 
     for host, (allocatable, capacity) in sorted(inputs.allocatable.items()):
