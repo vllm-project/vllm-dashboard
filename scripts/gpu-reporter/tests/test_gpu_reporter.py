@@ -740,7 +740,7 @@ def test_query_mig_util_runs_discovery_then_dmon_on_the_slices(reporter, monkeyp
     def fake_run(cmd, **kw):
         calls.append(cmd)
         assert kw["capture_output"] and kw["text"]
-        assert kw["timeout"] == reporter.DCGM_TIMEOUT is not None
+        assert 0 < kw["timeout"] <= reporter.DCGM_BUDGET
         out = DCGM_DISCOVERY_FIXTURE if cmd[1] == "discovery" else DCGM_DMON_FIXTURE
         return subprocess.CompletedProcess(cmd, 0, out, "")
 
@@ -749,7 +749,7 @@ def test_query_mig_util_runs_discovery_then_dmon_on_the_slices(reporter, monkeyp
     assert calls == [
         ["dcgmi", "discovery", "-c"],
         ["dcgmi", "dmon", "-e", "1001,1002,1003,1004,1005",
-         "-c", "5", "-d", "1000", "-i", "i:0,i:1,i:21,i:22"],
+         "-c", "3", "-d", "1000", "-i", "i:0,i:1,i:21,i:22"],
     ]
 
 
@@ -789,3 +789,19 @@ def test_fill_mig_util_logs_dcgm_failures(reporter, monkeypatch, capsys):
     monkeypatch.setattr(reporter, "query_mig_util", fail)
     reporter.fill_mig_util([{"index": 0, "gpu_util": None}])
     assert "DCGM MIG utilization query failed: dcgmi not found" in capsys.readouterr().err
+
+
+def test_query_mig_util_shares_one_deadline_across_dcgmi_calls(reporter, monkeypatch):
+    # discovery uses 15 s of the budget, so dmon gets only what is left.
+    clock = iter([100.0, 100.0, 115.0])
+    monkeypatch.setattr(reporter.time, "monotonic", lambda: next(clock))
+    timeouts = []
+
+    def fake_run(cmd, **kw):
+        timeouts.append(kw["timeout"])
+        out = DCGM_DISCOVERY_FIXTURE if cmd[1] == "discovery" else DCGM_DMON_FIXTURE
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    monkeypatch.setattr(reporter.subprocess, "run", fake_run)
+    reporter.query_mig_util()
+    assert timeouts == [reporter.DCGM_BUDGET, reporter.DCGM_BUDGET - 15]

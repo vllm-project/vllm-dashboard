@@ -92,7 +92,10 @@ CPU_SAMPLE_INTERVAL = 1.0  # seconds between the two /proc/stat reads
 DISK_STAT_TIMEOUT = float(os.environ.get("GPU_REPORT_DISK_TIMEOUT", "5"))
 COMPUTE_APPS_TIMEOUT = float(os.environ.get("GPU_REPORT_COMPUTE_APPS_TIMEOUT", "10"))
 FAULT_QUERY_TIMEOUT = 5  # nvidia-smi -L, fault query and journalctl; the unit's TimeoutSec is 90
-DCGM_TIMEOUT = 30  # each dcgmi call on MIG hosts; the whole DCGM step took 10-12 s
+# Whole DCGM step on MIG hosts (two dcgmi calls): about 12 s with 56 slices,
+# where each dmon sample takes about 4 s. Shared, so the step can't push
+# the run past the unit's TimeoutSec of 90.
+DCGM_BUDGET = 25
 STATE_DIR = os.environ.get("GPU_REPORT_STATE_DIR", "/var/lib/gpu-reporter")
 JOURNAL_CURSOR_FILE = os.path.join(STATE_DIR, "journal.cursor")
 MAX_XIDS_PER_REPORT = 200  # the ingestion contract allows 500
@@ -343,9 +346,10 @@ def parse_mig_util(text, instances):
     return {gpu: round(sum(v) / len(v) * 100, 2) for gpu, v in per_gpu.items()}
 
 
-def _dcgmi(*args):
+def _dcgmi(deadline, *args):
     result = subprocess.run(
-        ["dcgmi", *args], capture_output=True, text=True, timeout=DCGM_TIMEOUT,
+        ["dcgmi", *args], capture_output=True, text=True,
+        timeout=deadline - time.monotonic(),
     )
     if result.returncode != 0:
         raise RuntimeError(f"dcgmi {args[0]} failed: {result.stderr.strip()}")
@@ -353,14 +357,16 @@ def _dcgmi(*args):
 
 
 def query_mig_util():
-    instances = parse_dcgm_instances(_dcgmi("discovery", "-c"))
+    deadline = time.monotonic() + DCGM_BUDGET
+    instances = parse_dcgm_instances(_dcgmi(deadline, "discovery", "-c"))
     if not instances:
         return {}
     ids = ",".join(f"i:{entity}" for entity in sorted(instances))
     # Fields 1001-1005 together: watching 1001 alone stayed N/A on a GPU
-    # instance. Five 1 s samples ride out the warm-up and smooth bursts.
-    text = _dcgmi("dmon", "-e", "1001,1002,1003,1004,1005",
-                  "-c", "5", "-d", "1000", "-i", ids)
+    # instance. Three samples: the first is often N/A while the watch warms
+    # up, and each one takes seconds on a host with dozens of slices.
+    text = _dcgmi(deadline, "dmon", "-e", "1001,1002,1003,1004,1005",
+                  "-c", "3", "-d", "1000", "-i", ids)
     return parse_mig_util(text, instances)
 
 
