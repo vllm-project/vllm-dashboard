@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  medianFiles, summarizeFiles, withTestsOverMs, TimingDataError, type TestSpanRow,
+  medianFiles, medianSetupMs, setupMsPerJob, summarizeFiles, withTestsOverMs,
+  TimingDataError, type TestSpanRow,
 } from "./latest-test-timings";
 
 function row(nodeid: string, duration_ms: number, extra: Partial<TestSpanRow> = {}): TestSpanRow {
@@ -112,4 +113,47 @@ test("withTestsOverMs strips tests from every file when the param is absent, oth
   const rest: Record<string, unknown> = { ...file };
   delete rest.tests;
   assert.deepEqual(response, rest);
+});
+
+test("setup is each job's time outside its test commands", () => {
+  const jobs = [{ jobId: "job-1", durationMs: 1_000 }, { jobId: "job-2", durationMs: 500 }];
+  assert.deepEqual(setupMsPerJob(jobs, [
+    { job_id: "job-1", label: "pip install x", duration_ms: 50 },
+    { job_id: "job-1", label: "pytest a", duration_ms: 800 },
+    { job_id: "job-1", label: "pytest b", duration_ms: 120 },
+    { job_id: "job-2", label: "pytest a", duration_ms: 450 },
+  ], new Set(["pytest a", "pytest b"])), [80, 50]);
+});
+
+test("a command counts as a test command by its label, even where it lost every test span", () => {
+  // The labels come from every build's test spans, so a pytest command whose
+  // spans were all lost in this job still comes off; a pip install never does.
+  assert.deepEqual(setupMsPerJob(
+    [{ jobId: "job-1", durationMs: 1_000 }],
+    [{ job_id: "job-1", label: "pytest a", duration_ms: 900 }, { job_id: "job-1", label: null, duration_ms: 30 }],
+    new Set(["pytest a"]),
+  ), [100]);
+});
+
+test("a job with no test commands is all setup", () => {
+  assert.deepEqual(setupMsPerJob([{ jobId: "job-1", durationMs: 700 }], [], new Set()), [700]);
+});
+
+test("rejects a job shorter than its test commands, or with no usable duration", () => {
+  for (const [durationMs, duration_ms] of [[99, 100], [Number.NaN, 100], [-1, 0], [100, Number.NaN]]) {
+    assert.throws(
+      () => setupMsPerJob([{ jobId: "job-1", durationMs }], [{ job_id: "job-1", label: "pytest a", duration_ms }], new Set(["pytest a"])),
+      (e) => e instanceof TimingDataError && e.message === "Job job-1 is shorter than its test commands",
+    );
+  }
+  assert.deepEqual(setupMsPerJob(
+    [{ jobId: "job-1", durationMs: 100 }],
+    [{ job_id: "job-1", label: "pytest a", duration_ms: 100 }],
+    new Set(["pytest a"]),
+  ), [0]);
+});
+
+test("setup is the median over every job of every build", () => {
+  assert.equal(medianSetupMs([[60_000, 70_000], [1_000_000], [65_000]]), 67_500);
+  assert.equal(medianSetupMs([[3], [1, 2]]), 2);
 });

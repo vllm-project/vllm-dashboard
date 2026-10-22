@@ -17,6 +17,12 @@ export interface TestSpanRow {
   duration_ms: number;
 }
 
+export interface CommandSpanRow {
+  job_id: string;
+  label: string | null;
+  duration_ms: number;
+}
+
 export interface TestTiming {
   nodeid: string;
   observedMs: number;
@@ -47,6 +53,10 @@ export interface LatestTestTimings {
   buildNumbers: number[];
   skippedBuilds: { buildNumber: number; reason: string }[];
   measurement: "median_over_builds_of_summed_pytest_runtest_spans";
+  // What one job spends outside the commands that run its tests: container
+  // start, checkout, and setup commands such as pip installs. Median over every job of the builds used,
+  // so the planner can charge it once per shard.
+  setupMs: number;
   files: FileTiming[];
 }
 
@@ -151,6 +161,34 @@ export function medianFiles(filesPerBuild: FileTiming[][]): FileTiming[] {
 }
 
 /**
+ * Each job's duration less its test commands' durations, in job order. A test
+ * command is one whose label has test spans in any build: command spans, not
+ * test spans, because a job with thousands of tests can lose test spans (even
+ * all of one command's) in upload, and that time is not setup. Commands nest
+ * inside their job, so commands that outlast it mean broken spans.
+ */
+export function setupMsPerJob(
+  jobs: { jobId: string; durationMs: number }[],
+  commands: CommandSpanRow[],
+  testLabels: ReadonlySet<string | null>,
+): number[] {
+  const testCommandMs = new Map<string, number>();
+  for (const command of commands) {
+    if (!testLabels.has(command.label)) continue;
+    testCommandMs.set(command.job_id, (testCommandMs.get(command.job_id) ?? 0) + Number(command.duration_ms));
+  }
+  return jobs.map(({ jobId, durationMs }) => {
+    const setup = Number(durationMs) - (testCommandMs.get(jobId) ?? 0);
+    if (!(setup >= 0)) throw new TimingDataError(`Job ${jobId} is shorter than its test commands`);
+    return setup;
+  });
+}
+
+export function medianSetupMs(setupPerBuild: number[][]): number {
+  return median(setupPerBuild.flat());
+}
+
+/**
  * Keep per-test medians only for files whose median observedMs clears
  * testsOverMs; strip the field from every file when testsOverMs is null (the
  * query param was absent). The runtime shard planner asks for exactly the
@@ -184,13 +222,15 @@ export async function queryLatestTestTimings(
   // whose job ran on it, so a device change doesn't mix two queues' runs.
   const builds = await sql<{
     build_number: string; commit: string | null; finished_at: Date; job_ids: string[];
+    job_ms: number[];
   }[]>`
     SELECT * FROM (
       SELECT
         build_number,
         MAX(span_attributes->>'buildkite.build.commit') AS commit,
         MAX(end_time) AS finished_at,
-        ARRAY_AGG(job_id ORDER BY job_id) AS job_ids
+        ARRAY_AGG(job_id ORDER BY job_id) AS job_ids,
+        ARRAY_AGG(duration_ms ORDER BY job_id) AS job_ms
       FROM otel_spans
       WHERE span_name = 'buildkite.job'
         AND job_type = 'script'
@@ -228,6 +268,13 @@ export async function queryLatestTestTimings(
     WHERE t.job_id = ANY(${jobIds})
       AND t.span_attributes->>'ci.span.kind' = 'test'
   `;
+  const commands = await sql<CommandSpanRow[]>`
+    SELECT job_id, duration_ms, NULLIF(span_attributes->>'ci.command.label', '') AS label
+    FROM otel_spans
+    WHERE job_id = ANY(${jobIds})
+      AND span_attributes->>'ci.span.kind' = 'command'
+  `;
+  const testLabels = new Set(rows.flatMap((row) => row.command_label ?? []));
   const rowsByJob = new Map<string, TestSpanRow[]>();
   for (const row of rows) {
     const jobRows = rowsByJob.get(row.job_id) ?? [];
@@ -238,11 +285,17 @@ export async function queryLatestTestTimings(
   // out of the median rather than failing the whole baseline, and say so.
   const used: (typeof builds)[number][] = [];
   const filesPerBuild: FileTiming[][] = [];
+  const setupPerBuild: number[][] = [];
   const skippedBuilds: { buildNumber: number; reason: string }[] = [];
   let firstError: TimingDataError | null = null;
   for (const build of builds) {
     try {
-      filesPerBuild.push(summarizeFiles(build.job_ids.flatMap((jobId) => rowsByJob.get(jobId) ?? [])));
+      const buildRows = build.job_ids.flatMap((jobId) => rowsByJob.get(jobId) ?? []);
+      const files = summarizeFiles(buildRows);
+      const jobs = build.job_ids.map((jobId, i) => ({ jobId, durationMs: build.job_ms[i] }));
+      const jobSet = new Set(build.job_ids);
+      setupPerBuild.push(setupMsPerJob(jobs, commands.filter((c) => jobSet.has(c.job_id)), testLabels));
+      filesPerBuild.push(files);
       used.push(build);
     } catch (e) {
       if (!(e instanceof TimingDataError)) throw e;
@@ -261,6 +314,7 @@ export async function queryLatestTestTimings(
     buildNumbers: used.map((build) => Number(build.build_number)),
     skippedBuilds,
     measurement: "median_over_builds_of_summed_pytest_runtest_spans",
+    setupMs: medianSetupMs(setupPerBuild),
     files: medianFiles(filesPerBuild),
   };
 }
