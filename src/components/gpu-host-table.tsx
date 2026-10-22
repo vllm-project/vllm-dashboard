@@ -319,7 +319,7 @@ function HostDrillDown({ row, host }: { row: HostRow; host: HostLatest | undefin
                     >
                       <td className="py-1.5 pr-4 font-medium">GPU {gpu.index}</td>
                       <td className="py-1.5 pr-4 tabular-nums">
-                        {Math.round(gpu.gpuUtil)}%
+                        {gpu.gpuUtil == null ? <EmptyMetric /> : `${Math.round(gpu.gpuUtil)}%`}
                       </td>
                       <td className="py-1.5 pr-4 tabular-nums">
                         {formatMemory(gpu.memUsedMb)} /{" "}
@@ -431,8 +431,6 @@ export function GpuHostTable({
             {sortedRows.map((h) => {
               const host = hostsByName.get(h.hostname);
               const agent = agents?.get(h.hostname);
-              const gpuUtil =
-                h.gpuCount > 0 ? Math.round(h.gpuUtil / h.gpuCount) : 0;
               const ago =
                 now > 0
                   ? Math.round((now - new Date(h.lastSeen).getTime()) / 60_000)
@@ -504,7 +502,7 @@ export function GpuHostTable({
                     </td>
                     <td className="px-5 py-3.5 sm:px-6">{h.gpuType}</td>
                     <td className="px-5 py-3.5 sm:px-6">
-                      <Meter value={gpuUtil} />
+                      {h.gpuUtil == null ? <EmptyMetric /> : <Meter value={h.gpuUtil} />}
                     </td>
                     <td className="whitespace-nowrap px-5 py-3.5 tabular-nums sm:px-6">
                       <span
@@ -551,7 +549,8 @@ export function GpuHostTable({
                                   {formatMemory(gpu.memUsedMb)} / {formatMemory(gpu.memTotalMb)} ({pct}%)
                                 </span>
                                 <span className="block text-zinc-400">
-                                  GPU utilization: {Math.round(gpu.gpuUtil)}%
+                                  GPU utilization:{" "}
+                                  {gpu.gpuUtil == null ? "not reported" : `${Math.round(gpu.gpuUtil)}%`}
                                 </span>
                                 <span className="block text-zinc-400">
                                   Temp: {formatTemperature(gpu.temperatureC)}

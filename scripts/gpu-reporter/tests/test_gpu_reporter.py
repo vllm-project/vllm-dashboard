@@ -631,3 +631,13 @@ def test_check_docker(reporter, monkeypatch, tmp_path):
         False, "docker info failed: Cannot connect to the Docker daemon")
     assert run((1, "")) == (False, "docker info failed: no output")
     assert run((1, "x" * 400)) == (False, ("docker info failed: " + "x" * 400)[:300])
+
+
+def test_query_gpus_mig_utilization_is_null_not_zero(reporter, monkeypatch):
+    # MIG-enabled GPUs answer [N/A] for utilization; 0 would read as idle.
+    out = ("0, NVIDIA H200, [N/A], 58, 143771, 30, 76.85, 700.00\n"
+           "1, NVIDIA H200, 0, 58, 143771, 30, 76.85, 700.00\n")
+    monkeypatch.setattr(reporter.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, out, ""))
+    gpus = reporter.query_gpus()
+    assert [g["gpu_util"] for g in gpus] == [None, 0.0]

@@ -496,7 +496,8 @@ def parse_metrics(text):
             # Joins the nvidia-smi readings; process_node pops it before POST.
             "uuid": gpu["uuid"],
             "name": gpu["name"] or None,
-            "gpu_util": gpu["gpu_util"] or 0,
+            # No GPU_UTIL series (MIG GPUs) stays null; 0 would read as idle.
+            "gpu_util": gpu["gpu_util"],
             "mem_used_mb": gpu["fb_used"],
             "mem_total_mb": total,
             "temperature_c": gpu["gpu_temp"],

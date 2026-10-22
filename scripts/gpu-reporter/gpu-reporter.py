@@ -159,7 +159,8 @@ def query_gpus():
         gpus.append({
             "index": int(parts[0]),
             "name": parts[1] if parts[1] != "[N/A]" else None,
-            "gpu_util": safe_float(parts[2]) or 0,
+            # [N/A] on MIG GPUs stays null; 0 would read as idle.
+            "gpu_util": safe_float(parts[2]),
             "mem_used_mb": safe_float(parts[3]) or 0,
             "mem_total_mb": safe_float(parts[4]) or 0,
             "temperature_c": safe_float(parts[5]),

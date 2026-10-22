@@ -80,6 +80,48 @@ test("hosts reporting no temperature or power stay null rather than zero", () =>
   assert.equal(rows[0].powerLimitW, null);
 });
 
+test("host utilization averages only the GPUs that reported it", () => {
+  const [row] = buildHostRows(
+    [
+      gpu({ gpu_index: 0, gpu_util: 40 }),
+      gpu({ gpu_index: 1, gpu_util: null }),
+      gpu({ gpu_index: 2, gpu_util: 60 }),
+    ],
+    gpuType,
+  );
+  assert.equal(row.gpuUtil, 50);
+  assert.deepEqual(row.gpus.map((g) => g.gpuUtil), [40, null, 60]);
+});
+
+test("host totals add every GPU and keep the newest report", () => {
+  const [row] = buildHostRows(
+    [
+      gpu({ gpu_index: 0, mem_used_mb: 100, mem_total_mb: 1000, reported_at: "2026-09-02T19:00:00.000Z" }),
+      gpu({ gpu_index: 1, mem_used_mb: 200, mem_total_mb: 2000, reported_at: "2026-09-02T19:01:00.000Z" }),
+    ],
+    gpuType,
+  );
+  assert.equal(row.gpuCount, 2);
+  assert.equal(row.memUsedMb, 300);
+  assert.equal(row.memTotalMb, 3000);
+  assert.equal(row.lastSeen, "2026-09-02T19:01:00.000Z");
+});
+
+test("a host with no GPU utilization stays null and sorts last", () => {
+  const rows = buildHostRows(
+    [
+      gpu({ hostname: "mithril-h200-1", gpu_util: null }),
+      gpu({ hostname: "h200-ci-1", gpu_util: 0 }),
+      gpu({ hostname: "h200-ci-2", gpu_util: 30 }),
+    ],
+    gpuType,
+  );
+  assert.equal(rows.find((r) => r.hostname === "mithril-h200-1")?.gpuUtil, null);
+  for (const direction of ["asc", "desc"] as const) {
+    assert.equal(sortHostRows(rows, new Map(), "gpuUtil", direction).at(-1)?.hostname, "mithril-h200-1");
+  }
+});
+
 test("hosts are sorted, GPUs ordered by index, last seen is the newest report", () => {
   const rows = buildHostRows(
     [

@@ -21,7 +21,8 @@ export type DiskRole = "workspace" | "images" | "data" | "system" | "other";
 export interface NormalizedGpuMetric {
   index: number;
   name: string | null;
-  gpu_util: number;
+  /** Null when the GPU can't report utilization (MIG without DCGM). */
+  gpu_util: number | null;
   mem_used_mb: number;
   mem_total_mb: number;
   temperature_c: number | null;
@@ -271,7 +272,7 @@ function gpuMetric(value: unknown, index: number): NormalizedGpuMetric {
       integer: true,
     }),
     name: optionalString(gpu.name, `${path}.name`, MAX_NAME_LENGTH),
-    gpu_util: numberValue(gpu.gpu_util, `${path}.gpu_util`, { min: 0, max: 100 }),
+    gpu_util: optionalNumber(gpu.gpu_util, `${path}.gpu_util`, { min: 0, max: 100 }),
     mem_used_mb: memUsed,
     mem_total_mb: memTotal,
     temperature_c: optionalNumber(gpu.temperature_c, `${path}.temperature_c`, {

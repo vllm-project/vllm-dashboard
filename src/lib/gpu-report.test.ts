@@ -88,6 +88,18 @@ test("accepts an explicit degraded heartbeat without GPU rows", () => {
   assert.equal(report.reporter_status, "degraded");
 });
 
+test("accepts null utilization from GPUs that can't report it", () => {
+  const report = parseGpuReportPayload({
+    ...legacyPayload,
+    gpus: [{ ...legacyPayload.gpus[0], gpu_util: null }],
+  });
+  assert.equal(report.gpus[0].gpu_util, null);
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, gpus: [{ ...legacyPayload.gpus[0], gpu_util: -1 }] }),
+    /gpus\[0\]\.gpu_util/,
+  );
+});
+
 test("rejects invalid ranges, partial RAM values, and unknown fields", () => {
   assert.throws(
     () => parseGpuReportPayload({ ...legacyPayload, gpus: [{ ...legacyPayload.gpus[0], gpu_util: 101 }] }),

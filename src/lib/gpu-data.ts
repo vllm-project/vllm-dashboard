@@ -41,6 +41,7 @@ function normalizeSnapshots(rows: DbRow[]): GpuSnapshot[] {
     gpu_name: row.gpu_name == null ? null : String(row.gpu_name),
     mem_pct_sum: Number(row.mem_pct_sum),
     gpu_util_sum: Number(row.gpu_util_sum),
+    gpu_util_count: Number(row.gpu_util_count),
     sample_count: Number(row.sample_count),
   }));
 }
@@ -56,7 +57,7 @@ function normalizeLatest(rows: DbRow[]): GpuLatest[] {
     hostname: String(row.hostname),
     gpu_index: Number(row.gpu_index),
     gpu_name: row.gpu_name == null ? null : String(row.gpu_name),
-    gpu_util: Number(row.gpu_util),
+    gpu_util: nullableNumber(row.gpu_util),
     mem_used_mb: Number(row.mem_used_mb),
     mem_total_mb: Number(row.mem_total_mb),
     temperature_c: nullableNumber(row.temperature_c),
@@ -81,7 +82,10 @@ function summarizeGpuHistory(
 ): GpuOverviewPoint[] {
   const buckets = new Map<
     number,
-    Map<string, { memPctSum: number; gpuUtilSum: number; sampleCount: number }>
+    Map<
+      string,
+      { memPctSum: number; gpuUtilSum: number; gpuUtilCount: number; sampleCount: number }
+    >
   >();
 
   for (const snapshot of history.snapshots) {
@@ -90,10 +94,12 @@ function summarizeGpuHistory(
     const host = hosts.get(snapshot.hostname) ?? {
       memPctSum: 0,
       gpuUtilSum: 0,
+      gpuUtilCount: 0,
       sampleCount: 0,
     };
     host.memPctSum += snapshot.mem_pct_sum;
     host.gpuUtilSum += snapshot.gpu_util_sum;
+    host.gpuUtilCount += snapshot.gpu_util_count;
     host.sampleCount += snapshot.sample_count;
     hosts.set(snapshot.hostname, host);
     buckets.set(time, hosts);
@@ -107,9 +113,9 @@ function summarizeGpuHistory(
       const memoryValues = activeHosts.map(
         (host) => host.memPctSum / host.sampleCount,
       );
-      const gpuValues = activeHosts.map(
-        (host) => host.gpuUtilSum / host.sampleCount,
-      );
+      const gpuValues = activeHosts
+        .filter((host) => host.gpuUtilCount > 0)
+        .map((host) => host.gpuUtilSum / host.gpuUtilCount);
       return {
         time,
         memoryP50: Math.round(percentile(memoryValues, 0.5)),
@@ -148,7 +154,8 @@ export async function queryGpuHistory(
             WHEN mem_total_mb > 0 THEN mem_used_mb / mem_total_mb * 100
             ELSE 0
           END)::numeric, 2) AS mem_pct_sum,
-          ROUND(SUM(gpu_util)::numeric, 2) AS gpu_util_sum,
+          ROUND(COALESCE(SUM(gpu_util), 0)::numeric, 2) AS gpu_util_sum,
+          COUNT(gpu_util)::bigint AS gpu_util_count,
           COUNT(*)::bigint AS sample_count
         FROM gpu_snapshots
         WHERE reported_at > NOW() - INTERVAL '1 hour' * ${hours}
@@ -167,6 +174,7 @@ export async function queryGpuHistory(
           NULLIF(gpu_name, 'Unknown') AS gpu_name,
           ROUND(SUM(mem_pct_sum)::numeric, 2) AS mem_pct_sum,
           ROUND(SUM(gpu_util_sum)::numeric, 2) AS gpu_util_sum,
+          SUM(COALESCE(gpu_util_count, sample_count))::bigint AS gpu_util_count,
           SUM(sample_count)::bigint AS sample_count
         FROM gpu_history_5m
         WHERE time_bucket > NOW() - INTERVAL '1 hour' * ${hours}

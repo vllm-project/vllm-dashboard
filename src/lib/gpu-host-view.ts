@@ -21,7 +21,8 @@ export function hostReportStatus(minutesAgo: number): HostReportStatus {
 
 export interface HostGpuRow {
   index: number;
-  gpuUtil: number;
+  /** Null when the GPU can't report utilization (MIG without DCGM). */
+  gpuUtil: number | null;
   memUsedMb: number;
   memTotalMb: number;
   temperatureC: number | null;
@@ -33,7 +34,8 @@ export interface HostRow {
   hostname: string;
   gpuType: string;
   gpuCount: number;
-  gpuUtil: number;
+  /** Average over the GPUs that reported utilization; null if none did. */
+  gpuUtil: number | null;
   memUsedMb: number;
   memTotalMb: number;
   /** Hottest GPU on the host, or null when no GPU reported a temperature. */
@@ -77,7 +79,7 @@ export function buildHostRows(
         hostname: g.hostname,
         gpuType: gpuType(g.gpu_name),
         gpuCount: 1,
-        gpuUtil: g.gpu_util,
+        gpuUtil: null,
         memUsedMb: g.mem_used_mb,
         memTotalMb: g.mem_total_mb,
         maxTemperatureC: g.temperature_c,
@@ -89,7 +91,6 @@ export function buildHostRows(
       continue;
     }
     existing.gpuCount++;
-    existing.gpuUtil += g.gpu_util;
     existing.memUsedMb += g.mem_used_mb;
     existing.memTotalMb += g.mem_total_mb;
     existing.maxTemperatureC = maxNullable(existing.maxTemperatureC, g.temperature_c);
@@ -100,6 +101,8 @@ export function buildHostRows(
   }
   for (const row of map.values()) {
     row.gpus.sort((a, b) => a.index - b.index);
+    const utils = row.gpus.flatMap((g) => (g.gpuUtil == null ? [] : [g.gpuUtil]));
+    row.gpuUtil = utils.length > 0 ? utils.reduce((a, b) => a + b, 0) / utils.length : null;
   }
   return [...map.values()].sort((a, b) => a.hostname.localeCompare(b.hostname));
 }
@@ -208,7 +211,7 @@ function hostSortValue(
     case "gpuType":
       return row.gpuType;
     case "gpuUtil":
-      return row.gpuCount > 0 ? row.gpuUtil / row.gpuCount : null;
+      return row.gpuUtil;
     case "gpuTemp":
       return row.maxTemperatureC;
     case "gpuMemory":

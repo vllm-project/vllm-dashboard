@@ -727,3 +727,11 @@ def test_log_fetch_starts_with_the_other_pod_reads(reporter_k8s,
     assert "logs" in calls
     # First run: no cursor yet, so nothing to fetch.
     assert "log" not in reporter_k8s.start_pod_reads("pod-1", None)
+
+
+def test_parse_dcgm_metrics_missing_utilization_is_null(reporter_k8s):
+    # DCGM emits no GPU_UTIL series for MIG GPUs; 0 would read as idle.
+    no_util = "".join(line + "\n" for line in DCGM_FIXTURE.splitlines()
+                      if not line.startswith("DCGM_FI_DEV_GPU_UTIL"))
+    gpu = reporter_k8s.parse_metrics(no_util)["inf-4x8h100-1"][0]
+    assert gpu["gpu_util"] is None

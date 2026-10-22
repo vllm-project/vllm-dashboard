@@ -249,7 +249,10 @@ export function GpuDashboard({
 
     const bucketMap = new Map<
       number,
-      Map<string, { memPctSum: number; gpuUtilSum: number; count: number }>
+      Map<
+        string,
+        { memPctSum: number; gpuUtilSum: number; gpuUtilCount: number; count: number }
+      >
     >();
 
     for (const row of snapshots) {
@@ -261,11 +264,12 @@ export function GpuDashboard({
       if (!bucketMap.has(t)) bucketMap.set(t, new Map());
       const hostMap = bucketMap.get(t)!;
       if (!hostMap.has(row.hostname)) {
-        hostMap.set(row.hostname, { memPctSum: 0, gpuUtilSum: 0, count: 0 });
+        hostMap.set(row.hostname, { memPctSum: 0, gpuUtilSum: 0, gpuUtilCount: 0, count: 0 });
       }
       const entry = hostMap.get(row.hostname)!;
       entry.memPctSum += Number(row.mem_pct_sum);
       entry.gpuUtilSum += Number(row.gpu_util_sum);
+      entry.gpuUtilCount += Number(row.gpu_util_count);
       entry.count += Number(row.sample_count);
     }
 
@@ -277,11 +281,14 @@ export function GpuDashboard({
         const utilizationValues: number[] = [];
         for (const host of hosts) {
           const entry = hostMap.get(host);
-          if (entry) {
+          // MIG GPUs without utilization count toward memory only, and a
+          // host where no GPU reported utilization gets no point at all.
+          const samples = metric === "memory" ? entry?.count : entry?.gpuUtilCount;
+          if (entry && samples) {
             const total = metric === "memory"
               ? entry.memPctSum
               : entry.gpuUtilSum;
-            const averagePercent = total / entry.count;
+            const averagePercent = total / samples;
             utilizationValues.push(averagePercent);
             if (chartMode === "stacked") {
               row[host] =

@@ -10,6 +10,8 @@ export interface GpuSnapshot {
   gpu_name: string | null;
   mem_pct_sum: number;
   gpu_util_sum: number;
+  /** Samples that carried a utilization; sample_count also counts MIG GPUs. */
+  gpu_util_count: number;
   sample_count: number;
 }
 
@@ -17,7 +19,7 @@ export interface GpuLatest {
   hostname: string;
   gpu_index: number;
   gpu_name: string | null;
-  gpu_util: number;
+  gpu_util: number | null;
   mem_used_mb: number;
   mem_total_mb: number;
   temperature_c: number | null;
