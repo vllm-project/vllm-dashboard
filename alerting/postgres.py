@@ -916,6 +916,17 @@ class PostgresAlertStore:
                     ) >= observation.order:
                         continue
 
+                    # A job keeps its id when a change to how keys are built
+                    # (#209, #237) gives it a new key: move its row, or the
+                    # unique latest_job_id rejects the insert and the whole
+                    # reconcile fails.
+                    connection.execute(
+                        """
+                        DELETE FROM alerting_main_ci_job_states
+                        WHERE latest_job_id = %s AND job_key <> %s
+                        """,
+                        (observation.job_id, observation.job_key),
+                    )
                     connection.execute(
                         """
                         INSERT INTO alerting_main_ci_job_states (

@@ -180,3 +180,62 @@ def test_commit_enqueues_nothing_for_a_single_build_episode() -> None:
     _commit(PostgresAlertStore(lambda: connection), _image_build(94920, "passed"))
 
     assert _outbox_rows(connection) == []
+
+
+class JobStatesConnection(ScriptedConnection):
+    """Keeps alerting_main_ci_job_states with Postgres's two unique keys."""
+
+    def __init__(self, states: dict[str, str]) -> None:
+        super().__init__([])
+        self.states = dict(states)  # job_key -> latest_job_id
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> ScriptedResult:
+        statement = " ".join(sql.split())
+        self.calls.append((statement, params))
+        if statement.startswith("DELETE FROM alerting_main_ci_job_states"):
+            job_id, job_key = params
+            self.states = {
+                k: v
+                for k, v in self.states.items()
+                if not (v == job_id and k != job_key)
+            }
+        elif statement.startswith("INSERT INTO alerting_main_ci_job_states"):
+            job_key, job_id = params[0], params[2]
+            if any(v == job_id and k != job_key for k, v in self.states.items()):
+                raise RuntimeError(
+                    "duplicate key value violates unique constraint "
+                    '"alerting_main_ci_job_states_latest_job_id_key"'
+                )
+            self.states[job_key] = job_id
+        return ScriptedResult(None)
+
+
+def test_a_job_whose_key_changed_moves_its_state_row_instead_of_failing() -> None:
+    # 2026-10-13 (#209) and 2026-10-22 (#237): a change to how keys are built
+    # gave a job already stored under its old per-shard key a new step key.
+    # The unique latest_job_id rejected the insert and every reconcile failed.
+    old_key = "step:amd-v1-attention-b200|name::amd: (MI355 DPX) V1 Attention Shard 2"
+    new_key = "step:amd-v1-attention-b200|name::amd: (MI355 DPX) V1 Attention"
+    connection = JobStatesConnection({old_key: "job-1", "name:Other": "job-9"})
+    store = PostgresAlertStore(lambda: connection)
+    observation = MainCIJobObservation(
+        job_key=new_key,
+        job_id="job-1",
+        job_name=":amd: (MI355 DPX) V1 Attention Shard 2",
+        job_url="https://buildkite.com/vllm/ci/builds/96500#job-1",
+        state="passed",
+        finished_at=datetime(2026, 10, 22, 4, 6, tzinfo=timezone.utc),
+        build_id="build-96500",
+        build_number=96500,
+        build_url="https://buildkite.com/vllm/ci/builds/96500",
+        commit_sha="abc",
+    )
+
+    _commit(store, observation)
+
+    assert connection.states == {new_key: "job-1", "name:Other": "job-9"}
+    assert (
+        "DELETE FROM alerting_main_ci_job_states"
+        " WHERE latest_job_id = %s AND job_key <> %s",
+        ("job-1", new_key),
+    ) in connection.calls
