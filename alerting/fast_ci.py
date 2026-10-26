@@ -32,11 +32,12 @@ INITIAL_LOOKBACK = timedelta(minutes=30)
 SAFETY_OVERLAP = timedelta(minutes=15)
 MAX_DURATION_SECONDS = 30
 SLACK_BATCH_SIZE = 8
-# Fast CI, Main CI image builds and infra post to one alert channel, told
-# apart by each post's header block; Full CI reports keep their own channel.
-# Both are overridable from secrets manager, so a channel move stays a
-# secret edit: SLACK_CI_ALERT_CHANNEL and SLACK_CI_NOTIFICATIONS_CHANNEL
-# (SLACK_CHANNEL_ID is Full CI's legacy fallback).
+# Fast CI and Main CI image builds post to one alert channel, told apart by
+# each post's header block; infra alerts and Full CI reports have their own.
+# All are overridable from secrets manager, so a channel move stays a secret
+# edit: SLACK_CI_ALERT_CHANNEL, SLACK_CI_INFRA_ALERT_CHANNEL and
+# SLACK_CI_NOTIFICATIONS_CHANNEL (SLACK_CHANNEL_ID is Full CI's legacy
+# fallback).
 ALERTS_SLACK_CHANNEL = "C0ANHBE642Y"
 CI_NOTIFICATIONS_SLACK_CHANNEL = "C0ABTNM9L5U"
 STALE_NOTIFICATION_AGE = timedelta(minutes=30)
