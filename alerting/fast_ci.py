@@ -47,6 +47,11 @@ def slack_channel() -> str:
     return os.environ.get("SLACK_CI_ALERT_CHANNEL", ALERTS_SLACK_CHANNEL)
 
 
+def infra_slack_channel() -> str:
+    """The channel infra alerts post to: the daily summary's channel, else the alerts one."""
+    return os.environ.get("SLACK_CI_INFRA_ALERT_CHANNEL") or slack_channel()
+
+
 def full_ci_slack_channel() -> str:
     """The channel Full CI report intents post to."""
     return os.environ.get(
