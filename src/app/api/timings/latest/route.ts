@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 
 const STEP_KEY = /^[a-zA-Z0-9][a-zA-Z0-9_:.-]{0,199}$/;
 const QUEUE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
-// A median over 20 builds moves slowly, so an hour-old answer is still current.
+// A p80 over 20 builds moves slowly, so an hour-old answer is still current.
 const CDN_CACHE = { maxAge: 3_600, staleWhileRevalidate: 3_600 };
 
 function error(message: string, status: number) {

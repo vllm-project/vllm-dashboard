@@ -1,12 +1,15 @@
 import { getDb } from "@/lib/db";
 
-// Per-file test timings for one Buildkite step: the median over the newest
-// main builds in which every job of the step passed. The runtime shard planner
-// reads this as its timing baseline; it must never mistake missing telemetry
-// for fast tests. A median over many builds keeps a short run of slow builds,
-// such as an infra incident, from making the planner over-shard.
+// Per-file test timings for one Buildkite step: the 80th percentile over the
+// newest main builds in which every job of the step passed. The runtime shard
+// planner reads this as its timing baseline; it must never mistake missing
+// telemetry for fast tests. p80 rather than the median: a shard planned at a
+// typical run goes over its estimate half the time, and an extra shard costs
+// less than one that runs long. Up to three slow builds in twenty still don't
+// move it.
 
-export const MEDIAN_BUILDS = 20;
+export const TIMING_BUILDS = 20;
+export const FILE_PERCENTILE = 0.8;
 
 export interface TestSpanRow {
   job_id: string;
@@ -41,7 +44,7 @@ export interface FileTiming {
 }
 
 // A file entry with its tests omitted (when the caller asked for none, or the
-// file's median didn't clear their threshold).
+// file's p80 didn't clear their threshold).
 export type FileTimingResponse = Omit<FileTiming, "tests"> & { tests?: TestTiming[] };
 
 export interface LatestTestTimings {
@@ -52,7 +55,7 @@ export interface LatestTestTimings {
   jobIds: string[];
   buildNumbers: number[];
   skippedBuilds: { buildNumber: number; reason: string }[];
-  measurement: "median_over_builds_of_summed_pytest_runtest_spans";
+  measurement: "p80_over_builds_of_summed_pytest_runtest_spans";
   // What one job spends outside the commands that run its tests: container
   // start, checkout, and setup commands such as pip installs. Median over every job of the builds used,
   // so the planner can charge it once per shard.
@@ -111,18 +114,21 @@ export function summarizeFiles(rows: TestSpanRow[]): FileTiming[] {
     a.command === b.command ? a.file.localeCompare(b.file) : a.command.localeCompare(b.command));
 }
 
-function median(values: number[]): number {
+// Linear interpolation between the closest ranks, as Postgres percentile_cont.
+function percentile(values: number[], q: number): number {
   const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  const position = (sorted.length - 1) * q;
+  const below = Math.floor(position);
+  if (below === sorted.length - 1) return sorted[below];
+  return sorted[below] + (sorted[below + 1] - sorted[below]) * (position - below);
 }
 
 /**
  * Combine summarizeFiles() output from several builds, newest first, into one
- * entry per command and file. Times are medians over the builds the file ran
+ * entry per command and file. Times are p80s over the builds the file ran
  * in; cases, outcomes and status come from the newest of those builds.
  */
-export function medianFiles(filesPerBuild: FileTiming[][]): FileTiming[] {
+export function p80Files(filesPerBuild: FileTiming[][]): FileTiming[] {
   const byKey = new Map<string, FileTiming[]>();
   for (const files of filesPerBuild) {
     for (const file of files) {
@@ -134,8 +140,8 @@ export function medianFiles(filesPerBuild: FileTiming[][]): FileTiming[] {
   }
   const result: FileTiming[] = [];
   for (const entries of byKey.values()) {
-    // Per-test median, over only the builds that test appeared in (same rule
-    // as the file-level median above: a build missing a test doesn't give it
+    // Per-test p80, over only the builds that test appeared in (same rule
+    // as the file-level p80 above: a build missing a test doesn't give it
     // a 0). Order is first-seen, scanning builds newest first.
     const byNodeid = new Map<string, number[]>();
     for (const entry of entries) {
@@ -146,12 +152,12 @@ export function medianFiles(filesPerBuild: FileTiming[][]): FileTiming[] {
       }
     }
     const tests = [...byNodeid.entries()].map(([nodeid, times]) => ({
-      nodeid, observedMs: median(times),
+      nodeid, observedMs: percentile(times, FILE_PERCENTILE),
     }));
     result.push({
       ...entries[0],
-      observedMs: median(entries.map((e) => e.observedMs)),
-      passedMs: median(entries.map((e) => e.passedMs)),
+      observedMs: percentile(entries.map((e) => e.observedMs), FILE_PERCENTILE),
+      passedMs: percentile(entries.map((e) => e.passedMs), FILE_PERCENTILE),
       builds: entries.length,
       tests,
     });
@@ -185,11 +191,11 @@ export function setupMsPerJob(
 }
 
 export function medianSetupMs(setupPerBuild: number[][]): number {
-  return median(setupPerBuild.flat());
+  return percentile(setupPerBuild.flat(), 0.5);
 }
 
 /**
- * Keep per-test medians only for files whose median observedMs clears
+ * Keep per-test p80s only for files whose p80 observedMs clears
  * testsOverMs; strip the field from every file when testsOverMs is null (the
  * query param was absent). The runtime shard planner asks for exactly the
  * files it might need to split.
@@ -248,7 +254,7 @@ export async function queryLatestTestTimings(
         AND t.span_attributes->>'ci.span.kind' = 'test'
     )
     ORDER BY build_number DESC
-    LIMIT ${MEDIAN_BUILDS}
+    LIMIT ${TIMING_BUILDS}
   `;
   if (builds.length === 0) return null;
   const jobIds = builds.flatMap((build) => build.job_ids);
@@ -282,7 +288,7 @@ export async function queryLatestTestTimings(
     rowsByJob.set(row.job_id, jobRows);
   }
   // A build whose spans fail validation was partly lost in ingestion. Leave it
-  // out of the median rather than failing the whole baseline, and say so.
+  // out of the baseline rather than failing all of it, and say so.
   const used: (typeof builds)[number][] = [];
   const filesPerBuild: FileTiming[][] = [];
   const setupPerBuild: number[][] = [];
@@ -313,8 +319,8 @@ export async function queryLatestTestTimings(
     jobIds: used.flatMap((build) => build.job_ids),
     buildNumbers: used.map((build) => Number(build.build_number)),
     skippedBuilds,
-    measurement: "median_over_builds_of_summed_pytest_runtest_spans",
+    measurement: "p80_over_builds_of_summed_pytest_runtest_spans",
     setupMs: medianSetupMs(setupPerBuild),
-    files: medianFiles(filesPerBuild),
+    files: p80Files(filesPerBuild),
   };
 }
