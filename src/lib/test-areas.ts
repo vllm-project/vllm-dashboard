@@ -11,6 +11,12 @@ export interface TestStep {
   amdMirrorLabel?: string;
   /** The AMD mirror's own `soft_fail`; the mirror does not inherit the step's. */
   amdMirrorSoftFail?: boolean;
+  /** `automatic_shard: true`: the generator may split it into runtime shards. */
+  automaticShard?: boolean;
+  /** The AMD mirror's own `automatic_shard`; it shards only when both are set. */
+  amdMirrorAutomaticShard?: boolean;
+  /** `num_nodes`; the generator never shards a multi-node step. */
+  numNodes?: number;
 }
 
 export interface TestArea {
@@ -361,21 +367,33 @@ export function parseTestStep(value: unknown): TestStep | null {
     optional?: unknown;
     soft_fail?: unknown;
     mirror?: unknown;
+    parallelism?: unknown;
+    automatic_shard?: unknown;
+    num_nodes?: unknown;
   };
   if (typeof step.label !== "string") return null;
   const parsed: TestStep = { label: step.label };
   if (step.optional === true) parsed.optional = true;
   if (isSoftFailValue(step.soft_fail)) parsed.softFail = true;
+  if (typeof step.parallelism === "number") parsed.parallelism = step.parallelism;
+  if (step.automatic_shard === true) parsed.automaticShard = true;
+  if (typeof step.num_nodes === "number") parsed.numNodes = step.num_nodes;
   const mirror = step.mirror;
   if (mirror && typeof mirror === "object") {
     const amd = (mirror as { amd?: unknown }).amd;
     if (amd && typeof amd === "object") {
-      const { label: amdLabel, soft_fail: amdSoftFail } = amd as {
+      const {
+        label: amdLabel,
+        soft_fail: amdSoftFail,
+        automatic_shard: amdAutomaticShard,
+      } = amd as {
         label?: unknown;
         soft_fail?: unknown;
+        automatic_shard?: unknown;
       };
       if (typeof amdLabel === "string") parsed.amdMirrorLabel = amdLabel;
       if (isSoftFailValue(amdSoftFail)) parsed.amdMirrorSoftFail = true;
+      if (amdAutomaticShard === true) parsed.amdMirrorAutomaticShard = true;
     }
   }
   return parsed;
@@ -576,6 +594,14 @@ export async function ensureOptionalJobMatcher(): Promise<OptionalJobMatcher> {
     await refreshMapping();
   }
   return cachedOptionalMatcher;
+}
+
+/** The test areas on vLLM main, fetched if the cache has expired. */
+export async function ensureTestAreas(): Promise<TestArea[]> {
+  if (Date.now() >= cacheExpiry) {
+    await refreshMapping();
+  }
+  return cachedAreas;
 }
 
 export async function ensureSoftFailJobMatcher(): Promise<SoftFailJobMatcher> {
