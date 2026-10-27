@@ -77,6 +77,17 @@ export default function BuildsPage() {
   const [hideOutliers, setHideOutliers] = useState(false);
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
   const [selectedJobs, setSelectedJobs] = useState<Set<string>>(new Set());
+  // Ranges to return to, newest last: each drag-zoom on the chart pushes the
+  // range it replaced, and "Zoom out" pops one. Picking a range clears it.
+  const [zoomHistory, setZoomHistory] = useState<
+    Array<{ start: string; end: string }>
+  >([]);
+
+  function setRange(start: string, end: string) {
+    setStartDate(start);
+    setEndDate(end);
+    setPage(0);
+  }
 
   const params = new URLSearchParams();
   if (pipeline) params.set("pipeline", pipeline);
@@ -202,9 +213,8 @@ export default function BuildsPage() {
             startDate={startDate}
             endDate={endDate}
             onChange={(s, e) => {
-              setStartDate(s);
-              setEndDate(e);
-              setPage(0);
+              setZoomHistory([]);
+              setRange(s, e);
             }}
           />
         </div>
@@ -226,6 +236,22 @@ export default function BuildsPage() {
         startDate={startDate}
         endDate={endDate}
         hideOutliers={hideOutliers}
+        onRangeSelect={(start, end) => {
+          setZoomHistory((history) => [
+            ...history,
+            { start: startDate, end: endDate },
+          ]);
+          setRange(start, end);
+        }}
+        onZoomOut={
+          zoomHistory.length > 0
+            ? () => {
+                const previous = zoomHistory[zoomHistory.length - 1];
+                setZoomHistory(zoomHistory.slice(0, -1));
+                setRange(previous.start, previous.end);
+              }
+            : undefined
+        }
       />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between sm:gap-4">

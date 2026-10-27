@@ -53,6 +53,9 @@ function toIsoDate(date: string): string {
 }
 
 function endExclusive(date: string): string {
+  // A full timestamp (from a drag-zoom on a chart) is already the exact,
+  // exclusive end.
+  if (date.length !== 10) return date;
   // Mirror DATE_ADD(endDate, 1): the end date is inclusive, so filter < end+1d.
   const d = new Date(toIsoDate(date));
   d.setUTCDate(d.getUTCDate() + 1);

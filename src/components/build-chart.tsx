@@ -14,7 +14,10 @@ import {
   Line,
   Area,
   ComposedChart,
+  ReferenceArea,
 } from "recharts";
+import { useChartDragSelect } from "@/components/chart-drag-select";
+import { formatDisplayLabel } from "@/components/date-range-picker";
 
 export interface BuildDuration {
   id: string;
@@ -35,6 +38,7 @@ function isOutlier(build: BuildDuration): boolean {
 
 interface RunPoint {
   index: number;
+  createdAt: string;
   date: string;
   dateShort: string;
   duration: number;
@@ -42,6 +46,8 @@ interface RunPoint {
 }
 
 interface DailyPoint {
+  /** The UTC day (YYYY-MM-DD) the point covers, as the date filter reads it. */
+  day: string;
   date: string;
   dateLabel: string;
   p50: number;
@@ -221,12 +227,26 @@ interface BuildChartProps {
   startDate?: string;
   endDate?: string;
   hideOutliers?: boolean;
+  /**
+   * Called with a new time range when the user drags across the chart: exact
+   * ISO timestamps (end exclusive) in the Runs view, whole UTC days (end
+   * inclusive) in the Overview.
+   */
+  onRangeSelect?: (start: string, end: string) => void;
+  /** Shown as a "Zoom out" button while there is a range to go back to. */
+  onZoomOut?: () => void;
 }
 
-export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChartProps) {
+export function BuildChart({
+  data,
+  startDate,
+  endDate,
+  hideOutliers,
+  onRangeSelect,
+  onZoomOut,
+}: BuildChartProps) {
   const [mode, setMode] = useState<ChartMode>("runs");
-  const rangeLabel =
-    startDate && endDate ? `${startDate} — ${endDate}` : "All Time";
+  const rangeLabel = formatDisplayLabel(startDate ?? "", endDate ?? "");
 
   const filteredData = useMemo(
     () => (hideOutliers ? data.filter((build) => !isOutlier(build)) : data),
@@ -239,6 +259,7 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
         const date = new Date(build.created_at);
         return {
           index,
+          createdAt: build.created_at,
           date: date.toLocaleString(),
           dateShort: date.toLocaleDateString("en-US", {
             month: "short",
@@ -269,6 +290,7 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
         const p50 = percentile(durations, 0.5);
         const p90 = percentile(durations, 0.9);
         return {
+          day: date,
           date: parsedDate.toLocaleDateString("en-US", {
             month: "short",
             day: "numeric",
@@ -290,6 +312,42 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
         };
       });
   }, [filteredData]);
+
+  const { span, handlers } = useChartDragSelect(
+    onRangeSelect &&
+      ((first, last) => {
+        if (mode === "overview") {
+          onRangeSelect(dailyData[first].day, dailyData[last].day);
+        } else {
+          // Through the last selected build: end just after it was created.
+          const end = new Date(new Date(runData[last].createdAt).getTime() + 1000);
+          onRangeSelect(
+            new Date(runData[first].createdAt).toISOString(),
+            end.toISOString(),
+          );
+        }
+      }),
+  );
+  const selection = span && (
+    <ReferenceArea
+      {...(mode === "overview" ? { yAxisId: "duration" } : {})}
+      x1={
+        mode === "overview"
+          ? dailyData[span.from]?.dateLabel
+          : runData[span.from]?.index
+      }
+      x2={
+        mode === "overview"
+          ? dailyData[span.to]?.dateLabel
+          : runData[span.to]?.index
+      }
+      fill="#3b82f6"
+      fillOpacity={0.12}
+      stroke="#3b82f6"
+      strokeOpacity={0.5}
+      ifOverflow="visible"
+    />
+  );
 
   if (data.length === 0) {
     return (
@@ -337,39 +395,56 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
             {hideOutliers && filteredData.length !== data.length && (
               <span> ({data.length - filteredData.length} outliers hidden)</span>
             )}
+            {onRangeSelect && (
+              <span className="hidden sm:inline"> · Drag across the chart to zoom in</span>
+            )}
           </p>
         </div>
-        <div
-          className="inline-flex w-fit rounded-lg bg-zinc-100 p-0.5 dark:bg-zinc-900"
-          aria-label="Build duration chart mode"
-        >
-          {([
-            ["runs", "Runs"],
-            ["overview", "Overview"],
-          ] as const).map(([value, label]) => (
+        <div className="flex items-center gap-2">
+          {onZoomOut && (
             <button
-              key={value}
               type="button"
-              onClick={() => setMode(value)}
-              aria-pressed={mode === value}
-              className={`min-h-11 rounded-md px-3 text-sm font-medium transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
-                mode === value
-                  ? "bg-white text-zinc-900 shadow-sm ring-1 ring-black/5 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10"
-                  : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
-              }`}
+              onClick={onZoomOut}
+              className="min-h-11 rounded-md border border-zinc-200 px-3 text-sm font-medium text-zinc-600 transition-[background-color,transform] hover:bg-zinc-100 active:scale-[0.97] sm:min-h-10 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
             >
-              {label}
+              Zoom out
             </button>
-          ))}
+          )}
+          <div
+            className="inline-flex w-fit rounded-lg bg-zinc-100 p-0.5 dark:bg-zinc-900"
+            aria-label="Build duration chart mode"
+          >
+            {([
+              ["runs", "Runs"],
+              ["overview", "Overview"],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setMode(value)}
+                aria-pressed={mode === value}
+                className={`min-h-11 rounded-md px-3 text-sm font-medium transition-[background-color,color,transform] active:scale-[0.97] sm:min-h-10 ${
+                  mode === value
+                    ? "bg-white text-zinc-900 shadow-sm ring-1 ring-black/5 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-white/10"
+                    : "text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      <div className="h-[320px] sm:h-[360px]">
+      <div
+        className={`h-[320px] sm:h-[360px] ${onRangeSelect ? "cursor-crosshair select-none" : ""}`}
+      >
         <ResponsiveContainer width="100%" height="100%">
           {mode === "overview" ? (
             <ComposedChart
               data={dailyData}
               margin={{ top: 10, right: 12, bottom: 4, left: 2 }}
+              {...handlers}
             >
               <CartesianGrid
                 strokeDasharray="3 3"
@@ -470,11 +545,13 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
                 activeDot={{ r: 4 }}
                 isAnimationActive={false}
               />
+              {selection}
             </ComposedChart>
           ) : (
             <BarChart
               data={runData}
               margin={{ top: 10, right: 12, bottom: 4, left: 2 }}
+              {...handlers}
             >
               <CartesianGrid
                 strokeDasharray="3 3"
@@ -511,6 +588,7 @@ export function BuildChart({ data, startDate, endDate, hideOutliers }: BuildChar
                   />
                 ))}
               </Bar>
+              {selection}
             </BarChart>
           )}
         </ResponsiveContainer>

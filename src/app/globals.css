@@ -56,6 +56,12 @@ h2 {
   outline-offset: 2px;
 }
 
+/* Recharts makes each chart focusable for keyboard tooltips; clicking or
+   drag-zooming one would otherwise draw the browser's focus ring. */
+.recharts-surface:focus:not(:focus-visible) {
+  outline: none;
+}
+
 .dashboard-nav {
   background: rgb(255 255 255 / 82%);
   backdrop-filter: blur(20px) saturate(160%);
