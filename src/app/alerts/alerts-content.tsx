@@ -21,6 +21,11 @@ import {
   viewMainCiJobAlerts,
   type MainCiJobAlert,
 } from "@/lib/alerts-main-ci";
+import { EvalAlerts } from "@/components/eval-alerts";
+import type {
+  EvalRegressionAlert,
+  EvalRegressionSnapshot,
+} from "@/lib/eval-alert-types";
 import {
   ALERT_TIME_WINDOWS,
   alertWindowCutoff,
@@ -38,7 +43,7 @@ async function fetcher<T>(url: string): Promise<T> {
   return payload;
 }
 
-type AlertTab = "main-ci" | "image-builds" | "fast-ci" | "infra";
+type AlertTab = "main-ci" | "image-builds" | "fast-ci" | "infra" | "eval";
 
 const ALERT_TABS: readonly {
   value: AlertTab;
@@ -69,6 +74,12 @@ const ALERT_TABS: readonly {
     label: "Infra",
     description:
       "Infra health episodes: hosts that stopped reporting, shared disks over their usage threshold, and GPUs over their temperature threshold. An episode opens only after a breach sustains across consecutive five-minute scans and resolves on the first healthy observation; a host absent for seven days is auto-retired and stops alerting. This view is read-only — there is nothing to resolve by hand.",
+  },
+  {
+    value: "eval",
+    label: "Eval regressions",
+    description:
+      "Accuracy evaluation regressions detected by comparing the latest nightly image against the most recent release baseline. A regression opens when a metric drops beyond the statistical threshold (2σ) and resolves when a later check positively shows recovery. Missing data does not open or resolve episodes. Checks run every six hours.",
   },
 ];
 
@@ -156,6 +167,13 @@ interface InfraAlertsResponse {
   retiredHosts?: InfraRetiredHost[];
   schemaStatus?: "ready" | "pending";
   resolutionEnabled?: boolean;
+  error?: string;
+}
+
+interface EvalAlertsResponse {
+  alerts?: EvalRegressionAlert[];
+  snapshots?: EvalRegressionSnapshot[];
+  schemaStatus?: "ready" | "pending";
   error?: string;
 }
 
@@ -498,6 +516,35 @@ function InfraSection({ timeWindow }: { timeWindow: AlertTimeWindow }) {
   );
 }
 
+function EvalSection() {
+  const { data, isLoading, error, mutate } = useSWR<EvalAlertsResponse>(
+    "/api/alerts/eval",
+    fetcher,
+    { refreshInterval: 5 * 60 * 1000 },
+  );
+
+  return (
+    <AlertSection
+      title="Eval regressions"
+      isLoading={isLoading}
+      failed={Boolean(error || data?.error)}
+      onRetry={() => void mutate()}
+    >
+      {data?.schemaStatus === "pending" ? (
+        <div className="flex h-48 items-center justify-center rounded-lg border border-dashed border-amber-300 px-6 text-center text-sm text-amber-700 dark:border-amber-800 dark:text-amber-300">
+          Backend rollout pending. Migration 0023 and the eval regression
+          cron must be deployed before this preview can show alerts.
+        </div>
+      ) : (
+        <EvalAlerts
+          alerts={data?.alerts ?? []}
+          snapshots={data?.snapshots ?? []}
+        />
+      )}
+    </AlertSection>
+  );
+}
+
 export default function AlertsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -626,6 +673,8 @@ export default function AlertsContent() {
         />
       ) : tab === "infra" ? (
         <InfraSection timeWindow={timeWindow} />
+      ) : tab === "eval" ? (
+        <EvalSection />
       ) : (
         <FastCISection
           timeWindow={timeWindow}

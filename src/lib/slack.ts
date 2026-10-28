@@ -77,9 +77,11 @@ export async function postMessage(
 export async function updateMessage(
   ts: string,
   text: string,
+  channelOverride?: string,
   blocks?: SlackBlock[],
 ): Promise<SlackPostResult> {
-  const { token, channel } = getConfig();
+  const { token, channel: defaultChannel } = getConfig();
+  const channel = channelOverride ?? defaultChannel;
 
   const res = await fetch("https://slack.com/api/chat.update", {
     method: "POST",
@@ -97,8 +99,10 @@ export async function updateMessage(
 export async function addReaction(
   name: string,
   messageTs: string,
+  channelOverride?: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const { token, channel } = getConfig();
+  const { token, channel: defaultChannel } = getConfig();
+  const channel = channelOverride ?? defaultChannel;
 
   const res = await fetch("https://slack.com/api/reactions.add", {
     method: "POST",
