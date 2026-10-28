@@ -114,6 +114,12 @@ test("main's timings alone when the treatment branch has no builds", async (t) =
   assert.match(statements[3].text, /set_config\('statement_timeout', \?, true\)/);
   assert.deepEqual(statements[3].values, ["3000"]);
   assert.match(statements[4].text, /buildkite\.build\.branch' = 'khluu\/otel'/);
+  // The treatment branch counts only builds where every job of the step
+  // passed with test spans, the same rule as main.
+  for (const select of [statements[0].text, statements[4].text]) {
+    assert.match(select, /HAVING BOOL_AND\(job_state = 'finished' AND job_passed = 'true'\)/);
+    assert.match(select, /t\.span_attributes->>'ci\.span\.kind' = 'test'/);
+  }
 });
 
 test("adds treatment files only for commands main hasn't timed", async (t) => {
