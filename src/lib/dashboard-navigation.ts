@@ -3,51 +3,81 @@ export interface DashboardNavItem {
   label: string;
 }
 
+/** A section tab that opens a row of its own tabs (e.g. Health → Metrics). */
+export interface DashboardNavGroup {
+  label: string;
+  links: readonly DashboardNavItem[];
+}
+
+export type DashboardNavEntry = DashboardNavItem | DashboardNavGroup;
+
 export interface DashboardSection {
   href: string;
   label: string;
   description: string;
-  links: readonly DashboardNavItem[];
+  links: readonly DashboardNavEntry[];
+}
+
+export function isNavGroup(entry: DashboardNavEntry): entry is DashboardNavGroup {
+  return "links" in entry;
+}
+
+/** Every page a section links to, groups flattened, in order. */
+export function sectionPages(section: DashboardSection): DashboardNavItem[] {
+  return section.links.flatMap((entry) =>
+    isNavGroup(entry) ? [...entry.links] : [entry],
+  );
 }
 
 export const DASHBOARD_SECTIONS = [
   {
     href: "/",
-    label: "CI Health",
+    label: "Health",
     description:
-      "Build outcomes, job runs, queue health, test reliability, AMD parity, alert history, force-merges, and automatic sharding.",
+      "Build outcomes, job runs, test reliability, runner queues, alert history, and CI metrics.",
     links: [
       { href: "/", label: "Builds" },
       { href: "/jobs", label: "Jobs" },
-      { href: "/queue", label: "Queue" },
       { href: "/tests", label: "Tests" },
-      { href: "/parity", label: "Parity" },
+      { href: "/queue", label: "Runner Queue" },
       { href: "/alerts", label: "Alerts" },
-      { href: "/force-merges", label: "Force-merges" },
-      { href: "/sharding", label: "Sharding" },
+      {
+        label: "Metrics",
+        links: [
+          { href: "/parity", label: "AMD Parity" },
+          { href: "/force-merges", label: "Force-merges" },
+          { href: "/sharding", label: "Automatic sharding" },
+        ],
+      },
     ],
   },
   {
     href: "/gpu",
-    label: "Infrastructure",
+    label: "Infra",
     description: "GPU fleet capacity, utilization, and infrastructure cost.",
     links: [
       { href: "/gpu", label: "GPU" },
       { href: "/cost", label: "Cost" },
     ],
   },
+  {
+    href: "/perf",
+    label: "Perf Eval",
+    description:
+      "Nightly performance benchmarks, model accuracy evaluations, and side-by-side image comparisons.",
+    links: [
+      { href: "/perf", label: "Performance" },
+      { href: "/eval", label: "Evaluation" },
+      { href: "/compare", label: "Compare" },
+    ],
+  },
 ] as const satisfies readonly DashboardSection[];
 
-export const TOP_LEVEL_NAV_ITEMS = [
-  ...DASHBOARD_SECTIONS.map((section) => ({
-    href: section.href,
-    label: section.label,
-    routes: section.links.map((link) => link.href),
-  })),
-  { href: "/perf", label: "Performance", routes: ["/perf"] },
-  { href: "/eval", label: "Evaluation", routes: ["/eval"] },
-  { href: "/compare", label: "Compare", routes: ["/compare"] },
-];
+export const TOP_LEVEL_NAV_ITEMS = DASHBOARD_SECTIONS.map((section) => ({
+  href: section.href,
+  label: section.label,
+  routes: sectionPages(section).map((link) => link.href),
+}));
 
 export function routeMatches(pathname: string, href: string): boolean {
   return href === "/"
@@ -57,8 +87,8 @@ export function routeMatches(pathname: string, href: string): boolean {
 
 export function sectionForPathname(
   pathname: string,
-): (typeof DASHBOARD_SECTIONS)[number] | undefined {
+): DashboardSection | undefined {
   return DASHBOARD_SECTIONS.find((section) =>
-    section.links.some((link) => routeMatches(pathname, link.href)),
+    sectionPages(section).some((link) => routeMatches(pathname, link.href)),
   );
 }
