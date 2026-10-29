@@ -118,7 +118,14 @@ export async function GET(request: NextRequest) {
       conditions.push(`b.created_at >= '${startDate.replace(/'/g, "''")}'`);
     }
     if (endDate) {
-      conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
+      // A date is inclusive; a full timestamp (from a drag-zoom on the
+      // chart) is the exact, exclusive end.
+      const end = endDate.replace(/'/g, "''");
+      conditions.push(
+        endDate.includes("T")
+          ? `b.created_at < '${end}'`
+          : `b.created_at < DATE_ADD('${end}', 1)`,
+      );
     }
     const where = conditions.join(" AND ");
     if (jobGroups.length > 0) {

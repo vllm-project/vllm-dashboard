@@ -465,3 +465,15 @@ def test_alerts_share_one_channel_and_full_ci_keeps_its_own(
     monkeypatch.setenv("SLACK_CI_NOTIFICATIONS_CHANNEL", "C0NOTIFY")
     assert fast_ci.slack_channel() == "C0ALERTS"
     assert fast_ci.full_ci_slack_channel() == "C0NOTIFY"
+
+
+def test_infra_alerts_post_where_the_daily_summary_does(monkeypatch: Any) -> None:
+    import alerting.fast_ci as fast_ci
+
+    monkeypatch.setenv("SLACK_CI_ALERT_CHANNEL", "C0ALERTS")
+    monkeypatch.delenv("SLACK_CI_INFRA_ALERT_CHANNEL", raising=False)
+    assert fast_ci.infra_slack_channel() == "C0ALERTS"
+
+    monkeypatch.setenv("SLACK_CI_INFRA_ALERT_CHANNEL", "C0INFRA")
+    assert fast_ci.infra_slack_channel() == "C0INFRA"
+    assert fast_ci.slack_channel() == "C0ALERTS"

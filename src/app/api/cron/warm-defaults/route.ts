@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { cronAuthError } from "@/lib/operator-auth";
 
 export const maxDuration = 60;
 
@@ -12,12 +13,12 @@ export const maxDuration = 60;
 // changes. The Builds chain is recomputed each tick because the group matrix
 // key embeds the current build ids, which change with every new CI build.
 export async function GET(request: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const auth = request.headers.get("authorization");
-    if (auth !== `Bearer ${cronSecret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const authError = cronAuthError(request.headers.get("authorization"));
+  if (authError) {
+    return NextResponse.json(
+      { error: authError.error },
+      { status: authError.status },
+    );
   }
 
   const base = process.env.WARM_DEFAULTS_BASE_URL ?? "https://ci.vllm.ai";

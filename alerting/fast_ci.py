@@ -32,11 +32,12 @@ INITIAL_LOOKBACK = timedelta(minutes=30)
 SAFETY_OVERLAP = timedelta(minutes=15)
 MAX_DURATION_SECONDS = 30
 SLACK_BATCH_SIZE = 8
-# Fast CI, Main CI image builds and infra post to one alert channel, told
-# apart by each post's header block; Full CI reports keep their own channel.
-# Both are overridable from secrets manager, so a channel move stays a
-# secret edit: SLACK_CI_ALERT_CHANNEL and SLACK_CI_NOTIFICATIONS_CHANNEL
-# (SLACK_CHANNEL_ID is Full CI's legacy fallback).
+# Fast CI and Main CI image builds post to one alert channel, told apart by
+# each post's header block; infra alerts and Full CI reports have their own.
+# All are overridable from secrets manager, so a channel move stays a secret
+# edit: SLACK_CI_ALERT_CHANNEL, SLACK_CI_INFRA_ALERT_CHANNEL and
+# SLACK_CI_NOTIFICATIONS_CHANNEL (SLACK_CHANNEL_ID is Full CI's legacy
+# fallback).
 ALERTS_SLACK_CHANNEL = "C0ANHBE642Y"
 CI_NOTIFICATIONS_SLACK_CHANNEL = "C0ABTNM9L5U"
 STALE_NOTIFICATION_AGE = timedelta(minutes=30)
@@ -45,6 +46,11 @@ STALE_NOTIFICATION_AGE = timedelta(minutes=30)
 def slack_channel() -> str:
     """The shared alert channel Fast CI, Main CI and infra intents post to."""
     return os.environ.get("SLACK_CI_ALERT_CHANNEL", ALERTS_SLACK_CHANNEL)
+
+
+def infra_slack_channel() -> str:
+    """The channel infra alerts post to: the daily summary's channel, else the alerts one."""
+    return os.environ.get("SLACK_CI_INFRA_ALERT_CHANNEL") or slack_channel()
 
 
 def full_ci_slack_channel() -> str:

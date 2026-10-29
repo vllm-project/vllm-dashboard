@@ -39,7 +39,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from alerting.commands import ScheduledCommand
-from alerting.fast_ci import slack_channel
+from alerting.fast_ci import infra_slack_channel
 from alerting.ports import (
     AlertPath,
     Clock,
@@ -2145,7 +2145,7 @@ def _intent(
         alert_path=AlertPath.INFRA,
         delivery_mode=delivery_mode,
         destination_mode=DestinationMode.BOT_TOKEN,
-        destination=slack_channel(),
+        destination=infra_slack_channel(),
         payload=headed_payload(
             text,
             **(

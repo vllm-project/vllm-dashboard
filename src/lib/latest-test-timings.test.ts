@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  medianFiles, medianSetupMs, setupMsPerJob, summarizeFiles, withTestsOverMs,
+  p80Files, medianSetupMs, setupMsPerJob, summarizeFiles, withTestsOverMs,
   TimingDataError, type TestSpanRow,
 } from "./latest-test-timings";
+
+// Interpolated percentiles carry float noise (192.00000000000006).
+const rounded = (ms: number) => Math.round(ms * 1e6) / 1e6;
 
 function row(nodeid: string, duration_ms: number, extra: Partial<TestSpanRow> = {}): TestSpanRow {
   return {
@@ -48,38 +51,59 @@ test("rejects data that could masquerade as a usable baseline", () => {
   }
 });
 
-test("takes each file's median over the builds it ran in", () => {
+test("takes each file's p80 over the builds it ran in, interpolating between builds", () => {
   const build = (ms: number, extra: TestSpanRow[] = []) =>
     summarizeFiles([row("tests/a.py::one", ms), ...extra]);
-  const files = medianFiles([
+  const files = p80Files([
     build(100, [row("tests/new.py::one", 40, { outcome: "skipped" })]),
     build(300),
     build(110),
     build(120, [row("tests/new.py::one", 10)]),
   ]);
-  assert.deepEqual(files.map((f) => [f.file, f.observedMs, f.passedMs, f.builds, f.timingStatus]), [
-    ["tests/a.py", 115, 115, 4, "passed"],
-    ["tests/new.py", 25, 5, 2, "skip_only"],
+  assert.deepEqual(files.map((f) => [f.file, rounded(f.observedMs), rounded(f.passedMs), f.builds, f.timingStatus]), [
+    ["tests/a.py", 192, 192, 4, "passed"],
+    ["tests/new.py", 34, 8, 2, "skip_only"],
   ]);
 });
 
-test("ignores a run of slow builds that stays a minority", () => {
-  const files = medianFiles([30, 30, 30, 18, 18, 18, 18].map((min) =>
-    summarizeFiles([row("tests/a.py::one", min * 60_000)])));
-  assert.equal(files[0].observedMs, 18 * 60_000);
+test("ignores three slow builds in twenty; a fourth starts raising the estimate", () => {
+  const p80Of = (slow: number) => p80Files([...Array(20).keys()].map((i) =>
+    summarizeFiles([row("tests/a.py::one", (i < slow ? 30 : 18) * 60_000)])))[0].observedMs;
+  // 20 builds put p80 at rank 15.2 of 0..19: four slow builds take ranks 16-19.
+  assert.equal(p80Of(3), 18 * 60_000);
+  assert.equal(rounded(p80Of(4)), 20.4 * 60_000);
 });
 
-test("takes each test's median over only the builds it ran in, first-seen order", () => {
+test("orders files by command, then file, whichever build saw them first", () => {
+  const files = p80Files([
+    summarizeFiles([row("tests/z.py::one", 1, { command_label: "pytest b" })]),
+    summarizeFiles([
+      row("tests/y.py::one", 1), row("tests/x.py::one", 1),
+      row("tests/a.py::one", 1, { command_span_id: "cmd-b", command_label: "pytest b" }),
+    ]),
+  ]);
+  assert.deepEqual(files.map((f) => [f.command, f.file]), [
+    ["pytest a", "tests/x.py"], ["pytest a", "tests/y.py"],
+    ["pytest b", "tests/a.py"], ["pytest b", "tests/z.py"],
+  ]);
+});
+
+test("a file seen in one build takes that build's time", () => {
+  const [file] = p80Files([summarizeFiles([row("tests/a.py::one", 70)])]);
+  assert.equal(file.observedMs, 70);
+});
+
+test("takes each test's p80 over only the builds it ran in, first-seen order", () => {
   const build = (ms: number, extra: TestSpanRow[] = []) =>
     summarizeFiles([row("tests/a.py::one", ms), ...extra]);
-  const [file] = medianFiles([
+  const [file] = p80Files([
     build(100, [row("tests/a.py::two[p]", 40)]),
     build(300),
     build(110, [row("tests/a.py::two[p]", 20)]),
   ]);
   assert.deepEqual(file.tests, [
-    { nodeid: "tests/a.py::one", observedMs: 110 },
-    { nodeid: "tests/a.py::two[p]", observedMs: 30 },
+    { nodeid: "tests/a.py::one", observedMs: 224 },
+    { nodeid: "tests/a.py::two[p]", observedMs: 36 },
   ]);
 });
 
@@ -91,23 +115,23 @@ test("a repeated nodeid within one build is an error, same as a repeated case", 
 });
 
 test("a test that is always skipped keeps its real duration, not an invented zero", () => {
-  const [file] = medianFiles([
+  const [file] = p80Files([
     summarizeFiles([row("tests/a.py::one", 10), row("tests/a.py::skip", 2, { outcome: "skipped" })]),
     summarizeFiles([row("tests/a.py::one", 12), row("tests/a.py::skip", 4, { outcome: "skipped" })]),
   ]);
   assert.deepEqual(file.tests.find((t) => t.nodeid === "tests/a.py::skip"), {
-    nodeid: "tests/a.py::skip", observedMs: 3,
+    nodeid: "tests/a.py::skip", observedMs: 3.6,
   });
 });
 
 test("withTestsOverMs keeps tests only strictly over the threshold", () => {
-  const [file] = medianFiles([summarizeFiles([row("tests/a.py::one", 500)])]);
+  const [file] = p80Files([summarizeFiles([row("tests/a.py::one", 500)])]);
   assert.equal(withTestsOverMs([file], 500)[0].tests, undefined, "at the threshold: stripped");
   assert.deepEqual(withTestsOverMs([file], 499)[0].tests, [{ nodeid: "tests/a.py::one", observedMs: 500 }]);
 });
 
 test("withTestsOverMs strips tests from every file when the param is absent, other fields unchanged", () => {
-  const [file] = medianFiles([summarizeFiles([row("tests/a.py::one", 500)])]);
+  const [file] = p80Files([summarizeFiles([row("tests/a.py::one", 500)])]);
   const [response] = withTestsOverMs([file], null);
   assert.ok(!("tests" in response));
   const rest: Record<string, unknown> = { ...file };

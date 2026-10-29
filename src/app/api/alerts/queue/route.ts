@@ -8,6 +8,8 @@ import {
   type SlackBlock,
 } from "@/lib/slack";
 import { effectiveWaiting } from "@/lib/queue-plugins";
+import { cronAuthError } from "@/lib/operator-auth";
+import { parseQueueStates } from "@/lib/queue-alert-state";
 
 export const maxDuration = 55;
 
@@ -110,12 +112,12 @@ function buildCombinedMessage(
 }
 
 export async function GET(request: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const auth = request.headers.get("authorization");
-    if (auth !== `Bearer ${cronSecret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const authError = cronAuthError(request.headers.get("authorization"));
+  if (authError) {
+    return NextResponse.json(
+      { error: authError.error },
+      { status: authError.status },
+    );
   }
 
   if (!process.env.SLACK_BOT_TOKEN) {
@@ -166,10 +168,9 @@ export async function GET(request: NextRequest) {
 
     let messageTs: string | null =
       summaryRows.length > 0 ? (summaryRows[0].message_ts as string) : null;
-    const queueStates: Record<string, QueueAlertEntry> =
-      summaryRows.length > 0
-        ? (summaryRows[0].queues as Record<string, QueueAlertEntry>)
-        : {};
+    const queueStates = parseQueueStates<QueueAlertEntry>(
+      summaryRows.length > 0 ? summaryRows[0].queues : null,
+    );
 
     const time = fmtTime();
     let changed = false;
@@ -236,7 +237,7 @@ export async function GET(request: NextRequest) {
       if (messageTs) {
         await db`
           INSERT INTO alert_summary (id, message_ts, queues, created_at, updated_at)
-          VALUES (${dateKey}, ${messageTs}, ${JSON.stringify(queueStates)}::jsonb, NOW(), NOW())
+          VALUES (${dateKey}, ${messageTs}, ${db.json(queueStates as never)}::jsonb, NOW(), NOW())
           ON CONFLICT (id) DO UPDATE
             SET message_ts = EXCLUDED.message_ts,
                 queues = EXCLUDED.queues,

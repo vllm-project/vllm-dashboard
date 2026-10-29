@@ -41,7 +41,7 @@ function daysAgo(n: number): string {
   return formatDate(d);
 }
 
-function formatDisplayLabel(start: string, end: string): string {
+export function formatDisplayLabel(start: string, end: string): string {
   if (!start || !end) return "All Time";
 
   const now = new Date();
@@ -55,9 +55,23 @@ function formatDisplayLabel(start: string, end: string): string {
     }
   }
 
-  const startDate = start.includes("T") ? start.split("T")[0] : start;
-  const endDate = end.includes("T") ? end.split("T")[0] : end;
-  return `${startDate} — ${endDate}`;
+  if (start.includes("T")) {
+    // An hour preset (date end: still taking new builds) or a drag-zoomed
+    // range (timestamp end): show the local times it spans.
+    const startAt = new Date(start);
+    const day = (d: Date) =>
+      d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    const time = (d: Date) =>
+      d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    let endLabel = "now";
+    if (end.includes("T")) {
+      const endAt = new Date(end);
+      endLabel =
+        day(startAt) === day(endAt) ? time(endAt) : `${day(endAt)} ${time(endAt)}`;
+    }
+    return `${day(startAt)} ${time(startAt)} — ${endLabel}`;
+  }
+  return `${start} — ${end}`;
 }
 
 export function DateRangePicker({
@@ -168,7 +182,9 @@ export function DateRangePicker({
                   onClick={() => {
                     if (preset.hours) {
                       setDraftStart(hoursAgo(preset.hours));
-                      setDraftEnd(new Date().toISOString());
+                      // Today's date, not "now": a date end keeps taking new
+                      // builds, where a timestamp end is an exact cutoff.
+                      setDraftEnd(formatDate(new Date()));
                     } else if (preset.days) {
                       setDraftStart(daysAgo(preset.days));
                       setDraftEnd(formatDate(new Date()));
