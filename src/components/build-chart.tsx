@@ -14,7 +14,6 @@ import {
   Line,
   Area,
   ComposedChart,
-  ReferenceArea,
 } from "recharts";
 import { useChartDragSelect } from "@/components/chart-drag-select";
 import { formatDisplayLabel } from "@/components/date-range-picker";
@@ -313,7 +312,9 @@ export function BuildChart({
       });
   }, [filteredData]);
 
-  const { span, handlers } = useChartDragSelect(
+  const { containerRef, bandRef, handlers } = useChartDragSelect(
+    mode === "overview" ? dailyData.length : runData.length,
+    mode === "overview" ? "point" : "band",
     onRangeSelect &&
       ((first, last) => {
         if (mode === "overview") {
@@ -327,26 +328,6 @@ export function BuildChart({
           );
         }
       }),
-  );
-  const selection = span && (
-    <ReferenceArea
-      {...(mode === "overview" ? { yAxisId: "duration" } : {})}
-      x1={
-        mode === "overview"
-          ? dailyData[span.from]?.dateLabel
-          : runData[span.from]?.index
-      }
-      x2={
-        mode === "overview"
-          ? dailyData[span.to]?.dateLabel
-          : runData[span.to]?.index
-      }
-      fill="#3b82f6"
-      fillOpacity={0.12}
-      stroke="#3b82f6"
-      strokeOpacity={0.5}
-      ifOverflow="visible"
-    />
   );
 
   if (data.length === 0) {
@@ -437,14 +418,15 @@ export function BuildChart({
       </div>
 
       <div
-        className={`h-[320px] sm:h-[360px] ${onRangeSelect ? "cursor-crosshair select-none" : ""}`}
+        ref={containerRef}
+        className={`relative h-[320px] sm:h-[360px] ${onRangeSelect ? "cursor-crosshair touch-none select-none" : ""}`}
+        {...handlers}
       >
         <ResponsiveContainer width="100%" height="100%">
           {mode === "overview" ? (
             <ComposedChart
               data={dailyData}
               margin={{ top: 10, right: 12, bottom: 4, left: 2 }}
-              {...handlers}
             >
               <CartesianGrid
                 strokeDasharray="3 3"
@@ -545,13 +527,11 @@ export function BuildChart({
                 activeDot={{ r: 4 }}
                 isAnimationActive={false}
               />
-              {selection}
             </ComposedChart>
           ) : (
             <BarChart
               data={runData}
               margin={{ top: 10, right: 12, bottom: 4, left: 2 }}
-              {...handlers}
             >
               <CartesianGrid
                 strokeDasharray="3 3"
@@ -588,10 +568,14 @@ export function BuildChart({
                   />
                 ))}
               </Bar>
-              {selection}
             </BarChart>
           )}
         </ResponsiveContainer>
+        <div
+          ref={bandRef}
+          aria-hidden
+          className="pointer-events-none absolute hidden border-x border-blue-500/70 bg-blue-500/15"
+        />
       </div>
       {mode === "overview" && <BuildOutcomeStrip data={dailyData} />}
     </section>

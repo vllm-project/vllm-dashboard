@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import useSWR from "swr";
 import { StatCard } from "@/components/stat-card";
 import { BuildChart, BuildDuration } from "@/components/build-chart";
@@ -8,6 +8,13 @@ import { BuildsTable, Build } from "@/components/builds-table";
 import { SearchableSelect } from "@/components/searchable-select";
 import { MultiSelect } from "@/components/multi-select";
 import { DateRangePicker } from "@/components/date-range-picker";
+import {
+  durationStats,
+  formatMinutes,
+  rangeEndMs,
+  rangeSpanMs,
+  redTime,
+} from "@/lib/build-stats";
 
 const fetcher = async (url: string) => {
   const response = await fetch(url);
@@ -171,6 +178,22 @@ export default function BuildsPage() {
       .map((option) => option.name);
   }, [groupData?.jobOptions, selectedGroups]);
 
+  // "Now" for the headline numbers, refreshed each minute so a red stretch
+  // that is still open keeps growing.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const headline = useMemo(() => {
+    const span = rangeSpanMs(startDate, endDate, now);
+    return {
+      duration: durationStats(buildDurations),
+      red: branch ? redTime(buildDurations, rangeEndMs(endDate, now)) : null,
+      perDay: span ? (summary.total / span) * 86_400_000 : null,
+    };
+  }, [buildDurations, branch, startDate, endDate, summary.total, now]);
+
   if (isLoading && !data) {
     return (
       <div className="flex h-64 items-center justify-center text-zinc-400">
@@ -221,14 +244,54 @@ export default function BuildsPage() {
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
-        <StatCard label="Total Builds" value={summary.total} />
         <StatCard
-          label="Pass Rate"
+          label="Builds"
+          value={summary.total.toLocaleString()}
+          detail={
+            headline.perDay === null
+              ? undefined
+              : headline.perDay >= 24
+                ? `${Math.round(headline.perDay).toLocaleString()} per day`
+                : `${(headline.perDay / 24).toFixed(1)} per hour`
+          }
+        />
+        <StatCard
+          label="Pass rate"
           value={`${summary.passRate}%`}
           color={summary.passRate >= 80 ? "green" : summary.passRate >= 50 ? "yellow" : "red"}
+          detail={`${summary.passed.toLocaleString()} passed · ${summary.failed.toLocaleString()} failed`}
         />
-        <StatCard label="Passed" value={summary.passed} color="green" />
-        <StatCard label="Failed" value={summary.failed} color="red" />
+        <StatCard
+          label="Build duration"
+          value={headline.duration ? formatMinutes(headline.duration.p50) : "—"}
+          detail={
+            headline.duration
+              ? `median · p90 ${formatMinutes(headline.duration.p90)}`
+              : "No finished builds"
+          }
+        />
+        <StatCard
+          label="Time red"
+          value={headline.red ? `${Math.round(headline.red.share * 100)}%` : "—"}
+          color={
+            !headline.red
+              ? "default"
+              : headline.red.share < 0.1
+                ? "green"
+                : headline.red.share < 0.3
+                  ? "yellow"
+                  : "red"
+          }
+          detail={
+            !branch
+              ? "Pick a branch to see how long it was red"
+              : headline.red
+                ? headline.red.longestMs > 0
+                  ? `longest red stretch ${formatMinutes(headline.red.longestMs / 60_000)}`
+                  : "never red in this range"
+                : "No finished builds"
+          }
+        />
       </div>
 
       <BuildChart

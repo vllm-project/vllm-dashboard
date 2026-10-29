@@ -1,89 +1,138 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { MouseHandlerDataParam } from "recharts";
+import { useRef, type PointerEvent as ReactPointerEvent } from "react";
 
-/** The data indexes a drag currently spans, in the order the user dragged. */
-export interface DragSpan {
-  from: number;
-  to: number;
+/** Below this many pixels a press and release is a click, not a drag. */
+const MIN_DRAG_PX = 4;
+
+interface Drag {
+  pointerId: number;
+  startX: number;
+  x: number;
+  plot: DOMRect;
+  onKeyDown: (event: KeyboardEvent) => void;
 }
 
-function pointIndex(state: MouseHandlerDataParam): number | null {
-  // null/undefined until the pointer has been over a point; Number(null) is 0.
-  if (state.activeTooltipIndex == null) return null;
-  const index = Number(state.activeTooltipIndex);
-  return Number.isInteger(index) && index >= 0 ? index : null;
+/**
+ * How a category axis spreads its points: "band" gives each point an equal
+ * slice (bar charts), "point" puts the first and last on the plot's edges
+ * (line charts).
+ */
+export type AxisScale = "band" | "point";
+
+/** The data point nearest `x` on a category axis of `count` points. */
+export function pointIndexAt(
+  x: number,
+  plot: { left: number; width: number },
+  count: number,
+  scale: AxisScale,
+): number {
+  const fraction = (x - plot.left) / plot.width;
+  const index =
+    scale === "band"
+      ? Math.floor(fraction * count)
+      : Math.round(fraction * (count - 1));
+  return Math.min(count - 1, Math.max(0, index));
 }
 
 /**
  * Click-and-drag across a recharts chart to pick a span of its data points,
- * the way Datadog zooms a graph to a time range. Spread `handlers` on the
- * chart and draw `span` as a ReferenceArea while it is set. `onSelect` gets
- * the first and last index (ascending) once the mouse is released over a
- * different point than it was pressed on; a plain click selects nothing.
- * Escape, or releasing outside the chart, cancels.
+ * the way Datadog zooms a graph to a time range.
+ *
+ * Nothing re-renders while the pointer moves: redrawing a chart of hundreds
+ * of bars on every mousemove is what made dragging lag. The band is a plain
+ * element whose style follows the pointer, and the span is worked out once,
+ * on release, from where the pointer is over the plot area: `pointCount`
+ * points on a category axis spread as `scale` says.
+ *
+ * Spread `handlers` on an element wrapping the chart, with `containerRef`,
+ * and put an absolutely positioned element with `bandRef` inside it.
+ * `onSelect` gets the first and last index (ascending) when they differ. A
+ * click, Escape, or a cancelled pointer selects nothing.
  */
 export function useChartDragSelect(
+  pointCount: number,
+  scale: AxisScale,
   onSelect: ((first: number, last: number) => void) | undefined,
 ) {
-  const [span, setSpan] = useState<DragSpan | null>(null);
-  // The button is down over the chart; the span starts at the first point
-  // the pointer is over, which on a press with no hover yet is a later move.
-  const pressed = useRef(false);
-  const dragging = span !== null;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const bandRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<Drag | null>(null);
 
-  useEffect(() => {
-    if (!dragging) return;
-    const cancel = () => {
-      pressed.current = false;
-      setSpan(null);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") cancel();
-    };
-    // A mouseup over the chart is handled (and stops here) first; one that
-    // reaches the window was released outside it.
-    window.addEventListener("mouseup", cancel);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mouseup", cancel);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [dragging]);
+  function end() {
+    if (bandRef.current) bandRef.current.style.display = "none";
+    if (containerRef.current) delete containerRef.current.dataset.dragging;
+    if (drag.current) window.removeEventListener("keydown", drag.current.onKeyDown);
+    drag.current = null;
+  }
+
+  function paint(current: Drag) {
+    const band = bandRef.current;
+    const container = containerRef.current;
+    if (!band || !container) return;
+    const origin = container.getBoundingClientRect();
+    band.style.display = "block";
+    band.style.left = `${Math.min(current.startX, current.x) - origin.left}px`;
+    band.style.width = `${Math.abs(current.x - current.startX)}px`;
+    band.style.top = `${current.plot.top - origin.top}px`;
+    band.style.height = `${current.plot.height}px`;
+  }
 
   const handlers = onSelect
     ? {
-        onMouseDown: (state: MouseHandlerDataParam) => {
-          pressed.current = true;
-          const index = pointIndex(state);
-          if (index !== null) setSpan({ from: index, to: index });
+        onPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+          if (event.button !== 0 || pointCount < 2) return;
+          const plot = event.currentTarget
+            .querySelector(".recharts-cartesian-grid")
+            ?.getBoundingClientRect();
+          if (!plot || event.clientX < plot.left || event.clientX > plot.right) return;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          end();
+          drag.current = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            x: event.clientX,
+            plot,
+            onKeyDown: (key) => {
+              if (key.key === "Escape") end();
+            },
+          };
+          // Hides the hover tooltip while dragging (see globals.css).
+          event.currentTarget.dataset.dragging = "true";
+          window.addEventListener("keydown", drag.current.onKeyDown);
         },
-        onMouseMove: (
-          state: MouseHandlerDataParam,
-          event: { buttons?: number },
-        ) => {
-          // Released outside the chart before any span started.
-          if (event.buttons === 0) pressed.current = false;
-          if (!pressed.current) return;
-          const index = pointIndex(state);
-          if (index === null) return;
-          if (!span) setSpan({ from: index, to: index });
-          else if (index !== span.to) setSpan({ ...span, to: index });
+        onPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+          const current = drag.current;
+          if (!current || event.pointerId !== current.pointerId) return;
+          current.x = Math.min(
+            current.plot.right,
+            Math.max(current.plot.left, event.clientX),
+          );
+          paint(current);
         },
-        onMouseUp: (
-          _state: MouseHandlerDataParam,
-          event: { stopPropagation: () => void },
-        ) => {
-          event.stopPropagation();
-          pressed.current = false;
-          if (span && span.from !== span.to) {
-            onSelect(Math.min(span.from, span.to), Math.max(span.from, span.to));
-          }
-          setSpan(null);
+        onPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+          const current = drag.current;
+          if (!current || event.pointerId !== current.pointerId) return;
+          end();
+          if (Math.abs(current.x - current.startX) < MIN_DRAG_PX) return;
+          const first = pointIndexAt(
+            Math.min(current.startX, current.x),
+            current.plot,
+            pointCount,
+            scale,
+          );
+          const last = pointIndexAt(
+            Math.max(current.startX, current.x),
+            current.plot,
+            pointCount,
+            scale,
+          );
+          if (first !== last) onSelect(first, last);
         },
+        onPointerCancel: end,
+        onLostPointerCapture: end,
       }
     : {};
 
-  return { span, handlers };
+  return { containerRef, bandRef, handlers };
 }
