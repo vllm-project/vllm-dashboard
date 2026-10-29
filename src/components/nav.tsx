@@ -164,7 +164,7 @@ export function Nav() {
   return (
     <nav className="dashboard-nav sticky top-0 z-50 border-b border-black/5 shadow-[0_1px_0_rgba(0,0,0,0.02)] dark:border-white/10">
       <div aria-hidden="true" className="brand-hairline" />
-      <div className="mx-auto max-w-[1440px] px-4 sm:px-6 lg:px-8">
+      <div className="px-4 sm:px-6 lg:px-8">
         <div className="flex h-14 items-center gap-6">
           <Link
             href="/"
