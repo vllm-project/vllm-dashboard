@@ -8,6 +8,7 @@ import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { SHARD_SUFFIX_SQL } from "@/lib/job-shards";
 import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { queryBuildsFromOtel } from "@/lib/otel-ci";
+import { isValidDateParam } from "@/lib/date-param";
 
 const PAGE_SIZE = 50;
 const TTL = 30_000;
@@ -73,6 +74,12 @@ export async function GET(request: NextRequest) {
     const branch = searchParams.get("branch");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
+    if (!isValidDateParam(startDate) || !isValidDateParam(endDate)) {
+      return NextResponse.json(
+        { error: "startDate and endDate must be YYYY-MM-DD or an ISO timestamp" },
+        { status: 400 },
+      );
+    }
     const page = Math.max(0, parseInt(searchParams.get("page") ?? "0", 10));
     const jobGroups = searchParams.get("jobGroups")?.split(",").filter(Boolean) ?? [];
     const jobNames = searchParams.get("jobNames")?.split(",").filter(Boolean) ?? [];

@@ -14,6 +14,7 @@ import { getCached, setCache } from "@/lib/api-cache";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { queryBuildJobsFromOtel, queryBuildsFromOtel } from "@/lib/otel-ci";
+import { isValidDateParam } from "@/lib/date-param";
 
 const MAX_PER_PAGE = 30;
 const DEFAULT_PER_PAGE = 10;
@@ -196,6 +197,12 @@ export async function GET(request: NextRequest) {
     const branch = searchParams.get("branch");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
+    if (!isValidDateParam(startDate) || !isValidDateParam(endDate)) {
+      return NextResponse.json(
+        { error: "startDate and endDate must be YYYY-MM-DD or an ISO timestamp" },
+        { status: 400 },
+      );
+    }
     const state = searchParams.get("state");
     const page = Math.max(0, parseInt(searchParams.get("page") ?? "0", 10));
     const perPage = Math.min(MAX_PER_PAGE, Math.max(1, parseInt(searchParams.get("per_page") ?? `${DEFAULT_PER_PAGE}`, 10)));
