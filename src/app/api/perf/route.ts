@@ -6,6 +6,7 @@ import {
   perfDataStartCondition,
   resolvePerfDataStartDate,
 } from "@/lib/perf-data";
+import { escapeSqlString } from "@/lib/sql-literal";
 
 // Perf data refreshes at most nightly, so a longer cache keeps repeat loads
 // instant without serving stale numbers.
@@ -29,8 +30,8 @@ export async function GET(request: NextRequest) {
       "message:model IS NOT NULL",
       perfDataStartCondition(startDate),
     ];
-    if (model) conditions.push(`message:model::STRING = '${model.replace(/'/g, "''")}'`);
-    if (device) conditions.push(`message:device::STRING = '${device.replace(/'/g, "''")}'`);
+    if (model) conditions.push(`message:model::STRING = '${escapeSqlString(model)}'`);
+    if (device) conditions.push(`message:device::STRING = '${escapeSqlString(device)}'`);
     if (tp) conditions.push(`message:tp::INT = ${parseInt(tp, 10)}`);
     if (conc) conditions.push(`message:conc::INT = ${parseInt(conc, 10)}`);
 

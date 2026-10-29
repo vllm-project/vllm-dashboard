@@ -1,6 +1,7 @@
 import { queryDatabricks } from "@/lib/databricks";
 import type { EvalMetric, EvalRow } from "@/lib/eval-data";
 import { PERF_DATA_START_CONDITION } from "@/lib/perf-data";
+import { escapeSqlString } from "@/lib/sql-literal";
 
 export type Area = "perf" | "eval";
 export type DeltaStatus = "regression" | "improvement" | "unchanged" | "noisy";
@@ -98,10 +99,6 @@ export interface DeltaItem {
 interface EvalMetricRun {
   row: EvalRow;
   metric: EvalMetric;
-}
-
-export function escapeSqlString(value: string): string {
-  return value.replace(/'/g, "''");
 }
 
 function stringValue(value: string | number | null): string {
