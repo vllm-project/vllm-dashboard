@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildsInRange,
   durationStats,
   formatMinutes,
   rangeSpanMs,
@@ -66,4 +67,20 @@ test("formatMinutes", () => {
   assert.equal(formatMinutes(45), "45m");
   assert.equal(formatMinutes(120), "2h");
   assert.equal(formatMinutes(85), "1h 25m");
+});
+
+test("buildsInRange keeps builds created in the range, read like the API", () => {
+  const builds = [1, 5, 9, 30].map((hour) => build("passed", hour));
+  const created = (kept: FinishedBuild[]) =>
+    kept.map((b) => (Date.parse(b.created_at) - t0) / HOUR + 1);
+  const now = t0 + 100 * HOUR;
+  // A timestamp range is exact and exclusive at the end.
+  assert.deepEqual(
+    created(buildsInRange(builds, new Date(t0 + 4 * HOUR).toISOString(), new Date(t0 + 9 * HOUR).toISOString(), now)),
+    [5, 9],
+  );
+  // A date end is inclusive of that whole day.
+  assert.deepEqual(created(buildsInRange(builds, "2026-10-20", "2026-10-20", now)), [1, 5, 9]);
+  // Nothing to filter: the same array comes back.
+  assert.equal(buildsInRange(builds, "", "", now), builds);
 });

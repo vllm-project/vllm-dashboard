@@ -560,7 +560,7 @@ export function BuildChart({
                 content={<RunTooltip />}
                 cursor={{ fill: "rgba(113,113,122,0.1)" }}
               />
-              <Bar dataKey="duration" radius={[2, 2, 0, 0]}>
+              <Bar dataKey="duration" radius={[2, 2, 0, 0]} isAnimationActive={false}>
                 {runData.map((point) => (
                   <Cell
                     key={point.index}
