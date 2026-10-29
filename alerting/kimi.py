@@ -4,8 +4,10 @@
 analyzer instructions (by default `assets/vllm-ci-failure-analyzer.md`,
 frontmatter stripped) as the system message and drives an OpenAI-compatible
 tool-calling loop. File tools are sandboxed to the materialized working
-directory and the shell tool only executes `curl`, so credentials stay in the
-server-side environment. Tool failures are returned to the model as tool
+directory. The "Bash" tool takes `curl` commands but never runs a process: it
+parses them and makes a GET to the Buildkite or GitHub API itself, adding the
+credentials, so the model can neither read a credential nor send data
+anywhere else. Tool failures are returned to the model as tool
 messages so it can recover; only transport failures, turn exhaustion, or the
 overall time budget raise `AnalyzerError`, which leaves the previous baseline
 authoritative. Slices other than Full CI pass their own instructions and task
@@ -17,10 +19,11 @@ from __future__ import annotations
 import importlib.resources
 import json
 import re
+import os
 import shlex
-import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -34,8 +37,8 @@ KIMI_ANALYZER_PROMPT = (
     ".logs/nightly_full.json only for Buildkite job ID lookups. Write "
     ".logs/ci_report.txt and keep it at or below 2800 characters, and update "
     ".logs/failed_tests_cache.json and .logs/suspicious_prs.json. "
-    "Credentials are available only through the environment; never include "
-    "their values in prompts, files, or output. REVERT_THRESHOLD is "
+    "Credentials are added to Buildkite and GitHub API requests for you; "
+    "never ask for or include them. REVERT_THRESHOLD is "
     "available in the environment (default 1)."
 )
 
@@ -46,6 +49,42 @@ GLOB_RESULT_LIMIT = 200
 GREP_RESULT_LIMIT = 200
 BASH_OUTPUT_LIMIT = 40_000
 BASH_TIMEOUT_SECONDS = 60
+HTTP_READ_LIMIT = 8_000_000
+
+# The only hosts the agent can reach, and the environment variable holding
+# the read-only token sent to each. Nothing else in the worker's environment
+# (database, Slack, write tokens) is reachable from a tool call.
+API_TOKENS = {
+    "api.buildkite.com": "BUILDKITE_TOKEN",
+    "api.github.com": "GITHUB_TOKEN",
+}
+# Request headers the agent may set; Authorization is always ours.
+ALLOWED_HEADERS = {"accept", "x-github-api-version"}
+# curl flags that change nothing about where a request goes or what it sends.
+IGNORED_FLAGS = {
+    "-s",
+    "--silent",
+    "-S",
+    "--show-error",
+    "-sS",
+    "-Ss",
+    "-f",
+    "--fail",
+    "-sf",
+    "-fs",
+    "-sSf",
+    "-fsS",
+    "-sfS",
+    "-L",
+    "--location",
+    "-sL",
+    "-Ls",
+    "-sSL",
+    "-fsSL",
+    "--compressed",
+    "-g",
+    "--globoff",
+}
 TASK_RESULT_LIMIT = 50_000
 REQUEST_TIMEOUT_SECONDS = 300.0
 # One slow or dropped completion should cost a retry, not the whole analysis:
@@ -161,7 +200,11 @@ _TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "Bash",
-            "description": "Run a curl command; all other commands are rejected.",
+            "description": (
+                "Run a read-only `curl` GET to https://api.buildkite.com or "
+                "https://api.github.com. Credentials are added for you; other "
+                "hosts, methods, and file or upload options are rejected."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"command": _STRING},
@@ -548,33 +591,107 @@ def _tool_grep(workdir: Path, pattern: str, path: str) -> str:
     return "\n".join(results) if results else "no matches"
 
 
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def _http_get(
+    url: str, headers: dict[str, str], timeout_seconds: float
+) -> tuple[int, str]:
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    opener = urllib.request.build_opener(_NoRedirects())
+    try:
+        with opener.open(request, timeout=timeout_seconds) as response:
+            status = response.status
+            body = response.read(HTTP_READ_LIMIT)
+    except urllib.error.HTTPError as error:
+        status = error.code
+        body = error.read(HTTP_READ_LIMIT)
+    return status, body.decode("utf-8", errors="replace")
+
+
+def _parse_curl(command: str) -> tuple[str, dict[str, str]] | str:
+    """The URL and headers of a read-only curl GET, or why it is refused."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError as exc:
+        return f"cannot parse command: {exc}"
+    if not tokens or tokens[0] != "curl":
+        return "only curl commands are allowed"
+    urls: list[str] = []
+    headers: dict[str, str] = {}
+    query: list[str] = []
+    get = False
+    args = iter(tokens[1:])
+    for arg in args:
+        if arg in IGNORED_FLAGS:
+            continue
+        if arg in ("-G", "--get"):
+            get = True
+        elif arg in ("-X", "--request"):
+            if next(args, "").upper() != "GET":
+                return "only GET requests are allowed"
+        elif arg in ("-m", "--max-time"):
+            next(args, None)
+        elif arg in ("-H", "--header"):
+            name, _, value = next(args, "").partition(":")
+            if name.strip().lower() == "authorization":
+                continue  # added for the request's host below
+            if name.strip().lower() not in ALLOWED_HEADERS:
+                return f"header not allowed: {name.strip()}"
+            headers[name.strip()] = value.strip()
+        elif arg in ("-d", "--data", "--data-urlencode"):
+            value = next(args, "")
+            if value.startswith("@") or "=@" in value:
+                return "reading files is not allowed"
+            query.append(value)
+        elif arg.startswith("-"):
+            return f"unsupported curl option: {arg}"
+        else:
+            urls.append(arg)
+    if query and not get:
+        return "only GET requests are allowed (use -G with -d)"
+    if len(urls) != 1:
+        return "give exactly one URL"
+    url = urllib.parse.urlsplit(urls[0])
+    if url.scheme != "https" or url.hostname not in API_TOKENS:
+        return "only https://api.buildkite.com and https://api.github.com are allowed"
+    if url.username or url.password or url.port not in (None, 443):
+        return "only https://api.buildkite.com and https://api.github.com are allowed"
+    full = urls[0]
+    if query:
+        extra = "&".join(urllib.parse.quote(item, safe="=") for item in query)
+        full += ("&" if url.query else "?") + extra
+    token = os.environ.get(API_TOKENS[url.hostname], "")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if url.hostname == "api.github.com":
+        headers.setdefault("Accept", "application/vnd.github+json")
+    return full, headers
+
+
 def _tool_bash(
     workdir: Path,
     command: str,
     *,
     timeout_seconds: float = BASH_TIMEOUT_SECONDS,
 ) -> str:
+    parsed = _parse_curl(command)
+    if isinstance(parsed, str):
+        return f"error: {parsed}"
+    url, headers = parsed
     try:
-        tokens = shlex.split(command)
-    except ValueError as exc:
-        return f"error: cannot parse command: {exc}"
-    if not tokens or tokens[0] != "curl":
-        return "error: only curl commands are allowed"
-    try:
-        completed = subprocess.run(
-            tokens,
-            cwd=workdir,
-            capture_output=True,
-            text=True,
-            timeout=min(BASH_TIMEOUT_SECONDS, timeout_seconds),
-            check=False,
+        status, output = _http_get(
+            url, headers, min(BASH_TIMEOUT_SECONDS, timeout_seconds)
         )
-    except subprocess.TimeoutExpired:
+    except TimeoutError:
         return "error: command timed out"
-    except OSError as exc:
-        return f"error: command failed: {exc}"
-    output = (completed.stdout or "") + (completed.stderr or "")
+    except (urllib.error.URLError, OSError) as exc:
+        return f"error: request failed: {exc}"
     if len(output) > BASH_OUTPUT_LIMIT:
         # Buildkite logs put the failure at the end; keep the tail.
         output = "... (truncated)\n" + output[-BASH_OUTPUT_LIMIT:]
-    return f"exit {completed.returncode}\n{output}"
+    if status >= 400:
+        return f"exit 22\nHTTP {status}\n{output}"
+    return f"exit 0\n{output}"
