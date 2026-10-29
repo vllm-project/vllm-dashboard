@@ -3,10 +3,12 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  findRecurringMainCiJobs,
   groupMainCiAlertsByFixPr,
   MainCIAlerts,
   MainCiAlertRow,
   nextSort,
+  RECURRING_MIN_EPISODES,
   sortMainCiAlerts,
 } from "./main-ci-alerts";
 import type { MainCiJobAlert, MainCiJobAnalysis } from "../lib/alerts-main-ci";
@@ -492,4 +494,176 @@ test("header cells are sort buttons", () => {
   assert.match(markup, /aria-label="Sort by failures"/);
   assert.match(markup, /aria-label="Sort by opened"/);
   assert.match(markup, /aria-label="Sort by last failed"/);
+});
+
+const QUANT_KEY = "step:quant|name:(H200 MIG 35GB) Quantization";
+
+/** A resolved episode of one job, failing from `from` to `to`. */
+function episode(
+  alertId: string,
+  jobKey: string,
+  from: string,
+  to: string,
+  failureCount: number,
+  overrides: Partial<MainCiJobAlert> = {},
+): MainCiJobAlert {
+  const base = alert();
+  return alert({
+    alertId,
+    jobKey,
+    jobName: jobKey.split("|name:")[1],
+    status: "resolved",
+    openedAt: from,
+    firstFailure: { ...base.firstFailure, finishedAt: from },
+    lastFailure: { ...base.lastFailure, finishedAt: to },
+    failureCount,
+    resolvedAt: to,
+    ...overrides,
+  });
+}
+
+// Oct 15: the Quantization step crashed in three auto-resolved episodes.
+const quantEpisodes = [
+  episode(
+    "q1",
+    QUANT_KEY,
+    "2026-10-15T04:39:00.000Z",
+    "2026-10-15T06:33:00.000Z",
+    3,
+  ),
+  episode(
+    "q2",
+    QUANT_KEY,
+    "2026-10-15T07:45:00.000Z",
+    "2026-10-15T19:39:00.000Z",
+    6,
+  ),
+  episode(
+    "q3",
+    QUANT_KEY,
+    "2026-10-15T21:43:00.000Z",
+    "2026-10-15T22:47:00.000Z",
+    3,
+  ),
+];
+
+test("recurring jobs fold every episode of a job key into totals", () => {
+  const once = episode(
+    "o1",
+    "step:once|name:One-off",
+    "2026-10-15T10:00:00.000Z",
+    "2026-10-15T10:00:00.000Z",
+    1,
+  );
+  const twiceKey = "step:twice|name:Twice";
+  const twice = [
+    episode(
+      "t1",
+      twiceKey,
+      "2026-10-15T01:00:00.000Z",
+      "2026-10-15T01:00:00.000Z",
+      1,
+    ),
+    episode(
+      "t2",
+      twiceKey,
+      "2026-10-15T23:00:00.000Z",
+      "2026-10-15T23:30:00.000Z",
+      2,
+      { status: "open", resolvedAt: null },
+    ),
+  ];
+
+  assert.equal(RECURRING_MIN_EPISODES, 2);
+  const jobs = findRecurringMainCiJobs([once, ...twice, ...quantEpisodes]);
+
+  // A single episode is not recurring; more episodes rank first.
+  assert.deepEqual(
+    jobs.map((job) => job.jobKey),
+    [QUANT_KEY, twiceKey],
+  );
+  const [quant, recent] = jobs;
+  assert.deepEqual(
+    quant.episodes.map((item) => item.alertId),
+    ["q3", "q2", "q1"],
+  );
+  assert.equal(quant.totalFailures, 12);
+  assert.equal(quant.firstFailedAt, "2026-10-15T04:39:00.000Z");
+  assert.equal(quant.lastFailedAt, "2026-10-15T22:47:00.000Z");
+  assert.equal(quant.hasOpenEpisode, false);
+  assert.equal(recent.totalFailures, 3);
+  assert.equal(recent.hasOpenEpisode, true);
+
+  assert.equal(findRecurringMainCiJobs(quantEpisodes, 4).length, 0);
+});
+
+test("recurring view surfaces jobs whose every episode auto-resolved", () => {
+  const alerts = [
+    ...quantEpisodes,
+    alert({ alertId: "open-1", jobName: "GPU test" }),
+  ];
+
+  // Under the default Open filter the resolved episodes stay hidden, but the
+  // Recurring option advertises one recurring job.
+  const open = renderToStaticMarkup(createElement(MainCIAlerts, { alerts }));
+  assert.match(open, /Recurring<span[^>]*>1<\/span>/);
+  assert.doesNotMatch(open, /Quantization/);
+
+  const recurring = renderToStaticMarkup(
+    createElement(MainCIAlerts, { alerts, initialStatus: "recurring" }),
+  );
+  assert.match(recurring, /Quantization/);
+  assert.match(recurring, />3 episodes</);
+  assert.match(recurring, /12 failed runs across 3 episodes/);
+  assert.match(recurring, /Latest episode resolved/);
+  assert.doesNotMatch(recurring, /GPU test/);
+});
+
+test("recurring view still applies the job-category hides", () => {
+  const amdKey = "step:amd|name:AMD: MI300X Quantization";
+  const alerts = [
+    ...quantEpisodes,
+    episode(
+      "a1",
+      amdKey,
+      "2026-10-15T01:00:00.000Z",
+      "2026-10-15T02:00:00.000Z",
+      1,
+    ),
+    episode(
+      "a2",
+      amdKey,
+      "2026-10-15T03:00:00.000Z",
+      "2026-10-15T04:00:00.000Z",
+      1,
+    ),
+  ];
+  const markup = renderToStaticMarkup(
+    createElement(MainCIAlerts, {
+      alerts,
+      hideAmd: true,
+      initialStatus: "recurring",
+    }),
+  );
+  assert.match(markup, /\(H200 MIG 35GB\) Quantization/);
+  assert.doesNotMatch(markup, /MI300X/);
+});
+
+test("episode rows of a recurring job carry an episodes badge", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MainCIAlerts, {
+      alerts: [
+        alert({ alertId: "1", jobKey: QUANT_KEY }),
+        episode(
+          "2",
+          QUANT_KEY,
+          "2026-08-28T08:00:00.000Z",
+          "2026-08-28T09:00:00.000Z",
+          4,
+        ),
+        alert({ alertId: "3", jobKey: "step:other|name:Other" }),
+      ],
+    }),
+  );
+  assert.equal(markup.match(/>2 episodes</g)?.length, 1);
 });
