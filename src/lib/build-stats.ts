@@ -97,6 +97,27 @@ export function rangeSpanMs(
   return Number.isFinite(start) && end > start ? end - start : null;
 }
 
+/**
+ * The builds created within [startDate, endDate), read as the API reads the
+ * range. Lets the chart redraw a zoomed-in range at once from builds it
+ * already has, while the new range loads.
+ */
+export function buildsInRange<T extends { created_at: string }>(
+  builds: T[],
+  startDate: string,
+  endDate: string,
+  now: number,
+): T[] {
+  const start = startDate ? parseRangeDate(startDate) : -Infinity;
+  const end = endDate ? rangeEndMs(endDate, Infinity) : Infinity;
+  if (!Number.isFinite(start) && !Number.isFinite(end)) return builds;
+  const inRange = builds.filter((build) => {
+    const at = new Date(build.created_at).getTime();
+    return at >= start && at < end && at <= now;
+  });
+  return inRange.length === builds.length ? builds : inRange;
+}
+
 export function formatMinutes(minutes: number): string {
   const rounded = Math.round(minutes);
   if (rounded < 60) return `${rounded}m`;

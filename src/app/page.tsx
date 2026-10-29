@@ -9,6 +9,7 @@ import { SearchableSelect } from "@/components/searchable-select";
 import { MultiSelect } from "@/components/multi-select";
 import { DateRangePicker } from "@/components/date-range-picker";
 import {
+  buildsInRange,
   durationStats,
   formatMinutes,
   rangeEndMs,
@@ -185,14 +186,22 @@ export default function BuildsPage() {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
+  // While a new range loads, SWR keeps the previous range's builds: show the
+  // ones inside the new range right away, as Datadog does on a zoom. Once the
+  // new range arrives this filter keeps every build.
+  const chartBuilds = useMemo(
+    () => buildsInRange(buildDurations, startDate, endDate, now),
+    [buildDurations, startDate, endDate, now],
+  );
+
   const headline = useMemo(() => {
     const span = rangeSpanMs(startDate, endDate, now);
     return {
-      duration: durationStats(buildDurations),
-      red: branch ? redTime(buildDurations, rangeEndMs(endDate, now)) : null,
+      duration: durationStats(chartBuilds),
+      red: branch ? redTime(chartBuilds, rangeEndMs(endDate, now)) : null,
       perDay: span ? (summary.total / span) * 86_400_000 : null,
     };
-  }, [buildDurations, branch, startDate, endDate, summary.total, now]);
+  }, [chartBuilds, branch, startDate, endDate, summary.total, now]);
 
   if (isLoading && !data) {
     return (
@@ -295,7 +304,7 @@ export default function BuildsPage() {
       </div>
 
       <BuildChart
-        data={buildDurations}
+        data={chartBuilds}
         startDate={startDate}
         endDate={endDate}
         hideOutliers={hideOutliers}
