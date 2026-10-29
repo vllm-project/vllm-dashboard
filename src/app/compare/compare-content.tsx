@@ -1360,6 +1360,9 @@ export default function ComparePage() {
     });
   };
 
+  // Drops a selection the loaded image list no longer has, in state and in the
+  // URL together; it reacts to fetched data, so it stays an effect.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (imageOptions.length === 0) return;
     if (baseline && !imageOptions.includes(baseline)) {
@@ -1372,6 +1375,7 @@ export default function ComparePage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageOptions]);
+  /* eslint-enable react-hooks/set-state-in-effect */
   const modelOptions = useMemo(
     () => uniqueSorted([...(perfFilters?.models ?? []), ...(evalFilters?.models ?? [])]),
     [perfFilters?.models, evalFilters?.models]
