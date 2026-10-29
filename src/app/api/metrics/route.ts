@@ -22,7 +22,6 @@ export async function GET(request: NextRequest) {
     const cacheKey = `metrics:${hours}:${queue ?? "all"}:${latestOnly ? "latest" : "history"}`;
     const { data: result } = await getOrLoadCached(cacheKey, TTL, async () => {
       const cutoff = new Date(Date.now() - hours * 3600 * 1000);
-      const latestCutoff = new Date(Date.now() - 2 * 3600 * 1000);
 
       let snapshotsQuery;
       if (latestOnly) {
@@ -121,16 +120,26 @@ export async function GET(request: NextRequest) {
             p50_wait_secs, p90_wait_secs, p95_wait_secs,
             (to_jsonb(queue_snapshots) ->> 'p99_wait_secs')::real AS p99_wait_secs
           FROM queue_snapshots
-          WHERE polled_at >= ${latestCutoff}
+          -- Queues seen within 2 hours of the last poll, not of now: if
+          -- polling stops, the page keeps its queues and says the data is
+          -- stale (lastPolledAt) instead of going blank.
+          WHERE polled_at >= (SELECT MAX(polled_at) FROM queue_snapshots) - INTERVAL '2 hours'
           ORDER BY queue, polled_at DESC
         `,
       ]);
+      const lastPolledAt = latest.reduce<string | null>((last, row) => {
+        const ms = new Date(row.polled_at).getTime();
+        if (!Number.isFinite(ms)) return last;
+        const at = new Date(ms).toISOString();
+        return last === null || at > last ? at : last;
+      }, null);
 
       return {
         query: { hours, queue, bucketMinutes },
         snapshots,
         queues: [...new Set(latest.map((row) => row.queue))].sort(),
         latest,
+        lastPolledAt,
       };
     });
 
