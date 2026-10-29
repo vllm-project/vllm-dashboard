@@ -12,6 +12,7 @@ import {
   isOptionalJob,
   isSoftFailJob,
 } from "@/lib/test-areas";
+import { isValidDateParam } from "@/lib/date-param";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -37,6 +38,12 @@ export async function GET(request: NextRequest) {
     const branch = searchParams.get("branch") || "main";
     let startDate = searchParams.get("startDate");
     let endDate = searchParams.get("endDate");
+    if (!isValidDateParam(startDate) || !isValidDateParam(endDate)) {
+      return NextResponse.json(
+        { error: "startDate and endDate must be YYYY-MM-DD or an ISO timestamp" },
+        { status: 400 },
+      );
+    }
     const windowDays =
       startDate || endDate ? null : parseWindowDays(searchParams.get("window"));
     if (windowDays !== null) {

@@ -6,6 +6,7 @@ import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { queryCostFromOtel } from "@/lib/otel-ci";
+import { isValidDateParam } from "@/lib/date-param";
 
 export const maxDuration = 55;
 const TTL = 60_000;
@@ -25,6 +26,12 @@ export async function GET(request: NextRequest) {
     const branch = searchParams.get("branch");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
+    if (!isValidDateParam(startDate) || !isValidDateParam(endDate)) {
+      return NextResponse.json(
+        { error: "startDate and endDate must be YYYY-MM-DD or an ISO timestamp" },
+        { status: 400 },
+      );
+    }
 
     const cacheKey = `cost:${pipeline}:${branch}:${startDate}:${endDate}:${resolveCiDataSource(request)}`;
     const cached = getCached(cacheKey);

@@ -5,6 +5,7 @@ import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { queryJobRunsFromOtel } from "@/lib/otel-ci";
 import { SHARD_SUFFIX_SQL, SHARD_TOTAL_SQL } from "@/lib/job-shards";
+import { isValidDateParam } from "@/lib/date-param";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -17,6 +18,12 @@ export async function GET(request: NextRequest) {
     const branch = searchParams.get("branch") || "main";
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
+    if (!isValidDateParam(startDate) || !isValidDateParam(endDate)) {
+      return NextResponse.json(
+        { error: "startDate and endDate must be YYYY-MM-DD or an ISO timestamp" },
+        { status: 400 },
+      );
+    }
 
     if (!jobName) {
       return NextResponse.json({ error: "jobName is required" }, { status: 400 });
