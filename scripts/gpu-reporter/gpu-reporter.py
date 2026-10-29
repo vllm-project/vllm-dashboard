@@ -104,8 +104,11 @@ DCGM_MIN_TIME = 5
 RUN_START = time.monotonic()
 STATE_DIR = os.environ.get("GPU_REPORT_STATE_DIR", "/var/lib/gpu-reporter")
 JOURNAL_CURSOR_FILE = os.path.join(STATE_DIR, "journal.cursor")
-# "<gpu_uuid> <pid>" per line: the processes the last report saw dead.
+# "<gpu_uuid> <pid> <reports>" per line: each process the last report saw
+# dead, and on how many reports in a row.
 DEAD_PIDS_FILE = os.path.join(STATE_DIR, "dead-pids")
+# An exiting process was seen dead for one or two reports, never three.
+DEAD_REPORTS_REQUIRED = 3
 MAX_XIDS_PER_REPORT = 200  # the ingestion contract allows 500
 # Kernel-log entries read per report. A long backlog (reporter stopped for
 # days) catches up over several reports instead of timing out every time.
@@ -198,11 +201,11 @@ def query_dead_proc_memory(state_path=DEAD_PIDS_FILE):
     When a compute process is SIGKILLed mid-teardown the driver can keep its
     memory allocated to the dead PID indefinitely (observed on the H200 MIG
     fleet); only a GPU reset or reboot reclaims it. A process that is simply
-    exiting can also be listed with its PID already gone, for one report, so
-    memory counts only when the same PID on the same GPU was dead on the
-    previous report too (kept in state_path). The compute-apps table keys
-    rows by GPU UUID, so a second query maps UUIDs to the indexes used by the
-    rest of the report. Raises on any nvidia-smi failure or unwritable state;
+    exiting can also be listed with its PID already gone, for a report or
+    two, so memory counts only once the same PID on the same GPU has been
+    dead on DEAD_REPORTS_REQUIRED reports in a row (kept in state_path).
+    The compute-apps table keys rows by GPU UUID, so a second query maps
+    UUIDs to the indexes used by the rest of the report. Raises on any nvidia-smi failure or unwritable state;
     the caller degrades the metric to null rather than the whole report.
     """
     index_of_uuid = {}
@@ -237,11 +240,16 @@ def query_dead_proc_memory(state_path=DEAD_PIDS_FILE):
         raise RuntimeError(
             f"nvidia-smi compute-apps query failed: {result.stderr.strip()}"
         )
+    reports_dead_before = {}  # "<gpu_uuid> <pid>" -> reports in a row
     try:
         with open(state_path) as f:
-            dead_last_report = set(f.read().split("\n"))
+            for line in f.read().split("\n"):
+                parts = line.split(" ")
+                # Blank (nothing was dead) or damaged lines start from zero.
+                if len(parts) == 3 and parts[2].isdigit():
+                    reports_dead_before[f"{parts[0]} {parts[1]}"] = int(parts[2])
     except FileNotFoundError:
-        dead_last_report = set()
+        pass
     dead_now = []
     dead_mb = {index: 0.0 for index in index_of_uuid.values()}
     for line in result.stdout.strip().split("\n"):
@@ -257,8 +265,9 @@ def query_dead_proc_memory(state_path=DEAD_PIDS_FILE):
             continue
         if _pid_alive(pid):
             continue
-        dead_now.append(f"{gpu_uuid} {pid}")
-        if f"{gpu_uuid} {pid}" in dead_last_report:
+        reports = reports_dead_before.get(f"{gpu_uuid} {pid}", 0) + 1
+        dead_now.append(f"{gpu_uuid} {pid} {reports}")
+        if reports >= DEAD_REPORTS_REQUIRED:
             dead_mb[index_of_uuid[gpu_uuid]] += mem_mb
     os.makedirs(os.path.dirname(state_path), exist_ok=True)
     tmp = f"{state_path}.tmp"

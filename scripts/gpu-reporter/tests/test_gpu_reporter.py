@@ -849,30 +849,35 @@ def _fake_compute_apps(monkeypatch, reporter, rows, live_pids):
     monkeypatch.setattr(reporter, "_pid_alive", lambda pid: pid in live_pids)
 
 
-def test_dead_memory_counts_a_pid_only_when_dead_on_two_reports(reporter, monkeypatch, tmp_path):
-    # A process seen dead on one report only is usually mid-exit; a leak stays.
+def test_dead_memory_counts_a_pid_only_when_dead_on_three_reports(reporter, monkeypatch, tmp_path):
+    # Exiting processes were seen dead for one or two reports, never three.
     state = str(tmp_path / "dead-pids")
     _fake_compute_apps(monkeypatch, reporter, [("GPU-a", "7", "15250")], live_pids=set())
     assert reporter.query_dead_proc_memory(state) == {0: 0.0, 1: 0.0}
+    assert reporter.query_dead_proc_memory(state) == {0: 0.0, 1: 0.0}
+    assert reporter.query_dead_proc_memory(state) == {0: 15250.0, 1: 0.0}
     assert reporter.query_dead_proc_memory(state) == {0: 15250.0, 1: 0.0}
 
 
-def test_dead_memory_forgets_a_pid_that_left_the_listing(reporter, monkeypatch, tmp_path):
+def test_dead_memory_restarts_the_count_when_a_pid_leaves_the_listing(reporter, monkeypatch, tmp_path):
     state = str(tmp_path / "dead-pids")
     _fake_compute_apps(monkeypatch, reporter, [("GPU-a", "7", "15250")], live_pids=set())
+    reporter.query_dead_proc_memory(state)
     reporter.query_dead_proc_memory(state)
     _fake_compute_apps(monkeypatch, reporter, [], live_pids=set())
     reporter.query_dead_proc_memory(state)
     _fake_compute_apps(monkeypatch, reporter, [("GPU-a", "7", "15250")], live_pids=set())
+    reporter.query_dead_proc_memory(state)
     assert reporter.query_dead_proc_memory(state) == {0: 0.0, 1: 0.0}
 
 
 def test_dead_memory_keys_by_gpu_and_ignores_live_pids(reporter, monkeypatch, tmp_path):
-    # PID 7 dead on GPU-a last time does not vouch for PID 7 on GPU-b now.
+    # PID 7 dead on GPU-a before does not vouch for PID 7 on GPU-b now.
     state = str(tmp_path / "dead-pids")
     _fake_compute_apps(monkeypatch, reporter,
                        [("GPU-a", "7", "100"), ("GPU-a", "9", "40"), ("GPU-b", "8", "50")],
                        live_pids={"8"})
+    reporter.query_dead_proc_memory(state)
     reporter.query_dead_proc_memory(state)
     _fake_compute_apps(monkeypatch, reporter,
                        [("GPU-b", "8", "50"), ("GPU-b", "7", "300"),
@@ -888,5 +893,16 @@ def test_dead_memory_keeps_its_state_in_the_state_dir(monkeypatch, tmp_path):
     reporter = load_module("gpu_reporter_state_dir", "gpu-reporter.py")
     _fake_compute_apps(monkeypatch, reporter, [("GPU-a", "7", "15250")], live_pids=set())
     reporter.query_dead_proc_memory()
+    reporter.query_dead_proc_memory()
     assert reporter.query_dead_proc_memory() == {0: 15250.0, 1: 0.0}
-    assert (tmp_path / "dead-pids").read_text() == "GPU-a 7"
+    assert (tmp_path / "dead-pids").read_text() == "GPU-a 7 3"
+
+
+
+def test_dead_memory_starts_over_from_a_damaged_state_file(reporter, monkeypatch, tmp_path):
+    state = tmp_path / "dead-pids"
+    state.write_text("GPU-a 7 x\ngarbage\n\nGPU-a 9 2")
+    _fake_compute_apps(monkeypatch, reporter, [("GPU-a", "7", "100"), ("GPU-a", "9", "40")],
+                       live_pids=set())
+    assert reporter.query_dead_proc_memory(str(state)) == {0: 40.0, 1: 0.0}
+    assert state.read_text() == "GPU-a 7 1\nGPU-a 9 3"
