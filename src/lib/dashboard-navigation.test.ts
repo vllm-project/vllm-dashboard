@@ -33,9 +33,10 @@ test("Health owns builds, jobs, tests, runner queue, alerts and the Metrics page
       ["AMD Parity", "/parity"],
       ["Force-merges", "/force-merges"],
       ["Automatic sharding", "/sharding"],
+      ["CI Selector", "/selector"],
     ],
   );
-  const routes = ["/", "/jobs", "/tests", "/queue", "/alerts", "/parity", "/force-merges", "/sharding"];
+  const routes = ["/", "/jobs", "/tests", "/queue", "/alerts", "/parity", "/force-merges", "/sharding", "/selector"];
   for (const pathname of routes) {
     assert.equal(sectionForPathname(pathname)?.label, "Health");
   }

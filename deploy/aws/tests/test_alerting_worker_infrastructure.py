@@ -167,6 +167,35 @@ def test_daily_summary_timer_posts_at_nine_pacific_without_sensitive_data() -> N
         assert sensitive_name not in service + timer
 
 
+def test_selector_health_timers_follow_full_ci_collects_and_check_prs_hourly() -> None:
+    timer = read("systemd/alerting-selector-health.timer")
+    service = read("systemd/alerting-selector-health.service")
+    pr_timer = read("systemd/alerting-selector-health-pr.timer")
+    pr_service = read("systemd/alerting-selector-health-pr.service")
+
+    assert "OnCalendar=*-*-* 04:45:00 America/Los_Angeles" in timer
+    assert "OnCalendar=*-*-* 16:45:00 America/Los_Angeles" in timer
+    assert "Persistent=true" in timer
+    assert "Unit=alerting-selector-health.service" in timer
+    assert "run-worker selector-health\n" in service
+    assert "OnCalendar=*-*-* *:25:00 UTC" in pr_timer
+    assert "Persistent=true" in pr_timer
+    assert "Unit=alerting-selector-health-pr.service" in pr_timer
+    assert "run-worker selector-health-pr" in pr_service
+    for unit in (service, pr_service):
+        assert "StandardOutput=null" in unit
+        assert "StandardError=null" in unit
+        assert "OnFailure=alerting-failure-notify@%n.service" in unit
+    for sensitive_name in ("DATABASE_URL", "TOKEN", "PASSWORD"):
+        assert sensitive_name not in service + timer + pr_service + pr_timer
+
+
+def test_run_worker_maps_selector_consumers_to_their_own_control_path() -> None:
+    runner = read("bin/run-worker")
+
+    assert "selector-health|selector-health-pr) alert_path=selector ;;" in runner
+
+
 def test_main_ci_analysis_timer_runs_every_ten_minutes() -> None:
     timer = read("systemd/alerting-main-ci-analysis.timer")
 
@@ -322,6 +351,8 @@ def test_retention_timer_prunes_daily_without_sensitive_data() -> None:
         ("main-ci-backstop", "main_ci_backstop"),
         ("main-ci-analyze", "main_ci_analyze"),
         ("infra", "infra_scan"),
+        ("selector-health", "selector_health_scan"),
+        ("selector-health-pr", "selector_health_pr_scan"),
     ],
 )
 def test_timer_wake_up_creates_a_minute_stable_reconciliation_command(

@@ -19,6 +19,7 @@ from alerting.postgres import (
     build_main_ci_analysis_runtime,
     build_main_ci_backstop_runtime,
     build_main_ci_runtime,
+    build_selector_health_runtime,
 )
 from alerting.runtime import AlertingRuntime, ProcessStatus
 from alerting.slack import SlackDeliveryPort
@@ -171,6 +172,17 @@ def _runtime(
             delivery_mode=delivery_mode,
             quarantine_live=_quarantine_live(),
         )
+    if consumer in ("selector-health", "selector-health-pr"):
+        # Posts to the infra alert channel (SLACK_CI_INFRA_ALERT_CHANNEL, else
+        # the shared alert channel). The PR scan reads only PR decisions.
+        return build_selector_health_runtime(
+            database_url=database_url,
+            buildkite_token=_required_environment("BUILDKITE_TOKEN"),
+            slack=_slack(),
+            clock=clock,
+            delivery_mode=delivery_mode,
+            ingest_full_runs=consumer == "selector-health",
+        )
     if consumer == "main-ci-analyze":
         return build_main_ci_analysis_runtime(
             database_url=database_url,
@@ -211,6 +223,8 @@ def scheduled_command(consumer: str, target_time: datetime) -> ScheduledCommand:
         "main-ci-analyze": "main_ci_analyze",
         "infra": "infra_scan",
         "daily-summary": "daily_summary",
+        "selector-health": "selector_health_scan",
+        "selector-health-pr": "selector_health_pr_scan",
     }
     try:
         command_type = command_types[consumer]
@@ -231,6 +245,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         "main-ci-analyze",
         "infra",
         "daily-summary",
+        "selector-health",
+        "selector-health-pr",
     }:
         return 2
 

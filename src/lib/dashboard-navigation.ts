@@ -47,6 +47,7 @@ export const DASHBOARD_SECTIONS = [
           { href: "/parity", label: "AMD Parity" },
           { href: "/force-merges", label: "Force-merges" },
           { href: "/sharding", label: "Automatic sharding" },
+          { href: "/selector", label: "CI Selector" },
         ],
       },
     ],
