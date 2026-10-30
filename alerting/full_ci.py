@@ -145,14 +145,21 @@ class BuildkiteRestClient:
                 ) from exc
 
     def list_builds(
-        self, *, start_time: datetime | None, up_to: datetime
+        self,
+        *,
+        start_time: datetime | None,
+        up_to: datetime,
+        branch: str | None = "main",
     ) -> list[dict[str, Any]]:
+        """Builds created in the window, without jobs, on `branch` or, with
+        None, on every branch."""
         query: dict[str, str | int | list[str]] = {
-            "branch": "main",
             "created_to": _iso8601(up_to),
             "exclude_jobs": "true",
             "per_page": 100,
         }
+        if branch is not None:
+            query["branch"] = branch
         if start_time is not None:
             query["created_from"] = _iso8601(start_time)
         return self._list_build_pages(query)
@@ -250,6 +257,58 @@ class BuildkiteRestClient:
         if not isinstance(payload, dict):
             raise RuntimeError("Buildkite build response was not an object")
         return cast(dict[str, Any], payload)
+
+
+    def list_job_artifacts(
+        self, build_number: int, job_id: str
+    ) -> list[dict[str, Any]]:
+        """One job's artifacts (path, download_url, file_size, ...).
+
+        A single page of 100: the jobs read this way (collect, bootstrap and
+        image-build steps) upload a handful of files each.
+        """
+        payload = self._get_json(
+            f"{self._BUILDS_URL}/{build_number}/jobs/{job_id}/artifacts?per_page=100"
+        )
+        if not isinstance(payload, list):
+            raise RuntimeError("Buildkite artifacts response was not a list")
+        return cast(list[dict[str, Any]], payload)
+
+    def _open(self, url: str, *, accept: str) -> Any:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme != "https" or parsed.netloc != "api.buildkite.com":
+            raise RuntimeError("Buildkite returned an untrusted download URL")
+        request = urllib.request.Request(
+            url,
+            headers={"Accept": accept, "User-Agent": "vllm-ci-alerting/1.0"},
+        )
+        # Artifact downloads redirect to a presigned S3 URL, which rejects a
+        # second credential; an unredirected header stays on Buildkite.
+        request.add_unredirected_header("Authorization", f"Bearer {self._token}")
+        return urllib.request.urlopen(request, timeout=60)
+
+    def download_artifact(self, download_url: str, *, max_bytes: int) -> bytes:
+        """The artifact's bytes; refuses one larger than `max_bytes`."""
+        with self._open(download_url, accept="*/*") as response:
+            body = response.read(max_bytes + 1)
+        if len(body) > max_bytes:
+            raise RuntimeError(f"Buildkite artifact exceeds {max_bytes} bytes")
+        return cast(bytes, body)
+
+    def job_log_tail(
+        self, build_number: int, job_id: str, *, max_bytes: int
+    ) -> str:
+        """The last `max_bytes` of one job's raw log, streamed so a huge log
+        is never held whole."""
+        tail = bytearray()
+        with self._open(
+            f"{self._BUILDS_URL}/{build_number}/jobs/{job_id}/log",
+            accept="text/plain",
+        ) as response:
+            while chunk := response.read(1 << 20):
+                tail += chunk
+                del tail[:-max_bytes]
+        return tail.decode("utf-8", errors="replace")
 
 
 class BuildkiteFullCISource:

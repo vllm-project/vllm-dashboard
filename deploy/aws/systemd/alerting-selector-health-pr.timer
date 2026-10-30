@@ -1,0 +1,13 @@
+[Unit]
+Description=Check CI selector decisions on PR builds every hour
+
+[Timer]
+OnBootSec=4min
+OnCalendar=*-*-* *:25:00 UTC
+Persistent=true
+AccuracySec=30s
+RandomizedDelaySec=0
+Unit=alerting-selector-health-pr.service
+
+[Install]
+WantedBy=timers.target

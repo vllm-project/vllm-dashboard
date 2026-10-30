@@ -79,6 +79,15 @@ from alerting.ports import (
     SlackPort,
 )
 from alerting.runtime import AlertingRuntime
+from alerting.selector_health import (
+    FullRunRecord,
+    RunComponent,
+    SelectorAlertEpisode,
+    SelectorDecision,
+    SelectorHealthPlan,
+    SelectorHealthState,
+    SelectorNotificationFactory,
+)
 
 if TYPE_CHECKING:
     from alerting.migration import ImportedFastCIJob
@@ -1761,6 +1770,283 @@ class PostgresAlertStore:
                 if completed.rowcount != 1:
                     raise RuntimeError("Infra execution was not running at commit")
 
+    # Rows past this age are pruned in the scan transaction: the page shows
+    # 14 days and the conditions read at most 24 hours of decisions.
+    _SELECTOR_RETENTION = timedelta(days=30)
+
+    def selector_health_state(
+        self, *, runs_since: datetime, decisions_since: datetime
+    ) -> SelectorHealthState:
+        with self._connection_factory() as connection:
+            run_rows = connection.execute(
+                """
+                SELECT build_number, kind, created_at, commit_sha, build_state,
+                       settled
+                FROM alerting_selector_full_runs
+                WHERE created_at >= %s
+                ORDER BY created_at, build_number
+                """,
+                (runs_since,),
+            ).fetchall()
+            component_rows = connection.execute(
+                """
+                SELECT c.build_number, c.component, c.status, c.job_state,
+                       c.soft_failed, c.exit_status, c.expected_jobs,
+                       c.delivered_jobs, c.row_count, c.verdict, c.published,
+                       c.published_commit, c.source
+                FROM alerting_selector_run_components c
+                JOIN alerting_selector_full_runs r USING (build_number)
+                WHERE r.created_at >= %s
+                ORDER BY c.build_number, c.component
+                """,
+                (runs_since,),
+            ).fetchall()
+            decision_rows = connection.execute(
+                """
+                SELECT build_number, created_at, branch, outcome, pull_request,
+                       reason, seconds, fnrec_build, kernrec_build,
+                       ci_infra_commit
+                FROM alerting_selector_decisions
+                WHERE created_at >= %s
+                """,
+                (decisions_since,),
+            ).fetchall()
+            episode_rows = connection.execute(
+                """
+                SELECT alert_id, condition, subject_key, opened_at, details
+                FROM alerting_selector_alerts
+                WHERE status = 'open'
+                """
+            ).fetchall()
+        components: dict[int, list[RunComponent]] = {}
+        for row in component_rows:
+            components.setdefault(int(row[0]), []).append(
+                RunComponent(
+                    component=row[1],
+                    status=row[2],
+                    job_state=row[3],
+                    soft_failed=bool(row[4]),
+                    exit_status=row[5],
+                    expected_jobs=row[6],
+                    delivered_jobs=row[7],
+                    rows=row[8],
+                    verdict=row[9],
+                    published=bool(row[10]),
+                    published_commit=row[11],
+                    source=row[12],
+                )
+            )
+        return SelectorHealthState(
+            runs=tuple(
+                FullRunRecord(
+                    build_number=int(row[0]),
+                    kind=row[1],
+                    created_at=row[2],
+                    commit_sha=row[3],
+                    build_state=row[4],
+                    settled=bool(row[5]),
+                    components=tuple(components.get(int(row[0]), [])),
+                )
+                for row in run_rows
+            ),
+            decisions=tuple(
+                SelectorDecision(
+                    build_number=int(row[0]),
+                    created_at=row[1],
+                    branch=row[2],
+                    outcome=row[3],
+                    pull_request=row[4],
+                    reason=row[5],
+                    seconds=row[6],
+                    fnrec_build=row[7],
+                    kernrec_build=row[8],
+                    ci_infra_commit=row[9],
+                )
+                for row in decision_rows
+            ),
+            open_episodes=tuple(
+                SelectorAlertEpisode(
+                    alert_id=int(row[0]),
+                    condition=row[1],
+                    subject_key=row[2],
+                    opened_at=row[3],
+                    details=dict(row[4]),
+                )
+                for row in episode_rows
+            ),
+        )
+
+    def commit_selector_health(
+        self,
+        *,
+        command: ScheduledCommand,
+        plan: SelectorHealthPlan,
+        now: datetime,
+        notification_factory: SelectorNotificationFactory,
+    ) -> None:
+        with self._connection_factory() as connection:
+            with connection.transaction():
+                # The twice-daily and hourly scans share these rows.
+                connection.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext('alerting_selector_health'))"
+                )
+                for run in plan.runs:
+                    connection.execute(
+                        """
+                        INSERT INTO alerting_selector_full_runs (
+                            build_number, kind, created_at, commit_sha,
+                            build_state, settled, updated_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (build_number) DO UPDATE
+                        SET build_state = EXCLUDED.build_state,
+                            settled = EXCLUDED.settled,
+                            updated_at = EXCLUDED.updated_at
+                        """,
+                        (
+                            run.build_number,
+                            run.kind,
+                            run.created_at,
+                            run.commit_sha,
+                            run.build_state,
+                            run.settled,
+                            now,
+                        ),
+                    )
+                    for item in run.components:
+                        connection.execute(
+                            """
+                            INSERT INTO alerting_selector_run_components (
+                                build_number, component, status, job_state,
+                                soft_failed, exit_status, expected_jobs,
+                                delivered_jobs, row_count, verdict, published,
+                                published_commit, source
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                      %s, %s, %s)
+                            ON CONFLICT (build_number, component) DO UPDATE
+                            SET status = EXCLUDED.status,
+                                job_state = EXCLUDED.job_state,
+                                soft_failed = EXCLUDED.soft_failed,
+                                exit_status = EXCLUDED.exit_status,
+                                expected_jobs = EXCLUDED.expected_jobs,
+                                delivered_jobs = EXCLUDED.delivered_jobs,
+                                row_count = EXCLUDED.row_count,
+                                verdict = EXCLUDED.verdict,
+                                published = EXCLUDED.published,
+                                published_commit = EXCLUDED.published_commit,
+                                source = EXCLUDED.source
+                            """,
+                            (
+                                run.build_number,
+                                item.component,
+                                item.status,
+                                item.job_state,
+                                item.soft_failed,
+                                item.exit_status,
+                                item.expected_jobs,
+                                item.delivered_jobs,
+                                item.rows,
+                                item.verdict,
+                                item.published,
+                                item.published_commit,
+                                item.source,
+                            ),
+                        )
+                for decision in plan.decisions:
+                    connection.execute(
+                        """
+                        INSERT INTO alerting_selector_decisions (
+                            build_number, created_at, branch, pull_request,
+                            outcome, reason, seconds, fnrec_build,
+                            kernrec_build, ci_infra_commit, observed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (build_number) DO NOTHING
+                        """,
+                        (
+                            decision.build_number,
+                            decision.created_at,
+                            decision.branch,
+                            decision.pull_request,
+                            decision.outcome,
+                            decision.reason,
+                            decision.seconds,
+                            decision.fnrec_build,
+                            decision.kernrec_build,
+                            decision.ci_infra_commit,
+                            now,
+                        ),
+                    )
+                cutoff = now - self._SELECTOR_RETENTION
+                connection.execute(
+                    "DELETE FROM alerting_selector_decisions WHERE created_at < %s",
+                    (cutoff,),
+                )
+                connection.execute(
+                    "DELETE FROM alerting_selector_full_runs WHERE created_at < %s",
+                    (cutoff,),
+                )
+                opened: list[SelectorAlertEpisode] = []
+                for episode in plan.opened:
+                    inserted = connection.execute(
+                        """
+                        INSERT INTO alerting_selector_alerts (
+                            condition, subject_key, status, opened_at,
+                            details, created_at, updated_at
+                        ) VALUES (%s, %s, 'open', %s, %s::jsonb, %s, %s)
+                        ON CONFLICT (condition, subject_key)
+                        WHERE status = 'open' DO NOTHING
+                        """,
+                        (
+                            episode.condition,
+                            episode.subject_key,
+                            episode.opened_at,
+                            json.dumps(episode.details),
+                            now,
+                            now,
+                        ),
+                    )
+                    if inserted.rowcount == 1:
+                        opened.append(episode)
+                resolved: list[SelectorAlertEpisode] = []
+                for episode in plan.resolved:
+                    updated = connection.execute(
+                        """
+                        UPDATE alerting_selector_alerts
+                        SET status = 'resolved', resolved_at = %s,
+                            updated_at = %s
+                        WHERE condition = %s AND subject_key = %s
+                          AND status = 'open'
+                        """,
+                        (
+                            episode.resolved_at,
+                            now,
+                            episode.condition,
+                            episode.subject_key,
+                        ),
+                    )
+                    if updated.rowcount == 1:
+                        resolved.append(episode)
+                applied = SelectorHealthPlan(
+                    runs=plan.runs,
+                    decisions=plan.decisions,
+                    opened=tuple(opened),
+                    resolved=tuple(resolved),
+                )
+                for message in notification_factory(applied):
+                    self._enqueue(connection, message, next_attempt_at=now)
+                completed = connection.execute(
+                    """
+                    UPDATE alerting_automation_executions
+                    SET status = 'completed', completed_at = %s,
+                        lease_expires_at = NULL, last_error = NULL
+                    WHERE idempotency_key = %s AND status = 'running'
+                    """,
+                    (now, command.idempotency_key),
+                )
+                if completed.rowcount != 1:
+                    raise RuntimeError(
+                        "Selector health execution was not running at commit"
+                    )
+
     def pending_main_ci_analyses(self, *, limit: int) -> list[MainCIAnalysisTarget]:
         with self._connection_factory() as connection:
             rows = connection.execute(
@@ -2446,6 +2732,47 @@ def build_daily_summary_runtime(
         clock=clock,
         handlers={"daily_summary": handler},
         alert_path=AlertPath.INFRA,
+    )
+
+
+def build_selector_health_runtime(
+    *,
+    database_url: str,
+    buildkite_token: str,
+    slack: SlackPort,
+    clock: Clock,
+    delivery_mode: DeliveryMode = DeliveryMode.LIVE,
+    ingest_full_runs: bool = True,
+) -> AlertingRuntime:
+    """Wire CI selector health: Buildkite reads, Postgres state, the outbox.
+
+    `ingest_full_runs=False` is the hourly PR scan: decisions only, planned
+    against the stored runs.
+    """
+    from alerting.full_ci import BuildkiteRestClient
+    from alerting.selector_health import (
+        BuildkiteSelectorSource,
+        SelectorHealthHandler,
+    )
+
+    store = PostgresAlertStore.from_database_url(database_url)
+    handler = SelectorHealthHandler(
+        source=BuildkiteSelectorSource(BuildkiteRestClient(token=buildkite_token)),
+        store=store,
+        clock=clock,
+        delivery_mode=delivery_mode,
+        ingest_full_runs=ingest_full_runs,
+    )
+    command_type = (
+        "selector_health_scan" if ingest_full_runs else "selector_health_pr_scan"
+    )
+    return AlertingRuntime(
+        executions=store,
+        outbox=store,
+        slack=slack,
+        clock=clock,
+        handlers={command_type: handler},
+        alert_path=AlertPath.SELECTOR,
     )
 
 

@@ -54,12 +54,22 @@ _UNITS = {
         ("alerting-infra.timer", "alerting-infra.service"),
         ("alerting-daily-summary.timer", "alerting-daily-summary.service"),
     ),
+    # The twice-daily recording scan and the hourly PR-decision scan share
+    # the CI selector control.
+    AlertPath.SELECTOR: (
+        ("alerting-selector-health.timer", "alerting-selector-health.service"),
+        (
+            "alerting-selector-health-pr.timer",
+            "alerting-selector-health-pr.service",
+        ),
+    ),
 }
 _MODE_FILES = {
     AlertPath.FAST_CI: "fast-ci.mode",
     AlertPath.FULL_CI: "full-ci.mode",
     AlertPath.MAIN_CI: "main-ci.mode",
     AlertPath.INFRA: "infra.mode",
+    AlertPath.SELECTOR: "selector.mode",
 }
 
 

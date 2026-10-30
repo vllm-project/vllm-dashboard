@@ -67,6 +67,10 @@ def test_expected_tables_are_created() -> None:
         "alerting_main_ci_job_updates",
         "alerting_infra_host_states",
         "alerting_infra_alerts",
+        "alerting_selector_full_runs",
+        "alerting_selector_run_components",
+        "alerting_selector_decisions",
+        "alerting_selector_alerts",
         "force_merge_records",
     }
 
@@ -273,6 +277,23 @@ def test_infra_schema_preserves_one_open_episode_per_subject_and_widens_path() -
     assert "alerting_infra_alerts_alert_id_seq" in sql
     assert "DROP CONSTRAINT IF EXISTS alerting_notification_outbox_path_check" in sql
     for table in ("alerting_infra_host_states", "alerting_infra_alerts"):
+        assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
+
+
+def test_selector_health_schema_keeps_one_open_episode_and_widens_path() -> None:
+    sql = (MIGRATIONS_DIR / "0036_selector_health.sql").read_text()
+
+    assert "'fast_ci', 'full_ci', 'main_ci', 'infra', 'selector'" in sql
+    assert "ON alerting_selector_alerts (condition, subject_key)\n    WHERE status = 'open'" in sql
+    assert "'run_incomplete', 'stale', 'pr_stale', 'pr_errors'" in sql
+    assert "REFERENCES alerting_selector_full_runs (build_number) ON DELETE CASCADE" in sql
+    assert "alerting_selector_alerts_alert_id_seq" in sql
+    for table in (
+        "alerting_selector_full_runs",
+        "alerting_selector_run_components",
+        "alerting_selector_decisions",
+        "alerting_selector_alerts",
+    ):
         assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
 
 
