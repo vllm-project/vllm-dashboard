@@ -34,20 +34,21 @@ function metric(
 
 test("node reallocations update queue limits and conserve GPU equivalents", () => {
   for (const [queue, maxInFlight] of Object.entries({
-    amd_mi300_1: 227,
-    amd_mi300_2: 32,
-    amd_mi355_1: 80,
-    amd_mi355_2: 24,
-    amd_mi355_4: 42,
-    amd_mi355_8: 3,
+    amd_mi250: 26,
+    amd_mi300_1: 240,
+    amd_mi300_2: 30,
+    amd_mi355_1: 64,
+    amd_mi355_2: 28,
+    amd_mi355_4: 38,
+    amd_mi355_8: 2,
     mi355_perf_eval: 3,
     mi300_perf_eval: 1,
   })) {
     assert.equal(getQueueCapacity(queue)!.maxInFlight, maxInFlight, queue);
   }
   const mi355 = getQueueCapacity("amd_mi355_4")!;
-  assert.equal(mi355.gpuCount, 168);
-  assert.equal(mi355.nodeEquivalent, 21);
+  assert.equal(mi355.gpuCount, 152);
+  assert.equal(mi355.nodeEquivalent, 19);
   assert.equal(mi355.allocations.length, 1);
 
   const familyTotals = new Map<string, number>();
@@ -60,8 +61,8 @@ test("node reallocations update queue limits and conserve GPU equivalents", () =
   assert.deepEqual(Object.fromEntries(familyTotals), {
     MI250: 25.75,
     "AMD CPU": 3.75,
-    MI300: 47.875,
-    MI355: 58,
+    MI300: 49,
+    MI355: 54,
   });
 });
 
@@ -80,11 +81,12 @@ test("DPX records 15 eight-GPU nodes independently of its 240-job limit", () => 
 
 test("capacity aliases and hardware families are independent of view exclusions", () => {
   assert.deepEqual(
-    getQueueCapacity("mi250_1"),
-    getQueueCapacity("amd_mi250_1"),
+    getQueueCapacity("mi300_1"),
+    getQueueCapacity("amd_mi300_1"),
   );
   assert.deepEqual(getQueueCapacity("amd_cpu"), getQueueCapacity("amd-cpu"));
   for (const queue of [
+    "amd_mi250_1",
     "amd_mi325_1",
     "amd_mi300_16",
     "mi300_perf_eval_internal",
@@ -102,7 +104,7 @@ test("capacity aliases and hardware families are independent of view exclusions"
   assert.equal(queueFamily("router_rocm_mi300_2"), "MI300");
   assert.equal(getQueueCapacity("router_rocm_mi300_2"), null);
   const queues = [
-    "amd_mi250_1",
+    "amd_mi250",
     "amd_mi250_8",
     "amd-cpu",
     "amd_mi325_1",
@@ -117,7 +119,7 @@ test("capacity aliases and hardware families are independent of view exclusions"
   assert.deepEqual(filterQueues(queues, "all"), queues);
   assert.deepEqual(
     filterQueues(queues, "all", "MI250").map((row) => row.queue),
-    ["amd_mi250_1", "amd_mi250_8"],
+    ["amd_mi250", "amd_mi250_8"],
   );
   assert.deepEqual(
     filterQueues(queues, "all", "H100").map((row) => row.queue),
@@ -129,11 +131,11 @@ test("capacity aliases and hardware families are independent of view exclusions"
   ]);
   assert.deepEqual(
     filterQueues(queues, "rocm").map((row) => row.queue),
-    ["amd_mi250_1", "router_rocm"],
+    ["amd_mi250", "router_rocm"],
   );
   assert.deepEqual(
     filterQueues(queues, "rocm", "MI250").map((row) => row.queue),
-    ["amd_mi250_1"],
+    ["amd_mi250"],
   );
 });
 
@@ -221,9 +223,12 @@ test("wait P95 accepts real zero and rejects missing or invalid measurements", (
   );
 });
 
-test("ROCm view preserves exclusions and the reallocated 785-job limit", () => {
+test("ROCm view preserves exclusions and the reallocated 687-job limit", () => {
   const excluded = [
     "amd_gfx950",
+    "amd_mi250_1",
+    "amd_mi250_2",
+    "amd_mi250_4",
     "amd_mi250_8",
     "amd_mi325_1",
     "amd_mi325_2",
@@ -243,7 +248,7 @@ test("ROCm view preserves exclusions and the reallocated 785-job limit", () => {
     "mi250_8",
   ].map((queue) => metric(queue, { jobs_running: 100, jobs_scheduled: 50 }));
   const included = [
-    "amd_mi250_1",
+    "amd_mi250",
     "amd_mi300_1",
     "amd_mi355_dpx",
   ].map((queue) => metric(queue));
@@ -257,30 +262,30 @@ test("ROCm view preserves exclusions and the reallocated 785-job limit", () => {
 
   const inventory = QUEUE_CAPACITY.map((row) => metric(row.queue));
   const rocm = summarizeQueues(filterQueues(inventory, "rocm"));
-  assert.equal(rocm.maxInFlight, 785);
-  assert.equal(summarizeQueues(inventory).maxInFlight, 821);
+  assert.equal(rocm.maxInFlight, 687);
+  assert.equal(summarizeQueues(inventory).maxInFlight, 721);
 });
 
 test("utilization compares running jobs with supplied queue concurrency limits", () => {
   const rows = [
-    metric("amd_mi250_1", {
-      jobs_running: 39,
+    metric("amd_mi250", {
+      jobs_running: 13,
       agents_total: 50,
       agents_busy: 40,
     }),
-    metric("amd_mi250_8", { jobs_running: 2, agents_total: 3, agents_busy: 2 }),
+    metric("amd_mi300_8", { jobs_running: 2, agents_total: 3, agents_busy: 2 }),
     metric("amd-cpu", { jobs_running: 30, agents_total: 30, agents_busy: 30 }),
   ];
   const summary = summarizeQueues(rows);
-  assert.equal(summary.running, 71);
-  assert.equal(summary.jobLimitUtilization, (71 / 110) * 100);
+  assert.equal(summary.running, 45);
+  assert.equal(summary.jobLimitUtilization, (45 / 58) * 100);
   assert.equal(summary.knownQueueCount, 3);
   assert.equal(summary.nearLimitQueueCount, 2);
 });
 
 test("unknown queues contribute traffic but never dilute known capacity metrics", () => {
   const summary = summarizeQueues([
-    metric("amd_mi250_8", { jobs_running: 2 }),
+    metric("amd_mi300_8", { jobs_running: 2 }),
     metric("amd_mi325_1", { jobs_running: 100 }),
   ]);
   assert.equal(summary.running, 102);
@@ -293,7 +298,7 @@ test("unknown queues contribute traffic but never dilute known capacity metrics"
 
 test("unobserved queues do not enter denominators and excess demand remains visible", () => {
   const summary = summarizeQueues([
-    metric("amd_mi250_8", { jobs_running: 3, agents_total: 2, agents_busy: 3 }),
+    metric("amd_mi300_8", { jobs_running: 3, agents_total: 2, agents_busy: 3 }),
   ]);
   assert.equal(summary.maxInFlight, 2);
   assert.equal(summary.jobLimitUtilization, 150);
@@ -325,7 +330,7 @@ test("near-limit queues include the 90 percent boundary and exclude unknown limi
   const summary = summarizeQueues([
     metric("amd_mi355_dpx", { jobs_running: 216 }),
     metric("amd_mi355_2", { jobs_running: 17 }),
-    metric("amd_mi250_8", { jobs_running: 3 }),
+    metric("amd_mi300_8", { jobs_running: 3 }),
     metric("unknown", { jobs_running: 1000, jobs_scheduled: 4 }),
   ]);
   assert.equal(summary.nearLimitQueueCount, 2);
@@ -334,11 +339,11 @@ test("near-limit queues include the 90 percent boundary and exclude unknown limi
 
 test("duplicate aliases count capacity once and prefer the freshest reading", () => {
   const summary = summarizeQueues([
-    metric("amd_mi250_8", {
+    metric("amd_mi300_8", {
       jobs_running: 1,
       polled_at: "2026-09-28T12:00:00Z",
     }),
-    metric("mi250_8", { jobs_running: 2, polled_at: "2026-09-28T12:05:00Z" }),
+    metric("mi300_8", { jobs_running: 2, polled_at: "2026-09-28T12:05:00Z" }),
   ]);
   assert.equal(summary.queueCount, 1);
   assert.equal(summary.maxInFlight, 2);
@@ -356,14 +361,14 @@ function snapshot(queue: string, time: string, jobs_running = 1) {
 test("history aligns poll drift and never carries missing queue readings forward", () => {
   const history = buildTrafficHistory(
     [
-      snapshot("amd_mi250_1", "12:00:02"),
-      snapshot("amd_mi250_8", "12:00:45"),
-      snapshot("amd_mi250_1", "12:05:02"),
-      snapshot("amd_mi250_1", "12:15:02"),
-      snapshot("amd_mi250_8", "12:15:45"),
+      snapshot("amd_mi300_2", "12:00:02"),
+      snapshot("amd_mi300_8", "12:00:45"),
+      snapshot("amd_mi300_2", "12:05:02"),
+      snapshot("amd_mi300_2", "12:15:02"),
+      snapshot("amd_mi300_8", "12:15:45"),
     ],
     5,
-    ["amd_mi250_1", "amd_mi250_8"],
+    ["amd_mi300_2", "amd_mi300_8"],
   );
   assert.equal(history.length, 4);
   assert.equal(history[0].time, Date.parse("2026-09-28T12:00:00Z"));
@@ -373,11 +378,11 @@ test("history aligns poll drift and never carries missing queue readings forward
   );
   assert.deepEqual(
     history.map((point) => point.maxInFlight),
-    [80, 78, null, 80],
+    [32, 30, null, 32],
   );
   assert.deepEqual(
     history.map((point) => point.limitUtilization),
-    [2.5, (1 / 78) * 100, null, 2.5],
+    [6.25, (1 / 30) * 100, null, 6.25],
   );
   assert.deepEqual(history.map((point) => point.observedQueueCount), [2, 1, 0, 2]);
   assert.ok(history.every((point) => point.expectedQueueCount === 2));
@@ -389,19 +394,19 @@ test("history aligns poll drift and never carries missing queue readings forward
 test("history uses the latest per-queue reading and ignores unselected queues", () => {
   const history = buildTrafficHistory(
     [
-      snapshot("amd_mi250_8", "12:00:02", 1),
-      snapshot("mi250_8", "12:04:02", 2),
+      snapshot("amd_mi300_8", "12:00:02", 1),
+      snapshot("mi300_8", "12:04:02", 2),
       snapshot("gpu_1_queue", "12:10:00", 100),
     ],
     5,
-    ["amd_mi250_8", "mi250_8"],
+    ["amd_mi300_8", "mi300_8"],
   );
   assert.equal(history.length, 1);
   assert.equal(history[0].running, 2);
   assert.equal(history[0].limitUtilization, 100);
-  assert.deepEqual(buildTrafficHistory([], 5, ["amd_mi250_8"]), []);
+  assert.deepEqual(buildTrafficHistory([], 5, ["amd_mi300_8"]), []);
   assert.deepEqual(
-    buildTrafficHistory([snapshot("amd_mi250_8", "12:00:00")], 5, []),
+    buildTrafficHistory([snapshot("amd_mi300_8", "12:00:00")], 5, []),
     [],
   );
 });
@@ -409,14 +414,14 @@ test("history uses the latest per-queue reading and ignores unselected queues", 
 test("new, retired, and unobserved queues do not erase available traffic or inflate capacity", () => {
   const history = buildTrafficHistory(
     [
-      snapshot("amd_mi250_1", "12:00:00", 39),
-      snapshot("amd_mi355_4", "12:10:00", 21),
+      snapshot("amd_mi250", "12:00:00", 13),
+      snapshot("amd_mi355_4", "12:10:00", 19),
     ],
     5,
-    ["amd_mi250_1", "amd_mi355_4", "amd_mi300_1"],
+    ["amd_mi250", "amd_mi355_4", "amd_mi300_1"],
   );
-  assert.deepEqual(history.map((point) => point.running), [39, null, 21]);
-  assert.deepEqual(history.map((point) => point.maxInFlight), [78, null, 42]);
+  assert.deepEqual(history.map((point) => point.running), [13, null, 19]);
+  assert.deepEqual(history.map((point) => point.maxInFlight), [26, null, 38]);
   assert.deepEqual(history.map((point) => point.limitUtilization), [50, null, 50]);
   assert.deepEqual(history.map((point) => point.observedQueueCount), [1, 0, 1]);
   assert.ok(history.every((point) => point.expectedQueueCount === 3));
@@ -449,11 +454,11 @@ test("history uses explicit API bucket sizes including nonstandard widths", () =
   for (const stepMinutes of [5, 15, 30, 60, 360]) {
     const history = buildTrafficHistory(
       [
-        snapshot("amd_mi250_8", "00:00:00"),
-        snapshot("amd_mi250_8", "12:00:00"),
+        snapshot("amd_mi300_8", "00:00:00"),
+        snapshot("amd_mi300_8", "12:00:00"),
       ],
       stepMinutes,
-      ["amd_mi250_8"],
+      ["amd_mi300_8"],
     );
     assert.equal(history[1].time - history[0].time, stepMinutes * 60_000);
     assert.equal(history[1].running, null);
@@ -463,14 +468,14 @@ test("history uses explicit API bucket sizes including nonstandard widths", () =
 test("activity distinguishes idle observations from leading, internal, and trailing gaps", () => {
   const [activity] = buildQueueActivity(
     [
-      snapshot("amd_mi250_8", "12:05:02", 0),
+      snapshot("amd_mi300_8", "12:05:02", 0),
       {
-        ...snapshot("amd_mi250_8", "12:15:02", 1.8),
+        ...snapshot("amd_mi300_8", "12:15:02", 1.8),
         jobs_scheduled: 3,
       },
     ],
     0.5,
-    ["amd_mi250_8"],
+    ["amd_mi300_8"],
     5,
     Date.parse("2026-09-28T12:25:30Z"),
   );
@@ -494,19 +499,19 @@ test("activity distinguishes idle observations from leading, internal, and trail
 test("activity normalizes each queue by its own limit and deduplicates aliases", () => {
   const activity = buildQueueActivity(
     [
-      { ...snapshot("amd_mi250_8", "12:00:02", 1), p95_wait_secs: 100 },
-      { ...snapshot("mi250_8", "12:04:02", 2), p95_wait_secs: 20 },
+      { ...snapshot("amd_mi300_8", "12:00:02", 1), p95_wait_secs: 100 },
+      { ...snapshot("mi300_8", "12:04:02", 2), p95_wait_secs: 20 },
       { ...snapshot("amd_mi355_dpx", "12:00:02", 120), p95_wait_secs: 300 },
       snapshot("unknown", "12:00:02", 1000),
       snapshot("gpu_1_queue", "13:00:00", 100),
     ],
     1,
-    ["mi250_8", "amd_mi250_8", "amd_mi355_dpx", "unknown"],
+    ["mi300_8", "amd_mi300_8", "amd_mi355_dpx", "unknown"],
     5,
   );
   assert.deepEqual(
     activity.map((row) => row.queue),
-    ["amd_mi250_8", "amd_mi355_dpx", "unknown"],
+    ["amd_mi300_8", "amd_mi355_dpx", "unknown"],
   );
   assert.deepEqual(
     activity.map((row) => row.averageUtilization),
@@ -651,18 +656,18 @@ test("activity uses API bucket widths and ignores observations outside the windo
     const [activity] = buildQueueActivity(
       [
         {
-          ...snapshot("amd_mi250_8", "12:00:00"),
+          ...snapshot("amd_mi300_8", "12:00:00"),
           time_bucket: "2026-01-01T00:00:00Z",
         },
-        snapshot("amd_mi250_8", "12:00:00"),
-        snapshot("amd_mi250_8", "18:00:00"),
+        snapshot("amd_mi300_8", "12:00:00"),
+        snapshot("amd_mi300_8", "18:00:00"),
         {
-          ...snapshot("amd_mi250_8", "12:00:00"),
+          ...snapshot("amd_mi300_8", "12:00:00"),
           time_bucket: "invalid",
         },
       ],
       hours,
-      ["amd_mi250_8"],
+      ["amd_mi300_8"],
       stepMinutes,
       Date.parse("2026-09-28T12:00:00Z"),
     );
