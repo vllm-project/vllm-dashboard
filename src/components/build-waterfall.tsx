@@ -1,16 +1,16 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import useSWR from "swr";
 import { JobName, jobNameText } from "@/components/job-name";
 import { buildTestTree, type TestTreeNode } from "@/lib/test-tree";
 import { JobGpuTimeline, type GpuAxis } from "@/components/job-gpu-timeline";
 import { formatDuration } from "@/lib/format-duration";
-import { TimelineCursorProvider, TimelineHoverArea } from "@/components/timeline-cursor";
+import { TimelineCursorLabel, TimelineCursorProvider, TimelineHoverArea } from "@/components/timeline-cursor";
 
 type LaneKind = "job" | "step" | "command" | "test";
-/** Lanes from the API plus the client-side pytest grouping rows. */
-type RowKind = LaneKind | "test-file" | "test-case";
+/** Lanes from the API plus the client-side step-group and pytest grouping rows. */
+type RowKind = LaneKind | "group" | "test-file" | "test-case";
 
 interface WaterfallLane {
   id: string;
@@ -36,6 +36,14 @@ interface WaterfallLane {
   /** Total tests under a grouping row. */
   testCount?: number;
   failedCount?: number;
+  /** A step-group row holding a build-limiting job. */
+  containsCritical?: boolean;
+}
+
+interface StepGroupsResponse {
+  byKey: Record<string, string>;
+  byLabel: Record<string, string>;
+  complete: boolean;
 }
 
 interface VisibleRow {
@@ -76,15 +84,128 @@ interface BuildWaterfallProps {
 }
 
 const INITIAL_JOB_LIMIT = 36;
-const TICKS = [0, 0.25, 0.5, 0.75, 1];
 const INDENT_PX = 18;
 const ROW_GRID = "grid-cols-[minmax(22rem,34rem)_minmax(28rem,1fr)]";
+const GROUP_ID_PREFIX = "group:";
+const MINUTE = 60_000;
+// Round axis steps, from which the one giving roughly ten ticks is chosen.
+const TICK_STEPS = [
+  1_000, 5_000, 10_000, 30_000,
+  MINUTE, 2 * MINUTE, 5 * MINUTE, 10 * MINUTE, 15 * MINUTE, 20 * MINUTE, 30 * MINUTE,
+  60 * MINUTE, 120 * MINUTE, 240 * MINUTE,
+];
 
 async function fetchTrace(url: string): Promise<TraceResponse> {
   const response = await fetch(url);
   const body = (await response.json()) as TraceResponse;
   if (!response.ok) throw new Error(body.error ?? "Failed to load trace");
   return body;
+}
+
+async function fetchStepGroups(url: string): Promise<StepGroupsResponse> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error("Failed to load step groups");
+  return (await response.json()) as StepGroupsResponse;
+}
+
+/** Fractions of the axis at round elapsed-time steps, e.g. every 10m. */
+function axisTicks(durationMs: number): { fraction: number; ms: number }[] {
+  const step = TICK_STEPS.find((candidate) => durationMs / candidate <= 10) ?? TICK_STEPS[TICK_STEPS.length - 1];
+  const ticks = [];
+  for (let ms = 0; ms <= durationMs; ms += step) ticks.push({ fraction: ms / durationMs, ms });
+  return ticks;
+}
+
+/** Axis ticks fall on round steps, so "10m" rather than formatDuration's "10m 0s". */
+function formatTick(ms: number): string {
+  if (ms < MINUTE) return `${Math.round(ms / 1_000)}s`;
+  const minutes = Math.round(ms / MINUTE);
+  if (minutes < 60) return `${minutes}m`;
+  return minutes % 60 === 0 ? `${minutes / 60}h` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+function groupLane(label: string, jobs: WaterfallLane[]): WaterfallLane {
+  const start = Math.min(...jobs.map((job) => Date.parse(job.startTime)));
+  const end = Math.max(...jobs.map((job) => Date.parse(job.endTime)));
+  const status: WaterfallLane["status"] = jobs.some((job) => job.status === "failed")
+    ? "failed"
+    : jobs.every((job) => job.status === "skipped")
+      ? "skipped"
+      : jobs.every((job) => job.status === "passed" || job.status === "skipped")
+        ? "passed"
+        : "unknown";
+  return {
+    id: `${GROUP_ID_PREFIX}${label}`,
+    parentId: null,
+    kind: "group",
+    label,
+    group: label,
+    stepKey: null,
+    jobId: null,
+    queue: null,
+    startTime: new Date(start).toISOString(),
+    endTime: new Date(end).toISOString(),
+    durationMs: end - start,
+    waitMs: 0,
+    status,
+    outcome: null,
+    url: null,
+    critical: false,
+    childCount: jobs.length,
+    containsCritical: jobs.some((job) => job.critical),
+  };
+}
+
+/**
+ * Keep a header row under the sticky nav while its container scrolls past.
+ * CSS `position: sticky` cannot do this here: the builds table scrolls
+ * horizontally, and that overflow container also captures vertical sticking.
+ */
+function usePinnedHeader(
+  containerRef: RefObject<HTMLDivElement | null>,
+  headerRef: RefObject<HTMLDivElement | null>,
+  sectionRef: RefObject<HTMLElement | null>,
+  ready: boolean,
+) {
+  useEffect(() => {
+    const container = containerRef.current;
+    const header = headerRef.current;
+    const section = sectionRef.current;
+    if (!container || !header || !section) return;
+
+    // Match the visible width of the scroller the waterfall sits in, so the
+    // panel spans the page however wide the builds table is.
+    let scroller: HTMLElement | null = section.parentElement;
+    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowX)) {
+      scroller = scroller.parentElement;
+    }
+
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      if (scroller) section.style.width = `${scroller.clientWidth}px`;
+      const navBottom = document.querySelector(".dashboard-nav")?.getBoundingClientRect().bottom ?? 0;
+      const box = container.getBoundingClientRect();
+      const offset = Math.max(0, Math.min(navBottom - box.top, box.height - header.offsetHeight));
+      header.style.transform = offset > 0 ? `translateY(${offset}px)` : "";
+      header.dataset.pinned = offset > 0 ? "true" : "false";
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(update);
+    };
+    update();
+    window.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    const observer = new ResizeObserver(schedule);
+    observer.observe(container);
+    if (scroller) observer.observe(scroller);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      observer.disconnect();
+    };
+  }, [containerRef, headerRef, sectionRef, ready]);
 }
 
 
@@ -100,10 +221,10 @@ function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, value));
 }
 
-function GridLines() {
+function GridLines({ ticks }: { ticks: number[] }) {
   return (
     <div aria-hidden="true" className="pointer-events-none absolute inset-0">
-      {TICKS.map((tick) => (
+      {ticks.map((tick) => (
         <span
           key={tick}
           className="absolute inset-y-0 w-px bg-zinc-200/70 dark:bg-zinc-800"
@@ -118,18 +239,27 @@ function isJobLane(lane: WaterfallLane): boolean {
   return lane.kind === "job" || lane.kind === "step";
 }
 
+function isStepGroup(lane: WaterfallLane): boolean {
+  return lane.kind === "group";
+}
+
 function isTestGroup(lane: WaterfallLane): boolean {
   return lane.kind === "test-file" || lane.kind === "test-case";
 }
 
 /** Pytest node IDs contain `::`, which JobName would misread as shortcodes. */
 function laneText(lane: WaterfallLane): string {
-  return isJobLane(lane) ? jobNameText(lane.label) : lane.label;
+  return isJobLane(lane) || isStepGroup(lane) ? jobNameText(lane.label) : lane.label;
 }
 
 function laneColor(lane: WaterfallLane): string {
   if (lane.critical) {
     return "border border-amber-500 bg-amber-300 shadow-[0_0_0_1px_rgb(245_158_11_/_0.12)] dark:bg-amber-500";
+  }
+  if (isStepGroup(lane)) {
+    // A group bar spans its jobs; a tint keeps it from reading as one job.
+    if (lane.status === "failed") return "border border-red-500/70 bg-red-500/20 dark:bg-red-500/25";
+    return "border border-blue-500/60 bg-blue-500/15 dark:bg-blue-500/25";
   }
   if (isTestGroup(lane)) {
     // Grouping rows span their children; keep them visually lighter than
@@ -206,6 +336,10 @@ export function BuildWaterfall({
   const [detailErrors, setDetailErrors] = useState<Set<string>>(() => new Set());
   const [gpuLaneId, setGpuLaneId] = useState<string | null>(null);
   const [gpuAxis, setGpuAxis] = useState<GpuAxis>("selection");
+  const [groupByStep, setGroupByStep] = useState(true);
+  const sectionRef = useRef<HTMLElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const axisRef = useRef<HTMLDivElement>(null);
   const params = new URLSearchParams({ organization, pipeline, buildNumber });
   const { data, error, isLoading, isValidating, mutate } = useSWR<TraceResponse>(
     `/api/builds/trace?${params.toString()}`,
@@ -214,6 +348,12 @@ export function BuildWaterfall({
       keepPreviousData: true,
       refreshInterval: (latest) => (latest?.complete ? 0 : 10_000),
     },
+  );
+  // Until bootstrap uploads the generated pipeline there is nothing to group by.
+  const { data: stepGroups } = useSWR<StepGroupsResponse>(
+    `/api/builds/step-groups?${params.toString()}`,
+    fetchStepGroups,
+    { refreshInterval: (latest) => (latest?.complete ? 0 : 30_000) },
   );
 
   const { jobLanes, childrenByParent, defaultOpen } = useMemo(() => {
@@ -267,7 +407,21 @@ export function BuildWaterfall({
     return { jobLanes: roots, childrenByParent: children, defaultOpen };
   }, [data?.lanes, jobDetails]);
 
-  const isOpen = (id: string) => openOverrides.get(id) ?? defaultOpen.has(id);
+  // Step groups start open, like Buildkite's waterfall.
+  const isOpen = (id: string) =>
+    openOverrides.get(id) ?? (defaultOpen.has(id) || id.startsWith(GROUP_ID_PREFIX));
+
+  const jobGroupLabel = useMemo(() => {
+    const byKey = stepGroups?.byKey ?? {};
+    const byLabel = stepGroups?.byLabel ?? {};
+    return (lane: WaterfallLane): string | null =>
+      lane.group ?? (lane.stepKey ? byKey[lane.stepKey] : undefined) ?? byLabel[lane.label] ?? null;
+  }, [stepGroups]);
+  const hasStepGroups = useMemo(
+    () => jobLanes.some((lane) => jobGroupLabel(lane) !== null),
+    [jobGroupLabel, jobLanes],
+  );
+  const grouped = groupByStep && hasStepGroups;
 
   const visibleJobs = useMemo(() => {
     const filtered = criticalOnly
@@ -283,17 +437,46 @@ export function BuildWaterfall({
     return filtered.filter((lane) => initiallyVisible.has(lane.id));
   }, [criticalOnly, jobLanes, showAll]);
 
+  // Ungrouped jobs (bootstrap) sit between the groups in start order.
+  const { topLanes, groupMembers } = useMemo(() => {
+    const groupMembers = new Map<string, WaterfallLane[]>();
+    if (!grouped) return { topLanes: visibleJobs, groupMembers };
+    const members = new Map<string, WaterfallLane[]>();
+    const top: WaterfallLane[] = [];
+    for (const job of visibleJobs) {
+      const label = jobGroupLabel(job);
+      if (label === null) {
+        top.push(job);
+        continue;
+      }
+      const jobs = members.get(label) ?? [];
+      jobs.push(job);
+      members.set(label, jobs);
+    }
+    for (const [label, jobs] of members) {
+      const row = groupLane(label, jobs);
+      groupMembers.set(row.id, jobs);
+      top.push(row);
+    }
+    top.sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime) || b.durationMs - a.durationMs);
+    return { topLanes: top, groupMembers };
+  }, [grouped, jobGroupLabel, visibleJobs]);
+
   const visibleRows = useMemo(() => {
     const flattened: VisibleRow[] = [];
     const walk = (lane: WaterfallLane, depth: number, ancestors: string[]) => {
       const path = [...ancestors, lane.id];
       flattened.push({ lane, depth, path });
-      if (!(openOverrides.get(lane.id) ?? defaultOpen.has(lane.id))) return;
-      for (const child of childrenByParent.get(lane.id) ?? []) walk(child, depth + 1, path);
+      const open = openOverrides.get(lane.id) ??
+        (defaultOpen.has(lane.id) || lane.id.startsWith(GROUP_ID_PREFIX));
+      if (!open) return;
+      for (const child of groupMembers.get(lane.id) ?? childrenByParent.get(lane.id) ?? []) {
+        walk(child, depth + 1, path);
+      }
     };
-    for (const job of visibleJobs) walk(job, 0, []);
+    for (const lane of topLanes) walk(lane, 0, []);
     return flattened;
-  }, [childrenByParent, defaultOpen, openOverrides, visibleJobs]);
+  }, [childrenByParent, defaultOpen, groupMembers, openOverrides, topLanes]);
   const gpuLane = useMemo(
     () => (gpuLaneId === null ? null : visibleRows.find((row) => row.lane.id === gpuLaneId)?.lane ?? null),
     [gpuLaneId, visibleRows],
@@ -366,9 +549,13 @@ export function BuildWaterfall({
     setOpenOverrides((current) => {
       const next = new Map(current);
       for (const id of expandableJobs) next.set(id, !allExpanded);
+      // Commands inside a collapsed group would stay hidden.
+      if (!allExpanded) for (const id of groupMembers.keys()) next.set(id, true);
       return next;
     });
   }
+
+  usePinnedHeader(timelineRef, axisRef, sectionRef, Boolean(data?.summary && jobLanes.length > 0));
 
   if (isLoading && !data) {
     return (
@@ -413,6 +600,8 @@ export function BuildWaterfall({
   const timelineStart = Date.parse(summary.observedStart);
   const timelineEnd = Date.parse(summary.observedEnd);
   const timelineDuration = Math.max(1, timelineEnd - timelineStart);
+  const ticks = axisTicks(timelineDuration);
+  const tickFractions = ticks.map((tick) => tick.fraction);
   const hiddenCount = Math.max(0, jobLanes.length - visibleJobs.length);
   const hasCoverage = typeof startedJobCount === "number" && startedJobCount > 0;
   const coverageTotal = hasCoverage
@@ -435,8 +624,9 @@ export function BuildWaterfall({
   return (
     <TimelineCursorProvider>
     <section
+      ref={sectionRef}
       aria-label={`Build ${buildNumber} waterfall`}
-      className="sticky left-0 w-[calc(100vw-2rem)] max-w-[1376px] border-t border-zinc-200 bg-zinc-50/80 sm:w-[calc(100vw-3rem)] lg:w-[calc(100vw-4rem)] dark:border-zinc-800 dark:bg-zinc-900/35"
+      className="sticky left-0 w-[calc(100vw-2rem)] border-t border-zinc-200 bg-zinc-50/80 sm:w-[calc(100vw-3rem)] lg:w-[calc(100vw-4rem)] dark:border-zinc-800 dark:bg-zinc-900/35"
     >
       <div className="flex flex-col gap-4 border-b border-zinc-200 px-5 py-4 lg:flex-row lg:items-start lg:justify-between dark:border-zinc-800">
         <div className="min-w-0">
@@ -484,6 +674,16 @@ export function BuildWaterfall({
           <span className="inline-flex items-center gap-1.5"><span className="h-2 w-4 rounded-sm bg-zinc-300 dark:bg-zinc-700" /> queued / skipped</span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {hasStepGroups && (
+            <button
+              type="button"
+              aria-pressed={groupByStep}
+              onClick={() => setGroupByStep((value) => !value)}
+              className={`dashboard-control min-h-9 rounded-md border px-3 text-xs font-medium ${groupByStep ? "border-blue-300 bg-blue-50 text-blue-800 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-200" : "border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900"}`}
+            >
+              {groupByStep ? "Grouped by step group" : "Group by step group"}
+            </button>
+          )}
           {expandableJobs.length > 0 && (
             <button type="button" onClick={toggleAllJobs} className="dashboard-control min-h-9 rounded-md border border-cyan-300 bg-cyan-50 px-3 text-xs font-medium text-cyan-800 hover:bg-cyan-100 dark:border-cyan-800 dark:bg-cyan-950/40 dark:text-cyan-200 dark:hover:bg-cyan-950/70">
               {allJobsExpanded ? "Collapse commands" : `Show commands (${summary.commandCount})`}
@@ -506,16 +706,26 @@ export function BuildWaterfall({
       </div>
 
       <div className="overflow-x-auto pb-2">
-        <div className="min-w-[760px] px-5">
-          <div className={`grid ${ROW_GRID} gap-4 border-b border-zinc-200 pb-2 dark:border-zinc-800`}>
-            <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">Job / command / test</div>
-            <div className="relative h-5 font-mono text-[10px] text-zinc-400">
-              {TICKS.map((tick) => (
-                <span key={tick} className="absolute -translate-x-1/2 first:translate-x-0 last:-translate-x-full" style={{ left: `${tick * 100}%` }}>
-                  {formatDuration(timelineDuration * tick)}
+        <div ref={timelineRef} className="min-w-[760px] px-5">
+          <div
+            ref={axisRef}
+            className={`relative z-30 -mx-5 grid ${ROW_GRID} items-center gap-4 border-b border-zinc-200 bg-zinc-50 px-5 py-1.5 will-change-transform data-[pinned=true]:shadow-[0_6px_12px_-10px_rgb(0_0_0_/_0.35)] dark:border-zinc-800 dark:bg-zinc-900`}
+          >
+            <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
+              {grouped ? "Group / job / command / test" : "Job / command / test"}
+            </div>
+            <TimelineHoverArea start={timelineStart} end={timelineEnd} className="h-6 font-mono text-[10px] text-zinc-400">
+              {ticks.map((tick, index) => (
+                <span
+                  key={tick.ms}
+                  className={`absolute top-1/2 -translate-y-1/2 whitespace-nowrap ${index === 0 ? "" : "-translate-x-1/2"}`}
+                  style={{ left: `${tick.fraction * 100}%` }}
+                >
+                  {formatTick(tick.ms)}
                 </span>
               ))}
-            </div>
+              <TimelineCursorLabel start={timelineStart} end={timelineEnd} format={formatDuration} />
+            </TimelineHoverArea>
           </div>
 
           <div>
@@ -527,7 +737,7 @@ export function BuildWaterfall({
               const queueWidth = clampPercent(((start - queueStart) / timelineDuration) * 100);
               const runLeft = clampPercent(((start - timelineStart) / timelineDuration) * 100);
               const runWidth = clampPercent(((end - start) / timelineDuration) * 100);
-              const children = childrenByParent.get(lane.id) ?? [];
+              const children = groupMembers.get(lane.id) ?? childrenByParent.get(lane.id) ?? [];
               const displayedChildCount = lane.kind === "command"
                 ? Math.max(lane.childCount, children.length)
                 : children.length;
@@ -545,11 +755,26 @@ export function BuildWaterfall({
               );
               const text = laneText(lane);
               const detail = `${text} · ${formatTime(lane.startTime)}–${formatTime(lane.endTime)} · ${formatDuration(lane.durationMs)}${lane.outcome ? ` · ${lane.outcome}` : ""}${lane.testCount ? ` · ${lane.testCount} tests${lane.failedCount ? `, ${lane.failedCount} failed` : ""}` : ""}`;
-              const rowTone = depth === 0 ? "" : depth === 1 ? "bg-cyan-50/35 dark:bg-cyan-950/10" : "bg-emerald-50/30 dark:bg-emerald-950/10";
+              const isJob = isJobLane(lane);
+              const isStep = isStepGroup(lane);
+              const rowTone = isStep
+                ? "bg-zinc-100/80 dark:bg-zinc-800/40"
+                : isJob
+                  ? ""
+                  : lane.kind === "command"
+                    ? "bg-cyan-50/35 dark:bg-cyan-950/10"
+                    : "bg-emerald-50/30 dark:bg-emerald-950/10";
+              const guideTone = isJob
+                ? "bg-zinc-300 dark:bg-zinc-700"
+                : lane.kind === "command"
+                  ? "bg-cyan-200 dark:bg-cyan-900"
+                  : "bg-emerald-200 dark:bg-emerald-900";
               const isGroup = isTestGroup(lane);
               const countBadge = isGroup
                 ? `${lane.testCount ?? displayedChildCount} ${lane.testCount === 1 ? "test" : "tests"}`
-                : String(displayedChildCount);
+                : isStep
+                  ? `${displayedChildCount} ${displayedChildCount === 1 ? "job" : "jobs"}`
+                  : String(displayedChildCount);
 
               // The GPU panel follows the selected lane's whole visible subtree, so
               // a job's commands stay directly under the job row.
@@ -561,7 +786,7 @@ export function BuildWaterfall({
                 <Fragment key={lane.id}>
                 <div className={`grid min-h-10 ${ROW_GRID} items-center gap-4 border-b border-zinc-200/70 last:border-0 dark:border-zinc-800/70 ${rowTone} ${gpuLaneId === lane.id ? "bg-cyan-50/60 dark:bg-cyan-950/20" : ""}`}>
                   <div className="relative min-w-0 py-1.5" style={{ paddingLeft: `${depth * INDENT_PX}px` }}>
-                    {depth > 0 && <span aria-hidden="true" className={`absolute inset-y-0 w-px ${depth === 1 ? "bg-cyan-200 dark:bg-cyan-900" : "bg-emerald-200 dark:bg-emerald-900"}`} style={{ left: `${(depth - 1) * INDENT_PX + 8}px` }} />}
+                    {depth > 0 && <span aria-hidden="true" className={`absolute inset-y-0 w-px ${guideTone}`} style={{ left: `${(depth - 1) * INDENT_PX + 8}px` }} />}
                     <div className="flex items-center gap-1.5">
                       {isExpandable ? (
                         <button type="button" onClick={() => toggleExpanded(lane)} aria-expanded={open} aria-label={`${open ? "Collapse" : "Expand"} ${text}`} className="dashboard-control flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-500 hover:bg-zinc-200/70 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100">
@@ -569,11 +794,12 @@ export function BuildWaterfall({
                         </button>
                       ) : <span className="w-6 shrink-0" />}
                       {lane.critical && <span aria-label="Inferred build-limiting job" className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
+                      {lane.containsCritical && <span aria-label="Holds a build-limiting job" className="h-1.5 w-1.5 shrink-0 rounded-full border border-amber-500" />}
                       <span
-                        className={`truncate text-xs ${depth === 0 ? "font-medium text-zinc-800 dark:text-zinc-200" : isGroup ? "font-mono text-[11px] font-medium text-zinc-700 dark:text-zinc-300" : "font-mono text-[11px] text-zinc-800 dark:text-zinc-200"}`}
+                        className={`truncate text-xs ${isStep ? "font-semibold text-zinc-900 dark:text-zinc-100" : isJob ? "font-medium text-zinc-800 dark:text-zinc-200" : isGroup ? "font-mono text-[11px] font-medium text-zinc-700 dark:text-zinc-300" : "font-mono text-[11px] text-zinc-800 dark:text-zinc-200"}`}
                         title={text}
                       >
-                        {isJobLane(lane) ? <JobName name={lane.label} /> : (lane.displayLabel ?? lane.label)}
+                        {isJob || isStep ? <JobName name={lane.label} /> : (lane.displayLabel ?? lane.label)}
                       </span>
                       {isExpandable && <span className="shrink-0 rounded bg-zinc-200/70 px-1.5 py-0.5 font-mono text-[9px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">{countBadge}</span>}
                       {isGroup && (lane.failedCount ?? 0) > 0 && <span className="shrink-0 rounded bg-red-100 px-1.5 py-0.5 font-mono text-[9px] font-medium text-red-700 dark:bg-red-950 dark:text-red-300">{lane.failedCount} failed</span>}
@@ -601,7 +827,7 @@ export function BuildWaterfall({
                         </button>
                       )}
                     </div>
-                    {depth === 0 && (
+                    {isJob && (
                       <div className="mt-0.5 flex min-w-0 items-center gap-2 pl-7 font-mono text-[10px] text-zinc-400">
                         <span className="truncate">{lane.queue ?? lane.group ?? lane.kind}</span>
                         {lane.waitMs > 0 && <span className="shrink-0">+{formatDuration(lane.waitMs)} wait</span>}
@@ -610,8 +836,8 @@ export function BuildWaterfall({
                   </div>
                   <TimelineHoverArea start={timelineStart} end={timelineEnd} className="flex min-h-7 self-stretch items-center">
                     <div className="relative h-7 w-full">
-                      <GridLines />
-                      {queueWidth > 0.08 && depth === 0 && (
+                      <GridLines ticks={tickFractions} />
+                      {queueWidth > 0.08 && isJob && (
                         <span aria-hidden="true" className="absolute top-2 h-3 rounded-l-sm bg-zinc-300 dark:bg-zinc-700" style={{ left: `${queueLeft}%`, width: `${Math.max(queueWidth, 0.2)}%`, backgroundImage: "repeating-linear-gradient(135deg, transparent, transparent 3px, rgb(255 255 255 / 0.35) 3px, rgb(255 255 255 / 0.35) 4px)" }} />
                       )}
                       {lane.url ? (

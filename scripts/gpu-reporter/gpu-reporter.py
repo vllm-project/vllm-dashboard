@@ -17,7 +17,7 @@ Environment variables:
   GPU_HOSTNAME            - Override hostname (default: system hostname)
   GPU_REPORT_DISK_TIMEOUT - Seconds before a per-mount stat is given up (default: 5)
   GPU_REPORT_COMPUTE_APPS_TIMEOUT - Seconds before the compute-apps query is given up (default: 10)
-  GPU_REPORT_STATE_DIR    - Where the kernel-log cursor is kept (default: /var/lib/gpu-reporter)
+  GPU_REPORT_STATE_DIR    - Where the kernel-log cursor and dead PIDs are kept (default: /var/lib/gpu-reporter)
 
 The reporter always POSTs, even when nvidia-smi fails: a failed GPU query
 yields an empty "gpus" list with reporter_status="degraded" and last_error
@@ -104,6 +104,11 @@ DCGM_MIN_TIME = 5
 RUN_START = time.monotonic()
 STATE_DIR = os.environ.get("GPU_REPORT_STATE_DIR", "/var/lib/gpu-reporter")
 JOURNAL_CURSOR_FILE = os.path.join(STATE_DIR, "journal.cursor")
+# "<gpu_uuid> <pid> <reports>" per line: each process the last report saw
+# dead, and on how many reports in a row.
+DEAD_PIDS_FILE = os.path.join(STATE_DIR, "dead-pids")
+# An exiting process was seen dead for one or two reports, never three.
+DEAD_REPORTS_REQUIRED = 3
 MAX_XIDS_PER_REPORT = 200  # the ingestion contract allows 500
 # Kernel-log entries read per report. A long backlog (reporter stopped for
 # days) catches up over several reports instead of timing out every time.
@@ -190,15 +195,18 @@ def _pid_alive(pid, proc_root=PROC_ROOT):
     return os.path.isdir(os.path.join(proc_root, str(pid)))
 
 
-def query_dead_proc_memory():
+def query_dead_proc_memory(state_path=DEAD_PIDS_FILE):
     """Per-GPU MiB still attributed to processes that no longer exist.
 
     When a compute process is SIGKILLed mid-teardown the driver can keep its
     memory allocated to the dead PID indefinitely (observed on the H200 MIG
-    fleet); only a GPU reset or reboot reclaims it. The compute-apps table
-    keys rows by GPU UUID, so a second query maps UUIDs to the indexes used
-    by the rest of the report. Raises on any nvidia-smi failure; the caller
-    degrades the metric to null rather than the whole report.
+    fleet); only a GPU reset or reboot reclaims it. A process that is simply
+    exiting can also be listed with its PID already gone, for a report or
+    two, so memory counts only once the same PID on the same GPU has been
+    dead on DEAD_REPORTS_REQUIRED reports in a row (kept in state_path).
+    The compute-apps table keys rows by GPU UUID, so a second query maps
+    UUIDs to the indexes used by the rest of the report. Raises on any nvidia-smi failure or unwritable state;
+    the caller degrades the metric to null rather than the whole report.
     """
     index_of_uuid = {}
     result = subprocess.run(
@@ -232,6 +240,17 @@ def query_dead_proc_memory():
         raise RuntimeError(
             f"nvidia-smi compute-apps query failed: {result.stderr.strip()}"
         )
+    reports_dead_before = {}  # "<gpu_uuid> <pid>" -> reports in a row
+    try:
+        with open(state_path) as f:
+            for line in f.read().split("\n"):
+                parts = line.split(" ")
+                # Blank (nothing was dead) or damaged lines start from zero.
+                if len(parts) == 3 and parts[2].isdigit():
+                    reports_dead_before[f"{parts[0]} {parts[1]}"] = int(parts[2])
+    except FileNotFoundError:
+        pass
+    dead_now = []
     dead_mb = {index: 0.0 for index in index_of_uuid.values()}
     for line in result.stdout.strip().split("\n"):
         parts = [p.strip() for p in line.split(",")]
@@ -244,8 +263,17 @@ def query_dead_proc_memory():
             mem_mb = float(mem_mb)
         except ValueError:
             continue
-        if not _pid_alive(pid):
+        if _pid_alive(pid):
+            continue
+        reports = reports_dead_before.get(f"{gpu_uuid} {pid}", 0) + 1
+        dead_now.append(f"{gpu_uuid} {pid} {reports}")
+        if reports >= DEAD_REPORTS_REQUIRED:
             dead_mb[index_of_uuid[gpu_uuid]] += mem_mb
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    tmp = f"{state_path}.tmp"
+    with open(tmp, "w") as f:
+        f.write("\n".join(dead_now))
+    os.replace(tmp, state_path)
     return dead_mb
 
 

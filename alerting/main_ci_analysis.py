@@ -29,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from alerting.untrusted import pull_request_number, trusted_url
 from alerting.analyzer import AnalyzerError, GitHubPort, PullRequestRef
 from alerting.commands import ScheduledCommand
 from alerting.kimi import load_instructions
@@ -224,11 +225,16 @@ def _parse_fix_prs(payload: Any) -> tuple[SuspectedFixPR, ...]:
         number = item.get("number")
         if number is not None and not isinstance(number, int):
             raise AnalyzerError("analysis suspected_fix_prs number is not an int")
+        # Shown as "PR #N — title" linking to url: keep only real vllm-project
+        # PRs, numbered by their URL, so a link can't point anywhere else.
+        url_number = pull_request_number(str(item["url"]))
+        if url_number is None:
+            continue
         title = item.get("title")
         parsed.append(
             SuspectedFixPR(
                 url=str(item["url"]),
-                number=number,
+                number=url_number,
                 title=title if isinstance(title, str) else "",
             )
         )
@@ -260,6 +266,7 @@ def read_analysis(
         isinstance(url, str) for url in evidence
     ):
         raise AnalyzerError("analysis evidence_urls is not a list of strings")
+    evidence = [url for url in evidence if trusted_url(url)]
 
     return MainCIJobAnalysis(
         alert_id=target.alert_id,

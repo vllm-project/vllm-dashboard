@@ -9,6 +9,7 @@ import { SHARD_SUFFIX_SQL } from "@/lib/job-shards";
 import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { queryBuildsFromOtel } from "@/lib/otel-ci";
 import { isValidDateParam } from "@/lib/date-param";
+import { escapeSqlString } from "@/lib/sql-literal";
 
 const PAGE_SIZE = 50;
 const TTL = 30_000;
@@ -39,18 +40,18 @@ function buildJobFilterSubquery(jobGroups: string[], jobNames: string[]): string
   const step = `regexp_replace(jf.name, '${SHARD_SUFFIX_SQL}', '')`;
 
   if (jobNames.length > 0) {
-    const escaped = jobNames.map((n) => `'${n.replace(/'/g, "''")}'`);
+    const escaped = jobNames.map((n) => `'${escapeSqlString(n)}'`);
     nameConditions.push(`${step} IN (${escaped.join(",")})`);
   }
 
   if (jobGroups.length > 0) {
     const { exactNames, regexPatterns } = resolveGroupsToJobConditions(jobGroups);
     if (exactNames.length > 0) {
-      const escaped = exactNames.map((n) => `'${n.replace(/'/g, "''")}'`);
+      const escaped = exactNames.map((n) => `'${escapeSqlString(n)}'`);
       nameConditions.push(`${step} IN (${escaped.join(",")})`);
     }
     for (const pattern of regexPatterns) {
-      nameConditions.push(`${step} RLIKE '${pattern.replace(/'/g, "''")}'`);
+      nameConditions.push(`${step} RLIKE '${escapeSqlString(pattern)}'`);
     }
   }
 
@@ -116,18 +117,18 @@ export async function GET(request: NextRequest) {
     // Build WHERE clauses
     const conditions = ["b._fivetran_deleted = false"];
     if (pipeline) {
-      conditions.push(`p.name = '${pipeline.replace(/'/g, "''")}'`);
+      conditions.push(`p.name = '${escapeSqlString(pipeline)}'`);
     }
     if (branch) {
-      conditions.push(`b.branch = '${branch.replace(/'/g, "''")}'`);
+      conditions.push(`b.branch = '${escapeSqlString(branch)}'`);
     }
     if (startDate) {
-      conditions.push(`b.created_at >= '${startDate.replace(/'/g, "''")}'`);
+      conditions.push(`b.created_at >= '${escapeSqlString(startDate)}'`);
     }
     if (endDate) {
       // A date is inclusive; a full timestamp (from a drag-zoom on the
       // chart) is the exact, exclusive end.
-      const end = endDate.replace(/'/g, "''");
+      const end = escapeSqlString(endDate);
       conditions.push(
         endDate.includes("T")
           ? `b.created_at < '${end}'`

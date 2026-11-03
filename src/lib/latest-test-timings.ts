@@ -61,6 +61,8 @@ export interface LatestTestTimings {
   // so the planner can charge it once per shard.
   setupMs: number;
   files: FileTiming[];
+  // Treatment-branch builds behind files main hasn't timed; absent when none.
+  treatmentBuildNumbers?: number[];
 }
 
 export class TimingDataError extends Error {}
@@ -212,24 +214,46 @@ export function withTestsOverMs(
   });
 }
 
-export async function queryLatestTestTimings(
-  stepKey: string,
-  { days = 14, queue = null }: { days?: number; queue?: string | null } = {},
-): Promise<LatestTestTimings | null> {
-  const sql = getDb();
-  // Main-branch CI runs only: PR and other branches never feed the baseline.
-  // The pipeline and branch literals must match the partial index predicate
-  // in migration 0029, so they are not parameters. A retried failure keeps its
-  // failed job span, so that build is skipped: the baseline only comes from
-  // builds where the step passed outright. A passing build whose test spans
-  // were lost in ingestion is skipped too, so the previous build is used
-  // instead. The test-span check sits outside the sorted subquery so it runs
-  // newest first and stops once enough builds match. A queue keeps only builds
-  // whose job ran on it, so a device change doesn't mix two queues' runs.
-  const builds = await sql<{
-    build_number: string; commit: string | null; finished_at: Date; job_ids: string[];
-    job_ms: number[];
-  }[]>`
+// Builds of the OTel treatment branch (the one branch besides main whose spans
+// ingestion accepts, see otel-auth.ts) time a command before it reaches main:
+// the step is built there by API at the PR's commit. Their timings are added
+// only for command labels main has no timings for, so they never change one
+// main has; main's own runs replace them once it runs the command. The
+// literal is ingestion's default treatment branch and must match the partial
+// index predicate in migration 0035.
+// The treatment lookup is optional: past this, the response is main's alone.
+const TREATMENT_TIMEOUT_MS = 3_000;
+
+type Sql = ReturnType<typeof getDb>;
+type PassingBuild = {
+  build_number: string; commit: string | null; finished_at: Date; job_ids: string[];
+  job_ms: number[];
+};
+
+/** Main's files, plus the treatment branch's for commands main hasn't timed. */
+export function withTreatmentFiles(main: FileTiming[], treatment: FileTiming[]): FileTiming[] {
+  const mainCommands = new Set(main.map((file) => file.command));
+  const added = treatment.filter((file) => !mainCommands.has(file.command));
+  // Each command's files come from one of the two lists, already in file
+  // order; the stable sort keeps it.
+  return [...main, ...added].sort((a, b) => a.command.localeCompare(b.command));
+}
+
+// CI runs of main or the treatment branch only: PR and other branches never
+// feed the baseline. The pipeline and branch literals must match the partial
+// index predicates in migrations 0029 and 0035, so they are not parameters. A
+// retried failure keeps its failed job span, so that build is skipped: the
+// baseline only comes from builds where the step passed outright. A passing
+// build whose test spans were lost in ingestion is skipped too, so the
+// previous build is used instead. The test-span check sits outside the sorted
+// subquery so it runs newest first and stops once enough builds match. A queue
+// keeps only builds whose job ran on it, so a device change doesn't mix two
+// queues' runs.
+function passingBuilds(
+  sql: Sql, treatment: boolean, stepKey: string, days: number, queue: string | null,
+) {
+  const branch = treatment ? sql`'khluu/otel'` : sql`'main'`;
+  return sql<PassingBuild[]>`
     SELECT * FROM (
       SELECT
         build_number,
@@ -241,7 +265,7 @@ export async function queryLatestTestTimings(
       WHERE span_name = 'buildkite.job'
         AND job_type = 'script'
         AND pipeline_slug = 'ci'
-        AND span_attributes->>'buildkite.build.branch' = 'main'
+        AND span_attributes->>'buildkite.build.branch' = ${branch}
         AND step_key = ${stepKey}${queue === null ? sql`` : sql` AND agent_queue = ${queue}`}
         AND start_time >= NOW() - make_interval(days => ${days})
       GROUP BY build_number
@@ -256,7 +280,9 @@ export async function queryLatestTestTimings(
     ORDER BY build_number DESC
     LIMIT ${TIMING_BUILDS}
   `;
-  if (builds.length === 0) return null;
+}
+
+async function timingsOfBuilds(sql: Sql, builds: PassingBuild[]) {
   const jobIds = builds.flatMap((build) => build.job_ids);
   const rows = await sql<TestSpanRow[]>`
     SELECT
@@ -289,7 +315,7 @@ export async function queryLatestTestTimings(
   }
   // A build whose spans fail validation was partly lost in ingestion. Leave it
   // out of the baseline rather than failing all of it, and say so.
-  const used: (typeof builds)[number][] = [];
+  const used: PassingBuild[] = [];
   const filesPerBuild: FileTiming[][] = [];
   const setupPerBuild: number[][] = [];
   const skippedBuilds: { buildNumber: number; reason: string }[] = [];
@@ -299,8 +325,7 @@ export async function queryLatestTestTimings(
       const buildRows = build.job_ids.flatMap((jobId) => rowsByJob.get(jobId) ?? []);
       const files = summarizeFiles(buildRows);
       const jobs = build.job_ids.map((jobId, i) => ({ jobId, durationMs: build.job_ms[i] }));
-      const jobSet = new Set(build.job_ids);
-      setupPerBuild.push(setupMsPerJob(jobs, commands.filter((c) => jobSet.has(c.job_id)), testLabels));
+      setupPerBuild.push(setupMsPerJob(jobs, commands, testLabels));
       filesPerBuild.push(files);
       used.push(build);
     } catch (e) {
@@ -309,8 +334,45 @@ export async function queryLatestTestTimings(
       skippedBuilds.push({ buildNumber: Number(build.build_number), reason: e.message });
     }
   }
+  return { used, filesPerBuild, setupPerBuild, skippedBuilds, firstError };
+}
+
+/** The treatment branch's files and builds; null when it has none or the lookup fails. */
+async function treatmentTimings(
+  sql: Sql, stepKey: string, days: number, queue: string | null,
+): Promise<{ files: FileTiming[]; buildNumbers: number[] } | null> {
+  try {
+    return await sql.begin(async (transaction) => {
+      const tx = transaction as unknown as Sql;
+      await tx`SELECT set_config('statement_timeout', ${String(TREATMENT_TIMEOUT_MS)}, true)`;
+      const builds = await passingBuilds(tx, true, stepKey, days, queue);
+      if (builds.length === 0) return null;
+      const { used, filesPerBuild } = await timingsOfBuilds(tx, builds);
+      return {
+        files: p80Files(filesPerBuild),
+        buildNumbers: used.map((build) => Number(build.build_number)),
+      };
+    });
+  } catch (e) {
+    console.warn(`Treatment timings for ${stepKey} skipped:`, e);
+    return null;
+  }
+}
+
+export async function queryLatestTestTimings(
+  stepKey: string,
+  { days = 14, queue = null }: { days?: number; queue?: string | null } = {},
+): Promise<LatestTestTimings | null> {
+  const sql = getDb();
+  const builds = await passingBuilds(sql, false, stepKey, days, queue);
+  if (builds.length === 0) return null;
+  const { used, filesPerBuild, setupPerBuild, skippedBuilds, firstError } =
+    await timingsOfBuilds(sql, builds);
   if (used.length === 0) throw firstError;
   const [newest] = used;
+  const files = p80Files(filesPerBuild);
+  const treatment = await treatmentTimings(sql, stepKey, days, queue);
+  const merged = withTreatmentFiles(files, treatment?.files ?? []);
   return {
     stepKey,
     buildNumber: Number(newest.build_number),
@@ -321,6 +383,7 @@ export async function queryLatestTestTimings(
     skippedBuilds,
     measurement: "p80_over_builds_of_summed_pytest_runtest_spans",
     setupMs: medianSetupMs(setupPerBuild),
-    files: p80Files(filesPerBuild),
+    files: merged,
+    ...(merged.length > files.length ? { treatmentBuildNumbers: treatment?.buildNumbers } : {}),
   };
 }

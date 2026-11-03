@@ -4,6 +4,7 @@ import {
   resolveEvalImage,
   workloadFromSourceFile,
 } from "@/lib/eval-images";
+import { escapeSqlString } from "@/lib/sql-literal";
 
 export interface EvalMetric {
   name: string;
@@ -75,9 +76,6 @@ export interface EvalRowsQuery {
   images?: string[];
 }
 
-function escapeSqlString(value: string): string {
-  return value.replace(/'/g, "''");
-}
 
 export function parseEvalMetrics(
   taskResults: Record<string, number | string>,

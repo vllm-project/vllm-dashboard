@@ -5,6 +5,7 @@ import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { queryQueueFromOtel } from "@/lib/otel-ci";
 import { isValidDateParam } from "@/lib/date-param";
+import { escapeSqlString } from "@/lib/sql-literal";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -42,16 +43,16 @@ export async function GET(request: NextRequest) {
       "r.rule LIKE 'queue=%'",
     ];
     if (pipeline) {
-      conditions.push(`p.name = '${pipeline.replace(/'/g, "''")}'`);
+      conditions.push(`p.name = '${escapeSqlString(pipeline)}'`);
     }
     if (queue) {
-      conditions.push(`SUBSTRING(r.rule, 7) = '${queue.replace(/'/g, "''")}'`);
+      conditions.push(`SUBSTRING(r.rule, 7) = '${escapeSqlString(queue)}'`);
     }
     if (startDate) {
-      conditions.push(`b.created_at >= '${startDate.replace(/'/g, "''")}'`);
+      conditions.push(`b.created_at >= '${escapeSqlString(startDate)}'`);
     }
     if (endDate) {
-      conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
+      conditions.push(`b.created_at < DATE_ADD('${escapeSqlString(endDate)}', 1)`);
     }
     const where = conditions.join(" AND ");
     const hasDateRange = startDate || endDate;
