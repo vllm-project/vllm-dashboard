@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import html
 import io
 import importlib.resources
 import json
@@ -37,6 +38,7 @@ from typing import Any, Protocol, cast
 from zoneinfo import ZoneInfo
 
 from alerting.commands import ScheduledCommand, SCHEMA_VERSION
+from alerting.untrusted import safe_slack_mrkdwn
 from alerting.fast_ci import full_ci_slack_channel
 from alerting.full_ci import FullCIJobOutcome, FullCIRun
 from alerting.ports import (
@@ -486,7 +488,9 @@ def _amd_failure_payload(
     if not failed:
         return None
 
-    failure_lines = "\n".join(f"• ✗ {job.name}" for job in failed)
+    failure_lines = "\n".join(
+        f"• ✗ {html.escape(job.name, quote=False)}" for job in failed
+    )
     passed = len(amd_jobs) - len(failed)
     body = (
         f"{failure_lines}\n\n"
@@ -681,6 +685,7 @@ def _read_outputs(
     report_text = _plain_bullet_names(report_text)
     report_text = _authoritative_stats(report_text, stats)
     report_text = _canonical_sections(report_text)
+    report_text = safe_slack_mrkdwn(report_text)
     if len(report_text) > REPORT_CHAR_LIMIT:
         raise AnalyzerError(
             f"report exceeds {REPORT_CHAR_LIMIT} characters: {len(report_text)}"
