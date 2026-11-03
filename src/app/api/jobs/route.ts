@@ -12,6 +12,7 @@ import {
   isOptionalJob,
   isSoftFailJob,
 } from "@/lib/test-areas";
+import { escapeSqlString } from "@/lib/sql-literal";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -68,16 +69,16 @@ export async function GET(request: NextRequest) {
         "b._fivetran_deleted = false",
       ];
       if (pipeline) {
-        conditions.push(`p.name = '${pipeline.replace(/'/g, "''")}'`);
+        conditions.push(`p.name = '${escapeSqlString(pipeline)}'`);
       }
       if (branch) {
-        conditions.push(`b.branch = '${branch.replace(/'/g, "''")}'`);
+        conditions.push(`b.branch = '${escapeSqlString(branch)}'`);
       }
       if (startDate) {
-        conditions.push(`b.created_at >= '${startDate.replace(/'/g, "''")}'`);
+        conditions.push(`b.created_at >= '${escapeSqlString(startDate)}'`);
       }
       if (endDate) {
-        conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
+        conditions.push(`b.created_at < DATE_ADD('${escapeSqlString(endDate)}', 1)`);
       }
       const where = conditions.join(" AND ");
       const hasDateRange = startDate || endDate;

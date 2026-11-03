@@ -18,6 +18,7 @@ import {
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { getBuildJobRosterRows } from "@/lib/buildkite-build-jobs";
 import { queryBuildJobsFromOtel } from "@/lib/otel-ci";
+import { escapeSqlString } from "@/lib/sql-literal";
 
 const TTL = 30_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -26,10 +27,6 @@ const MAX_BUILD_IDS = 50;
 type GroupSummary = Omit<GroupStatus, "jobs"> & {
   failedJobs: Array<{ name: string; web_url: string }>;
 };
-
-function escapeSql(value: string): string {
-  return value.replace(/'/g, "''");
-}
 
 export async function GET(request: NextRequest) {
   const timing = new ServerTiming();
@@ -78,7 +75,7 @@ export async function GET(request: NextRequest) {
         jobs = await timing.measure("spans", queryBuildJobsFromOtel(buildIds));
       }
     } else {
-      const idList = buildIds.map((id) => `'${escapeSql(id)}'`).join(",");
+      const idList = buildIds.map((id) => `'${escapeSqlString(id)}'`).join(",");
       jobs = await timing.measure("warehouse", queryDatabricks(`
         SELECT
           j.build_id,

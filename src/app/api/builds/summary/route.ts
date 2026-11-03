@@ -14,6 +14,7 @@ import { getCached, setCache } from "@/lib/api-cache";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { queryBuildJobsFromOtel, queryBuildsFromOtel } from "@/lib/otel-ci";
+import { escapeSqlString } from "@/lib/sql-literal";
 
 const MAX_PER_PAGE = 30;
 const DEFAULT_PER_PAGE = 10;
@@ -25,18 +26,18 @@ function buildJobFilterSubquery(jobGroups: string[], jobNames: string[]): string
   const step = `regexp_replace(jf.name, '${SHARD_SUFFIX_SQL}', '')`;
 
   if (jobNames.length > 0) {
-    const escaped = jobNames.map((n) => `'${n.replace(/'/g, "''")}'`);
+    const escaped = jobNames.map((n) => `'${escapeSqlString(n)}'`);
     nameConditions.push(`${step} IN (${escaped.join(",")})`);
   }
 
   if (jobGroups.length > 0) {
     const { exactNames, regexPatterns } = resolveGroupsToJobConditions(jobGroups);
     if (exactNames.length > 0) {
-      const escaped = exactNames.map((n) => `'${n.replace(/'/g, "''")}'`);
+      const escaped = exactNames.map((n) => `'${escapeSqlString(n)}'`);
       nameConditions.push(`${step} IN (${escaped.join(",")})`);
     }
     for (const pattern of regexPatterns) {
-      nameConditions.push(`${step} RLIKE '${pattern.replace(/'/g, "''")}'`);
+      nameConditions.push(`${step} RLIKE '${escapeSqlString(pattern)}'`);
     }
   }
 
@@ -296,11 +297,11 @@ export async function GET(request: NextRequest) {
     }
 
     const conditions = ["b._fivetran_deleted = false"];
-    if (pipeline) conditions.push(`p.name = '${pipeline.replace(/'/g, "''")}'`);
-    if (branch) conditions.push(`b.branch = '${branch.replace(/'/g, "''")}'`);
-    if (startDate) conditions.push(`b.created_at >= '${startDate.replace(/'/g, "''")}'`);
-    if (endDate) conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
-    if (state) conditions.push(`b.state = '${state.replace(/'/g, "''")}'`);
+    if (pipeline) conditions.push(`p.name = '${escapeSqlString(pipeline)}'`);
+    if (branch) conditions.push(`b.branch = '${escapeSqlString(branch)}'`);
+    if (startDate) conditions.push(`b.created_at >= '${escapeSqlString(startDate)}'`);
+    if (endDate) conditions.push(`b.created_at < DATE_ADD('${escapeSqlString(endDate)}', 1)`);
+    if (state) conditions.push(`b.state = '${escapeSqlString(state)}'`);
     const where = conditions.join(" AND ");
     await ensureTestAreaMapping();
     const jobFilter = buildJobFilterSubquery(jobGroups, jobNames);
@@ -347,7 +348,7 @@ export async function GET(request: NextRequest) {
     const jobsByBuild = new Map<string, { name: string; state: string }[]>();
 
     if (buildIds.length > 0) {
-      const idList = buildIds.map((id) => `'${id}'`).join(",");
+      const idList = buildIds.map((id) => `'${escapeSqlString(id)}'`).join(",");
       const jobs = await queryDatabricks<JobRow>(`
         SELECT
           j.build_id,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
+import { escapeSqlString } from "@/lib/sql-literal";
 
 export interface EvalSample {
   doc_id: number;
@@ -92,9 +93,9 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    const escBuild = buildId.replace(/'/g, "''");
-    const escTask = taskParam ? taskParam.replace(/'/g, "''") : null;
-    const escWorkload = workloadParam ? workloadParam.replace(/'/g, "''") : null;
+    const escBuild = escapeSqlString(buildId);
+    const escTask = taskParam ? escapeSqlString(taskParam) : null;
+    const escWorkload = workloadParam ? escapeSqlString(workloadParam) : null;
 
     const conds = [
       "CAST(message:kind AS STRING) IN ('sample', 'samples')",

@@ -6,6 +6,7 @@ import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { queryCostFromOtel } from "@/lib/otel-ci";
+import { escapeSqlString } from "@/lib/sql-literal";
 
 export const maxDuration = 55;
 const TTL = 60_000;
@@ -51,16 +52,16 @@ export async function GET(request: NextRequest) {
       "r.rule LIKE 'queue=%'",
     ];
     if (pipeline) {
-      conditions.push(`p.name = '${pipeline.replace(/'/g, "''")}'`);
+      conditions.push(`p.name = '${escapeSqlString(pipeline)}'`);
     }
     if (branch) {
-      conditions.push(`b.branch = '${branch.replace(/'/g, "''")}'`);
+      conditions.push(`b.branch = '${escapeSqlString(branch)}'`);
     }
     if (startDate) {
-      conditions.push(`b.created_at >= '${startDate.replace(/'/g, "''")}'`);
+      conditions.push(`b.created_at >= '${escapeSqlString(startDate)}'`);
     }
     if (endDate) {
-      conditions.push(`b.created_at < DATE_ADD('${endDate.replace(/'/g, "''")}', 1)`);
+      conditions.push(`b.created_at < DATE_ADD('${escapeSqlString(endDate)}', 1)`);
     }
     const where = conditions.join(" AND ");
 
