@@ -68,20 +68,17 @@ function allocation(
 // User-supplied allocation table. GPU node equivalents assume eight GPUs;
 // CPU host equivalents use the table's eight jobs per host.
 export const QUEUE_CAPACITY: readonly CapacityAllocation[] = [
-  allocation("amd_mi250_1", "MI250", 78, 1),
-  allocation("amd_mi250_2", "MI250", 24, 2),
-  allocation("amd_mi250_4", "MI250", 16, 4),
-  allocation("amd_mi250_8", "MI250", 2, 8),
+  allocation("amd_mi250", "MI250", 26, null, 206),
   allocation("amd-cpu", "AMD CPU", 30, null),
-  allocation("amd_mi300_1", "MI300", 227, 1),
-  allocation("amd_mi300_2", "MI300", 32, 2),
+  allocation("amd_mi300_1", "MI300", 240, 1),
+  allocation("amd_mi300_2", "MI300", 30, 2),
   allocation("amd_mi300_4", "MI300", 17, 4),
   allocation("amd_mi300_8", "MI300", 2, 8),
   allocation("mi300_perf_eval", "MI300", 1, 8),
-  allocation("amd_mi355_1", "MI355", 80, 1),
-  allocation("amd_mi355_2", "MI355", 24, 2),
-  allocation("amd_mi355_4", "MI355", 42, 4),
-  allocation("amd_mi355_8", "MI355", 3, 8),
+  allocation("amd_mi355_1", "MI355", 64, 1),
+  allocation("amd_mi355_2", "MI355", 28, 2),
+  allocation("amd_mi355_4", "MI355", 38, 4),
+  allocation("amd_mi355_8", "MI355", 2, 8),
   allocation("amd_mi355_dpx", "MI355", 240, null, 120),
   allocation("mi355_perf_eval", "MI355", 3, 8),
 ];
@@ -177,6 +174,9 @@ export const QUEUE_FAMILIES: readonly QueueFamily[] = [
 
 const ROCM_VIEW_EXCLUDED_QUEUES = new Set([
   "amd_gfx950",
+  "amd_mi250_1",
+  "amd_mi250_2",
+  "amd_mi250_4",
   "amd_mi250_8",
   "amd_mi325_1",
   "amd_mi325_2",
