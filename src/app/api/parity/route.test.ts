@@ -54,9 +54,6 @@ steps:
     device: b200
     optional: false
     soft_fail: true
-  - label: ":amd: (MI355) Native Quantization Kernels"
-    key: amd-native-quant
-    device: mi355_dpx
 `;
 
 test("parity snapshot and history use optional-only gating and retain hardware variants", async (t) => {
@@ -94,22 +91,17 @@ test("parity snapshot and history use optional-only gating and retain hardware v
   const snapshot = (await response.json()) as ParitySnapshotResponse;
   assert.equal(snapshot.source.commit, commit);
   assert.deepEqual(snapshot.summary, {
-    all: { gpuJobs: 8, mirroredJobs: 2, coverage: 2 / 8 },
-    gating: { gpuJobs: 6, mirroredJobs: 1, coverage: 1 / 6 },
-    nonGating: { gpuJobs: 2, mirroredJobs: 1, coverage: 1 / 2 },
+    all: { nvidiaJobs: 7, mirroredJobs: 2, coverage: 2 / 7 },
+    gating: { nvidiaJobs: 5, mirroredJobs: 1, coverage: 1 / 5 },
+    nonGating: { nvidiaJobs: 2, mirroredJobs: 1, coverage: 1 / 2 },
   });
   assert.deepEqual(
     snapshot.jobs.map((job) => job.key),
     [
       "asynctp", "mla-fusion", "deepseek-kernels", "optional-shared",
       "mirrored-flashinfer", "batch-invariance-h100", "batch-invariance-b200",
-      "amd-native-quant",
     ],
   );
-  const amdNative = snapshot.jobs.find((job) => job.key === "amd-native-quant");
-  assert.equal(amdNative?.vendor, "amd");
-  assert.equal(amdNative?.gating, true);
-  assert.equal(amdNative?.mirror, null);
   const mirrored = snapshot.jobs.find((job) => job.key === "mirrored-flashinfer");
   assert.equal(mirrored?.gating, true);
   assert.equal(mirrored?.softFail, true);
