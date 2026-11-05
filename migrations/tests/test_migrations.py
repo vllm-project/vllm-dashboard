@@ -67,6 +67,10 @@ def test_expected_tables_are_created() -> None:
         "alerting_main_ci_job_updates",
         "alerting_infra_host_states",
         "alerting_infra_alerts",
+        "alerting_eval_regression_alerts",
+        "alerting_eval_regression_snapshots",
+        "alerting_eval_alert_summary",
+        "alerting_eval_last_notified",
         "force_merge_records",
     }
 
@@ -218,6 +222,33 @@ def test_main_ci_agent_updates_are_append_only_revision_scoped_sidecars() -> Non
         in sql
     )
     assert "ARRAY['anon'::name, 'authenticated'::name]" in sql
+
+
+def test_eval_regression_schema_preserves_one_open_episode_per_eval_key() -> None:
+    sql = (MIGRATIONS_DIR / "0030_eval_regression_alerts.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS alerting_eval_regression_alerts" in sql
+    assert "CREATE TABLE IF NOT EXISTS alerting_eval_regression_snapshots" in sql
+    assert "CREATE TABLE IF NOT EXISTS alerting_eval_alert_summary" in sql
+    assert "n_shot              integer NOT NULL" in sql
+    assert "higher_is_better    boolean NOT NULL" in sql
+    assert "status IN ('open', 'resolved')" in sql
+    assert "status = 'open' AND resolved_at IS NULL" in sql
+    assert "status = 'resolved' AND resolved_at IS NOT NULL" in sql
+    assert "ON alerting_eval_regression_alerts (model, task, n_shot, metric, filter)" in sql
+    assert "WHERE status = 'open'" in sql
+    assert "status IN ('pass', 'regression', 'skipped', 'error')" in sql
+    assert "unit                text NOT NULL" in sql
+    assert "CREATE TABLE IF NOT EXISTS alerting_eval_last_notified" in sql
+    assert "alerting_eval_regression_alerts_alert_id_seq" in sql
+    assert "alerting_eval_regression_snapshots_snapshot_id_seq" in sql
+    for table in (
+        "alerting_eval_regression_alerts",
+        "alerting_eval_regression_snapshots",
+        "alerting_eval_alert_summary",
+        "alerting_eval_last_notified",
+    ):
+        assert f"ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY" in sql
 
 
 def test_dashboard_schema_keeps_legacy_additive_columns_and_covering_index() -> None:
