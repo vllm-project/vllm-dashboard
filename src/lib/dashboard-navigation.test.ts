@@ -30,7 +30,7 @@ test("Health owns builds, jobs, tests, runner queue, alerts and the Metrics page
   assert.deepEqual(
     metrics?.links.map((link) => [link.label, link.href]),
     [
-      ["AMD Parity", "/parity"],
+      ["Parity", "/parity"],
       ["Force-merges", "/force-merges"],
       ["Automatic sharding", "/sharding"],
     ],
