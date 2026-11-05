@@ -20,7 +20,7 @@ client credentials are needed for dashboard reads.
 - **Alerts** — Fast CI observations, analyzed Full CI comparisons, and exact
   main-branch job failures that remain open until the same job passes again.
 - **Tests** — Test Engine reliability, execution counts, and duration history.
-- **Parity** — NVIDIA test jobs in `.buildkite/test_areas` and how many declare an AMD mirror, overall, per test area, and as a weekly trend.
+- **Parity** — GPU test jobs in `.buildkite/test_areas` and how many run on more than one vendor's hardware, overall, per test area, and as a weekly trend.
 - **Queue** — live agent queue depth, waiting builds, and Slack alerts when queues back up.
 - **Cost** — compute hours and dollar cost per queue, derived from AWS on-demand pricing.
 - **Performance** — benchmark trends ingested into the warehouse.

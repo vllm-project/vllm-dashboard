@@ -1,7 +1,8 @@
-# NVIDIA to AMD gating parity
+# Cross-vendor gating parity
 
-The Parity page (`/parity`) answers one question: of the gating test jobs
-vLLM runs on NVIDIA GPUs and includes in AMD parity, how many declare an AMD mirror?
+The Parity page (`/parity`) answers one question: of the gating GPU test jobs
+vLLM runs, how many run on more than one vendor's hardware via a declared
+cross-vendor mirror?
 The page shows gating jobs only, with no all-jobs scope selector.
 
 ## Source
@@ -33,50 +34,51 @@ Each file is one test area (`group`) with a list of `steps`. For every step:
   `soft_fail` and `autorun_on_main` are shown as badges but do not change this
   classification.
 
-Only eligible NVIDIA steps count toward parity. CPU-only steps (some of which
+Only GPU steps (NVIDIA and AMD) count toward parity. CPU-only steps (some of which
 also have AMD mirrors) are excluded and their count is reported so the totals
 reconcile with the YAML.
 
 ## Parity exclusions
 
-NVIDIA jobs without a declared AMD mirror are excluded when their labels contain
+GPU jobs without a declared mirror are excluded when their labels contain
 the whole word `FlashInfer` or `DeepGEMM` (case-insensitive). A declared
 `mirror.amd` always takes precedence.
 
-The unmirrored A100 Batch Invariance job is also excluded: its AMD coverage is
-tracked on the H100 job. Other NVIDIA steps count independently, even if a
-similarly named job on another GPU has a mirror.
+The unmirrored A100 Batch Invariance job is also excluded: its cross-vendor
+coverage is tracked on the H100 job. Other NVIDIA steps count independently,
+even if a similarly named job on another GPU has a mirror.
 Fusion, Fault Tolerance, NIXL-EP, Humming and AsyncTP remain eligible. Rules do
 not inspect test commands or infer coverage from other CI pipelines.
 
-The page uses gating counts for area totals, missing mirrors, coverage and
-history. Its job filter switches between all eligible gating jobs and those
-missing a mirror. The expandable exclusions section also lists only gating jobs.
+The page uses gating counts for area totals, single-vendor counts, coverage and
+history. Its job filter switches between all eligible gating jobs and the
+single-vendor ones. The expandable exclusions section also lists only gating jobs.
 Every history sample uses the same current rules, so the trend and current
 snapshot measure the same population.
 
 ## Metric
 
-For any set of eligible NVIDIA jobs:
+For any set of eligible GPU jobs:
 
 ```
-coverage = jobs with a mirror.amd block / eligible NVIDIA jobs
+coverage = jobs with a mirror.amd block / eligible GPU jobs
 ```
 
-The page displays `gating` counts using the definition above. An optional or
+The page displays `gating` counts using the definition above, with the
+single-vendor total split by side from each job's vendor. An optional or
 soft-fail AMD mirror still counts as a declared mirror; each flag is marked
 separately alongside its device in the job list. This measures declared
 coverage, not passing test results or whether an AMD failure blocks a build.
 
-The APIs retain `all`, `gating` and `nonGating` snapshot counts, plus `all` and
-`gating` area/history counts, for compatibility with existing clients.
+The APIs report `all`, `gating` and `nonGating` snapshot counts, and `all` and
+`gating` area/history counts.
 
 ## APIs
 
 - `GET /api/parity` returns `{ source, summary, groups, jobs, excluded, skipped }`.
   `source` names the commit the snapshot was read at. `jobs` lists every eligible
-  NVIDIA job with its device, shard count, flags, and mirror (or `null`).
-  `excluded` contains `{ job, reason }` for each NVIDIA job removed by a label
+  GPU job with its vendor, device, shard count, flags, and mirror (or `null`).
+  `excluded` contains `{ job, reason }` for each GPU job removed by a label
   exclusion, preserving its source metadata for inspection.
   Cached one hour at the origin and served stale from the CDN for a day.
 - `GET /api/parity/history?weeks=26` returns weekly `samples`, oldest first.
