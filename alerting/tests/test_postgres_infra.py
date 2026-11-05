@@ -107,6 +107,8 @@ class FakePostgresConnection:
                 status="running", lease=params[0], attempts=record["attempts"] + 1
             )
             return Result(rowcount=1)
+        if statement == "SELECT max(polled_at) FROM buildkite_agent_snapshots":
+            return Result((None,))  # agents never polled
         if statement.startswith("SELECT alert_type, threshold_value"):
             return Result(rows=list(self.state["thresholds"]))
         if statement.startswith("WITH gpu AS ("):
@@ -122,6 +124,7 @@ class FakePostgresConnection:
                 "SELECT DISTINCT ON (hostname) hostname, gpu_query_hung",
                 "SELECT hostname, bus_id, xid, at FROM gpu_xid_events",
                 "SELECT DISTINCT hostname, queue FROM buildkite_agent_snapshots",
+                "SELECT newest.hostname, queue FROM unnest",
             )
         ):
             return Result(rows=[])  # trigger-rule readings: none reported

@@ -28,7 +28,6 @@ from alerting.infra import (
     InfraStore,
     _code,
     _escape,
-    normalize_hostname,
     pilot_pools,
 )
 from alerting.ports import (
@@ -74,13 +73,14 @@ class DailySummarySource(Protocol):
         ...
 
     def last_agent_queues(
-        self, hostnames: Iterable[str], suffixes: Iterable[str]
+        self, hostnames: Iterable[str], *, since: datetime | None = None
     ) -> list[tuple[str, str]]:
         """(agent hostname, queue) from the newest agent snapshot of each of
-        `hostnames`, however old, so a host whose agents are gone keeps its
-        pool. An agent matches a host by normalized name, so it may be an
-        FQDN under one of `suffixes` or differ in case. Only these hosts are
-        looked up: the table holds one hostname per CI pod agent."""
+        `hostnames`, however old (or since `since`), so a host whose agents
+        are gone keeps its pool. An agent matches a host by its short
+        lower-case name, so it may be an FQDN under any domain or differ in
+        case. Only these hosts are looked up: the table holds one hostname per
+        CI pod agent."""
         ...
 
     def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
@@ -323,15 +323,7 @@ class DailySummaryHandler:
         fresh = self._snapshots.agent_queues()
         queues = [
             *fresh,
-            *self._source.last_agent_queues(
-                sorted(roster),
-                # The domains Buildkite is using for FQDN agent names today.
-                {
-                    name.split(".", 1)[1]
-                    for name, _ in fresh
-                    if "." in name and normalize_hostname(name) != name.lower()
-                },
-            ),
+            *self._source.last_agent_queues(sorted(roster)),
             *(
                 (e.subject_key, str(e.details["pool"]))
                 for e in episodes

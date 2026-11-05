@@ -322,6 +322,18 @@ class InfraSnapshotPort(Protocol):
         """(hostname, queue) for every recently connected Buildkite agent."""
         ...
 
+    def agents_polled_at(self) -> datetime | None:
+        """When Buildkite's agents were last polled (the newest agent
+        snapshot), or None if never."""
+        ...
+
+    def last_agent_queues(
+        self, hostnames: Iterable[str], *, since: datetime | None = None
+    ) -> list[tuple[str, str]]:
+        """(agent hostname, queue) from the newest agent snapshot of each of
+        `hostnames` polled at or after `since` (any age when None)."""
+        ...
+
 
 class InfraStore(Protocol):
     def infra_state(self) -> InfraStateSnapshot: ...
@@ -799,6 +811,11 @@ def normalize_hostname(hostname: str) -> str:
     if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", name):
         return name
     return name.split(".", 1)[0]
+
+
+# How recent an agent snapshot must be to count as connected; agent_queues
+# reads the same window.
+AGENT_FRESHNESS = timedelta(minutes=15)
 
 
 def pilot_pools(
@@ -1284,7 +1301,9 @@ REPEAT_WINDOW = timedelta(days=7)
 BREAKER_RECORD_KEY = "limits:commands"
 # Limit details a later verdict replaces; cleared when a held or dry-run
 # episode moves on, so an old hold or page doesn't follow it.
-LIMIT_DETAILS = ("held_reason", "would_hold", "breaker_count", "paged", "repeat_of")
+LIMIT_DETAILS = (
+    "held_reason", "would_hold", "breaker_count", "paged", "repeat_of", "out_of_ci"
+)
 HELD_REASONS = {
     "pool_cap": "pool cap",
     "last_host": "last serving host in its pool",
@@ -1300,6 +1319,7 @@ def _quarantine_limits(
     episodes: Mapping[str, InfraAlertEpisode],
     pool_sizes: Mapping[str, int],
     commands: Mapping[str, datetime] | None = None,
+    out_of_ci: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, str], int]:
     """Verdict per host whose decision would take it out this scan: 'apply',
     'page' (applied: a hardware fault on the last serving host), or a
@@ -1310,7 +1330,10 @@ def _quarantine_limits(
     the out stages, so the verdicts say what the limits would do. `commands`
     is when each host was last commanded out (BREAKER_RECORD_KEY), which the
     breaker counts alongside the hosts still out. A breaker hold sticks: the
-    host stays held while its decision stands.
+    host stays held while its decision stands. A host in `out_of_ci` serves no
+    jobs, so taking it out uses no pool slot and can't be the last serving
+    host, then or while its episode (marked `out_of_ci`) stays out; it still
+    counts toward the breaker, which guards against a bad detector.
     """
 
     def is_out(episode: InfraAlertEpisode) -> bool:
@@ -1324,7 +1347,11 @@ def _quarantine_limits(
         return datetime.fromisoformat(str(at)) if at else episode.opened_at
 
     out_episodes = [episode for episode in episodes.values() if is_out(episode)]
-    out = Counter(str(episode.details.get("pool")) for episode in out_episodes)
+    out = Counter(
+        str(episode.details.get("pool"))
+        for episode in out_episodes
+        if not episode.details.get("out_of_ci")
+    )
     recent = len(
         {
             e.subject_key
@@ -1359,6 +1386,9 @@ def _quarantine_limits(
         if stage(host) == "held" and held_by == "detector_suspect":
             verdicts[host] = "detector_suspect"
             continue
+        if host in out_of_ci:
+            verdicts[host] = "apply"
+            continue
         size, taken = pool_sizes.get(decision.pool, 0), out[decision.pool]
         last_host = size - taken <= 1
         # A hardware fault skips the cap (design §4.4): a broken GPU only
@@ -1389,6 +1419,7 @@ def plan_quarantine(
     pool_sizes: Mapping[str, int] | None = None,
     faults: Mapping[str, str] | None = None,
     readings: Mapping[str, datetime] | None = None,
+    out_of_ci: frozenset[str] = frozenset(),
 ) -> InfraScanPlan:
     """Advance the quarantine sequence by one scan.
 
@@ -1436,6 +1467,7 @@ def plan_quarantine(
         episodes=episodes,
         pool_sizes=pool_sizes or {},
         commands=commands,
+        out_of_ci=out_of_ci,
     )
     for host in sorted(set(wanted) | set(episodes)):
         decision = wanted.get(host)
@@ -1450,6 +1482,9 @@ def plan_quarantine(
                 "reason": decision.reason,
                 "evidence": decision.evidence,
                 "commanded_at": now.isoformat(),
+                # It served no jobs: its pool's cap and last-host counts
+                # leave it out for as long as it stays out.
+                **({"out_of_ci": True} if host in out_of_ci else {}),
             }
             if decision is not None
             else {}
@@ -1623,14 +1658,19 @@ def _pool_sizes(
 ) -> Counter[str]:
     """Hosts per pool: every mapped host, plus a host out of CI that no longer
     maps (a quarantined bare-metal host whose agents went away), so taking a
-    host out never shrinks its own pool's cap."""
+    host out never shrinks its own pool's cap. A host quarantined while it
+    served nothing (`out_of_ci` on its episode) counts on neither side: not
+    here and not as taken, even once its paused agents reconnect."""
     members = {host: pool for host, (_, pool) in pools.items()}
     for (alert_type, host), episode in open_episodes.items():
         if (
             alert_type == InfraAlertType.QUARANTINE.value
             and episode.details.get("stage") in OUT_STAGES
         ):
-            members.setdefault(host, str(episode.details.get("pool")))
+            if episode.details.get("out_of_ci"):
+                members.pop(host, None)
+            else:
+                members.setdefault(host, str(episode.details.get("pool")))
     return Counter(members.values())
 
 
@@ -1649,6 +1689,7 @@ def plan_infra_scan(
     quarantine_decisions: Iterable[QuarantineDecision] = (),
     quarantine_live_clusters: frozenset[str] = frozenset(),
     pools: Mapping[str, tuple[str, str]] | None = None,
+    out_of_ci_pools: Mapping[str, tuple[str, str]] | None = None,
     gpu_faults: list[GpuFaultObservation] | None = None,
     host_faults: list[HostFaultObservation] | None = None,
     xid_events: list[XidEvent] | None = None,
@@ -1662,10 +1703,16 @@ def plan_infra_scan(
     only for `quarantine_live_clusters`: a decision on any other cluster is
     treated as a dry-run trigger, so it opens a 'would' episode and takes no
     slot, and each pool goes live on its own.
+
+    `out_of_ci_pools` are bare-metal hosts still reporting whose agents are
+    gone, mapped to their last pool: the trigger rules still read them, so a
+    fault opens an episode before the host is put back, but they don't count
+    as serving hosts: taking one out uses no pool slot and is never held as
+    the last serving host (the breaker still counts it).
     """
     rule_decisions, rule_states = plan_trigger_rules(
         now=now,
-        pools=pools or {},
+        pools={**(out_of_ci_pools or {}), **(pools or {})},
         thresholds=thresholds,
         gpu_faults=gpu_faults or [],
         host_faults=host_faults or [],
@@ -1798,6 +1845,7 @@ def plan_infra_scan(
             pool_sizes=_pool_sizes(pools or {}, open_episodes),
             faults=faults,
             readings=readings,
+            out_of_ci=frozenset(out_of_ci_pools or {}),
         ),
     ]
     unreporting = thresholds.get(InfraAlertType.UNREPORTING.value)
@@ -2364,11 +2412,25 @@ class InfraScanHandler:
         }
         gpu_faults = self._snapshots.gpu_faults()
         host_faults = self._snapshots.host_faults()
-        pools = pilot_pools(
-            {fault.hostname for fault in gpu_faults}
-            | {reading.hostname for reading in host_faults},
-            self._snapshots.agent_queues(),
-        )
+        reporting = {fault.hostname for fault in gpu_faults} | {
+            reading.hostname for reading in host_faults
+        }
+        connected = self._snapshots.agent_queues()
+        pools = pilot_pools(reporting, connected)
+        # A host whose agents were stopped or drained still has its faults
+        # read, so a broken host is caught before its agents come back, up to
+        # RETIREMENT_AGE after its agents were last seen. Only while agents
+        # are being polled: if polling stops, every host looks agentless,
+        # and serving hosts must not lose the limits.
+        out_of_ci: dict[str, tuple[str, str]] = {}
+        polled_at = self._snapshots.agents_polled_at()
+        if polled_at is not None and now - polled_at <= AGENT_FRESHNESS:
+            last_queues = self._snapshots.last_agent_queues(
+                sorted(reporting - pools.keys()), since=now - RETIREMENT_AGE
+            )
+            for host, pool in pilot_pools(reporting, last_queues).items():
+                if host not in pools:
+                    out_of_ci[host] = pool
         job_failures, cache = self._job_failures(now, states)
         plan = plan_infra_scan(
             now=now,
@@ -2393,10 +2455,11 @@ class InfraScanHandler:
             quarantine_decisions=[*job_failures, *self._quarantine_decisions()],
             quarantine_live_clusters=self._quarantine_live_clusters,
             pools=pools,
+            out_of_ci_pools=out_of_ci,
             gpu_faults=gpu_faults,
             host_faults=host_faults,
             xid_events=self._snapshots.xid_events(
-                hostnames=sorted(pools), since=now - XID_WINDOW
+                hostnames=sorted(pools.keys() | out_of_ci.keys()), since=now - XID_WINDOW
             ),
         )
         plan = replace(plan, states=plan.states + cache)

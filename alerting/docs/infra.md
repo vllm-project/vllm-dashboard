@@ -94,6 +94,17 @@ the limits, and nothing changes on its host. A pool goes live when its
 cluster is listed and its actuator runs without `--dry-run`. The old
 worker-wide `QUARANTINE_MODE=live` is refused.
 
+A bare-metal host whose agents were stopped or drained keeps its last pool
+for `RETIREMENT_AGE` after its agents were last seen, while it still reports:
+the triggers still read it, so a fault opens an episode before it is put back
+in CI. Taking it out uses no pool slot and is never held or paged as the last
+serving host, and its episode is marked `out_of_ci` so later scans leave it
+out of the cap and last-host counts too; it still counts toward the breaker.
+This applies only while agents are being polled (a snapshot within the last
+15 minutes): if polling stops, every host would look agentless, so none is
+treated as out of CI. The lookup matches the agent's short host name (index
+from migration 0036), whatever domain it used.
+
 **Triggers** (`plan_trigger_rules`), over the pilot pools (`pilot_pools`):
 
 - GPU hardware, on first sight: a driver recovery action other than `None`,

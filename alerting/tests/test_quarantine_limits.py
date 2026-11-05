@@ -198,6 +198,134 @@ def test_only_the_live_clusters_quarantine_and_the_rest_stay_dry_run() -> None:
     }
 
 
+def test_a_host_out_of_ci_is_read_but_not_counted_as_serving() -> None:
+    # host-1 serves; host-2's agents are gone. host-1 is the last serving
+    # host, so its quarantine is held, and host-2 doesn't widen the pool.
+    result = plan_infra_scan(
+        now=NOW,
+        thresholds={},
+        expected_hosts=frozenset(),
+        latest_reports={},
+        disk_mounts=[],
+        gpu_temperatures=[],
+        gpu_dead_memory=[],
+        gpu_counts=[],
+        states={},
+        open_episodes={},
+        quarantine_decisions=[decision("host-1")],
+        quarantine_live_clusters=frozenset({"h200"}),
+        pools={"host-1": ("h200", "pool-a")},
+        out_of_ci_pools={"host-2": ("h200", "pool-a")},
+    )
+    assert opened(result) == {"host-1": ("held", "last_host")}
+
+
+def plan_out_of_ci(
+    decisions: list[QuarantineDecision], out_of_ci: list[str]
+) -> InfraScanPlan:
+    """One live scan: host-1 serves pool-a, `out_of_ci` hosts' agents are gone."""
+    return plan_infra_scan(
+        now=NOW,
+        thresholds={},
+        expected_hosts=frozenset(),
+        latest_reports={},
+        disk_mounts=[],
+        gpu_temperatures=[],
+        gpu_dead_memory=[],
+        gpu_counts=[],
+        states={},
+        open_episodes={},
+        quarantine_decisions=decisions,
+        quarantine_live_clusters=frozenset({"h200"}),
+        pools={"host-1": ("h200", "pool-a")},
+        out_of_ci_pools={host: ("h200", "pool-a") for host in out_of_ci},
+    )
+
+
+def test_a_host_out_of_ci_goes_out_without_using_a_serving_slot() -> None:
+    # host-1 is the only serving host; host-2 serves nothing, so taking it
+    # out leaves host-1 serving: not held as the last host, never paged.
+    for hardware in (False, True):
+        result = plan_out_of_ci([decision("host-2", hardware=hardware)], ["host-2"])
+        assert opened(result) == {"host-2": ("quarantining", None)}
+        [episode] = result.opened
+        assert "paged" not in episode.details
+
+
+def live_scan(
+    decisions: list[QuarantineDecision],
+    pools: dict[str, tuple[str, str]],
+    out_of_ci: list[str],
+    open_episodes: dict[tuple[str, str], InfraAlertEpisode],
+) -> InfraScanPlan:
+    return plan_infra_scan(
+        now=NOW,
+        thresholds={},
+        expected_hosts=frozenset(),
+        latest_reports={},
+        disk_mounts=[],
+        gpu_temperatures=[],
+        gpu_dead_memory=[],
+        gpu_counts=[],
+        states={},
+        open_episodes=open_episodes,
+        quarantine_decisions=decisions,
+        quarantine_live_clusters=frozenset({"h200"}),
+        pools=pools,
+        out_of_ci_pools={host: ("h200", "pool-a") for host in out_of_ci},
+    )
+
+
+def test_a_host_taken_out_of_ci_uses_no_slot_on_later_scans_either() -> None:
+    serving = {f"host-{n}": ("h200", "pool-a") for n in range(1, 5)}
+    first = live_scan([decision("host-5")], serving, ["host-5"], {})
+    [out] = first.opened
+    assert out.details["out_of_ci"] is True
+    # Next scan: host-5 is out; host-1's fault still has the pool's one slot.
+    second = live_scan(
+        [decision("host-5"), decision("host-1")],
+        serving,
+        ["host-5"],
+        {("quarantine", "host-5"): out},
+    )
+    assert opened(second) == {"host-1": ("quarantining", None)}
+    assert "out_of_ci" not in second.opened[0].details
+
+
+def test_a_quarantined_host_whose_agents_reconnect_still_serves_nothing() -> None:
+    # host-5 went out while serving nothing; its paused agents are back, so
+    # it maps to the pool again, but host-1 is still the last serving host.
+    out = replace(episode("host-5", "quarantined"), details={
+        **episode("host-5", "quarantined").details, "out_of_ci": True
+    })
+    result = live_scan(
+        [decision("host-1")],
+        {"host-1": ("h200", "pool-a"), "host-5": ("h200", "pool-a")},
+        [],
+        {("quarantine", "host-5"): out},
+    )
+    assert opened(result) == {"host-1": ("held", "last_host")}
+
+
+def test_the_out_of_ci_mark_clears_when_a_waiting_episode_moves_on() -> None:
+    # host-5 opened 'held' while serving nothing; by the time it goes ahead
+    # its agents serve again, so it now uses a slot like any serving host.
+    held = replace(episode("host-5", "held"), details={
+        **episode("host-5", "held").details, "out_of_ci": True
+    })
+    serving = {f"host-{n}": ("h200", "pool-a") for n in range(1, 6)}
+    result = live_scan([decision("host-5")], serving, [], {("quarantine", "host-5"): held})
+    [change] = result.stage_changes
+    assert change.patch["stage"] == "quarantining"
+    assert change.patch["out_of_ci"] is None
+
+
+def test_hosts_out_of_ci_still_count_toward_the_breaker() -> None:
+    hosts = [f"host-{n}" for n in range(2, 6)]
+    result = plan_out_of_ci([decision(h, hardware=True) for h in hosts], hosts)
+    assert opened(result) == {h: ("held", "detector_suspect") for h in hosts}
+
+
 def test_no_live_clusters_is_dry_run_everywhere() -> None:
     result = plan_infra_scan(
         now=NOW,
