@@ -1279,7 +1279,7 @@ def test_a_failed_return_check_sends_a_resolve_back_to_quarantined() -> None:
     assert fail_check() == (
         ":x: *Quarantine* — `gpu-node-7` failed its return check and stays "
         "quarantined: | Memory | Fail - GPU 3 |\n"
-        "Runbook: to be linked before quarantine goes live."
+        "<https://app.notion.com/p/40f008ab1f5b81a690a9c8f768c6e4e2|Runbook>"
     )
     [episode] = store.open_episodes()
     assert episode.details["verify_note"] == "| Memory | Fail - GPU 3 |"
