@@ -1435,6 +1435,14 @@ class PostgresAlertStore:
             for row in rows
         ]
 
+    def agents_polled_at(self) -> datetime | None:
+        with self._connection_factory() as connection:
+            # One descent of idx_buildkite_agent_snapshots_polled.
+            row = connection.execute(
+                "SELECT max(polled_at) FROM buildkite_agent_snapshots"
+            ).fetchone()
+        return row[0] if row else None
+
     def agent_queues(self) -> list[tuple[str, str]]:
         with self._connection_factory() as connection:
             rows = connection.execute(
@@ -1500,45 +1508,33 @@ class PostgresAlertStore:
         return {str(row[0]).lower(): int(row[1]) for row in rows}
 
     def last_agent_queues(
-        self, hostnames: Iterable[str], suffixes: Iterable[str]
+        self, hostnames: Iterable[str], *, since: datetime | None = None
     ) -> list[tuple[str, str]]:
-        # Candidate names for each host, lower case: short, and under each
-        # known domain. Each is one probe of
-        # idx_buildkite_agent_snapshots_lower_host (lower(hostname),
-        # polled_at DESC), so any spelling Buildkite stored matches, and the
-        # cost is the candidate count, not the table, which holds a hostname
-        # per CI pod agent.
-        candidates = sorted(
-            {
-                base.lower()
-                for host in hostnames
-                for base in (host, *(f"{host}.{suffix}" for suffix in suffixes))
-            }
-        )
+        # One probe per host of idx_buildkite_agent_snapshots_short_host
+        # (short lower-case name, polled_at DESC): an agent matches its host
+        # however Buildkite stored the name (any case, with or without any
+        # domain), and the cost is the host count, not the table, which holds
+        # a hostname per CI pod agent. An IPv4 name has no short form to match.
+        names = sorted({normalize_hostname(host) for host in hostnames})
         with self._connection_factory() as connection:
             rows = connection.execute(
                 """
-                SELECT c.name, newest.polled_at, queue
+                SELECT newest.hostname, queue
                 FROM unnest(%s::text[]) AS c(name)
                 CROSS JOIN LATERAL (
-                    SELECT polled_at, queues FROM buildkite_agent_snapshots
-                    WHERE lower(hostname) = c.name
+                    SELECT hostname, queues FROM buildkite_agent_snapshots
+                    WHERE split_part(lower(hostname), '.', 1) = c.name
+                      -- In the index condition, so a host whose agents left
+                      -- before `since` costs one index descent, not a walk
+                      -- through its history.
+                      AND polled_at >= coalesce(%s::timestamptz, '-infinity')
                     ORDER BY polled_at DESC LIMIT 1
                 ) newest,
                 unnest(newest.queues) AS queue
                 """,
-                (candidates,),
+                (names, since),
             ).fetchall()
-        # Of the candidates that normalize to one host, keep the newest poll.
-        newest: dict[str, datetime] = {}
-        for name, polled_at, _ in rows:
-            key = normalize_hostname(str(name))
-            newest[key] = max(polled_at, newest.get(key, polled_at))
-        return [
-            (str(name), str(queue))
-            for name, polled_at, queue in rows
-            if polled_at == newest[normalize_hostname(str(name))]
-        ]
+        return [(str(row[0]), str(row[1])) for row in rows]
 
     def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
         with self._connection_factory() as connection:

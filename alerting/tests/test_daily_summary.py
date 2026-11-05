@@ -16,6 +16,7 @@ from alerting.daily_summary import (
     render_summary,
 )
 from alerting.infra import (
+    AGENT_FRESHNESS,
     normalize_hostname,
     pilot_pools,
     GpuCountObservation,
@@ -459,6 +460,8 @@ def test_only_the_summarys_own_hosts_are_looked_up_in_agent_snapshots() -> None:
     assert source.asked == [
         "h200-ci-1", "h200-ci-2", "h200-ci-3", "inf-4x8h100-9"
     ]
+    # however old: a host keeps its pool past the infra scan's window.
+    assert source.agents_since is None
 
 
 def test_an_online_host_reported_by_fqdn_is_mapped_from_fresh_agents() -> None:
@@ -471,8 +474,6 @@ def test_an_online_host_reported_by_fqdn_is_mapped_from_fresh_agents() -> None:
     ]
     handler(ScheduledCommand("daily_summary", NOW))
     assert "h200 dry run" in outbox.records()[0].payload["text"]
-    # The domain is passed on so an offline FQDN host is found later.
-    assert source.suffixes == ["corp.example"]
 
 
 def test_hostnames_normalize_like_the_dashboard() -> None:
@@ -568,10 +569,10 @@ class FakeSource:
     queues: list[tuple[str, str]] = [("h200-ci-1", "h200_35gb")]
 
     def last_agent_queues(
-        self, hostnames: Iterable[str], suffixes: Iterable[str]
+        self, hostnames: Iterable[str], *, since: datetime | None = None
     ) -> list[tuple[str, str]]:
         self.asked = sorted(hostnames)
-        self.suffixes = sorted(suffixes)
+        self.agents_since = since
         return [q for q in self.queues if q[0] in self.asked]
 
     def scrape_buckets(self, since: datetime) -> dict[str, int]:
@@ -678,6 +679,9 @@ class Recorder:
     def fetchall(self) -> list[tuple[Any, ...]]:
         return self.rows
 
+    def fetchone(self) -> tuple[Any, ...] | None:
+        return self.rows[0] if self.rows else None
+
 
 def test_postgres_reads_map_rows_and_bound_the_window() -> None:
     recorder = Recorder(
@@ -706,34 +710,49 @@ def test_postgres_reads_map_rows_and_bound_the_window() -> None:
         YESTERDAY, YESTERDAY - timedelta(days=1), YESTERDAY,
     )
 
-    older, newer = YESTERDAY, NOW
+    # The database returns the newest snapshot per host, whatever its spelling.
     recorder = Recorder(
-        [
-            ("h200-ci-3", older, "old_queue"),
-            ("H200-CI-3.example.net", newer, "h200_35gb"),
-            ("h200-ci-4", older, "h200_18gb"),
-        ]
+        [("H200-CI-3.example.net", "h200_35gb"), ("h200-ci-4", "h200_18gb")]
     )
     queues = PostgresAlertStore(lambda: recorder).last_agent_queues(
-        ["h200-ci-3", "h200-ci-4"], ["Example.NET"]
+        ["H200-CI-3", "h200-ci-4.example.net", "h200-ci-3"]
     )
-    # The FQDN in other case is the newest of h200-ci-3's candidates.
     assert queues == [
         ("H200-CI-3.example.net", "h200_35gb"),
         ("h200-ci-4", "h200_18gb"),
     ]
-    assert [(h, q) for h, q in queues if normalize_hostname(h) == "h200-ci-3"] == [
-        ("H200-CI-3.example.net", "h200_35gb")
-    ]
-    sql, (candidates,) = recorder.calls[0]
-    # Matched case-blind through the lower(hostname) index, so any spelling
-    # Buildkite stored is found; only the given hosts are probed, never a table
-    # walk, so a pod hostname can't come back.
-    assert "unnest(%s::text[])" in sql and "lower(hostname) = c.name" in sql
-    assert candidates == [
-        "h200-ci-3", "h200-ci-3.example.net", "h200-ci-4", "h200-ci-4.example.net",
-    ]
+    sql, (names, since) = recorder.calls[0]
+    # The daily summary looks back however far the table goes.
+    assert since is None
+    # Each host is one probe by its short lower-case name, through the
+    # short-name index, so an FQDN under any domain is found without knowing
+    # the domain; only the given hosts are probed, never a table walk, so a
+    # pod hostname can't come back.
+    assert "unnest(%s::text[])" in sql
+    assert "split_part(lower(hostname), '.', 1) = c.name" in sql
+    assert names == ["h200-ci-3", "h200-ci-4"]
     assert pilot_pools(["h200-ci-3"], queues)["h200-ci-3"] == ("h200", "h200_35gb")
+
+    # The scan's "inventory is fresh" window is agent_queues' connected one.
+    recorder = Recorder([])
+    PostgresAlertStore(lambda: recorder).agent_queues()
+    assert "polled_at >= now() - interval '15 minutes'" in recorder.calls[0][0]
+    assert AGENT_FRESHNESS == timedelta(minutes=15)
+
+    # When agents were last polled: one max() over the polled_at index.
+    recorder = Recorder([(NOW,)])
+    assert PostgresAlertStore(lambda: recorder).agents_polled_at() == NOW
+    assert recorder.calls[0][0] == "SELECT max(polled_at) FROM buildkite_agent_snapshots"
+    assert PostgresAlertStore(lambda: Recorder([])).agents_polled_at() is None
+
+    # The infra scan bounds the lookup to agents seen since a time.
+    recorder = Recorder([])
+    PostgresAlertStore(lambda: recorder).last_agent_queues(
+        ["h200-ci-3"], since=YESTERDAY
+    )
+    sql, (_, since) = recorder.calls[0]
+    assert "AND polled_at >= coalesce(%s::timestamptz, '-infinity')" in sql
+    assert since == YESTERDAY
 
     recorder = Recorder([("INF-4X8H100-1", 6, 8)])
     assert PostgresAlertStore(lambda: recorder).allocatable_gpus() == {

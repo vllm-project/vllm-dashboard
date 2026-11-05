@@ -16,6 +16,7 @@ from alerting.commands import ScheduledCommand
 from alerting.infra import (
     InfraAlertEpisode,
     _render_quarantine,
+    AGENT_FRESHNESS,
     RETIREMENT_AGE,
     DiskMountObservation,
     GpuCountObservation,
@@ -31,6 +32,7 @@ from alerting.infra import (
     QuarantineDecision,
     UnionExpectedHostSource,
     XidEvent,
+    normalize_hostname,
 )
 from alerting.memory import (
     FixedClock,
@@ -76,6 +78,11 @@ class FixtureSnapshots:
         self.host_fault_rows: list[HostFaultObservation] = []
         self.xids: list[XidEvent] = []
         self.agents: list[tuple[str, str]] = []
+        # (agent hostname, queue, polled_at) of agents no longer connected.
+        self.past_agents: list[tuple[str, str, datetime]] = []
+        self.past_agent_lookups: list[tuple[list[str], datetime | None]] = []
+        # The newest agent poll; None, as if polling had never run.
+        self.polled_at: datetime | None = None
 
     def infra_thresholds(self) -> list[InfraThreshold]:
         return list(self.threshold_rows)
@@ -122,6 +129,21 @@ class FixtureSnapshots:
 
     def agent_queues(self) -> list[tuple[str, str]]:
         return list(self.agents)
+
+    def agents_polled_at(self) -> datetime | None:
+        return self.polled_at
+
+    def last_agent_queues(
+        self, hostnames: Iterable[str], *, since: datetime | None = None
+    ) -> list[tuple[str, str]]:
+        wanted = set(hostnames)
+        self.past_agent_lookups.append((sorted(wanted), since))
+        return [
+            (name, queue)
+            for name, queue, polled_at in self.past_agents
+            if normalize_hostname(name) in wanted
+            and (since is None or polled_at >= since)
+        ]
 
 
 def threshold(
@@ -1015,6 +1037,80 @@ def scan_and_post(runtime: AlertingRuntime, clock: FixedClock) -> None:
     clock.advance(minutes=5)
     scan(runtime, clock.now())
     runtime.dispatch_due_notifications()
+
+
+def out_of_ci_docker_scans(
+    agents_last_seen: timedelta,
+    *,
+    xid: bool = False,
+    polled_ago: timedelta | None = timedelta(minutes=1),
+) -> tuple[list[dict[str, Any]], FixtureSnapshots]:
+    """Two scans of a bare-metal host whose agents were stopped days ago but
+    whose reporter still says Docker can't start containers, or with `xid` an
+    Xid 79 instead. Its last agent reported an FQDN; another host's agent is
+    connected under a short name. Agents were last polled `polled_ago` before
+    each scan (None: never). Returns the open episodes' details and the
+    snapshots."""
+    runtime, store, _, clock = quarantine_runtime([])
+    snapshots = runtime._handlers["infra_scan"]._snapshots  # type: ignore[attr-defined]
+    snapshots.agents = [("gpu-node-1", "h200_35gb")]
+    snapshots.past_agents = [
+        ("gpu-node-9.example.net", "H200", START - agents_last_seen)
+    ]
+    for _ in range(2):
+        clock.advance(minutes=5)
+        if polled_ago is not None:
+            snapshots.polled_at = clock.now() - polled_ago
+        snapshots.host_fault_rows = [
+            HostFaultObservation(
+                "gpu-node-9", False, None, None, clock.now(),
+                docker_ok=xid, docker_error=None if xid else "the docker0 bridge is missing",
+            ),
+            HostFaultObservation(
+                "gpu-node-1", False, None, None, clock.now(), docker_ok=True
+            ),
+        ]
+        if xid:
+            snapshots.xids = [XidEvent("gpu-node-9", "0000:c3:00", 79, clock.now())]
+        scan(runtime, clock.now())
+    return [episode.details for episode in store.open_episodes()], snapshots
+
+
+def test_a_host_whose_agents_are_gone_still_has_its_faults_read() -> None:
+    [details], snapshots = out_of_ci_docker_scans(agents_last_seen=timedelta(days=3))
+    assert details["stage"] == "would"
+    assert details["pool"] == "H200"
+    assert details["evidence"]["rule"] == "docker"
+    # Only the unmapped reporting host is looked up, no further back than
+    # RETIREMENT_AGE.
+    hosts, since = snapshots.past_agent_lookups[-1]
+    assert hosts == ["gpu-node-9"]
+    assert since == START + timedelta(minutes=10) - RETIREMENT_AGE
+
+
+def test_no_host_counts_as_out_of_ci_while_agent_polling_is_stale() -> None:
+    # If polling stops, every host looks agentless; then nothing is classed
+    # out of CI, so serving hosts keep the limits (what main did).
+    days = timedelta(days=3)
+    assert len(out_of_ci_docker_scans(days, polled_ago=AGENT_FRESHNESS)[0]) == 1
+    stale = AGENT_FRESHNESS + timedelta(seconds=1)
+    assert out_of_ci_docker_scans(days, polled_ago=stale)[0] == []
+    details, snapshots = out_of_ci_docker_scans(days, polled_ago=None)
+    assert details == [] and snapshots.past_agent_lookups == []
+
+
+def test_an_xid_on_a_host_whose_agents_are_gone_is_read() -> None:
+    [details], _ = out_of_ci_docker_scans(agents_last_seen=timedelta(days=3), xid=True)
+    assert details["evidence"]["rule"] == "xid"
+
+
+def test_a_host_whose_agents_left_past_retirement_is_not_read() -> None:
+    assert out_of_ci_docker_scans(agents_last_seen=RETIREMENT_AGE + timedelta(hours=1))[0] == []
+    # Seen exactly RETIREMENT_AGE before the scan that trips (the second, at
+    # START + 10 min): it still counts.
+    edge = RETIREMENT_AGE - timedelta(minutes=10)
+    assert len(out_of_ci_docker_scans(agents_last_seen=edge)[0]) == 1
+    assert out_of_ci_docker_scans(agents_last_seen=edge + timedelta(seconds=1))[0] == []
 
 
 def test_live_quarantine_runs_the_whole_sequence_on_actuator_reports() -> None:
