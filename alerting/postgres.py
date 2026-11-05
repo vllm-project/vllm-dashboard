@@ -2364,7 +2364,7 @@ def build_infra_runtime(
     slack: SlackPort,
     clock: Clock,
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
-    quarantine_live: bool = False,
+    quarantine_live_clusters: frozenset[str] = frozenset(),
     buildkite_token: str | None = None,
     operator_destination: str | None = None,
 ) -> AlertingRuntime:
@@ -2403,7 +2403,7 @@ def build_infra_runtime(
         clock=clock,
         delivery_mode=delivery_mode,
         job_failure_decisions=job_failure_decisions,
-        quarantine_live=quarantine_live,
+        quarantine_live_clusters=quarantine_live_clusters,
         operator_destination=operator_destination,
     )
     return AlertingRuntime(
@@ -2423,7 +2423,7 @@ def build_daily_summary_runtime(
     slack: SlackPort,
     clock: Clock,
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
-    quarantine_live: bool = False,
+    quarantine_live_clusters: frozenset[str] = frozenset(),
 ) -> AlertingRuntime:
     """Wire the daily infra summary: Postgres reads, one outbox post."""
     from alerting.daily_summary import DailySummaryHandler
@@ -2437,7 +2437,7 @@ def build_daily_summary_runtime(
         clock=clock,
         destination=destination,
         delivery_mode=delivery_mode,
-        quarantine_live=quarantine_live,
+        quarantine_live_clusters=quarantine_live_clusters,
     )
     return AlertingRuntime(
         executions=store,

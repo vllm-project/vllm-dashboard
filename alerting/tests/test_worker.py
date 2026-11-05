@@ -148,14 +148,14 @@ def test_daily_summary_goes_to_the_failure_dm_unless_a_destination_is_set(
         monkeypatch.delenv("SLACK_CI_INFRA_ALERT_CHANNEL", raising=False)
     else:
         monkeypatch.setenv("SLACK_CI_INFRA_ALERT_CHANNEL", summary)
-    monkeypatch.setenv("QUARANTINE_MODE", "live")
+    monkeypatch.setenv("QUARANTINE_LIVE_CLUSTERS", "h100, h200")
     monkeypatch.setattr(worker, "build_daily_summary_runtime", fake_build)
 
     worker._runtime("daily-summary", worker.SystemClock(), DeliveryMode.SHADOW)
 
     assert captured["destination"] == expected
     assert captured["delivery_mode"] is DeliveryMode.SHADOW
-    assert captured["quarantine_live"] is True
+    assert captured["quarantine_live_clusters"] == frozenset({"h100", "h200"})
 
 
 def test_infra_runtime_passes_kubeconfigs_and_delivery_mode(
@@ -371,3 +371,29 @@ def test_successful_or_unsupervised_runs_leave_nothing(
     assert worker.main(["fast-ci"]) == 1
 
     assert not (tmp_path / "failures").exists()
+
+
+def test_quarantine_live_clusters_are_read_and_checked(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("QUARANTINE_MODE", raising=False)
+    monkeypatch.delenv("QUARANTINE_LIVE_CLUSTERS", raising=False)
+    assert worker._quarantine_live_clusters() == frozenset()
+    monkeypatch.setenv("QUARANTINE_LIVE_CLUSTERS", " h100 ,,b200")
+    assert worker._quarantine_live_clusters() == frozenset({"h100", "b200"})
+    monkeypatch.setenv("QUARANTINE_LIVE_CLUSTERS", "h100,a100")
+    with pytest.raises(RuntimeError) as unknown:
+        worker._quarantine_live_clusters()
+    assert str(unknown.value) == "QUARANTINE_LIVE_CLUSTERS has unknown clusters: ['a100']"
+
+
+def test_the_old_worker_wide_switch_is_refused_but_dry_run_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("QUARANTINE_LIVE_CLUSTERS", raising=False)
+    monkeypatch.setenv("QUARANTINE_MODE", "dry_run")
+    assert worker._quarantine_live_clusters() == frozenset()
+    monkeypatch.setenv("QUARANTINE_MODE", "live")
+    with pytest.raises(RuntimeError) as refused:
+        worker._quarantine_live_clusters()
+    assert str(refused.value) == (
+        "QUARANTINE_MODE is replaced by QUARANTINE_LIVE_CLUSTERS, e.g. 'h100'"
+    )

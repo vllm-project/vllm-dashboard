@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from alerting.commands import ScheduledCommand
+from alerting.daily_summary import CLUSTERS
 from alerting.ports import Clock, DeliveryMode
 from alerting.postgres import (
     build_daily_summary_runtime,
@@ -57,13 +58,25 @@ def _delivery_mode() -> DeliveryMode:
         raise RuntimeError("ALERTING_DELIVERY_MODE must be 'shadow' or 'live'") from exc
 
 
-def _quarantine_live() -> bool:
-    # Dry run unless explicitly switched: quarantines are recorded and posted
-    # as 'would', and the actuators only log them.
-    raw = os.environ.get("QUARANTINE_MODE", "dry_run")
-    if raw not in ("dry_run", "live"):
-        raise RuntimeError("QUARANTINE_MODE must be 'dry_run' or 'live'")
-    return raw == "live"
+def _quarantine_live_clusters() -> frozenset[str]:
+    """The clusters QUARANTINE_LIVE_CLUSTERS (comma-separated) puts live.
+
+    Every other cluster stays in dry run: its quarantines are recorded and
+    posted as 'would', and its actuator only logs them. Unset is all dry run.
+    """
+    if os.environ.get("QUARANTINE_MODE", "dry_run") != "dry_run":
+        # Replaced so no pool goes live by a worker-wide switch.
+        raise RuntimeError(
+            "QUARANTINE_MODE is replaced by QUARANTINE_LIVE_CLUSTERS, e.g. 'h100'"
+        )
+    raw = os.environ.get("QUARANTINE_LIVE_CLUSTERS", "")
+    clusters = frozenset(name.strip() for name in raw.split(",") if name.strip())
+    unknown = clusters - set(CLUSTERS)
+    if unknown:
+        raise RuntimeError(
+            f"QUARANTINE_LIVE_CLUSTERS has unknown clusters: {sorted(unknown)}"
+        )
+    return clusters
 
 
 def _runtime(
@@ -152,7 +165,7 @@ def _runtime(
             slack=_slack(),
             clock=clock,
             delivery_mode=delivery_mode,
-            quarantine_live=_quarantine_live(),
+            quarantine_live_clusters=_quarantine_live_clusters(),
             # Optional like the kubeconfigs: unset skips the job-failure
             # trigger, and its fetch failing never fails the scan.
             buildkite_token=os.environ.get("BUILDKITE_TOKEN"),
@@ -169,7 +182,7 @@ def _runtime(
             slack=_slack(),
             clock=clock,
             delivery_mode=delivery_mode,
-            quarantine_live=_quarantine_live(),
+            quarantine_live_clusters=_quarantine_live_clusters(),
         )
     if consumer == "main-ci-analyze":
         return build_main_ci_analysis_runtime(

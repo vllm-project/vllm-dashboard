@@ -1647,7 +1647,7 @@ def plan_infra_scan(
     states: Mapping[tuple[str, str], InfraSubjectState],
     open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
     quarantine_decisions: Iterable[QuarantineDecision] = (),
-    quarantine_live: bool = False,
+    quarantine_live_clusters: frozenset[str] = frozenset(),
     pools: Mapping[str, tuple[str, str]] | None = None,
     gpu_faults: list[GpuFaultObservation] | None = None,
     host_faults: list[HostFaultObservation] | None = None,
@@ -1658,7 +1658,10 @@ def plan_infra_scan(
     Disabled threshold rows suppress their alert type entirely. The
     quarantine sequence always runs, so an open episode keeps advancing on
     actuator reports even when no decision names its host. Its decisions are
-    the trigger rules' first, then `quarantine_decisions`.
+    the trigger rules' first, then `quarantine_decisions`. Quarantine is live
+    only for `quarantine_live_clusters`: a decision on any other cluster is
+    treated as a dry-run trigger, so it opens a 'would' episode and takes no
+    slot, and each pool goes live on its own.
     """
     rule_decisions, rule_states = plan_trigger_rules(
         now=now,
@@ -1783,8 +1786,13 @@ def plan_infra_scan(
         InfraScanPlan(states=tuple(rule_states)),
         plan_quarantine(
             now=now,
-            live=quarantine_live,
-            decisions=[*rule_decisions, *quarantine_decisions],
+            live=bool(quarantine_live_clusters),
+            decisions=[
+                decision
+                if decision.cluster in quarantine_live_clusters
+                else replace(decision, dry_run=True)
+                for decision in [*rule_decisions, *quarantine_decisions]
+            ],
             states=states,
             open_episodes=open_episodes,
             pool_sizes=_pool_sizes(pools or {}, open_episodes),
@@ -2281,7 +2289,7 @@ class InfraScanHandler:
         job_failure_decisions: (
             Callable[[datetime], Iterable[QuarantineDecision]] | None
         ) = None,
-        quarantine_live: bool = False,
+        quarantine_live_clusters: frozenset[str] = frozenset(),
         operator_destination: str | None = None,
     ) -> None:
         self._hosts = hosts
@@ -2294,7 +2302,7 @@ class InfraScanHandler:
         # cached (see _job_failures).
         self._quarantine_decisions = quarantine_decisions
         self._job_failure_decisions = job_failure_decisions
-        self._quarantine_live = quarantine_live
+        self._quarantine_live_clusters = quarantine_live_clusters
         self._operator_destination = operator_destination
 
     def _job_failures(
@@ -2383,7 +2391,7 @@ class InfraScanHandler:
                 for episode in snapshot.open_episodes
             },
             quarantine_decisions=[*job_failures, *self._quarantine_decisions()],
-            quarantine_live=self._quarantine_live,
+            quarantine_live_clusters=self._quarantine_live_clusters,
             pools=pools,
             gpu_faults=gpu_faults,
             host_faults=host_faults,
