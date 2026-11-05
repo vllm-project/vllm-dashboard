@@ -16,15 +16,15 @@ import type { ParityHistorySample } from "@/lib/gpu-parity";
 
 export const PARITY_COLORS = {
   mirrored: "#34d399",
-  missing: "#a1a1aa",
+  singleVendor: "#a1a1aa",
   coverage: "#3b82f6",
 } as const;
 
 interface TrendPoint {
   date: string;
-  nvidiaJobs: number;
+  gpuJobs: number;
   mirroredJobs: number;
-  missingJobs: number;
+  singleVendorJobs: number;
   coverage: number | null;
 }
 
@@ -48,8 +48,8 @@ function TrendTooltip({
   if (!active || !payload?.length || !label) return null;
   const point = payload[0].payload;
   const rows: Array<[string, string, string]> = [
-    ["With AMD mirror", String(point.mirroredJobs), PARITY_COLORS.mirrored],
-    ["Missing mirror", String(point.missingJobs), PARITY_COLORS.missing],
+    ["Multi-vendor", String(point.mirroredJobs), PARITY_COLORS.mirrored],
+    ["Single-vendor", String(point.singleVendorJobs), PARITY_COLORS.singleVendor],
     [
       "Coverage",
       point.coverage == null ? "—" : `${Math.round(point.coverage * 100)}%`,
@@ -59,7 +59,7 @@ function TrendTooltip({
   return (
     <div className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-xs shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
       <p className="mb-1 font-medium">
-        Week of {formatDate(label)} · {point.nvidiaJobs} NVIDIA jobs
+        Week of {formatDate(label)} · {point.gpuJobs} gating GPU jobs
       </p>
       {rows.map(([name, value, color]) => (
         <div key={name} className="flex items-center justify-between gap-4">
@@ -86,9 +86,9 @@ export function ParityTrendChart({
     const counts = sample.gating;
     return {
       date: sample.date,
-      nvidiaJobs: counts.nvidiaJobs,
+      gpuJobs: counts.gpuJobs,
       mirroredJobs: counts.mirroredJobs,
-      missingJobs: counts.nvidiaJobs - counts.mirroredJobs,
+      singleVendorJobs: counts.gpuJobs - counts.mirroredJobs,
       coverage: counts.coverage,
     };
   });
@@ -136,17 +136,17 @@ export function ParityTrendChart({
         <Bar
           yAxisId="jobs"
           dataKey="mirroredJobs"
-          name="With AMD mirror"
+          name="Multi-vendor"
           stackId="jobs"
           fill={PARITY_COLORS.mirrored}
           isAnimationActive={false}
         />
         <Bar
           yAxisId="jobs"
-          dataKey="missingJobs"
-          name="Missing mirror"
+          dataKey="singleVendorJobs"
+          name="Single-vendor"
           stackId="jobs"
-          fill={PARITY_COLORS.missing}
+          fill={PARITY_COLORS.singleVendor}
           fillOpacity={0.55}
           radius={[2, 2, 0, 0]}
           isAnimationActive={false}
