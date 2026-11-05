@@ -119,24 +119,17 @@ function DeviceChip({ device }: { device: string | null }) {
   );
 }
 
-function CoverageBar({
-  counts,
-  colorValue,
-}: {
-  counts: ParityCounts;
-  /** Drives the bar's colour: the NVIDIA-side coverage, where gaps are fillable. */
-  colorValue: number | null;
-}) {
+function CoverageBar({ counts }: { counts: ParityCounts }) {
   const width = counts.coverage == null ? 0 : counts.coverage * 100;
   return (
     <div className="flex items-center gap-3">
       <div
         className="h-2 w-28 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800"
         role="img"
-        aria-label={`${percent(counts.coverage)} of GPU jobs have a cross-vendor mirror`}
+        aria-label={`${percent(counts.coverage)} of NVIDIA jobs have an AMD mirror`}
       >
         <div
-          className={`h-full rounded-full ${coverageBarClass(colorValue)}`}
+          className={`h-full rounded-full ${coverageBarClass(counts.coverage)}`}
           style={{ width: `${width}%` }}
         />
       </div>
@@ -181,14 +174,8 @@ function JobRow({ job }: { job: ParityJob }) {
             {job.mirror.optional && <Badge tone="warn">mirror optional</Badge>}
             {job.mirror.softFail && <Badge tone="warn">mirror soft fail</Badge>}
           </p>
-        ) : job.vendor === "amd" ? (
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            AMD-native · no cross-vendor mirror
-          </p>
         ) : (
-          <p className="text-sm text-rose-600 dark:text-rose-400">
-            No cross-vendor mirror
-          </p>
+          <p className="text-sm text-rose-600 dark:text-rose-400">No AMD mirror</p>
         )}
       </div>
     </li>
@@ -219,31 +206,21 @@ export default function ParityPage() {
   const groups = useMemo(() => {
     if (!data) return [];
     return data.groups
-      .filter((group) => group.gating.gpuJobs > 0)
+      .filter((group) => group.gating.nvidiaJobs > 0)
       .map((group) => {
         const jobs = data.jobs.filter(
           (job) => job.group === group.group && job.gating,
         );
-        const nvidiaJobs = jobs.filter((job) => job.vendor === "nvidia");
-        const nvidiaMirrored = nvidiaJobs.filter((job) => job.mirror).length;
         return {
           ...group,
           counts: group.gating,
-          missing: group.gating.gpuJobs - group.gating.mirroredJobs,
-          // NVIDIA-side gaps are fillable (a mirror.amd block); AMD-native
-          // jobs are not, so they never drive the red styling or the sort.
-          nvidiaOnly: nvidiaJobs.length - nvidiaMirrored,
-          amdOnly: jobs.filter((job) => job.vendor === "amd" && !job.mirror)
-            .length,
-          nvidiaCoverage:
-            nvidiaJobs.length > 0 ? nvidiaMirrored / nvidiaJobs.length : null,
+          missing: group.gating.nvidiaJobs - group.gating.mirroredJobs,
           jobs:
             jobFilter === "missing" ? jobs.filter((job) => !job.mirror) : jobs,
         };
       })
       .sort(
         (a, b) =>
-          b.nvidiaOnly - a.nvidiaOnly ||
           b.missing - a.missing ||
           (a.counts.coverage ?? 0) - (b.counts.coverage ?? 0) ||
           a.group.localeCompare(b.group),
@@ -282,14 +259,7 @@ export default function ParityPage() {
     );
   }
 
-  const missing = summary ? summary.gpuJobs - summary.mirroredJobs : 0;
-  const gatingJobs = data.jobs.filter((job) => job.gating);
-  const nvidiaOnly = gatingJobs.filter(
-    (job) => job.vendor === "nvidia" && !job.mirror,
-  ).length;
-  const amdOnly = gatingJobs.filter(
-    (job) => job.vendor === "amd" && !job.mirror,
-  ).length;
+  const missing = summary ? summary.nvidiaJobs - summary.mirroredJobs : 0;
   const excluded = (data.excluded ?? []).filter(({ job }) => job.gating);
 
   return (
@@ -298,7 +268,7 @@ export default function ParityPage() {
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold">Parity</h1>
           <p className="mt-1 max-w-3xl text-sm text-zinc-500 dark:text-zinc-400">
-            Gating GPU test jobs declared in{" "}
+            Gating NVIDIA test jobs declared in{" "}
             <a
               href={`https://github.com/${data.source.repo}/tree/${data.source.commit}/${data.source.directory}`}
               target="_blank"
@@ -307,9 +277,8 @@ export default function ParityPage() {
             >
               {data.source.repo}/{data.source.directory}
             </a>{" "}
-            and whether each runs on more than one vendor&apos;s hardware via a
-            cross-vendor mirror. Unmirrored FlashInfer, DeepGEMM and A100 Batch
-            Invariance jobs are excluded as vendor-specific. Snapshot of{" "}
+            and whether each declares an AMD mirror. Unmirrored FlashInfer,
+            DeepGEMM and A100 Batch Invariance jobs are excluded. Snapshot of{" "}
             <a
               href={data.source.commitUrl}
               target="_blank"
@@ -326,33 +295,33 @@ export default function ParityPage() {
       {summary && (
         <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
           <StatCard
-            label="GPU jobs"
-            value={summary.gpuJobs}
-            detail="Gating jobs, all vendors"
+            label="NVIDIA jobs"
+            value={summary.nvidiaJobs}
+            detail="Gating jobs only"
           />
           <StatCard
-            label="Multi-vendor"
+            label="With AMD mirror"
             value={summary.mirroredJobs}
-            detail="Jobs declaring a cross-vendor mirror"
+            detail="Steps declaring a mirror.amd block"
           />
           <StatCard
-            label="Cross-vendor coverage"
+            label="AMD coverage"
             value={percent(summary.coverage)}
             color={coverageColor(summary.coverage)}
-            detail="Share of gating GPU jobs with a mirror"
+            detail="Share of gating NVIDIA jobs with a mirror"
           />
           <StatCard
-            label="Single-vendor"
+            label="Missing mirror"
             value={missing}
-            color={nvidiaOnly > 0 ? "red" : missing > 0 ? "default" : "green"}
-            detail={`${nvidiaOnly} NVIDIA-only · ${amdOnly} AMD-only`}
+            color={missing > 0 ? "red" : "green"}
+            detail={`Across ${groups.filter((group) => group.missing > 0).length} test areas`}
           />
         </div>
       )}
 
       <section className="rounded-lg border border-zinc-200 bg-white p-4 sm:p-5 dark:border-zinc-800 dark:bg-zinc-950">
         <div className="mb-2 flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
-          <h2 className="text-sm font-semibold">Cross-vendor coverage over time</h2>
+          <h2 className="text-sm font-semibold">AMD mirror coverage over time</h2>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
             Weekly gating counts on {data.source.ref} for the last{" "}
             {HISTORY_WEEKS} weeks, using the same exclusions; the last point is the current snapshot.
@@ -406,7 +375,7 @@ export default function ParityPage() {
           <div>
             <h2 className="text-sm font-semibold">By test area</h2>
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              Areas with the most single-vendor jobs first. Expand an area to see each job and its mirror.
+              Areas with the most unmirrored jobs first. Expand an area to see each job and its mirror.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -416,7 +385,7 @@ export default function ParityPage() {
               onChange={setJobFilter}
               options={[
                 { value: "all", label: "All gating jobs" },
-                { value: "missing", label: "Single-vendor", count: missing },
+                { value: "missing", label: "Missing mirror", count: missing },
               ]}
             />
             <button
@@ -437,9 +406,9 @@ export default function ParityPage() {
             <thead>
               <tr className="border-b border-zinc-200 text-left text-xs font-medium text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
                 <th scope="col" className="px-4 py-2.5 sm:px-5">Test area</th>
-                <th scope="col" className="px-3 py-2.5 text-right">GPU jobs</th>
-                <th scope="col" className="px-3 py-2.5 text-right">Multi-vendor</th>
-                <th scope="col" className="px-3 py-2.5 text-right">Single-vendor</th>
+                <th scope="col" className="px-3 py-2.5 text-right">NVIDIA jobs</th>
+                <th scope="col" className="px-3 py-2.5 text-right">With mirror</th>
+                <th scope="col" className="px-3 py-2.5 text-right">Missing</th>
                 <th scope="col" className="px-3 py-2.5 sm:px-5">Coverage</th>
               </tr>
             </thead>
@@ -463,36 +432,22 @@ export default function ParityPage() {
                         </button>
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
-                        {group.counts.gpuJobs}
+                        {group.counts.nvidiaJobs}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
                         {group.counts.mirroredJobs}
                       </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">
-                        {group.missing === 0 ? (
-                          <span className="text-zinc-400">0</span>
-                        ) : (
-                          <span
-                            className={
-                              group.nvidiaOnly > 0
-                                ? "font-medium text-rose-600 dark:text-rose-400"
-                                : "text-zinc-400"
-                            }
-                          >
-                            {`${group.nvidiaOnly} NVIDIA`}
-                          </span>
-                        )}
-                        {group.amdOnly > 0 && (
-                          <span className="text-xs text-zinc-400">
-                            {` + ${group.amdOnly} AMD`}
-                          </span>
-                        )}
+                      <td
+                        className={`px-3 py-2.5 text-right tabular-nums ${
+                          group.missing > 0
+                            ? "font-medium text-rose-600 dark:text-rose-400"
+                            : "text-zinc-400"
+                        }`}
+                      >
+                        {group.missing}
                       </td>
                       <td className="px-3 py-2.5 sm:px-5">
-                        <CoverageBar
-                          counts={group.counts}
-                          colorValue={group.nvidiaCoverage}
-                        />
+                        <CoverageBar counts={group.counts} />
                       </td>
                     </tr>
                     {open && (
@@ -500,13 +455,13 @@ export default function ParityPage() {
                         <td colSpan={5} className="p-0">
                           {group.jobs.length === 0 ? (
                             <p className="px-4 py-3 text-sm text-zinc-500 sm:px-6">
-                              Every gating job in this area has a cross-vendor mirror.
+                              Every gating job in this area has an AMD mirror.
                             </p>
                           ) : (
                             <ul className="divide-y divide-zinc-200/70 dark:divide-zinc-800">
                               <li className="hidden px-6 pt-2 text-[11px] font-medium uppercase tracking-[0.08em] text-zinc-400 sm:grid sm:grid-cols-2 sm:gap-6">
-                                <span>Job</span>
-                                <span>Cross-vendor mirror</span>
+                                <span>NVIDIA job</span>
+                                <span>AMD mirror</span>
                               </li>
                               {group.jobs.map((job) => (
                                 <JobRow key={`${job.file}:${job.label}`} job={job} />
@@ -527,9 +482,7 @@ export default function ParityPage() {
           is absent or false. <code className="font-mono">soft_fail</code> jobs remain included;
           their failures do not fail the build. Mirrors inherit both flags unless overridden,
           and count as declared mirrors regardless of those flags. CPU-only steps ({data.skipped.cpuJobs})
-          are excluded
-          {data.skipped.otherJobs > 0 &&
-            `, as are ${data.skipped.otherJobs} step(s) on other accelerators`}.
+          are excluded.
           {data.skipped.unknown.length > 0 &&
             ` ${data.skipped.unknown.length} step(s) with an unrecognised device were also excluded.`}
         </p>
@@ -538,11 +491,11 @@ export default function ParityPage() {
       {excluded.length > 0 && (
         <details className="rounded-lg border border-zinc-200 bg-white p-4 text-sm dark:border-zinc-800 dark:bg-zinc-950">
           <summary className="dashboard-control cursor-pointer font-medium">
-            Excluded from cross-vendor parity ({excluded.length} gating jobs)
+            Excluded from AMD parity ({excluded.length} gating jobs)
           </summary>
           <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
-            Unmirrored FlashInfer, DeepGEMM and A100 Batch Invariance jobs are excluded as
-            vendor-specific. Jobs with a declared cross-vendor mirror are always retained.
+            Unmirrored FlashInfer, DeepGEMM and A100 Batch Invariance jobs are excluded. Jobs with a
+            declared AMD mirror are always retained.
           </p>
           <ul className="mt-3 space-y-2">
             {excluded.map(({ job, reason }) => (

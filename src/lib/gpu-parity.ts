@@ -1,20 +1,20 @@
 /**
- * Cross-vendor gating parity for vLLM's CI.
+ * NVIDIA-to-AMD gating parity for vLLM's CI.
  *
- * Every test job in `.buildkite/test_areas/*.yaml` on vllm-project/vllm runs
- * on some vendor's hardware. A step may declare a `mirror.amd` block, which
+ * Every test job in `.buildkite/test_areas/*.yaml` on vllm-project/vllm is a
+ * step with a `device`. NVIDIA steps may declare a `mirror.amd` block, which
  * the pipeline generator (vllm-project/ci-infra) turns into an `amd-<key>`
- * step on AMD hardware; AMD-native steps are declared directly with an `mi*`
- * device. This module reads those parsed YAML files and counts, per test area
- * and overall, how many GPU jobs run on more than one vendor's hardware.
- * Vendor-specific job families without a declared mirror are excluded by
- * label. Each YAML step is counted independently, except for the A100 Batch
- * Invariance job whose cross-vendor coverage is tracked on the H100 job.
+ * step on AMD hardware. This module reads those parsed YAML files and counts,
+ * per test area and overall, how many NVIDIA jobs are eligible for AMD parity
+ * and how many of them have an AMD mirror. Known NVIDIA-specific job families
+ * without a declared AMD mirror are excluded by label. Each YAML step is
+ * counted independently, except for the A100 Batch Invariance job whose AMD
+ * coverage is tracked on the H100 job.
  *
  * For this view, "gating" means `optional` is not true. `soft_fail` does not
  * affect inclusion, but is reported separately because it changes whether a
- * failure blocks the build. A mirror inherits both flags from its parent step
- * unless its block overrides them, matching the pipeline generator.
+ * failure blocks the build. The AMD mirror inherits both flags from its NVIDIA
+ * parent unless its block overrides them, matching the pipeline generator.
  */
 
 export type DeviceVendor = "nvidia" | "amd" | "cpu" | "other" | "unknown";
@@ -139,8 +139,6 @@ export interface ParityJob {
   key: string | null;
   group: string;
   file: string;
-  /** GPU vendor the job runs on. */
-  vendor: "nvidia" | "amd";
   device: string | null;
   numDevices: number;
   numNodes: number;
@@ -158,34 +156,33 @@ export interface ParityExcludedJob {
   reason: string;
 }
 
-// Vendor-specific suites outside cross-vendor parity scope. Hardware alone
-// never excludes a job: a mirror may use a different device or backend.
-const PARITY_EXCLUSIONS = [
+// Backend-specific suites outside AMD parity scope. Hardware alone never
+// excludes a job: an AMD mirror may use a different device or backend.
+const AMD_PARITY_EXCLUSIONS = [
   { patterns: [/\bflashinfer\b/i], reason: "FlashInfer-specific job" },
   { patterns: [/\bdeepgemm\b/i], reason: "DeepGEMM-specific job" },
 ] as const;
 
-function parityExclusionReason(job: ParityJob): string | null {
-  // An explicit mirror takes precedence over the label heuristic.
+function amdParityExclusionReason(job: ParityJob): string | null {
+  // An explicit AMD mirror takes precedence over the label heuristic.
   if (job.mirror) return null;
-  // Track Batch Invariance cross-vendor coverage on the H100 job. Keep this
-  // exception specific to A100; B200 and other scenarios may select
-  // additional tests.
+  // Track AMD Batch Invariance coverage on the H100 job. Keep this exception
+  // specific to A100; B200 and other scenarios may select additional tests.
   if (
     job.device?.trim().toLowerCase() === "a100" &&
     /^(?::nvidia:\s*)?(?:\(A100\)\s*)?Batch Invariance$/i.test(job.label)
   ) {
-    return "Batch Invariance cross-vendor coverage is tracked on the H100 job";
+    return "Batch Invariance AMD coverage is tracked on the H100 job";
   }
-  return PARITY_EXCLUSIONS.find(({ patterns }) =>
+  return AMD_PARITY_EXCLUSIONS.find(({ patterns }) =>
     patterns.every((pattern) => pattern.test(job.label)),
   )?.reason ?? null;
 }
 
 export interface ParityCounts {
-  gpuJobs: number;
+  nvidiaJobs: number;
   mirroredJobs: number;
-  /** mirroredJobs / gpuJobs, or null when there are no GPU jobs. */
+  /** mirroredJobs / nvidiaJobs, or null when there are no NVIDIA jobs. */
   coverage: number | null;
 }
 
@@ -200,15 +197,16 @@ export interface ParitySnapshot {
   summary: {
     all: ParityCounts;
     gating: ParityCounts;
-    /** Optional GPU jobs, regardless of soft-fail status. */
+    /** Optional NVIDIA jobs, regardless of soft-fail status. */
     nonGating: ParityCounts;
   };
   groups: ParityGroup[];
   jobs: ParityJob[];
-  /** GPU jobs omitted by parity scope rules. */
+  /** NVIDIA jobs omitted by parity scope rules. */
   excluded: ParityExcludedJob[];
   skipped: {
     cpuJobs: number;
+    amdJobs: number;
     otherJobs: number;
     /** Steps whose device and label gave no vendor; surfaced so they are not silently dropped. */
     unknown: Array<{ label: string; device: string | null; file: string }>;
@@ -256,7 +254,6 @@ function parseMirror(
 export function parityJobFromStep(
   file: TestAreaFile,
   step: Record<string, unknown>,
-  vendor: "nvidia" | "amd",
 ): ParityJob {
   const optional = asBoolean(step.optional);
   const softFail = asBoolean(step.soft_fail);
@@ -265,7 +262,6 @@ export function parityJobFromStep(
     key: asNullableString(step.key),
     group: file.group,
     file: file.path,
-    vendor,
     device: asNullableString(step.device),
     numDevices: asPositiveInteger(
       step.num_devices ?? step.num_gpus,
@@ -277,19 +273,17 @@ export function parityJobFromStep(
     softFail,
     autorunOnMain: asBoolean(step.autorun_on_main),
     gating: !optional,
-    // A mirror counts only from an NVIDIA parent: an AMD step that carries a
-    // copied mirror.amd block would run on AMD twice, not cross-vendor.
-    mirror: vendor === "nvidia" ? parseMirror(step, optional, softFail) : null,
+    mirror: parseMirror(step, optional, softFail),
   };
 }
 
 export function countParity(jobs: readonly ParityJob[]): ParityCounts {
-  const gpuJobs = jobs.length;
+  const nvidiaJobs = jobs.length;
   const mirroredJobs = jobs.filter((job) => job.mirror !== null).length;
   return {
-    gpuJobs,
+    nvidiaJobs,
     mirroredJobs,
-    coverage: gpuJobs > 0 ? mirroredJobs / gpuJobs : null,
+    coverage: nvidiaJobs > 0 ? mirroredJobs / nvidiaJobs : null,
   };
 }
 
@@ -299,6 +293,7 @@ export function computeParity(files: readonly TestAreaFile[]): ParitySnapshot {
   const excluded: ParityExcludedJob[] = [];
   const skipped: ParitySnapshot["skipped"] = {
     cpuJobs: 0,
+    amdJobs: 0,
     otherJobs: 0,
     unknown: [],
   };
@@ -308,15 +303,16 @@ export function computeParity(files: readonly TestAreaFile[]): ParitySnapshot {
     for (const step of file.steps) {
       const label = String(step.label);
       const device = asNullableString(step.device);
-      const vendor = classifyStep(step);
-      switch (vendor) {
-        case "nvidia":
-        case "amd": {
-          candidates.push(parityJobFromStep(file, step, vendor));
+      switch (classifyStep(step)) {
+        case "nvidia": {
+          candidates.push(parityJobFromStep(file, step));
           break;
         }
         case "cpu":
           skipped.cpuJobs += 1;
+          break;
+        case "amd":
+          skipped.amdJobs += 1;
           break;
         case "other":
           skipped.otherJobs += 1;
@@ -328,7 +324,7 @@ export function computeParity(files: readonly TestAreaFile[]): ParitySnapshot {
   }
 
   for (const job of candidates) {
-    const reason = parityExclusionReason(job);
+    const reason = amdParityExclusionReason(job);
     if (reason) {
       excluded.push({ job, reason });
     } else {
