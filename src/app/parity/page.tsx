@@ -469,12 +469,18 @@ export default function ParityPage() {
                         {group.counts.mirroredJobs}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
-                        {group.nvidiaOnly > 0 ? (
-                          <span className="font-medium text-rose-600 dark:text-rose-400">
-                            {group.nvidiaOnly}
-                          </span>
-                        ) : (
+                        {group.missing === 0 ? (
                           <span className="text-zinc-400">0</span>
+                        ) : (
+                          <span
+                            className={
+                              group.nvidiaOnly > 0
+                                ? "font-medium text-rose-600 dark:text-rose-400"
+                                : "text-zinc-400"
+                            }
+                          >
+                            {`${group.nvidiaOnly} NVIDIA`}
+                          </span>
                         )}
                         {group.amdOnly > 0 && (
                           <span className="text-xs text-zinc-400">
