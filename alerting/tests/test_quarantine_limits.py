@@ -160,10 +160,60 @@ def test_a_host_out_of_ci_still_counts_toward_its_pool() -> None:
         states={},
         open_episodes={("quarantine", "host-8"): out},
         quarantine_decisions=[decision("host-1")],
-        quarantine_live=True,
+        quarantine_live_clusters=frozenset({"h200", "h100", "b200"}),
         pools=pools,
     )
     assert opened(result) == {"host-1": ("quarantining", None)}
+
+
+def test_only_the_live_clusters_quarantine_and_the_rest_stay_dry_run() -> None:
+    # H100 is live, H200 is not: the H200 host only gets a 'would' episode
+    # and takes no slot, so it can't hold back the live pool or trip the
+    # breaker.
+    pools = {
+        **{f"h200-{n}": ("h200", "pool-a") for n in range(1, 9)},
+        **{f"h100-{n}": ("h100", "pool-b") for n in range(1, 9)},
+    }
+    result = plan_infra_scan(
+        now=NOW,
+        thresholds={},
+        expected_hosts=frozenset(),
+        latest_reports={},
+        disk_mounts=[],
+        gpu_temperatures=[],
+        gpu_dead_memory=[],
+        gpu_counts=[],
+        states={},
+        open_episodes={},
+        quarantine_decisions=[
+            decision("h200-1"),
+            replace(decision("h100-1", "pool-b"), cluster="h100"),
+        ],
+        quarantine_live_clusters=frozenset({"h100"}),
+        pools=pools,
+    )
+    assert opened(result) == {
+        "h200-1": ("would", None),
+        "h100-1": ("quarantining", None),
+    }
+
+
+def test_no_live_clusters_is_dry_run_everywhere() -> None:
+    result = plan_infra_scan(
+        now=NOW,
+        thresholds={},
+        expected_hosts=frozenset(),
+        latest_reports={},
+        disk_mounts=[],
+        gpu_temperatures=[],
+        gpu_dead_memory=[],
+        gpu_counts=[],
+        states={},
+        open_episodes={},
+        quarantine_decisions=[decision("host-1")],
+        pools={f"host-{n}": ("h200", "pool-a") for n in range(1, 9)},
+    )
+    assert opened(result) == {"host-1": ("would", None)}
 
 
 def test_held_hosts_then_hardware_faults_take_a_slot_first() -> None:
@@ -743,7 +793,7 @@ def waiting(
         latest_reports={},
         gpu_temperatures=[],
         open_episodes={("quarantine", "host-1"): resolve},
-        quarantine_live=True,
+        quarantine_live_clusters=frozenset({"h200", "h100", "b200"}),
         pools={"host-1": ("h200", "pool-a")},
         **{
             "disk_mounts": [],
@@ -892,7 +942,7 @@ def test_a_new_xid_after_the_request_sends_a_resolve_back() -> None:
         gpu_counts=[],
         states={},
         open_episodes={("quarantine", "host-1"): resolve},
-        quarantine_live=True,
+        quarantine_live_clusters=frozenset({"h200", "h100", "b200"}),
         pools={"host-1": ("h200", "pool-a")},
         gpu_faults=[GpuFaultObservation("host-1", 0, "Reset", False, requested)],
         xid_events=[

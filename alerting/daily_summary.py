@@ -97,7 +97,7 @@ class DailySummarySource(Protocol):
 @dataclass(frozen=True)
 class SummaryInputs:
     now: datetime
-    live: bool
+    live_clusters: frozenset[str]
     pools: Mapping[str, tuple[str, str]]
     gpu_counts: list[GpuCountObservation]
     baselines: Mapping[str, int]
@@ -245,11 +245,16 @@ def render_summary(inputs: SummaryInputs) -> str:
             "nothing quarantined or degraded."
         )
 
-    mode = "live" if inputs.live else "dry run"
     clusters = {cluster for cluster, _ in inputs.pools.values()}
-    lines = [title, "Mode: " + ", ".join(
-        f"{c} {mode if c in clusters else 'not started'}" for c in CLUSTERS
-    )]
+    modes = []
+    for cluster in CLUSTERS:
+        if cluster not in clusters:
+            modes.append(f"{cluster} not started")
+        elif cluster in inputs.live_clusters:
+            modes.append(f"{cluster} live")
+        else:
+            modes.append(f"{cluster} dry run")
+    lines = [title, "Mode: " + ", ".join(modes)]
     if changes:
         lines += ["", "Changes since yesterday:", *changes]
     if standing:
@@ -287,7 +292,7 @@ class DailySummaryHandler:
         clock: Clock,
         destination: str,
         delivery_mode: DeliveryMode = DeliveryMode.LIVE,
-        quarantine_live: bool = False,
+        quarantine_live_clusters: frozenset[str] = frozenset(),
     ) -> None:
         self._source = source
         self._snapshots = snapshots
@@ -296,7 +301,7 @@ class DailySummaryHandler:
         self._clock = clock
         self._destination = destination
         self._delivery_mode = delivery_mode
-        self._quarantine_live = quarantine_live
+        self._quarantine_live_clusters = quarantine_live_clusters
 
     def __call__(self, command: ScheduledCommand) -> None:
         now = command.target_time
@@ -338,7 +343,7 @@ class DailySummaryHandler:
         text = render_summary(
             SummaryInputs(
                 now=now,
-                live=self._quarantine_live,
+                live_clusters=self._quarantine_live_clusters,
                 pools=pilot_pools(roster, queues),
                 gpu_counts=counts,
                 baselines={

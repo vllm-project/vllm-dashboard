@@ -87,8 +87,12 @@ quarantine (below), once the operator token is entered. Backed by
 The same scan also decides when to take a host out of CI. A quarantine is
 one more episode type (`quarantine`, keyed by host) in
 `alerting_infra_alerts`; its stage and evidence live in `details`.
-`QUARANTINE_MODE` defaults to `dry_run`: decisions open `would` episodes
-and nothing changes on a host.
+Each pool goes live on its own: `QUARANTINE_LIVE_CLUSTERS` lists the live
+clusters, comma-separated (`h200`, `h100`, `b200`; unset is none). A
+decision on any other cluster opens a `would` episode, takes no slot under
+the limits, and nothing changes on its host. A pool goes live when its
+cluster is listed and its actuator runs without `--dry-run`. The old
+worker-wide `QUARANTINE_MODE=live` is refused.
 
 **Triggers** (`plan_trigger_rules`), over the pilot pools (`pilot_pools`):
 
@@ -227,5 +231,5 @@ stands (quarantined, held, degraded, not reporting) and a `/gpu` link. A quiet
 day is one line. A host is degraded when its GPU count is below its
 exception-list value, or below the larger of 8 and the most GPUs the
 `gpu_count` baseline has seen; a Kubernetes node whose allocatable GPUs are
-below its capacity is listed too. The Mode line shows the global `QUARANTINE_MODE`
-for each pool that has hosts, and `not started` for a pool with none.
+below its capacity is listed too. The Mode line shows `live` or `dry run`
+for each pool that has hosts (from `QUARANTINE_LIVE_CLUSTERS`), and `not started` for a pool with none.

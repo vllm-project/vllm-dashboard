@@ -95,7 +95,7 @@ class Rig:
                     store=self.store,
                     clock=self.clock,
                     quarantine_decisions=lambda: list(self.decisions),
-                    quarantine_live=True,
+                    quarantine_live_clusters=frozenset({"h200", "h100", "b200"}),
                 )
             },
             alert_path=None,

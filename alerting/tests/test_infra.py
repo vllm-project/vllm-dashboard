@@ -976,7 +976,7 @@ def quarantine_runtime(
                 store=store,
                 clock=clock,
                 quarantine_decisions=lambda: list(decisions),
-                quarantine_live=live,
+                quarantine_live_clusters=frozenset({"h200"}) if live else frozenset(),
                 operator_destination=operator_destination,
             )
         },
@@ -1133,7 +1133,7 @@ def test_switching_to_live_upgrades_a_standing_dry_run_episode() -> None:
     scan_and_post(runtime, clock)
 
     handler = runtime._handlers["infra_scan"]
-    handler._quarantine_live = True  # type: ignore[attr-defined]
+    handler._quarantine_live_clusters = frozenset({"h200"})  # type: ignore[attr-defined]
     scan_and_post(runtime, clock)
 
     [episode] = store.open_episodes()
@@ -1594,7 +1594,7 @@ def job_failure_runtime(
                 store=store,
                 clock=clock,
                 job_failure_decisions=fetch,
-                quarantine_live=live,
+                quarantine_live_clusters=frozenset({"h200"}) if live else frozenset(),
             )
         },
         alert_path=None,

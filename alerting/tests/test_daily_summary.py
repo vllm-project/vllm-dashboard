@@ -66,7 +66,7 @@ def episode(
 def inputs(**overrides: Any) -> SummaryInputs:
     fields: dict[str, Any] = dict(
         now=NOW,
-        live=False,
+        live_clusters=frozenset(),
         pools=POOLS,
         gpu_counts=counts(h200_ci_1=8, h200_ci_2=8, inf_4x8h100_1=8),
         baselines={},
@@ -89,7 +89,7 @@ def test_quiet_day_is_one_line() -> None:
 def test_busy_day_lists_changes_then_standing_and_hides_empty_sections() -> None:
     text = render_summary(
         inputs(
-            live=True,
+            live_clusters=frozenset({"h200", "h100"}),
             gpu_counts=counts(h200_ci_1=7, h200_ci_2=8, inf_4x8h100_1=8),
             baselines={"h200-ci-1": 8},
             exceptions={"h200-ci-2": 9},
@@ -612,9 +612,19 @@ def handler_parts(
         clock=FixedClock(NOW),
         destination=destination,
         delivery_mode=DeliveryMode.LIVE,
-        **({} if live is None else {"quarantine_live": live}),
+        **({} if live is None else {"quarantine_live_clusters": frozenset({"h200"}) if live else frozenset()}),
     )
     return handler, outbox, source
+
+
+def test_mode_line_names_each_pools_own_mode() -> None:
+    text = render_summary(
+        inputs(
+            live_clusters=frozenset({"h100"}),
+            episodes=[episode("quarantine", "h200-ci-1", stage="would", reason="x")],
+        )
+    )
+    assert "Mode: h200 dry run, h100 live, b200 not started" in text
 
 
 def test_handler_enqueues_one_post_per_pacific_day_to_the_destination() -> None:
@@ -770,7 +780,7 @@ def test_the_runtime_wires_one_handler_over_one_store(monkeypatch: Any) -> None:
     assert built["handler"] == {
         "source": store, "snapshots": store, "store": store, "outbox": store,
         "clock": clock, "destination": "C1",
-        "delivery_mode": DeliveryMode.LIVE, "quarantine_live": False,
+        "delivery_mode": DeliveryMode.LIVE, "quarantine_live_clusters": frozenset(),
     }
     assert built["runtime"] == {
         "executions": store, "outbox": store, "slack": slack, "clock": clock,
