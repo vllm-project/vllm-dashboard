@@ -61,7 +61,9 @@ export interface LatestTestTimings {
   // so the planner can charge it once per shard.
   setupMs: number;
   files: FileTiming[];
-  // Treatment-branch builds behind files main hasn't timed; absent when none.
+  // Treatment-branch builds behind files main hasn't timed (behind every file,
+  // and the build fields above, when main has never timed the step); absent
+  // when none.
   treatmentBuildNumbers?: number[];
 }
 
@@ -218,7 +220,8 @@ export function withTestsOverMs(
 // ingestion accepts, see otel-auth.ts) time a command before it reaches main:
 // the step is built there by API at the PR's commit. Their timings are added
 // only for command labels main has no timings for, so they never change one
-// main has; main's own runs replace them once it runs the command. The
+// main has, and they stand alone for a step main has never timed;
+// main's own runs replace them once it runs the command. The
 // literal is ingestion's default treatment branch and must match the partial
 // index predicate in migration 0035.
 // The treatment lookup is optional: past this, the response is main's alone.
@@ -337,21 +340,51 @@ async function timingsOfBuilds(sql: Sql, builds: PassingBuild[]) {
   return { used, filesPerBuild, setupPerBuild, skippedBuilds, firstError };
 }
 
-/** The treatment branch's files and builds; null when it has none or the lookup fails. */
+type BuildTimings = Pick<
+  Awaited<ReturnType<typeof timingsOfBuilds>>, "used" | "setupPerBuild" | "skippedBuilds"
+>;
+
+// Whether main has ever recorded a test span for the step: any build, passed or
+// not, on any queue, with no time window. Only a step main has never timed
+// gets treatment timings alone; one main timed before and hasn't passed lately
+// keeps today's answer (none). Repeats migration 0029's index predicate.
+async function mainEverTimed(sql: Sql, stepKey: string): Promise<boolean> {
+  const [row] = await sql<{ timed: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1 FROM otel_spans AS j
+      WHERE j.span_name = 'buildkite.job'
+        AND j.job_type = 'script'
+        AND j.pipeline_slug = 'ci'
+        AND j.span_attributes->>'buildkite.build.branch' = 'main'
+        AND j.step_key = ${stepKey}
+        AND EXISTS (
+          SELECT 1 FROM otel_spans AS t
+          WHERE t.job_id = j.job_id
+            AND t.span_attributes->>'ci.span.kind' = 'test'
+        )
+    ) AS timed
+  `;
+  return row.timed;
+}
+
+/**
+ * The treatment branch's builds and files; null when it has none or the
+ * lookup fails. With `untimedOnMain`, also null when main has ever timed the
+ * step; that check runs under the same timeout.
+ */
 async function treatmentTimings(
-  sql: Sql, stepKey: string, days: number, queue: string | null,
-): Promise<{ files: FileTiming[]; buildNumbers: number[] } | null> {
+  sql: Sql, stepKey: string, days: number, queue: string | null, untimedOnMain = false,
+): Promise<(BuildTimings & { files: FileTiming[] }) | null> {
   try {
     return await sql.begin(async (transaction) => {
       const tx = transaction as unknown as Sql;
       await tx`SELECT set_config('statement_timeout', ${String(TREATMENT_TIMEOUT_MS)}, true)`;
+      if (untimedOnMain && await mainEverTimed(tx, stepKey)) return null;
       const builds = await passingBuilds(tx, true, stepKey, days, queue);
       if (builds.length === 0) return null;
-      const { used, filesPerBuild } = await timingsOfBuilds(tx, builds);
-      return {
-        files: p80Files(filesPerBuild),
-        buildNumbers: used.map((build) => Number(build.build_number)),
-      };
+      const { used, filesPerBuild, setupPerBuild, skippedBuilds } = await timingsOfBuilds(tx, builds);
+      if (used.length === 0) return null;
+      return { used, setupPerBuild, skippedBuilds, files: p80Files(filesPerBuild) };
     });
   } catch (e) {
     console.warn(`Treatment timings for ${stepKey} skipped:`, e);
@@ -359,20 +392,13 @@ async function treatmentTimings(
   }
 }
 
-export async function queryLatestTestTimings(
+function timingsResponse(
   stepKey: string,
-  { days = 14, queue = null }: { days?: number; queue?: string | null } = {},
-): Promise<LatestTestTimings | null> {
-  const sql = getDb();
-  const builds = await passingBuilds(sql, false, stepKey, days, queue);
-  if (builds.length === 0) return null;
-  const { used, filesPerBuild, setupPerBuild, skippedBuilds, firstError } =
-    await timingsOfBuilds(sql, builds);
-  if (used.length === 0) throw firstError;
+  { used, setupPerBuild, skippedBuilds }: BuildTimings,
+  files: FileTiming[],
+  treatmentBuilds: PassingBuild[] | null,
+): LatestTestTimings {
   const [newest] = used;
-  const files = p80Files(filesPerBuild);
-  const treatment = await treatmentTimings(sql, stepKey, days, queue);
-  const merged = withTreatmentFiles(files, treatment?.files ?? []);
   return {
     stepKey,
     buildNumber: Number(newest.build_number),
@@ -383,7 +409,32 @@ export async function queryLatestTestTimings(
     skippedBuilds,
     measurement: "p80_over_builds_of_summed_pytest_runtest_spans",
     setupMs: medianSetupMs(setupPerBuild),
-    files: merged,
-    ...(merged.length > files.length ? { treatmentBuildNumbers: treatment?.buildNumbers } : {}),
+    files,
+    ...(treatmentBuilds
+      ? { treatmentBuildNumbers: treatmentBuilds.map((build) => Number(build.build_number)) }
+      : {}),
   };
+}
+
+export async function queryLatestTestTimings(
+  stepKey: string,
+  { days = 14, queue = null }: { days?: number; queue?: string | null } = {},
+): Promise<LatestTestTimings | null> {
+  const sql = getDb();
+  const builds = await passingBuilds(sql, false, stepKey, days, queue);
+  if (builds.length === 0) {
+    // A step main has never timed (a script step just turned into pytest)
+    // gets the treatment branch's timings alone, until main's first passing
+    // run replaces them.
+    const treatment = await treatmentTimings(sql, stepKey, days, queue, true);
+    return treatment && timingsResponse(stepKey, treatment, treatment.files, treatment.used);
+  }
+  const main = await timingsOfBuilds(sql, builds);
+  if (main.used.length === 0) throw main.firstError;
+  const files = p80Files(main.filesPerBuild);
+  const treatment = await treatmentTimings(sql, stepKey, days, queue);
+  const merged = withTreatmentFiles(files, treatment?.files ?? []);
+  return timingsResponse(
+    stepKey, main, merged, treatment && merged.length > files.length ? treatment.used : null,
+  );
 }

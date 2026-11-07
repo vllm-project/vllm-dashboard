@@ -7,7 +7,9 @@ const require = createRequire(import.meta.url);
 
 type Build = { build_number: string; commit: string; finished_at: Date; job_ids: string[]; job_ms: number[] };
 type Command = { job_id: string; duration_ms: number; label: string };
-type Branch = { builds: Build[]; rows: TestSpanRow[]; commands: Command[] };
+// timedBefore: main recorded test spans for the step outside the passing builds
+// (an older or failed run); "fails" makes that lookup time out.
+type Branch = { builds: Build[]; rows: TestSpanRow[]; commands: Command[]; timedBefore?: boolean | "fails" };
 // One job: its test spans as [command label, nodeid, ms], and its setup.
 type Job = { id: string; tests: [string | null, string, number][]; setupMs?: number };
 
@@ -70,6 +72,10 @@ async function query(t: test.TestContext, main: Branch, treatment: Branch | "fai
     if (frag.text.includes("set_config")) return Promise.resolve([]);
     const source = frag.text.includes("'khluu/otel'") ? treatment : main;
     if (source === "fails") return Promise.reject(new Error("canceling statement due to statement timeout"));
+    if (frag.text.includes("AS timed")) {
+      if (source.timedBefore === "fails") return Promise.reject(new Error("canceling statement due to statement timeout"));
+      return Promise.resolve([{ timed: source.timedBefore ?? source.builds.length > 0 }]);
+    }
     if (frag.text.includes("buildkite.job")) return Promise.resolve(source.builds);
     const jobIds = frag.values.find(Array.isArray) as string[];
     const all = [main, treatment].filter((b): b is Branch => b !== "fails");
@@ -158,11 +164,70 @@ test("a failed or timed-out treatment lookup returns main's timings unchanged", 
   assert.match(String(warn.mock.calls[0].arguments[0]), /step-a/);
 });
 
-test("no main build is still no timings, whatever the treatment branch has", async (t) => {
-  const treatment = builds([200, [{ id: "treatment-job", tests: [["pytest new", "tests/test_a.py::one", 1]] }]]);
+test("a step main has no build for gets the treatment branch's timings alone", async (t) => {
+  const treatment = builds(
+    [201, [{ id: "t-new", tests: [["pytest new", "tests/test_a.py::one", 61_000]], setupMs: 3_000 }]],
+    [200, [{ id: "t-old", tests: [["pytest new", "tests/test_a.py::one", 59_000]], setupMs: 5_000 }]],
+  );
   const { result, statements } = await query(t, none, treatment);
+  assert.ok(result);
+  assert.deepEqual(result.files.map((f) => [f.command, f.file, f.builds]), [
+    ["pytest new", "tests/test_a.py", 2],
+  ]);
+  assert.equal(result.buildNumber, 201);
+  assert.equal(result.commit, "c201");
+  assert.deepEqual(result.buildNumbers, [201, 200]);
+  assert.deepEqual(result.treatmentBuildNumbers, [201, 200]);
+  assert.deepEqual(result.jobIds, ["t-new", "t-old"]);
+  assert.equal(result.setupMs, 4_000);
+  // Main's build query finds nothing; the check that main never timed the
+  // step and the treatment lookup run under the treatment timeout.
+  assert.equal(statements.length, 6);
+  assert.match(statements[0].text, /buildkite\.build\.branch' = 'main'/);
+  assert.match(statements[1].text, /set_config\('statement_timeout', \?, true\)/);
+  const timed = statements[2].text;
+  assert.match(timed, /AS timed/);
+  // Any main job of the step with a test span, ever: no window, no queue,
+  // passed or not, under migration 0029's index predicate.
+  assert.match(timed, /span_name = 'buildkite\.job'\s+AND j\.job_type = 'script'\s+AND j\.pipeline_slug = 'ci'\s+AND j\.span_attributes->>'buildkite\.build\.branch' = 'main'\s+AND j\.step_key = \?/);
+  assert.match(timed, /t\.job_id = j\.job_id\s+AND t\.span_attributes->>'ci\.span\.kind' = 'test'/);
+  assert.doesNotMatch(timed, /make_interval|agent_queue|job_passed/);
+  assert.deepEqual(statements[2].values, ["step-a"]);
+  assert.match(statements[3].text, /buildkite\.build\.branch' = 'khluu\/otel'/);
+});
+
+test("a step main timed before, but not lately, gets no treatment fallback", async (t) => {
+  const treatment = builds([200, [{ id: "treatment-job", tests: [["pytest new", "tests/test_a.py::one", 1]] }]]);
+  const { result, statements } = await query(t, { ...none, timedBefore: true }, treatment);
   assert.equal(result, null);
-  assert.equal(statements.length, 1);
+  // The treatment branch is never read.
+  assert.equal(statements.length, 3);
+});
+
+test("a failed check of main's history is no timings, not a fallback", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const treatment = builds([200, [{ id: "treatment-job", tests: [["pytest new", "tests/test_a.py::one", 1]] }]]);
+  assert.equal((await query(t, { ...none, timedBefore: "fails" }, treatment)).result, null);
+  assert.equal(warn.mock.callCount(), 1);
+});
+
+test("no main build and no treatment build is no timings", async (t) => {
+  const { result, statements } = await query(t, none, none);
+  assert.equal(result, null);
+  assert.equal(statements.length, 4);
+});
+
+test("no main build and a failed treatment lookup is no timings, not an error", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  assert.equal((await query(t, none, "fails")).result, null);
+  assert.equal(warn.mock.callCount(), 1);
+});
+
+test("no main build and only broken treatment builds is no timings", async (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const broken = builds([200, [{ id: "broken", tests: [[null, "tests/test_a.py::one", 10]] }]]);
+  assert.equal((await query(t, none, broken)).result, null);
+  assert.equal(warn.mock.callCount(), 0);
 });
 
 test("a main build with broken spans is skipped and named", async (t) => {
