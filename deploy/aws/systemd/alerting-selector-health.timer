@@ -1,0 +1,16 @@
+[Unit]
+Description=Check CI selector recordings after each Full CI run's collect steps
+
+[Timer]
+OnBootSec=2min
+# Nightly runs start 06:00 UTC and daily ones 18:00 UTC; collect steps can
+# take until about 4.5 hours later.
+OnCalendar=*-*-* 04:45:00 America/Los_Angeles
+OnCalendar=*-*-* 16:45:00 America/Los_Angeles
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+Unit=alerting-selector-health.service
+
+[Install]
+WantedBy=timers.target

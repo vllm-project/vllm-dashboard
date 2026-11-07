@@ -54,6 +54,7 @@ class AlertPath(StrEnum):
     FULL_CI = "full_ci"
     MAIN_CI = "main_ci"
     INFRA = "infra"
+    SELECTOR = "selector"
 
 
 class DeliveryMode(StrEnum):

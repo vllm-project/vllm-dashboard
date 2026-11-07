@@ -8,6 +8,7 @@ case "$consumer" in
   full-ci|full-ci-analyze) alert_path=full-ci ;;
   main-ci|main-ci-analyze|main-ci-backstop) alert_path=main-ci ;;
   infra|daily-summary) alert_path=infra ;;
+  selector-health|selector-health-pr) alert_path=selector ;;
   *) echo "unknown consumer: $consumer" >&2; exit 2 ;;
 esac
 mode_path="/run/alerting/${alert_path}.mode"

@@ -85,3 +85,23 @@ _Avoid_: Machine-down alarm, flapping page
 A host absent from every expected source and silent for seven days. It stops
 alerting and keeps a queryable retirement timestamp for the dashboard.
 _Avoid_: Deleted host, decommission record
+
+**Selector Recording**:
+One table ci-selector decides from — the Python function table (fnrec) or
+the CUDA or ROCm kernel table (kernrec) — as one scheduled Full CI Run's
+collect step folded and published it. It is whole when its collect verdict
+is ok, it published, and it delivered at least 80% of the expected jobs.
+_Avoid_: Coverage, test map
+
+**Selector Decision**:
+The record one PR build's bootstrap uploads of what the selector did
+(applied, skipped, fell back) and which recording builds it used. A build
+with no decision artifact has a missing decision.
+_Avoid_: Selection, plan
+
+**Selector Health Episode**:
+One open-or-resolved breach of a selector-health condition for a recording,
+recorder, or the selector itself. It opens on the first breaching
+observation and resolves on the first healthy one, so it is one Slack
+message edited in place.
+_Avoid_: Coverage alert

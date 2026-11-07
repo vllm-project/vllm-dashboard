@@ -1,8 +1,8 @@
 # Alert Production
 
 This bounded context produces durable vLLM CI alert history for Full CI
-comparisons, Fast CI fast-failure signals, and exact Main CI job failure
-episodes. It processes scheduled
+comparisons, Fast CI fast-failure signals, exact Main CI job failure
+episodes, infra health, and CI selector recording health. It processes scheduled
 reconciliation commands idempotently against Postgres as the system of record
 and delivers Slack notifications through a transactional outbox. The dashboard
 application in this repository reads its records but does not own ingestion.
@@ -13,7 +13,8 @@ The package uses vertical domain slices rather than layer-only folders:
 
 - `commands.py` defines the scheduled-command value object shared by all
   slices.
-- `fast_ci.py`, `full_ci.py`, `main_ci.py`, and `infra.py` keep each signal's
+- `fast_ci.py`, `full_ci.py`, `main_ci.py`, `infra.py`, and
+  `selector_health.py` keep each signal's
   domain records, reconciliation behavior, source port, and source adapter
   together.
 - `runtime.py` exposes the small application interface:
@@ -35,6 +36,7 @@ End-to-end docs per alert type produced here:
 - [Full CI comparison alerts](./docs/full-ci.md)
 - [Main CI job failure alerts](./docs/main-ci.md)
 - [Infra health alerts](./docs/infra.md)
+- [CI selector health alerts](./docs/selector-health.md)
 
 Queue-wait alerting is owned by the dashboard context:
 [`docs/alerts/queue-wait.md`](../docs/alerts/queue-wait.md).
@@ -89,6 +91,15 @@ Queue-wait alerting is owned by the dashboard context:
   never alert. Every episode sends
   exactly two Slack messages (open and resolve) through the outbox, and the
   wording always says a host stopped reporting, never that it is down.
+- `selector_health.py` — CI selector recording health. Twice a day it
+  ingests the scheduled Full CI runs of the last 14 days (one record per run
+  and component: Python and CUDA/ROCm kernel recordings and symbol maps,
+  read from the collect summaries of ci-infra#881 or, before it, the collect
+  logs) and every hour the selector decisions of PR builds. It opens one
+  episode per recording that is not whole in the latest completed run or
+  more than 30 hours stale, per recorder that PR decisions are not picking
+  up, and for selector errors on more than 5% of PR builds; each episode is
+  one Slack message, edited in place on resolve.
 - `analyzer.py` — the Full CI analyzer compatibility adapter. It materializes
   the working files the bundled analyzer instructions expect (summary, full
   build data, previous-failure cache, agent memory hydrated from the latest
@@ -180,7 +191,9 @@ enabling the new path, and preserves Postgres and S3 baselines on rollback.
   as the `fast-ci`, `full-ci`, `full-ci-analyze`, `main-ci`,
   `main-ci-backstop`, and
   `main-ci-analyze` consumers, and `InfraScanHandler` registers as
-  `infra_scan` on the `infra` consumer, so the
+  `infra_scan` on the `infra` consumer, and `SelectorHealthHandler` registers
+  as `selector_health_scan` on `selector-health` and as
+  `selector_health_pr_scan` on `selector-health-pr`, so the
   long-running LLM analysis never blocks ingest. The Main CI analysis consumer
   writes only the `alerting_main_ci_job_analysis` sidecar table; the
   deterministic alert lifecycle stays owned by `main_ci_reconcile`.
@@ -200,6 +213,6 @@ enabling the new path, and preserves Postgres and S3 baselines on rollback.
 cd alerting
 uv sync --extra dev
 uv run pytest
-uv run mypy __init__.py analyzer.py commands.py control.py cutover.py daily_summary.py fast_ci.py full_ci.py infra.py kimi.py main_ci.py main_ci_analysis.py memory.py migration.py ports.py postgres.py retention.py runtime.py slack.py worker.py tests
+uv run mypy __init__.py analyzer.py commands.py control.py cutover.py daily_summary.py fast_ci.py full_ci.py infra.py kimi.py main_ci.py main_ci_analysis.py memory.py migration.py ports.py postgres.py retention.py runtime.py selector_health.py slack.py worker.py tests
 uv run ruff check .
 ```
