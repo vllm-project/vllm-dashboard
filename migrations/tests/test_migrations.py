@@ -1,5 +1,6 @@
 """Sanity checks on SQL migration files and runner ordering."""
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -523,3 +524,30 @@ def test_cli_reports_apply_lock_failure_without_traceback(
     assert runner.main(["--apply", "--confirm-target", target]) == 1
     error = capsys.readouterr().err
     assert "migration failed: another migration process" in error
+
+
+def test_every_public_table_is_closed_to_the_supabase_api() -> None:
+    sql = (MIGRATIONS_DIR / "0036_secure_public_tables.sql").read_text()
+
+    assert "NOT c.relrowsecurity" in sql
+    assert "ENABLE ROW LEVEL SECURITY" in sql
+    assert "ARRAY['anon'::name, 'authenticated'::name]" in sql
+    for kind in ("TABLES", "SEQUENCES", "FUNCTIONS"):
+        assert f"ON ALL {kind} IN SCHEMA public FROM %I" in sql
+        assert f"REVOKE ALL ON {kind} FROM %I" in sql
+
+
+def test_tables_created_after_0036_enable_row_level_security() -> None:
+    """0036 closed every table that existed; later migrations must close
+    the tables they create themselves."""
+    create = re.compile(
+        r"CREATE TABLE (?:IF NOT EXISTS )?(?:public\.)?(\w+)", re.IGNORECASE
+    )
+    for path in migration_files(MIGRATIONS_DIR):
+        if int(path.name[:4]) <= 36:
+            continue
+        sql = path.read_text()
+        for table in create.findall(sql):
+            assert re.search(
+                rf"ALTER TABLE (?:public\.)?{table} ENABLE ROW LEVEL SECURITY", sql
+            ), f"{path.name} creates {table} without enabling RLS"
