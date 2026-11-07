@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isBuildkiteQueueError, reprioritizeQueueJob } from "@/lib/buildkite-queue-jobs";
+import { secretMatches } from "@/lib/operator-auth";
 
 export const dynamic = "force-dynamic";
 
 function hasOperatorAccess(request: NextRequest): boolean {
-  const expectedToken = process.env.BUILDKITE_QUEUE_OPERATOR_TOKEN;
-  const suppliedToken = request.headers.get("x-queue-operator-token");
-  return Boolean(expectedToken && suppliedToken && suppliedToken === expectedToken);
+  return secretMatches(
+    request.headers.get("x-queue-operator-token"),
+    process.env.BUILDKITE_QUEUE_OPERATOR_TOKEN,
+  );
 }
 
 export async function POST(request: NextRequest) {

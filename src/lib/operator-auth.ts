@@ -6,6 +6,17 @@ import { timingSafeEqual } from "node:crypto";
  * token is configured; callers that need to distinguish "not configured" (503)
  * from "wrong token" (401) check `process.env` themselves first.
  */
+/** Constant-time comparison of a supplied secret with the configured one. */
+export function secretMatches(
+  supplied: string | null,
+  expected: string | undefined,
+): boolean {
+  if (!expected || !supplied) return false;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(supplied);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export function bearerTokenMatches(
   authorization: string | null,
   expectedToken: string | undefined,

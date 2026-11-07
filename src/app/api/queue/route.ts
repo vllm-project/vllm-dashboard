@@ -4,6 +4,7 @@ import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { queryQueueFromOtel } from "@/lib/otel-ci";
+import { isValidDateParam } from "@/lib/date-param";
 import { escapeSqlString } from "@/lib/sql-literal";
 
 const TTL = 60_000;
@@ -16,6 +17,12 @@ export async function GET(request: NextRequest) {
     const queue = searchParams.get("queue");
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
+    if (!isValidDateParam(startDate) || !isValidDateParam(endDate)) {
+      return NextResponse.json(
+        { error: "startDate and endDate must be YYYY-MM-DD or an ISO timestamp" },
+        { status: 400 },
+      );
+    }
 
     const cacheKey = `queue:${pipeline}:${queue}:${startDate}:${endDate}:${resolveCiDataSource(request)}`;
     const cached = getCached(cacheKey);
