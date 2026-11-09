@@ -8,8 +8,11 @@ const require = createRequire(import.meta.url);
 type Build = { build_number: string; commit: string; finished_at: Date; job_ids: string[]; job_ms: number[] };
 type Command = { job_id: string; duration_ms: number; label: string };
 // timedBefore: main recorded test spans for the step outside the passing builds
-// (an older or failed run); "fails" makes that lookup time out.
-type Branch = { builds: Build[]; rows: TestSpanRow[]; commands: Command[]; timedBefore?: boolean | "fails" };
+// (an older or failed run); "fails" makes that lookup time out. older: passing
+// builds from before the time window, which only an unwindowed lookup sees.
+type Branch = {
+  builds: Build[]; rows: TestSpanRow[]; commands: Command[]; timedBefore?: boolean | "fails"; older?: Build[];
+};
 // One job: its test spans as [command label, nodeid, ms], and its setup.
 type Job = { id: string; tests: [string | null, string, number][]; setupMs?: number };
 
@@ -76,7 +79,9 @@ async function query(t: test.TestContext, main: Branch, treatment: Branch | "fai
       if (source.timedBefore === "fails") return Promise.reject(new Error("canceling statement due to statement timeout"));
       return Promise.resolve([{ timed: source.timedBefore ?? source.builds.length > 0 }]);
     }
-    if (frag.text.includes("buildkite.job")) return Promise.resolve(source.builds);
+    if (frag.text.includes("buildkite.job")) {
+      return Promise.resolve(frag.text.includes("make_interval") ? source.builds : (source.older ?? []));
+    }
     const jobIds = frag.values.find(Array.isArray) as string[];
     const all = [main, treatment].filter((b): b is Branch => b !== "fails");
     if (frag.text.includes("LEFT JOIN")) {
@@ -200,8 +205,33 @@ test("a step main timed before, but not lately, gets no treatment fallback", asy
   const treatment = builds([200, [{ id: "treatment-job", tests: [["pytest new", "tests/test_a.py::one", 1]] }]]);
   const { result, statements } = await query(t, { ...none, timedBefore: true }, treatment);
   assert.equal(result, null);
-  // The treatment branch is never read.
-  assert.equal(statements.length, 3);
+  // The treatment branch is never read; main's unwindowed lookup finds no
+  // passing build either.
+  assert.equal(statements.length, 4);
+  assert.doesNotMatch(statements.map((s) => s.text).join("\n"), /'khluu\/otel'/);
+});
+
+test("a step main passed only before the window gets its newest older builds", async (t) => {
+  // A job disabled for longer than the window: its last passing main runs
+  // are older than 14 days, so the windowed lookup finds none.
+  const past = builds(
+    [97156, [{ id: "old-new", tests: [["pytest q", "tests/test_q.py::one", 60_000]], setupMs: 2_000 }]],
+    [97100, [{ id: "old-old", tests: [["pytest q", "tests/test_q.py::one", 40_000]], setupMs: 4_000 }]],
+  );
+  const { result, statements } = await query(t, { ...past, builds: [], timedBefore: true, older: past.builds }, none);
+  assert.ok(result);
+  assert.equal(result.buildNumber, 97156);
+  assert.deepEqual(result.buildNumbers, [97156, 97100]);
+  assert.deepEqual(result.jobIds, ["old-new", "old-old"]);
+  assert.deepEqual(result.files.map((f) => [f.command, f.file, f.builds]), [["pytest q", "tests/test_q.py", 2]]);
+  assert.equal(result.setupMs, 3_000);
+  assert.equal("treatmentBuildNumbers" in result, false);
+  const older = statements[3].text;
+  // The same passing-build rule on main, on the step's index, without the window.
+  assert.match(older, /buildkite\.build\.branch' = 'main'/);
+  assert.match(older, /HAVING BOOL_AND\(job_state = 'finished' AND job_passed = 'true'\)/);
+  assert.match(older, /AND step_key = \?\n\s+GROUP BY build_number/);
+  assert.match(statements[0].text, /AND step_key = \?\n\s+AND start_time >= NOW\(\) - make_interval/);
 });
 
 test("a failed check of main's history is no timings, not a fallback", async (t) => {
@@ -214,7 +244,9 @@ test("a failed check of main's history is no timings, not a fallback", async (t)
 test("no main build and no treatment build is no timings", async (t) => {
   const { result, statements } = await query(t, none, none);
   assert.equal(result, null);
-  assert.equal(statements.length, 4);
+  // Main in the window, the treatment lookup (timeout, check, builds), then
+  // main without the window.
+  assert.equal(statements.length, 5);
 });
 
 test("no main build and a failed treatment lookup is no timings, not an error", async (t) => {
