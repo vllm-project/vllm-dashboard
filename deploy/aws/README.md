@@ -116,6 +116,12 @@ Main CI writes dashboard lifecycle and renders Slack payloads only for image
 builds red on two main builds in a row (see `alerting/docs/main-ci.md`); its
 mode controls those posts and the independent two-minute timer.
 
+CI selector health (`alerting/docs/selector-health.md`) has its own control,
+`s3://CHECKPOINT_BUCKET/control/selector.mode`, applied to
+`alerting-selector-health.timer` and `alerting-selector-health-pr.timer`.
+After `install.sh` ships the units, the control reconciler creates the
+missing object as `shadow` and enables both timers; write `live` to post.
+
 Run the repeatable operator wizard from the repository root:
 
 ```bash

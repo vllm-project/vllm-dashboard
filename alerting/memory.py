@@ -53,6 +53,14 @@ from alerting.main_ci import (
     ordered_unique_observations,
 )
 from alerting.main_ci_analysis import MainCIAnalysisTarget, MainCIJobAnalysis
+from alerting.selector_health import (
+    FullRunRecord,
+    SelectorAlertEpisode,
+    SelectorDecision,
+    SelectorHealthPlan,
+    SelectorHealthState,
+    SelectorNotificationFactory,
+)
 from alerting.ports import (
     AlertPath,
     ClaimOutcome,
@@ -713,6 +721,115 @@ class InMemoryInfraStore:
         self, alert_type: str, subject_key: str
     ) -> InfraSubjectState | None:
         return self._states.get((alert_type, subject_key))
+
+    def fail_next_commit(self) -> None:
+        self._fail_commit = True
+
+
+class InMemorySelectorHealthStore:
+    """Atomic in-memory model of selector-health runs, decisions and episodes."""
+
+    def __init__(
+        self,
+        *,
+        executions: InMemoryAutomationExecutionStore,
+        outbox: InMemoryOutboxStore,
+    ) -> None:
+        self._executions = executions
+        self._outbox = outbox
+        self._runs: dict[int, FullRunRecord] = {}
+        self._decisions: dict[int, SelectorDecision] = {}
+        self._episodes: list[SelectorAlertEpisode] = []
+        self._active: dict[tuple[str, str], int] = {}
+        self._fail_commit = False
+
+    def selector_health_state(
+        self, *, runs_since: datetime, decisions_since: datetime
+    ) -> SelectorHealthState:
+        return SelectorHealthState(
+            runs=tuple(
+                run
+                for run in sorted(
+                    self._runs.values(),
+                    key=lambda run: (run.created_at, run.build_number),
+                )
+                if run.created_at >= runs_since
+            ),
+            decisions=tuple(
+                decision
+                for decision in self._decisions.values()
+                if decision.created_at >= decisions_since
+            ),
+            open_episodes=tuple(self._episodes[i] for i in self._active.values()),
+        )
+
+    def commit_selector_health(
+        self,
+        *,
+        command: ScheduledCommand,
+        plan: SelectorHealthPlan,
+        now: datetime,
+        notification_factory: SelectorNotificationFactory,
+    ) -> None:
+        snapshot = (
+            self._executions._snapshot(),
+            self._outbox._snapshot(),
+            dict(self._runs),
+            dict(self._decisions),
+            list(self._episodes),
+            dict(self._active),
+        )
+        try:
+            for run in plan.runs:
+                self._runs[run.build_number] = run
+            for decision in plan.decisions:
+                self._decisions.setdefault(decision.build_number, decision)
+            opened = []
+            for episode in plan.opened:
+                key = (episode.condition, episode.subject_key)
+                if key in self._active:
+                    continue
+                self._episodes.append(
+                    replace(episode, alert_id=len(self._episodes) + 1)
+                )
+                self._active[key] = len(self._episodes) - 1
+                opened.append(episode)
+            resolved = []
+            for episode in plan.resolved:
+                index = self._active.pop(
+                    (episode.condition, episode.subject_key), None
+                )
+                if index is None:
+                    continue
+                self._episodes[index] = replace(
+                    self._episodes[index], resolved_at=episode.resolved_at
+                )
+                resolved.append(episode)
+            applied = replace(plan, opened=tuple(opened), resolved=tuple(resolved))
+            for message in notification_factory(applied):
+                self._outbox.enqueue(message, now=now)
+            if self._fail_commit:
+                self._fail_commit = False
+                raise RuntimeError("Selector health transaction failed")
+            self._executions.complete(command.idempotency_key, now=now)
+        except Exception:
+            self._executions._restore(snapshot[0])
+            self._outbox._restore(snapshot[1])
+            self._runs, self._decisions = snapshot[2], snapshot[3]
+            self._episodes, self._active = snapshot[4], snapshot[5]
+            raise
+
+    def runs(self) -> list[FullRunRecord]:
+        return sorted(self._runs.values(), key=lambda run: run.build_number)
+
+    def decisions(self) -> list[SelectorDecision]:
+        return sorted(self._decisions.values(), key=lambda item: item.build_number)
+
+    def episodes(self) -> list[SelectorAlertEpisode]:
+        return list(self._episodes)
+
+    def open_episodes(self) -> list[SelectorAlertEpisode]:
+        return [self._episodes[index] for index in self._active.values()]
 
     def fail_next_commit(self) -> None:
         self._fail_commit = True

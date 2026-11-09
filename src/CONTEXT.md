@@ -19,6 +19,14 @@ _Avoid_: Incident analysis, Slack ledger
 A dashboard presentation of build, job, queue, test, and alert state.
 _Avoid_: Alert producer, monitoring worker
 
+**Selector Health View**:
+The read-only CI Selector page over Alert Production's selector-health
+records: each scheduled Full CI Run's five components (Python function
+table, CUDA and ROCm kernel tables, CUDA and ROCm kernel source maps) with
+their counts, the recordings' freshness, and PR selector decisions by day
+with the kernel backends they used.
+_Avoid_: Coverage dashboard
+
 **Queue Wait Alert**:
 An active or resolved warning that a CI queue's observed wait is excessive. It belongs to CI Dashboard rather than Alert Production.
 _Avoid_: Fast CI alert, Full CI alert

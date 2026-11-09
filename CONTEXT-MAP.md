@@ -8,7 +8,9 @@
 ## Relationships
 
 - **Alert Production to CI Dashboard**: Alert Production defines and writes
-  Fast CI observations, Full CI comparisons, and Main CI Job Alert episodes.
+  Fast CI observations, Full CI comparisons, Main CI Job Alert episodes,
+  infra episodes, and CI selector recording health (runs, decisions, and
+  Selector Health Episodes).
   CI Dashboard reads those records, independently owns Queue Wait Alerts, and
   does not mutate schema during requests. Main CI diagnosis remains a curated
   Slack concern rather than dashboard state.

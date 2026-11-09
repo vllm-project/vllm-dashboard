@@ -28,6 +28,13 @@ client credentials are needed for dashboard reads.
 - **Force-merges** — how often vLLM PRs are merged while `buildkite/ci/pr` is
   red: rate windows, daily or weekly rate and merge volume over 7d/30d/90d/1y,
   top PR authors, and recent force-merged PRs.
+- **CI Selector** — every data collection ci-selector picks PR test steps
+  from, run by run: for each scheduled full run, the Python function table,
+  the CUDA and ROCm kernel tables (rows, usable rows and share, and why the
+  rest are unusable), and the CUDA and ROCm kernel source maps (objects,
+  device objects, symbols, csrc sources); the builds and kernel backends PR
+  decisions actually use; and daily PR decision outcomes and selector run
+  time.
 
 ## Architecture
 
@@ -49,7 +56,8 @@ client credentials are needed for dashboard reads.
 - Cron schedules live in `vercel.json`.
 - **Alert reference**: end-to-end docs per alert type —
   [Fast CI](./alerting/docs/fast-ci.md), [Full CI](./alerting/docs/full-ci.md),
-  [Main CI](./alerting/docs/main-ci.md), and [Infra](./alerting/docs/infra.md)
+  [Main CI](./alerting/docs/main-ci.md), [Infra](./alerting/docs/infra.md),
+  and [CI selector health](./alerting/docs/selector-health.md)
   (produced by the alerting worker), plus
   [Queue wait](./docs/alerts/queue-wait.md) (owned by this app).
 
