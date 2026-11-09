@@ -244,7 +244,8 @@ export function withTreatmentFiles(main: FileTiming[], treatment: FileTiming[]):
 
 // CI runs of main or the treatment branch only: PR and other branches never
 // feed the baseline. The pipeline and branch literals must match the partial
-// index predicates in migrations 0029 and 0035, so they are not parameters. A
+// index predicates in migrations 0029 and 0035, so they are not parameters.
+// `days` null reads the step's whole history on that index. A
 // retried failure keeps its failed job span, so that build is skipped: the
 // baseline only comes from builds where the step passed outright. A passing
 // build whose test spans were lost in ingestion is skipped too, so the
@@ -253,9 +254,11 @@ export function withTreatmentFiles(main: FileTiming[], treatment: FileTiming[]):
 // keeps only builds whose job ran on it, so a device change doesn't mix two
 // queues' runs.
 function passingBuilds(
-  sql: Sql, treatment: boolean, stepKey: string, days: number, queue: string | null,
+  sql: Sql, treatment: boolean, stepKey: string, days: number | null, queue: string | null,
 ) {
   const branch = treatment ? sql`'khluu/otel'` : sql`'main'`;
+  const since = days === null ? sql`` : sql`
+        AND start_time >= NOW() - make_interval(days => ${days})`;
   return sql<PassingBuild[]>`
     SELECT * FROM (
       SELECT
@@ -269,8 +272,7 @@ function passingBuilds(
         AND job_type = 'script'
         AND pipeline_slug = 'ci'
         AND span_attributes->>'buildkite.build.branch' = ${branch}
-        AND step_key = ${stepKey}${queue === null ? sql`` : sql` AND agent_queue = ${queue}`}
-        AND start_time >= NOW() - make_interval(days => ${days})
+        AND step_key = ${stepKey}${queue === null ? sql`` : sql` AND agent_queue = ${queue}`}${since}
       GROUP BY build_number
       HAVING BOOL_AND(job_state = 'finished' AND job_passed = 'true')
       ORDER BY build_number DESC
@@ -421,13 +423,18 @@ export async function queryLatestTestTimings(
   { days = 14, queue = null }: { days?: number; queue?: string | null } = {},
 ): Promise<LatestTestTimings | null> {
   const sql = getDb();
-  const builds = await passingBuilds(sql, false, stepKey, days, queue);
+  let builds = await passingBuilds(sql, false, stepKey, days, queue);
   if (builds.length === 0) {
     // A step main has never timed (a script step just turned into pytest)
     // gets the treatment branch's timings alone, until main's first passing
     // run replaces them.
     const treatment = await treatmentTimings(sql, stepKey, days, queue, true);
-    return treatment && timingsResponse(stepKey, treatment, treatment.files, treatment.used);
+    if (treatment) return timingsResponse(stepKey, treatment, treatment.files, treatment.used);
+    // A step main passed only before the window (a job disabled for a while)
+    // gets its newest older passing builds, so it shards on its first run
+    // back instead of running as one job past its timeout.
+    builds = await passingBuilds(sql, false, stepKey, null, queue);
+    if (builds.length === 0) return null;
   }
   const main = await timingsOfBuilds(sql, builds);
   if (main.used.length === 0) throw main.firstError;
