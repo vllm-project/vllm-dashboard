@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -32,8 +33,12 @@ from alerting.selector_health import (
     SelectorDecision,
     SelectorHealthHandler,
     SelectorHealthThresholds,
+    decision_kernel_builds,
     fnrec_summary_reading,
+    grade_rows,
+    kernel_table_stats,
     kernrec_summary_readings,
+    map_component,
     parse_decision,
     parse_fnrec_log,
     parse_kernrec_log,
@@ -41,6 +46,7 @@ from alerting.selector_health import (
     recording_component,
     render_open,
     selector_notifications,
+    source_map_stats,
 )
 
 # 2026-10-30 23:45 UTC: the 16:45 Pacific scan after the day's daily run.
@@ -108,7 +114,7 @@ def test_kernel_log_of_build_97886_publishes_rocm_but_not_cuda() -> None:
     assert cuda.verdict == "no valid table/map pair"
     rocm = readings[Component.KERNREC_ROCM]
     assert rocm.armed and rocm.published
-    assert rocm.rows == 193
+    assert (rocm.rows, rocm.usable_rows) == (215, 193)
     assert rocm.published_commit == SHA
     assert rocm.verdict == "ok"
 
@@ -127,7 +133,8 @@ def test_kernel_log_before_rocm_publishes_cuda_only() -> None:
     readings = parse_kernrec_log(KERNREC_96933_LOG)
 
     assert readings[Component.KERNREC_CUDA].published
-    assert readings[Component.KERNREC_CUDA].rows == 243
+    assert readings[Component.KERNREC_CUDA].rows == 250
+    assert readings[Component.KERNREC_CUDA].usable_rows == 243
     assert not readings[Component.KERNREC_ROCM].armed
 
 
@@ -190,7 +197,7 @@ def test_kernel_summary_grades_each_backend_on_its_own_verdict() -> None:
         armed=True,
         expected_jobs=250,
         delivered_jobs=0,
-        rows=0,
+        usable_rows=0,
         verdict="no recordings delivered",
     )
     assert readings[Component.KERNREC_ROCM].published
@@ -691,7 +698,7 @@ def test_open_message_names_component_build_counts_and_staleness() -> None:
 
     text = render_open(episode)
 
-    assert "CUDA kernel recording" in text
+    assert "CUDA kernel table" in text
     assert "<https://buildkite.com/vllm/ci/builds/99001|#99001>" in text
     assert "delivered 0 of 250 expected jobs" in text
     assert "<https://buildkite.com/vllm/ci/builds/96933|#96933>, 168.0 h" in text
@@ -780,7 +787,7 @@ def test_episode_posts_once_and_resolve_edits_it_in_place() -> None:
     runtime.dispatch_due_notifications()
     assert [e.subject_key for e in store.open_episodes()] == ["kernrec_cuda"]
     assert len(slack.deliveries) == 1
-    assert "CUDA kernel recording" in slack.deliveries[0].payload["text"]
+    assert "CUDA kernel table" in slack.deliveries[0].payload["text"]
 
     # The outage run is settled, so it is not read again; the next run is fine.
     source.runs = [healthy_run(97300, at(31, 6))]
@@ -862,6 +869,7 @@ class FakeBuildkite:
         self.files: dict[str, bytes] = {}
         self.logs: dict[str, str] = {}
         self.log_reads: list[str] = []
+        self.downloads: list[str] = []
 
     def list_builds(
         self, *, start_time: datetime | None, up_to: datetime, branch: str | None = "main"
@@ -875,6 +883,7 @@ class FakeBuildkite:
         return self.artifacts.get(job_id, [])
 
     def download_artifact(self, download_url: str, *, max_bytes: int) -> bytes:
+        self.downloads.append(download_url)
         return self.files[download_url]
 
     def job_log_tail(self, build_number: int, job_id: str, *, max_bytes: int) -> str:
@@ -927,6 +936,14 @@ def test_adapter_falls_back_to_logs_for_runs_before_ci_infra_881() -> None:
         "img": [artifact("img", "kernel_symbol_map.json.gz")],
         "amd": [artifact("amd", "kernel_symbol_map.rocm.json.gz")],
     }
+    bk.files = {
+        "https://api.buildkite.com/img/kernel_symbol_map.json.gz": gz(source_map()),
+        "https://api.buildkite.com/amd/kernel_symbol_map.rocm.json.gz": gz(
+            source_map(backend="rocm")
+        ),
+        # Not JSON: the table read falls back to the log's counts.
+        "https://api.buildkite.com/kern/kernel_table.rocm.json.gz": b"\x1f\x8bnot gzip",
+    }
     bk.logs = {"fn": FNREC_98403_LOG, "kern": KERNREC_97886_LOG}
 
     (record,) = BuildkiteSelectorSource(bk).full_runs(
@@ -945,6 +962,13 @@ def test_adapter_falls_back_to_logs_for_runs_before_ci_infra_881() -> None:
     }
     cuda = record.component(Component.KERNREC_CUDA)
     assert cuda is not None and cuda.source == "log" and cuda.rows == 0
+    rocm = record.component(Component.KERNREC_ROCM)
+    assert rocm is not None and (rocm.rows, rocm.usable_rows, rocm.source) == (
+        215,
+        193,
+        "log",
+    )
+    assert rocm.collected and not cuda.collected
     assert sorted(bk.log_reads) == ["fn", "kern"]
 
 
@@ -1048,3 +1072,544 @@ def test_adapter_reads_pr_decisions_and_records_missing_ones() -> None:
     ]
     assert decisions[1].pull_request == 64618
     assert decisions[1].kernrec_build == 96933
+
+
+# --- Components: kernel tables, source maps, row degradation ---------------
+
+SHA_100914 = "34b780fe66bdf3df173358774eb4f29f684b8368"
+
+
+def gz(payload: Any) -> bytes:
+    return gzip.compress(json.dumps(payload).encode())
+
+
+def kernel_row(
+    *,
+    backend: str = "cuda",
+    passed: bool = True,
+    trace_complete: Any = True,
+    **fields: Any,
+) -> dict[str, Any]:
+    return {
+        "jobs": 2,
+        "passed": passed,
+        "complete": True,
+        "processes": 3,
+        "dropped": 0,
+        "kernels": [0],
+        "backend": backend,
+        "trace_complete": trace_complete,
+        "recording_available": True,
+        **fields,
+    }
+
+
+def kernel_table(
+    *,
+    backend: str = "cuda",
+    usable: int,
+    trace_incomplete: int,
+    not_passed_untraced: int = 0,
+    not_passed_traced: int = 0,
+) -> dict[str, Any]:
+    """A version-3 kernel table with the given row mix."""
+    rows: dict[str, Any] = {}
+    for count, kind in (
+        (usable, {}),
+        (trace_incomplete, {"trace_complete": False}),
+        (not_passed_untraced, {"passed": False, "trace_complete": False}),
+        (not_passed_traced, {"passed": False}),
+    ):
+        for _ in range(count):
+            rows[f"step-{len(rows)}"] = kernel_row(backend=backend, **kind)
+    return {"version": 3, "names": ["k0"], "rows": rows}
+
+
+# The two kernel tables of vllm/ci #100914 (2026-11-08 19:00 UTC): every
+# collect passed and published, and the CUDA table had 95 usable rows of 253
+# (157 from jobs whose trace was incomplete, 7 from jobs that did not pass).
+CUDA_TABLE_100914 = kernel_table(
+    usable=95, trace_incomplete=151, not_passed_untraced=6, not_passed_traced=1
+)
+ROCM_TABLE_100914 = kernel_table(
+    backend="rocm", usable=215, trace_incomplete=29, not_passed_traced=1
+)
+
+
+def source_map(
+    *, commit: str = SHA, backend: str | None = None, **fields: Any
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "version": 2 if backend else 1,
+        "commit": commit,
+        "objects": [
+            {"source": "csrc/attention/a.cu", "device": True, "symbols": ["a", "b"]},
+            {"source": "csrc/attention/a.cu", "device": True, "symbols": ["c"]},
+            {"source": "csrc/ops.cpp", "device": False, "symbols": []},
+            {"source": ".deps/flashmla/x.cu", "device": True, "symbols": ["d"]},
+        ],
+    }
+    if backend:
+        payload["backend"] = backend
+    payload.update(fields)
+    return payload
+
+
+def test_kernel_table_counts_rows_failing_each_condition() -> None:
+    stats = kernel_table_stats(CUDA_TABLE_100914)
+
+    assert (stats.rows, stats.usable_rows) == (253, 95)
+    assert stats.trace_incomplete == 157
+    assert stats.not_passed == 7
+    assert (stats.dropped, stats.incomplete) == (0, 0)
+
+    mixed = kernel_table_stats(
+        {
+            "version": 3,
+            "rows": {
+                "a": kernel_row(),
+                "b": kernel_row(dropped=4),
+                "c": kernel_row(complete=False),
+                "d": kernel_row(backend="unknown"),
+                "e": kernel_row(trace_complete=None),
+                "f": {key: v for key, v in kernel_row().items() if key != "complete"},
+            },
+        }
+    )
+    assert (mixed.rows, mixed.usable_rows) == (6, 2)
+    assert (mixed.dropped, mixed.incomplete, mixed.trace_incomplete) == (1, 1, 1)
+
+
+def test_kernel_table_before_trace_health_counts_usable_as_its_collect_did() -> None:
+    # Build 96933's table is version 2: no backend, no trace_complete.
+    stats = kernel_table_stats(
+        {
+            "version": 2,
+            "rows": {
+                **{f"ok{i}": {"passed": True, "complete": True, "dropped": 0} for i in range(243)},
+                **{f"bad{i}": {"passed": False, "complete": True, "dropped": 0} for i in range(7)},
+            },
+        }
+    )
+
+    assert (stats.rows, stats.usable_rows, stats.not_passed) == (250, 243, 7)
+    assert stats.trace_incomplete is None
+
+
+def test_healthy_source_map_counts_objects_symbols_and_csrc_sources() -> None:
+    stats = source_map_stats(source_map(), build_commit=SHA, backend="cuda")
+
+    assert stats.problems == ()
+    assert (stats.objects, stats.device_objects, stats.symbols, stats.sources) == (
+        4,
+        3,
+        4,
+        2,
+    )
+    rocm = source_map_stats(source_map(backend="rocm"), build_commit=SHA, backend="rocm")
+    assert rocm.problems == ()
+
+
+@pytest.mark.parametrize(
+    ("payload", "problem"),
+    [
+        (
+            source_map(objects=[], reason="cuobjdump not found"),
+            "map not built: cuobjdump not found",
+        ),
+        (source_map(objects=[]), "map has no objects"),
+        (source_map(commit=SHA_100914), "map built from 34b780fe66bd, run is at 665bfc8aaeb7"),
+        (source_map(backend="rocm"), "map is for rocm, expected cuda"),
+    ],
+)
+def test_broken_source_maps_say_why(payload: dict[str, Any], problem: str) -> None:
+    stats = source_map_stats(payload, build_commit=SHA, backend="cuda")
+
+    assert stats.problems == (problem,)
+    graded = map_component(
+        Component.MAP_CUDA,
+        job("img", "image-build"),
+        ["kernel_symbol_map.json.gz"],
+        wanted="kernel_symbol_map.json.gz",
+        armed=True,
+        stats=stats,
+    )
+    assert graded.status == ComponentStatus.BROKEN
+    assert graded.verdict == problem
+
+
+def test_absent_map_is_broken_only_when_its_image_build_ran_for_an_armed_backend() -> None:
+    def grade(image_job: dict[str, Any] | None, *, armed: bool) -> str:
+        return map_component(
+            Component.MAP_ROCM,
+            image_job,
+            [] if image_job is not None else None,
+            wanted="kernel_symbol_map.rocm.json.gz",
+            armed=armed,
+        ).status
+
+    assert grade(job("amd", "image-build-amd"), armed=True) == "broken"
+    # Before ROCm was armed (build 96933) the AMD image build uploaded none.
+    assert grade(job("amd", "image-build-amd"), armed=False) == "missing"
+    assert grade(job("amd", "image-build-amd", started_at=None), armed=True) == "missing"
+    assert grade(None, armed=True) == "missing"
+
+
+def test_decision_today_names_only_the_cuda_kernel_table() -> None:
+    decision = parse_decision(
+        {
+            "applied": True,
+            "records": {
+                "fnrec": {"build": 100914, "files": ["table.json.gz"]},
+                "kernrec": {
+                    "backend": "cuda",
+                    "build": 100914,
+                    "files": ["kernel_symbol_map.json.gz", "kernel_table.json.gz"],
+                },
+            },
+        },
+        build_number=101003,
+        created_at=NOW,
+        branch="a:b",
+        pull_request=63721,
+    )
+
+    assert decision.kernrec_build == 100914
+    assert decision.kernrec_rocm_build is None
+    assert decision.kernel_backends == ("cuda",)
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        {"kernrec": {"backend": "cuda", "build": 100914},
+         "kernrec_rocm": {"backend": "rocm", "build": 100800}},
+        {"kernrec": {"build": 100914}, "kernrec_rocm": {"build": 100800}},
+        {"kernrec": [{"backend": "cuda", "build": 100914},
+                     {"backend": "rocm", "build": "100800"}]},
+        {"kernrec": {"cuda": {"build": 100914}, "rocm": {"build": 100800}}},
+    ],
+)
+def test_decision_with_a_rocm_kernel_entry_names_both_backends(
+    records: dict[str, Any],
+) -> None:
+    decision = parse_decision(
+        {"applied": True, "records": {"fnrec": {"build": 100914}, **records}},
+        build_number=101100,
+        created_at=NOW,
+        branch="a:b",
+        pull_request=1,
+    )
+
+    assert (decision.kernrec_build, decision.kernrec_rocm_build) == (100914, 100800)
+    assert decision.kernel_backends == ("cuda", "rocm")
+
+
+def test_decision_kernel_builds_ignores_unknown_backends_and_bad_builds() -> None:
+    assert decision_kernel_builds(
+        {"kernrec": {"backend": "xpu", "build": 1}, "kernrec_rocm": {"build": "x"}}
+    ) == {"rocm": None}
+    assert decision_kernel_builds({"fnrec": {"build": 1}}) == {}
+
+
+def table_component(
+    component: Component, *, rows: int | None, usable: int | None, **fields: Any
+) -> RunComponent:
+    return replace(ok(component, rows=rows or 0), rows=rows, usable_rows=usable, **fields)
+
+
+def kernel_run(
+    build_number: int, created_at: datetime, *, cuda: tuple[int, int], rocm: tuple[int, int]
+) -> FullRunRecord:
+    return run(
+        build_number,
+        created_at,
+        table_component(Component.FNREC, rows=492, usable=None),
+        table_component(Component.KERNREC_CUDA, rows=cuda[1], usable=cuda[0]),
+        table_component(Component.KERNREC_ROCM, rows=rocm[1], usable=rocm[0]),
+    )
+
+
+def nov(day: int, hour: int) -> datetime:
+    return datetime(2026, 11, day, hour, tzinfo=timezone.utc)
+
+
+NOV_NOW = datetime(2026, 11, 9, 0, 45, tzinfo=timezone.utc)
+
+
+def week_before_100914() -> list[FullRunRecord]:
+    """Seven healthy runs: ~243 of 252 CUDA rows, ~215 of 245 ROCm rows."""
+    return [
+        kernel_run(100000 + index, nov(5 + index // 2, 7 if index % 2 == 0 else 19),
+                   cuda=(240 + index, 252), rocm=(212 + index, 245))
+        for index in range(7)
+    ]
+
+
+def test_run_100914_degrades_the_cuda_kernel_table_only() -> None:
+    latest = kernel_run(100914, nov(8, 19), cuda=(95, 253), rocm=(215, 245))
+    latest = replace(
+        latest,
+        components=tuple(
+            replace(item, rows_not_passed=7, rows_trace_incomplete=157)
+            if item.component == "kernrec_cuda"
+            else item
+            for item in latest.components
+        ),
+    )
+
+    for history in ([], week_before_100914()):
+        plan = plan_selector_health(
+            now=NOV_NOW, runs=[*history, latest], decisions=[], open_episodes=[]
+        )
+        assert subjects(plan.opened) == [("rows_degraded", "kernrec_cuda")]
+
+    (episode,) = plan.opened
+    assert episode.details["usable_rows"] == 95
+    assert episode.details["rows"] == 253
+    assert episode.details["median_usable_rows"] == 243
+    assert episode.details["reason"].startswith("95 of 253 rows usable (38%, under 70%)")
+    text = render_open(episode)
+    assert "CUDA kernel table" in text and "#100914" in text
+    assert "157 with an incomplete trace" in text
+    assert "7 from jobs that did not pass" in text
+
+
+def test_usable_rows_under_60_percent_of_the_7_run_median_degrade_a_table() -> None:
+    history = week_before_100914()
+    # 87% of its rows are usable, but 140 is under 60% of the median 243.
+    latest = kernel_run(100914, nov(8, 19), cuda=(140, 160), rocm=(215, 245))
+
+    plan = plan_selector_health(
+        now=NOV_NOW, runs=[*history, latest], decisions=[], open_episodes=[]
+    )
+    assert subjects(plan.opened) == [("rows_degraded", "kernrec_cuda")]
+    assert "under 60% of the median 243 of the previous 7 runs" in (
+        plan.opened[0].details["reason"]
+    )
+
+    # The median rule waits for three prior runs.
+    plan = plan_selector_health(
+        now=NOV_NOW, runs=[*history[-2:], latest], decisions=[], open_episodes=[]
+    )
+    assert plan.opened == ()
+
+    # Only the previous seven count: an older, bigger run does not.
+    old = kernel_run(99000, nov(1, 7), cuda=(10_000, 10_000), rocm=(215, 245))
+    plan = plan_selector_health(
+        now=NOV_NOW,
+        runs=[old, *history, replace(latest, build_number=100915)],
+        decisions=[],
+        open_episodes=[],
+    )
+    assert plan.opened[0].details["median_usable_rows"] == 243
+
+    # Runs that did not publish the table are left out of the median.
+    outage = [
+        replace(r, components=tuple(
+            replace(item, published=False, usable_rows=0)
+            if item.component == "kernrec_cuda" else item
+            for item in r.components
+        ))
+        for r in history[:5]
+    ]
+    plan = plan_selector_health(
+        now=NOV_NOW, runs=[*outage, *history[5:], latest], decisions=[], open_episodes=[]
+    )
+    assert plan.opened == ()
+
+
+def test_a_recovered_table_resolves_rows_degraded_and_unknown_usable_never_alerts() -> None:
+    history = week_before_100914()
+    degraded = kernel_run(100914, nov(8, 19), cuda=(95, 253), rocm=(215, 245))
+    opened = plan_selector_health(
+        now=NOV_NOW, runs=[*history, degraded], decisions=[], open_episodes=[]
+    ).opened
+    recovered = kernel_run(101100, nov(9, 7), cuda=(244, 253), rocm=(215, 245))
+
+    plan = plan_selector_health(
+        now=NOV_NOW + timedelta(hours=12),
+        runs=[*history, degraded, recovered],
+        decisions=[],
+        open_episodes=opened,
+    )
+
+    assert plan.opened == ()
+    assert subjects(plan.resolved) == [("rows_degraded", "kernrec_cuda")]
+    # fnrec reports rows but not usable rows: never degraded.
+    assert all(e.subject_key != "fnrec" for e in opened)
+
+
+def test_grade_rows_stores_each_runs_reason_against_the_runs_before_it() -> None:
+    history = week_before_100914()
+    latest = kernel_run(100914, nov(8, 19), cuda=(95, 253), rocm=(215, 245))
+
+    graded = {r.build_number: r for r in grade_rows([latest, *history])}
+
+    cuda = graded[100914].component(Component.KERNREC_CUDA)
+    assert cuda is not None and cuda.rows_degraded is not None
+    assert "95 of 253 rows usable" in cuda.rows_degraded
+    rocm = graded[100914].component(Component.KERNREC_ROCM)
+    assert rocm is not None and rocm.rows_degraded is None
+    assert all(
+        item.rows_degraded is None for item in graded[history[0].build_number].components
+    )
+
+
+def test_a_broken_source_map_opens_run_incomplete_for_the_map() -> None:
+    latest = kernel_run(100914, nov(8, 19), cuda=(244, 253), rocm=(215, 245))
+    latest = replace(
+        latest,
+        components=(
+            *latest.components,
+            RunComponent("map_cuda", "broken", job_state="passed",
+                         verdict="map has no objects", collected=True, map_objects=0),
+            RunComponent("map_rocm", "ok", job_state="passed", verdict="ok",
+                         collected=True, map_objects=96),
+        ),
+    )
+
+    plan = plan_selector_health(
+        now=NOV_NOW, runs=[*week_before_100914(), latest], decisions=[], open_episodes=[]
+    )
+
+    assert subjects(plan.opened) == [("run_incomplete", "map_cuda")]
+    text = render_open(plan.opened[0])
+    assert "CUDA kernel source map" in text and "map has no objects" in text
+
+
+def test_pr_decisions_on_an_old_rocm_kernel_table_open_pr_stale() -> None:
+    runs = [
+        kernel_run(100000 + index, nov(5 + index // 2, 7 if index % 2 == 0 else 19),
+                   cuda=(243, 252), rocm=(215, 245))
+        for index in range(7)
+    ]
+    decisions = [
+        replace(
+            decision(101000 + index, NOV_NOW - timedelta(hours=1)),
+            fnrec_build=100006,
+            kernrec_build=100006,
+            kernrec_rocm_build=100000,
+            kernel_backends=("cuda", "rocm"),
+        )
+        for index in range(3)
+    ]
+
+    plan = plan_selector_health(
+        now=NOV_NOW, runs=runs, decisions=decisions, open_episodes=[]
+    )
+
+    assert subjects(plan.opened) == [("pr_stale", "kernrec_rocm")]
+
+
+def test_adapter_reads_both_kernel_tables_and_both_maps_of_run_100914() -> None:
+    bk = FakeBuildkite()
+    bk.builds = [{**full_run_build(100914), "commit": SHA_100914,
+                  "message": "Full CI run - daily"}]
+    bk.jobs[100914] = [
+        job("fn", "fnrec-collect"),
+        job("kern", "kernrec-collect"),
+        job("img", "image-build"),
+        job("amd", "image-build-amd"),
+    ]
+    bk.artifacts = {
+        "fn": [artifact("fn", "table.json.gz"), artifact("fn", "fnrec_collect_summary.json")],
+        "kern": [
+            artifact("kern", name)
+            for name in (
+                "kernel_table.json.gz",
+                "kernel_table.rocm.json.gz",
+                "kernel_symbol_map.json.gz",
+                "kernel_symbol_map.rocm.json.gz",
+                "kernrec_collect_summary.json",
+            )
+        ],
+        "img": [artifact("img", "kernel_symbol_map.json.gz")],
+        "amd": [artifact("amd", "kernel_symbol_map.rocm.json.gz")],
+    }
+    url = "https://api.buildkite.com/{}/{}".format
+    bk.files = {
+        url("fn", "fnrec_collect_summary.json"): json.dumps(
+            {"recorder": "fnrec", "build": 100914, "commit": SHA_100914,
+             "expected_jobs": 819, "delivered_jobs": 820, "rows": 492,
+             "verdict": "ok", "exit_status": 0}
+        ).encode(),
+        url("kern", "kernrec_collect_summary.json"): json.dumps(
+            {"recorder": "kernrec", "build": 100914, "commit": SHA_100914, "backends": {
+                "cuda": {"expected_jobs": 445, "delivered_jobs": 429,
+                         "usable_rows": 95, "verdict": "ok"},
+                "rocm": {"expected_jobs": 371, "delivered_jobs": 369,
+                         "usable_rows": 215, "verdict": "ok"}}}
+        ).encode(),
+        url("kern", "kernel_table.json.gz"): gz(CUDA_TABLE_100914),
+        url("kern", "kernel_table.rocm.json.gz"): gz(ROCM_TABLE_100914),
+        url("img", "kernel_symbol_map.json.gz"): gz(source_map(commit=SHA_100914)),
+        url("amd", "kernel_symbol_map.rocm.json.gz"): gz(
+            source_map(commit=SHA_100914, backend="rocm")
+        ),
+    }
+
+    (record,) = BuildkiteSelectorSource(bk).full_runs(
+        since=NOV_NOW - timedelta(days=14), up_to=NOV_NOW, settled=frozenset()
+    )
+
+    status = {item.component: item.status for item in record.components}
+    assert set(status.values()) == {"ok"}
+    fnrec = record.component(Component.FNREC)
+    assert fnrec is not None and fnrec.collected and fnrec.published
+    assert (fnrec.rows, fnrec.usable_rows) == (492, None)
+    cuda = record.component(Component.KERNREC_CUDA)
+    assert cuda is not None
+    assert (cuda.rows, cuda.usable_rows, cuda.source) == (253, 95, "table")
+    assert (cuda.rows_trace_incomplete, cuda.rows_not_passed) == (157, 7)
+    assert (cuda.expected_jobs, cuda.delivered_jobs) == (445, 429)
+    rocm = record.component(Component.KERNREC_ROCM)
+    assert rocm is not None and (rocm.rows, rocm.usable_rows) == (245, 215)
+    cuda_map = record.component(Component.MAP_CUDA)
+    assert cuda_map is not None and cuda_map.collected and cuda_map.published
+    assert (cuda_map.map_objects, cuda_map.map_device_objects, cuda_map.map_symbols,
+            cuda_map.map_sources) == (4, 3, 4, 2)
+    # fnrec's 125 MB table is never downloaded.
+    assert "table.json.gz" not in [path.rsplit("/", 1)[-1] for path in bk.downloads]
+
+
+def test_adapter_falls_back_to_summary_usable_rows_when_a_table_fails() -> None:
+    bk = FakeBuildkite()
+    bk.builds = [full_run_build(100914)]
+    bk.jobs[100914] = [job("kern", "kernrec-collect")]
+    bk.artifacts = {
+        "kern": [artifact("kern", "kernel_table.json.gz"),
+                 artifact("kern", "kernrec_collect_summary.json")],
+    }
+    bk.files = {
+        "https://api.buildkite.com/kern/kernrec_collect_summary.json": json.dumps(
+            {"backends": {"cuda": {"expected_jobs": 445, "delivered_jobs": 429,
+                                   "usable_rows": 95, "verdict": "ok"}}}
+        ).encode(),
+    }  # the table's download raises KeyError
+
+    (record,) = BuildkiteSelectorSource(bk).full_runs(
+        since=NOV_NOW - timedelta(days=14), up_to=NOV_NOW, settled=frozenset()
+    )
+
+    cuda = record.component(Component.KERNREC_CUDA)
+    assert cuda is not None
+    assert (cuda.rows, cuda.usable_rows, cuda.source) == (None, 95, "summary")
+    assert cuda.rows_trace_incomplete is None
+
+
+def test_handler_stores_fresh_runs_with_their_rows_degraded_reason() -> None:
+    source = FixtureSource()
+    source.runs = [
+        *week_before_100914(),
+        kernel_run(100914, nov(8, 19), cuda=(95, 253), rocm=(215, 245)),
+    ]
+    runtime, store, _, _ = make_runtime(source)
+    runtime.process_command(ScheduledCommand("selector_health_scan", NOV_NOW))
+
+    stored = {r.build_number: r for r in store.runs()}
+    cuda = stored[100914].component(Component.KERNREC_CUDA)
+    assert cuda is not None and cuda.rows_degraded is not None
+    assert [(e.condition, e.subject_key) for e in store.open_episodes()] == [
+        ("rows_degraded", "kernrec_cuda")
+    ]

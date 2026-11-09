@@ -1793,7 +1793,11 @@ class PostgresAlertStore:
                 SELECT c.build_number, c.component, c.status, c.job_state,
                        c.soft_failed, c.exit_status, c.expected_jobs,
                        c.delivered_jobs, c.row_count, c.verdict, c.published,
-                       c.published_commit, c.source
+                       c.published_commit, c.source, c.usable_rows,
+                       c.rows_not_passed, c.rows_trace_incomplete,
+                       c.rows_dropped, c.rows_incomplete, c.map_objects,
+                       c.map_device_objects, c.map_symbols, c.map_sources,
+                       c.collected, c.rows_degraded
                 FROM alerting_selector_run_components c
                 JOIN alerting_selector_full_runs r USING (build_number)
                 WHERE r.created_at >= %s
@@ -1805,7 +1809,7 @@ class PostgresAlertStore:
                 """
                 SELECT build_number, created_at, branch, outcome, pull_request,
                        reason, seconds, fnrec_build, kernrec_build,
-                       ci_infra_commit
+                       ci_infra_commit, kernrec_rocm_build, kernel_backends
                 FROM alerting_selector_decisions
                 WHERE created_at >= %s
                 """,
@@ -1834,6 +1838,17 @@ class PostgresAlertStore:
                     published=bool(row[10]),
                     published_commit=row[11],
                     source=row[12],
+                    usable_rows=row[13],
+                    rows_not_passed=row[14],
+                    rows_trace_incomplete=row[15],
+                    rows_dropped=row[16],
+                    rows_incomplete=row[17],
+                    map_objects=row[18],
+                    map_device_objects=row[19],
+                    map_symbols=row[20],
+                    map_sources=row[21],
+                    collected=bool(row[22]),
+                    rows_degraded=row[23],
                 )
             )
         return SelectorHealthState(
@@ -1861,6 +1876,8 @@ class PostgresAlertStore:
                     fnrec_build=row[7],
                     kernrec_build=row[8],
                     ci_infra_commit=row[9],
+                    kernrec_rocm_build=row[10],
+                    kernel_backends=tuple(row[11] or ()),
                 )
                 for row in decision_rows
             ),
@@ -1919,9 +1936,14 @@ class PostgresAlertStore:
                                 build_number, component, status, job_state,
                                 soft_failed, exit_status, expected_jobs,
                                 delivered_jobs, row_count, verdict, published,
-                                published_commit, source
+                                published_commit, source, usable_rows,
+                                rows_not_passed, rows_trace_incomplete,
+                                rows_dropped, rows_incomplete, map_objects,
+                                map_device_objects, map_symbols, map_sources,
+                                collected, rows_degraded
                             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                                      %s, %s, %s)
+                                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                      %s, %s, %s, %s)
                             ON CONFLICT (build_number, component) DO UPDATE
                             SET status = EXCLUDED.status,
                                 job_state = EXCLUDED.job_state,
@@ -1933,7 +1955,19 @@ class PostgresAlertStore:
                                 verdict = EXCLUDED.verdict,
                                 published = EXCLUDED.published,
                                 published_commit = EXCLUDED.published_commit,
-                                source = EXCLUDED.source
+                                source = EXCLUDED.source,
+                                usable_rows = EXCLUDED.usable_rows,
+                                rows_not_passed = EXCLUDED.rows_not_passed,
+                                rows_trace_incomplete =
+                                    EXCLUDED.rows_trace_incomplete,
+                                rows_dropped = EXCLUDED.rows_dropped,
+                                rows_incomplete = EXCLUDED.rows_incomplete,
+                                map_objects = EXCLUDED.map_objects,
+                                map_device_objects = EXCLUDED.map_device_objects,
+                                map_symbols = EXCLUDED.map_symbols,
+                                map_sources = EXCLUDED.map_sources,
+                                collected = EXCLUDED.collected,
+                                rows_degraded = EXCLUDED.rows_degraded
                             """,
                             (
                                 run.build_number,
@@ -1949,6 +1983,17 @@ class PostgresAlertStore:
                                 item.published,
                                 item.published_commit,
                                 item.source,
+                                item.usable_rows,
+                                item.rows_not_passed,
+                                item.rows_trace_incomplete,
+                                item.rows_dropped,
+                                item.rows_incomplete,
+                                item.map_objects,
+                                item.map_device_objects,
+                                item.map_symbols,
+                                item.map_sources,
+                                item.collected,
+                                item.rows_degraded,
                             ),
                         )
                 for decision in plan.decisions:
@@ -1957,8 +2002,10 @@ class PostgresAlertStore:
                         INSERT INTO alerting_selector_decisions (
                             build_number, created_at, branch, pull_request,
                             outcome, reason, seconds, fnrec_build,
-                            kernrec_build, ci_infra_commit, observed_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            kernrec_build, ci_infra_commit, observed_at,
+                            kernrec_rocm_build, kernel_backends
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                  %s, %s)
                         ON CONFLICT (build_number) DO NOTHING
                         """,
                         (
@@ -1973,6 +2020,8 @@ class PostgresAlertStore:
                             decision.kernrec_build,
                             decision.ci_infra_commit,
                             now,
+                            decision.kernrec_rocm_build,
+                            list(decision.kernel_backends),
                         ),
                     )
                 cutoff = now - self._SELECTOR_RETENTION

@@ -1,10 +1,11 @@
 /**
  * Presentation logic for the CI Selector page.
  *
- * ci-selector picks which test steps a PR build runs from recordings the
- * scheduled Full CI runs make on main: a Python function table (fnrec) and
- * CUDA and ROCm kernel tables (kernrec), each kernel table paired with a
- * symbol map from the image builds. The collect steps are soft_fail, so a
+ * ci-selector picks which test steps a PR build runs from data the scheduled
+ * Full CI runs collect on main. Five components per run: the Python function
+ * table (fnrec), the CUDA and ROCm kernel tables (kernrec), and the CUDA and
+ * ROCm kernel source maps from the image builds that the kernel tables pair
+ * with. The collect steps are soft_fail, so a
  * broken collect never turns a build red. The alerting worker's
  * selector-health slice records every run's components and every PR build's
  * selector decision; this module turns those records into the page's view.
@@ -25,14 +26,36 @@ export type SelectorComponent = (typeof SELECTOR_COMPONENTS)[number];
 export const SELECTOR_RECORDINGS = ["fnrec", "kernrec_cuda", "kernrec_rocm"] as const;
 export type SelectorRecording = (typeof SELECTOR_RECORDINGS)[number];
 
-export type ComponentStatus = "ok" | "broken" | "off" | "pending";
+/** Kernel backends a PR decision can name. */
+export const KERNEL_BACKENDS = ["cuda", "rocm"] as const;
+export type KernelBackend = (typeof KERNEL_BACKENDS)[number];
 
+/**
+ * `missing` is a source map absent where nothing needed it (the image build
+ * did not run, or its backend's kernel recorder was off); a map absent where
+ * its image build ran for an armed backend is `broken`.
+ */
+export type ComponentStatus = "ok" | "broken" | "off" | "pending" | "missing";
+
+/** A cell's colour: its status, or `degraded` for an ok table with rows_degraded. */
+export type CellTone = ComponentStatus | "degraded";
+
+/** Short column headings. */
 export const SELECTOR_COMPONENT_LABELS: Record<SelectorComponent, string> = {
-  fnrec: "Python",
+  fnrec: "Python table",
   kernrec_cuda: "CUDA kernels",
   kernrec_rocm: "ROCm kernels",
   map_cuda: "CUDA map",
   map_rocm: "ROCm map",
+};
+
+/** Full component names. */
+export const SELECTOR_COMPONENT_NAMES: Record<SelectorComponent, string> = {
+  fnrec: "Python function table",
+  kernrec_cuda: "CUDA kernel table",
+  kernrec_rocm: "ROCm kernel table",
+  map_cuda: "CUDA kernel source map",
+  map_rocm: "ROCm kernel source map",
 };
 
 export interface RunComponentRecord {
@@ -42,10 +65,27 @@ export interface RunComponentRecord {
   softFailed: boolean;
   expectedJobs: number | null;
   deliveredJobs: number | null;
+  /** Tables: every row, and the usable ones (null when unknown). */
   rows: number | null;
+  usableRows: number | null;
+  /** Kernel tables read whole: rows failing each usability condition. */
+  rowsNotPassed: number | null;
+  rowsTraceIncomplete: number | null;
+  rowsDropped: number | null;
+  rowsIncomplete: number | null;
+  /** Source maps: objects, device objects, symbols, distinct csrc sources. */
+  mapObjects: number | null;
+  mapDeviceObjects: number | null;
+  mapSymbols: number | null;
+  mapSources: number | null;
   verdict: string | null;
+  /** Uploaded by the producing job. */
+  collected: boolean;
+  /** Tables: published as latest. Maps: re-uploaded next to the kernel table. */
   published: boolean;
   publishedCommit: string | null;
+  /** Why a published table's usable rows are degraded, else null. */
+  rowsDegraded: string | null;
   source: string;
 }
 
@@ -72,6 +112,8 @@ export interface DecisionTimingRow {
   p50Seconds: number | null;
   p95Seconds: number | null;
   ciInfraCommits: string[];
+  /** Decisions whose records named each kernel backend. */
+  kernelBackends: Record<KernelBackend, number>;
 }
 
 /** Recording builds PR decisions used in the recent window. */
@@ -80,12 +122,15 @@ export interface DecisionsInUse {
   decisions: number;
   fnrecBuild: number | null;
   kernrecBuild: number | null;
+  kernrecRocmBuild: number | null;
+  /** Decisions in the window whose records named each kernel backend. */
+  kernelBackends: Record<KernelBackend, number>;
   latestAt: string | null;
 }
 
 export interface SelectorAlertEpisode {
   alertId: string;
-  condition: "run_incomplete" | "stale" | "pr_stale" | "pr_errors";
+  condition: "run_incomplete" | "rows_degraded" | "stale" | "pr_stale" | "pr_errors";
   subjectKey: string;
   status: "open" | "resolved";
   openedAt: string;
@@ -115,29 +160,95 @@ export function componentOf(
   return run.components.find((item) => item.component === component);
 }
 
-/** The short figure in a run cell: rows and delivered/expected jobs. */
+/** Usable rows over all rows, when both are known. */
+export function usableShare(item: RunComponentRecord | undefined): number | null {
+  if (!item || item.usableRows === null || !item.rows) return null;
+  return item.usableRows / item.rows;
+}
+
+function percent(share: number): string {
+  return `${Math.round(share * 100)}%`;
+}
+
+/** Why a kernel table's rows are unusable, largest first. */
+export function unusableReasons(item: RunComponentRecord | undefined): string[] {
+  if (!item) return [];
+  const reasons: Array<[number | null, string]> = [
+    [item.rowsTraceIncomplete, "trace incomplete"],
+    [item.rowsNotPassed, "job not passed"],
+    [item.rowsDropped, "dropped recordings"],
+    [item.rowsIncomplete, "incomplete"],
+  ];
+  return reasons
+    .filter((entry): entry is [number, string] => entry[0] !== null && entry[0] > 0)
+    .sort((a, b) => b[0] - a[0])
+    .map(([count, label]) => `${count.toLocaleString()} ${label}`);
+}
+
+/** The cell colour: degraded tables stand apart from whole ones. */
+export function cellTone(item: RunComponentRecord | undefined): CellTone {
+  if (!item) return "off";
+  if (item.status === "ok" && item.rowsDegraded) return "degraded";
+  return item.status;
+}
+
+function isMap(item: RunComponentRecord): boolean {
+  return item.component.startsWith("map_");
+}
+
+function jobsFigure(item: RunComponentRecord): string | null {
+  if (item.expectedJobs === null && item.deliveredJobs === null) return null;
+  return `${item.deliveredJobs ?? "?"}/${item.expectedJobs ?? "?"} jobs`;
+}
+
+/** The short figure in a run cell. */
 export function componentFigure(item: RunComponentRecord | undefined): string {
   if (!item) return "—";
   if (item.status === "off") return "off";
   if (item.status === "pending") return "running";
-  if (item.component.startsWith("map_")) return item.published ? "uploaded" : "missing";
-  const rows = item.rows === null ? "? rows" : `${item.rows.toLocaleString()} rows`;
-  if (item.expectedJobs === null && item.deliveredJobs === null) return rows;
-  return `${rows} · ${item.deliveredJobs ?? "?"}/${item.expectedJobs ?? "?"}`;
+  if (isMap(item)) {
+    if (item.mapObjects === null) return item.collected ? "uploaded" : "missing";
+    return `${item.mapObjects.toLocaleString()} obj · ${(item.mapSymbols ?? 0).toLocaleString()} sym`;
+  }
+  const share = usableShare(item);
+  let rows: string;
+  if (item.usableRows !== null && item.rows !== null && share !== null) {
+    rows = `${item.usableRows.toLocaleString()}/${item.rows.toLocaleString()} usable (${percent(share)})`;
+  } else if (item.usableRows !== null) {
+    rows = `${item.usableRows.toLocaleString()} usable`;
+  } else if (item.rows !== null) {
+    rows = `${item.rows.toLocaleString()} rows`;
+  } else {
+    rows = "? rows";
+  }
+  const jobs = jobsFigure(item);
+  return jobs ? `${rows} · ${jobs}` : rows;
 }
 
-/** The hover text for a run cell: the verdict and where it was read. */
+/** The hover text for a run cell: verdict, counts, and where it was read. */
 export function componentTitle(item: RunComponentRecord | undefined): string {
   if (!item) return "Not recorded";
   const parts = [
     `${SELECTOR_COMPONENT_LABELS[item.component]}: ${item.verdict ?? item.status}`,
   ];
+  if (item.rowsDegraded) parts.push(`degraded: ${item.rowsDegraded}`);
   if (item.jobState) {
     parts.push(`job ${item.jobState}${item.softFailed ? " (soft-failed)" : ""}`);
   }
-  if (item.publishedCommit) parts.push(`published ${item.publishedCommit.slice(0, 12)}`);
+  if (!isMap(item) && item.rows !== null && item.usableRows === null) {
+    parts.push("usable rows unknown");
+  }
+  const reasons = unusableReasons(item);
+  if (reasons.length) parts.push(`unusable: ${reasons.join(", ")}`);
+  if (isMap(item) && item.mapObjects !== null) {
+    parts.push(
+      `${item.mapDeviceObjects ?? "?"} device objects, ${item.mapSources ?? "?"} csrc sources`,
+    );
+  }
+  if (item.publishedCommit) parts.push(`commit ${item.publishedCommit.slice(0, 12)}`);
   if (item.source === "log") parts.push("read from the collect log");
   if (item.source === "summary") parts.push("read from the collect summary");
+  if (item.source === "table") parts.push("rows counted from the table");
   return parts.join(" · ");
 }
 
@@ -149,7 +260,7 @@ export interface RecordingFreshness {
   ageHours: number | null;
   /** Hours it trails the newest completed run. */
   behindHours: number | null;
-  /** The recording build recent PR decisions used, when it has one. */
+  /** The recording build recent PR decisions used, when they name one. */
   usedBuild: number | null;
 }
 
@@ -180,7 +291,7 @@ export function recordingFreshness(
         ? (inUse?.fnrecBuild ?? null)
         : recording === "kernrec_cuda"
           ? (inUse?.kernrecBuild ?? null)
-          : null;
+          : (inUse?.kernrecRocmBuild ?? null);
     return {
       recording,
       published,
@@ -206,6 +317,8 @@ export interface DailyDecisionSummary {
   p50Seconds: number | null;
   p95Seconds: number | null;
   ciInfraCommits: string[];
+  /** Decisions whose records named each kernel backend. */
+  kernelBackends: Record<KernelBackend, number>;
 }
 
 const SELECTOR_ERROR = /^(selector failed|gate error)/i;
@@ -234,6 +347,7 @@ export function summarizeDecisions(
         p50Seconds: null,
         p95Seconds: null,
         ciInfraCommits: [],
+        kernelBackends: { cuda: 0, rocm: 0 },
       };
       days.set(key, entry);
     }
@@ -256,6 +370,7 @@ export function summarizeDecisions(
     entry.p50Seconds = row.p50Seconds;
     entry.p95Seconds = row.p95Seconds;
     entry.ciInfraCommits = row.ciInfraCommits;
+    entry.kernelBackends = row.kernelBackends;
   }
   for (const entry of days.values()) {
     entry.skipped.sort((a, b) => b.builds - a.builds);
@@ -265,10 +380,8 @@ export function summarizeDecisions(
 }
 
 const RECORDING_NAMES: Record<string, string> = {
-  fnrec: "Python recording",
-  kernrec_cuda: "CUDA kernel recording",
-  kernrec_rocm: "ROCm kernel recording",
-  kernrec: "kernel recording",
+  ...SELECTOR_COMPONENT_NAMES,
+  kernrec: "CUDA kernel table",
 };
 
 function num(details: Record<string, unknown>, key: string): number | null {
@@ -295,6 +408,11 @@ export function summarizeEpisode(episode: SelectorAlertEpisode): string {
       const verdict = typeof details.verdict === "string" ? details.verdict : "not whole";
       return `${name} not whole in run #${build ?? "?"}: ${verdict}.`;
     }
+    case "rows_degraded": {
+      const build = num(details, "build_number");
+      const reason = typeof details.reason === "string" ? details.reason : "usable rows dropped";
+      return `${name} degraded in run #${build ?? "?"}: ${reason}.`;
+    }
     case "stale": {
       const hours = num(details, "stale_hours");
       const last = buildOf(details, "last_published");
@@ -317,6 +435,7 @@ export function summarizeEpisode(episode: SelectorAlertEpisode): string {
 
 export const SELECTOR_CONDITION_LABELS: Record<SelectorAlertEpisode["condition"], string> = {
   run_incomplete: "Run not whole",
+  rows_degraded: "Usable rows dropped",
   stale: "Recording stale",
   pr_stale: "PRs on an old recording",
   pr_errors: "Selector errors",

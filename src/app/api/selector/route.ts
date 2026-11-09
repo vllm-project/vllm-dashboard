@@ -35,9 +35,20 @@ interface RunRow {
     expected_jobs: number | null;
     delivered_jobs: number | null;
     row_count: number | null;
+    usable_rows: number | null;
+    rows_not_passed: number | null;
+    rows_trace_incomplete: number | null;
+    rows_dropped: number | null;
+    rows_incomplete: number | null;
+    map_objects: number | null;
+    map_device_objects: number | null;
+    map_symbols: number | null;
+    map_sources: number | null;
     verdict: string | null;
+    collected: boolean;
     published: boolean;
     published_commit: string | null;
+    rows_degraded: string | null;
     source: string;
   }> | null;
 }
@@ -68,9 +79,20 @@ function toRun(row: RunRow): FullRunRecord {
       expectedJobs: item.expected_jobs,
       deliveredJobs: item.delivered_jobs,
       rows: item.row_count,
+      usableRows: item.usable_rows,
+      rowsNotPassed: item.rows_not_passed,
+      rowsTraceIncomplete: item.rows_trace_incomplete,
+      rowsDropped: item.rows_dropped,
+      rowsIncomplete: item.rows_incomplete,
+      mapObjects: item.map_objects,
+      mapDeviceObjects: item.map_device_objects,
+      mapSymbols: item.map_symbols,
+      mapSources: item.map_sources,
       verdict: item.verdict,
+      collected: item.collected,
       published: item.published,
       publishedCommit: item.published_commit,
+      rowsDegraded: item.rows_degraded,
       source: item.source,
     })),
   };
@@ -102,25 +124,47 @@ export async function GET() {
         WHERE created_at >= now() - ${window}::interval AND branch <> 'main'
         GROUP BY 1, 2, 3
       `,
-      db<Array<{ day: Date; p50: number | null; p95: number | null; commits: string[] | null }>>`
+      db<Array<{
+        day: Date;
+        p50: number | null;
+        p95: number | null;
+        commits: string[] | null;
+        cuda: number;
+        rocm: number;
+      }>>`
         SELECT date_trunc('day', created_at) AS day,
                percentile_cont(0.5) WITHIN GROUP (ORDER BY seconds) AS p50,
                percentile_cont(0.95) WITHIN GROUP (ORDER BY seconds) AS p95,
                array_agg(DISTINCT ci_infra_commit)
-                 FILTER (WHERE ci_infra_commit IS NOT NULL) AS commits
+                 FILTER (WHERE ci_infra_commit IS NOT NULL) AS commits,
+               count(*) FILTER (WHERE 'cuda' = ANY(kernel_backends))::int AS cuda,
+               count(*) FILTER (WHERE 'rocm' = ANY(kernel_backends))::int AS rocm
         FROM alerting_selector_decisions
         WHERE created_at >= now() - ${window}::interval AND branch <> 'main'
         GROUP BY 1
       `,
-      db<Array<{ decisions: number; fnrec: number | null; kernrec: number | null; latest: Date | null }>>`
+      db<Array<{
+        decisions: number;
+        fnrec: number | null;
+        kernrec: number | null;
+        kernrec_rocm: number | null;
+        cuda: number;
+        rocm: number;
+        latest: Date | null;
+      }>>`
         SELECT count(*)::int AS decisions,
                percentile_disc(0.5) WITHIN GROUP (ORDER BY fnrec_build) AS fnrec,
                percentile_disc(0.5) WITHIN GROUP (ORDER BY kernrec_build) AS kernrec,
+               percentile_disc(0.5) WITHIN GROUP (ORDER BY kernrec_rocm_build)
+                 AS kernrec_rocm,
+               count(*) FILTER (WHERE 'cuda' = ANY(kernel_backends))::int AS cuda,
+               count(*) FILTER (WHERE 'rocm' = ANY(kernel_backends))::int AS rocm,
                max(created_at) AS latest
         FROM alerting_selector_decisions
         WHERE created_at >= now() - ${`${IN_USE_HOURS} hours`}::interval
           AND branch <> 'main'
-          AND (fnrec_build IS NOT NULL OR kernrec_build IS NOT NULL)
+          AND (fnrec_build IS NOT NULL OR kernrec_build IS NOT NULL
+               OR kernrec_rocm_build IS NOT NULL)
       `,
       db<EpisodeRow[]>`
         SELECT alert_id, condition, subject_key, status, opened_at,
@@ -148,6 +192,7 @@ export async function GET() {
         p50Seconds: row.p50 === null ? null : Number(row.p50),
         p95Seconds: row.p95 === null ? null : Number(row.p95),
         ciInfraCommits: row.commits ?? [],
+        kernelBackends: { cuda: row.cuda, rocm: row.rocm },
       })),
       inUse:
         used && used.decisions > 0
@@ -156,6 +201,9 @@ export async function GET() {
               decisions: used.decisions,
               fnrecBuild: used.fnrec === null ? null : Number(used.fnrec),
               kernrecBuild: used.kernrec === null ? null : Number(used.kernrec),
+              kernrecRocmBuild:
+                used.kernrec_rocm === null ? null : Number(used.kernrec_rocm),
+              kernelBackends: { cuda: used.cuda, rocm: used.rocm },
               latestAt: used.latest?.toISOString() ?? null,
             } satisfies DecisionsInUse)
           : null,

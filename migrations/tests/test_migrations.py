@@ -285,7 +285,24 @@ def test_selector_health_schema_keeps_one_open_episode_and_widens_path() -> None
 
     assert "'fast_ci', 'full_ci', 'main_ci', 'infra', 'selector'" in sql
     assert "ON alerting_selector_alerts (condition, subject_key)\n    WHERE status = 'open'" in sql
-    assert "'run_incomplete', 'stale', 'pr_stale', 'pr_errors'" in sql
+    assert "'run_incomplete', 'rows_degraded', 'stale', 'pr_stale', 'pr_errors'" in sql
+    assert "'ok', 'broken', 'off', 'pending', 'missing'" in sql
+    for column in (
+        "usable_rows",
+        "rows_not_passed",
+        "rows_trace_incomplete",
+        "rows_dropped",
+        "rows_incomplete",
+        "map_objects",
+        "map_device_objects",
+        "map_symbols",
+        "map_sources",
+        "collected",
+        "rows_degraded",
+        "kernrec_rocm_build",
+        "kernel_backends",
+    ):
+        assert f"    {column} " in sql
     assert "REFERENCES alerting_selector_full_runs (build_number) ON DELETE CASCADE" in sql
     assert "alerting_selector_alerts_alert_id_seq" in sql
     for table in (

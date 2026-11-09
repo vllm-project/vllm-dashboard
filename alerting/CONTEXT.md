@@ -90,8 +90,18 @@ _Avoid_: Deleted host, decommission record
 One table ci-selector decides from — the Python function table (fnrec) or
 the CUDA or ROCm kernel table (kernrec) — as one scheduled Full CI Run's
 collect step folded and published it. It is whole when its collect verdict
-is ok, it published, and it delivered at least 80% of the expected jobs.
+is ok, it published, and it delivered at least 80% of the expected jobs. A
+whole recording is degraded when under 70% of its rows are usable, or its
+usable rows fall under 60% of the median of the previous 7 runs.
 _Avoid_: Coverage, test map
+
+**Kernel Source Map**:
+The kernel symbol map an image build (`image-build` for CUDA,
+`image-build-amd` for ROCm) produces for one run, mapping compiled objects
+to `csrc/` sources; each kernel table pairs with its backend's map. It is
+broken when it carries a `reason`, has no objects, or was built from another
+commit than the run's.
+_Avoid_: Symbol table
 
 **Selector Decision**:
 The record one PR build's bootstrap uploads of what the selector did

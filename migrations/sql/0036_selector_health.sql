@@ -23,25 +23,46 @@ CREATE TABLE IF NOT EXISTS alerting_selector_full_runs (
 CREATE INDEX IF NOT EXISTS alerting_selector_full_runs_created_idx
     ON alerting_selector_full_runs (created_at DESC);
 
--- One recording (fnrec, CUDA and ROCm kernel tables) or symbol map of one run,
--- read from the collect job's summary artifact (ci-infra#881) or its log.
+-- One component of one run: the Python function table, the CUDA and ROCm
+-- kernel tables, and the CUDA and ROCm kernel source maps. Tables are read
+-- from the collect job's summary artifact (ci-infra#881) or its log, and the
+-- two small kernel tables and both source maps from the files themselves.
 CREATE TABLE IF NOT EXISTS alerting_selector_run_components (
     build_number     integer NOT NULL
         REFERENCES alerting_selector_full_runs (build_number) ON DELETE CASCADE,
     component        text NOT NULL CHECK (
         component IN ('fnrec', 'kernrec_cuda', 'kernrec_rocm', 'map_cuda', 'map_rocm')
     ),
-    status           text NOT NULL CHECK (status IN ('ok', 'broken', 'off', 'pending')),
+    status           text NOT NULL
+        CHECK (status IN ('ok', 'broken', 'off', 'pending', 'missing')),
     job_state        text,
     soft_failed      boolean NOT NULL DEFAULT false,
     exit_status      integer,
     expected_jobs    integer,
     delivered_jobs   integer,
+    -- Tables: every row and the usable ones (NULL when unknown).
     row_count        integer,
+    usable_rows      integer,
+    -- Kernel tables read whole: rows failing each usability condition.
+    rows_not_passed       integer,
+    rows_trace_incomplete integer,
+    rows_dropped          integer,
+    rows_incomplete       integer,
+    -- Source maps: objects, device objects, symbols, distinct csrc sources.
+    map_objects        integer,
+    map_device_objects integer,
+    map_symbols        integer,
+    map_sources        integer,
     verdict          text,
+    -- Uploaded by the producing job; published as latest (tables) or
+    -- re-uploaded next to the kernel table (maps).
+    collected        boolean NOT NULL DEFAULT false,
     published        boolean NOT NULL DEFAULT false,
     published_commit text,
-    source           text NOT NULL CHECK (source IN ('summary', 'log', 'artifacts', 'none')),
+    -- Why a published table's usable rows are degraded, else NULL.
+    rows_degraded    text,
+    source           text NOT NULL
+        CHECK (source IN ('summary', 'log', 'artifacts', 'table', 'none')),
     PRIMARY KEY (build_number, component)
 );
 
@@ -57,7 +78,11 @@ CREATE TABLE IF NOT EXISTS alerting_selector_decisions (
     reason          text,
     seconds         double precision,
     fnrec_build     integer,
-    kernrec_build   integer,
+    -- The CUDA and ROCm kernel tables used, and every kernel backend the
+    -- decision's records named.
+    kernrec_build      integer,
+    kernrec_rocm_build integer,
+    kernel_backends    text[] NOT NULL DEFAULT '{}',
     ci_infra_commit text,
     observed_at     timestamptz NOT NULL DEFAULT now()
 );
@@ -70,7 +95,9 @@ CREATE INDEX IF NOT EXISTS alerting_selector_decisions_created_idx
 CREATE TABLE IF NOT EXISTS alerting_selector_alerts (
     alert_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     condition   text NOT NULL
-        CHECK (condition IN ('run_incomplete', 'stale', 'pr_stale', 'pr_errors')),
+        CHECK (condition IN (
+            'run_incomplete', 'rows_degraded', 'stale', 'pr_stale', 'pr_errors'
+        )),
     subject_key text NOT NULL,
     status      text NOT NULL CHECK (status IN ('open', 'resolved')),
     opened_at   timestamptz NOT NULL,

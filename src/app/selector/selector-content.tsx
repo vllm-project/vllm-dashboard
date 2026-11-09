@@ -1,37 +1,151 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { StatCard } from "@/components/stat-card";
 import {
   SELECTOR_COMPONENT_LABELS,
+  SELECTOR_COMPONENT_NAMES,
   SELECTOR_COMPONENTS,
   SELECTOR_CONDITION_LABELS,
   buildUrl,
+  cellTone,
   componentFigure,
   componentOf,
   componentTitle,
   recordingFreshness,
   summarizeDecisions,
   summarizeEpisode,
-  type ComponentStatus,
+  unusableReasons,
+  usableShare,
+  type CellTone,
+  type FullRunRecord,
+  type KernelBackend,
   type SelectorHealthResponse,
 } from "@/lib/selector-health";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
-const CELL: Record<ComponentStatus, string> = {
+const CELL: Record<CellTone, string> = {
   ok: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
+  degraded: "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-300",
   broken: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300",
+  missing: "bg-zinc-100 text-zinc-500 italic dark:bg-zinc-800 dark:text-zinc-400",
   off: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400",
   pending: "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400",
 };
 
 const RECORDING_NAMES = {
-  fnrec: "Python (fnrec)",
-  kernrec_cuda: "CUDA kernels (kernrec)",
-  kernrec_rocm: "ROCm kernels (kernrec)",
+  fnrec: "Python function table (fnrec)",
+  kernrec_cuda: "CUDA kernel table (kernrec)",
+  kernrec_rocm: "ROCm kernel table (kernrec)",
 } as const;
+
+const BACKEND_NAMES: Record<KernelBackend, string> = { cuda: "CUDA", rocm: "ROCm" };
+
+function count(value: number | null): string {
+  return value === null ? "—" : value.toLocaleString();
+}
+
+function backendsLine(backends: Record<KernelBackend, number>, total: number): string {
+  return (Object.keys(BACKEND_NAMES) as KernelBackend[])
+    .map((backend) => `${BACKEND_NAMES[backend]} ${backends[backend]}/${total}`)
+    .join(" · ");
+}
+
+function RunDetail({ run }: { run: FullRunRecord }) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            <th className="px-5 py-3 font-medium">Component</th>
+            <th className="px-3 py-3 font-medium">Status</th>
+            <th
+              className="px-3 py-3 font-medium whitespace-nowrap"
+              title="Collected: uploaded by its job. Published: tables published as latest; maps re-uploaded next to the kernel table."
+            >
+              Collected / published
+            </th>
+            <th className="px-3 py-3 text-right font-medium whitespace-nowrap">
+              Jobs delivered / expected
+            </th>
+            <th className="px-3 py-3 text-right font-medium">Rows</th>
+            <th className="px-3 py-3 text-right font-medium whitespace-nowrap">Usable (share)</th>
+            <th className="px-3 py-3 font-medium whitespace-nowrap">Why rows are unusable</th>
+            <th
+              className="px-3 py-3 text-right font-medium whitespace-nowrap"
+              title="Source maps: objects, device objects, symbols, distinct csrc sources"
+            >
+              Objects / device / symbols / sources
+            </th>
+            <th className="px-3 py-3 font-medium">Verdict</th>
+          </tr>
+        </thead>
+        <tbody>
+          {SELECTOR_COMPONENTS.map((component) => {
+            const item = componentOf(run, component);
+            const isMap = component.startsWith("map_");
+            const share = usableShare(item);
+            const reasons = unusableReasons(item);
+            const tone = cellTone(item);
+            return (
+              <tr
+                key={component}
+                className="border-b border-zinc-100 align-top last:border-0 dark:border-zinc-800/50"
+              >
+                <td className="px-5 py-2.5 whitespace-nowrap">
+                  {SELECTOR_COMPONENT_NAMES[component]}
+                </td>
+                <td className="px-3 py-2.5">
+                  <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${CELL[tone]}`}>
+                    {tone}
+                  </span>
+                </td>
+                <td className="px-3 py-2.5 whitespace-nowrap">
+                  {item ? `${item.collected ? "yes" : "no"} / ${item.published ? "yes" : "no"}` : "—"}
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums">
+                  {item && (item.deliveredJobs !== null || item.expectedJobs !== null)
+                    ? `${count(item.deliveredJobs)} / ${count(item.expectedJobs)}`
+                    : "—"}
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums">
+                  {isMap ? "—" : count(item?.rows ?? null)}
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">
+                  {isMap
+                    ? "—"
+                    : item?.usableRows == null
+                      ? item?.rows != null
+                        ? "unknown"
+                        : "—"
+                      : `${count(item.usableRows)}${share === null ? "" : ` (${Math.round(share * 100)}%)`}`}
+                </td>
+                <td className="px-3 py-2.5 text-xs">
+                  {reasons.length ? reasons.join(", ") : isMap ? "—" : ""}
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">
+                  {isMap && item?.mapObjects != null
+                    ? `${count(item.mapObjects)} / ${count(item.mapDeviceObjects)} / ${count(item.mapSymbols)} / ${count(item.mapSources)}`
+                    : "—"}
+                </td>
+                <td className="max-w-[24rem] px-3 py-2.5 text-xs">
+                  {item?.verdict ?? item?.status ?? "not recorded"}
+                  {item?.rowsDegraded && (
+                    <span className="block text-amber-700 dark:text-amber-400">
+                      degraded: {item.rowsDegraded}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
@@ -82,6 +196,7 @@ function Reasons({ items }: { items: Array<{ reason: string; builds: number }> }
 }
 
 export default function SelectorContent() {
+  const [selectedBuild, setSelectedBuild] = useState<number | null>(null);
   const { data, error, isLoading } = useSWR<SelectorHealthResponse & { error?: string }>(
     "/api/selector",
     fetcher,
@@ -128,6 +243,11 @@ export default function SelectorContent() {
   const brokenLatest = latest
     ? latest.components.filter((item) => item.status === "broken").length
     : 0;
+  const degradedLatest = latest
+    ? latest.components.filter((item) => cellTone(item) === "degraded").length
+    : 0;
+  const selected =
+    data.runs.find((run) => run.buildNumber === selectedBuild) ?? latest ?? data.runs[0];
   const today = days[0];
 
   return (
@@ -148,12 +268,14 @@ export default function SelectorContent() {
           >
             ci-selector
           </a>{" "}
-          picks, from recordings the scheduled Full CI runs on main make: a
-          Python function table and CUDA and ROCm kernel tables, each kernel
-          table paired with a symbol map from the image builds. The collect
-          steps are soft-fail, so a broken one never turns a build red; this
-          page and its alerts are how it gets noticed. Hover a cell for its
-          verdict.
+          picks, from data every scheduled Full CI run on main collects: the
+          Python function table, the CUDA and ROCm kernel tables, and the
+          CUDA and ROCm kernel source maps the image builds produce for the
+          kernel tables to pair with. The collect steps are soft-fail, so a
+          broken one never turns a build red; this page and its alerts are
+          how it gets noticed. A table can also publish with most of its rows
+          unusable (amber). Hover a cell for its verdict, or pick a run for
+          every component&apos;s counts.
         </p>
       </div>
 
@@ -167,10 +289,18 @@ export default function SelectorContent() {
         <StatCard
           label="Latest completed run"
           value={latest ? `#${latest.buildNumber}` : "—"}
-          color={latest ? (brokenLatest ? "red" : "green") : "default"}
+          color={
+            latest ? (brokenLatest ? "red" : degradedLatest ? "yellow" : "green") : "default"
+          }
           detail={
             latest
-              ? `${latest.kind} · ${brokenLatest ? `${brokenLatest} not whole` : "all whole"}`
+              ? `${latest.kind} · ${
+                  brokenLatest
+                    ? `${brokenLatest} not whole`
+                    : degradedLatest
+                      ? `${degradedLatest} degraded`
+                      : "all whole"
+                }`
               : undefined
           }
         />
@@ -244,7 +374,7 @@ export default function SelectorContent() {
                       {formatHours(row.behindHours)}
                     </td>
                     <td className="px-3 py-2.5">
-                      {row.recording === "kernrec_rocm" ? (
+                      {row.recording === "kernrec_rocm" && row.usedBuild === null ? (
                         <span className="text-xs text-zinc-400">not in decisions</span>
                       ) : (
                         <BuildLink build={row.usedBuild} />
@@ -256,6 +386,12 @@ export default function SelectorContent() {
             </tbody>
           </table>
         </div>
+        {data.inUse && (
+          <p className="mt-2 text-xs text-zinc-400 dark:text-zinc-500">
+            Kernel backends named by the last {data.inUse.windowHours} h of PR
+            decisions: {backendsLine(data.inUse.kernelBackends, data.inUse.decisions)}.
+          </p>
+        )}
       </div>
 
       <div>
@@ -277,13 +413,21 @@ export default function SelectorContent() {
               {data.runs.map((run) => (
                 <tr
                   key={run.buildNumber}
-                  className="border-b border-zinc-100 last:border-0 dark:border-zinc-800/50"
+                  className={`border-b border-zinc-100 last:border-0 dark:border-zinc-800/50 ${run.buildNumber === selected?.buildNumber ? "bg-zinc-50 dark:bg-zinc-900" : ""}`}
                 >
                   <td className="px-5 py-2 whitespace-nowrap">
                     <BuildLink build={run.buildNumber} />
                     <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
                       {run.kind}
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedBuild(run.buildNumber)}
+                      className="ml-2 text-xs text-blue-600 hover:underline dark:text-blue-400"
+                      aria-pressed={run.buildNumber === selected?.buildNumber}
+                    >
+                      details
+                    </button>
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap text-zinc-500 dark:text-zinc-400">
                     {formatTime(run.createdAt)}
@@ -293,7 +437,7 @@ export default function SelectorContent() {
                     return (
                       <td key={component} className="px-2 py-1.5">
                         <span
-                          className={`block rounded px-2 py-1 text-xs whitespace-nowrap tabular-nums ${CELL[item?.status ?? "off"]}`}
+                          className={`block rounded px-2 py-1 text-xs whitespace-nowrap tabular-nums ${CELL[cellTone(item)]}`}
                           title={componentTitle(item)}
                         >
                           {componentFigure(item)}
@@ -314,10 +458,28 @@ export default function SelectorContent() {
           </table>
         </div>
         <p className="mt-2 text-xs text-zinc-400 dark:text-zinc-500">
-          Cells show usable rows and delivered/expected jobs. Runs before
-          ci-infra#881 have no job counts; their cells come from the collect log.
+          Table cells show usable/all rows and delivered/expected jobs; map
+          cells show objects and symbols. Amber: published but under 70% of
+          rows usable, or under 60% of the median of the previous 7 runs.
+          Python usable rows are unknown until fnrec_collect_summary.json
+          reports them. Runs before ci-infra#881 have no job counts; their
+          cells come from the collect log.
         </p>
       </div>
+
+      {selected && (
+        <div>
+          <h2 className="mb-3 text-lg font-semibold">
+            Run <BuildLink build={selected.buildNumber} />{" "}
+            <span className="text-sm font-normal text-zinc-500 dark:text-zinc-400">
+              {selected.kind} · {formatTime(selected.createdAt)} ·{" "}
+              {selected.commitSha.slice(0, 12)}
+              {selected.settled ? "" : " · still collecting"}
+            </span>
+          </h2>
+          <RunDetail run={selected} />
+        </div>
+      )}
 
       <div>
         <h2 className="mb-3 text-lg font-semibold">PR decisions by day</h2>
@@ -335,6 +497,12 @@ export default function SelectorContent() {
                   title="No decision artifact: docs-only builds, or a bootstrap that failed"
                 >
                   Missing
+                </th>
+                <th
+                  className="px-3 py-3 font-medium whitespace-nowrap"
+                  title="Decisions whose records named each kernel backend's table"
+                >
+                  Kernel backends
                 </th>
                 <th className="px-3 py-3 text-right font-medium whitespace-nowrap">p50 / p95</th>
                 <th className="px-3 py-3 font-medium">ci-infra</th>
@@ -358,6 +526,9 @@ export default function SelectorContent() {
                     <Reasons items={day.fallback} />
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{day.missing}</td>
+                  <td className="px-3 py-2.5 text-xs whitespace-nowrap tabular-nums">
+                    {backendsLine(day.kernelBackends, day.total - day.missing)}
+                  </td>
                   <td className="px-3 py-2.5 text-right whitespace-nowrap tabular-nums">
                     {formatSeconds(day.p50Seconds)} / {formatSeconds(day.p95Seconds)}
                   </td>
@@ -378,7 +549,7 @@ export default function SelectorContent() {
               ))}
               {days.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-5 py-8 text-center text-zinc-400">
+                  <td colSpan={9} className="px-5 py-8 text-center text-zinc-400">
                     No PR decisions recorded yet
                   </td>
                 </tr>

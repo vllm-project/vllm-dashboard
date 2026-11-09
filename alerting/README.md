@@ -95,11 +95,13 @@ Queue-wait alerting is owned by the dashboard context:
   ingests the scheduled Full CI runs of the last 14 days (one record per run
   and component: Python and CUDA/ROCm kernel recordings and symbol maps,
   read from the collect summaries of ci-infra#881 or, before it, the collect
-  logs) and every hour the selector decisions of PR builds. It opens one
-  episode per recording that is not whole in the latest completed run or
-  more than 30 hours stale, per recorder that PR decisions are not picking
-  up, and for selector errors on more than 5% of PR builds; each episode is
-  one Slack message, edited in place on resolve.
+  logs, plus the two small kernel tables and both kernel source maps read
+  whole) and every hour the selector decisions of PR builds. It opens one
+  episode per recording or source map that is not whole in the latest
+  completed run, per table whose usable rows dropped (`rows_degraded`), per
+  recording more than 30 hours stale, per recorder that PR decisions are not
+  picking up, and for selector errors on more than 5% of PR builds; each
+  episode is one Slack message, edited in place on resolve.
 - `analyzer.py` — the Full CI analyzer compatibility adapter. It materializes
   the working files the bundled analyzer instructions expect (summary, full
   build data, previous-failure cache, agent memory hydrated from the latest

@@ -28,10 +28,13 @@ client credentials are needed for dashboard reads.
 - **Force-merges** — how often vLLM PRs are merged while `buildkite/ci/pr` is
   red: rate windows, daily or weekly rate and merge volume over 7d/30d/90d/1y,
   top PR authors, and recent force-merged PRs.
-- **CI Selector** — whether the recordings ci-selector picks PR test steps
-  from are whole and fresh: one row per scheduled full run with each
-  recording's health, the build PR decisions actually use, and daily PR
-  decision outcomes and selector run time.
+- **CI Selector** — every data collection ci-selector picks PR test steps
+  from, run by run: for each scheduled full run, the Python function table,
+  the CUDA and ROCm kernel tables (rows, usable rows and share, and why the
+  rest are unusable), and the CUDA and ROCm kernel source maps (objects,
+  device objects, symbols, csrc sources); the builds and kernel backends PR
+  decisions actually use; and daily PR decision outcomes and selector run
+  time.
 
 ## Architecture
 

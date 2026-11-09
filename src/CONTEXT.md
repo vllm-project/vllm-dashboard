@@ -21,8 +21,10 @@ _Avoid_: Alert producer, monitoring worker
 
 **Selector Health View**:
 The read-only CI Selector page over Alert Production's selector-health
-records: each scheduled Full CI Run's recordings, their freshness, and PR
-selector decisions by day.
+records: each scheduled Full CI Run's five components (Python function
+table, CUDA and ROCm kernel tables, CUDA and ROCm kernel source maps) with
+their counts, the recordings' freshness, and PR selector decisions by day
+with the kernel backends they used.
 _Avoid_: Coverage dashboard
 
 **Queue Wait Alert**:
