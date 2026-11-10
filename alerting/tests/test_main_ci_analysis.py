@@ -430,6 +430,62 @@ def test_read_analysis_accepts_summary_up_to_the_limit(tmp_path: Path) -> None:
     assert analysis.summary == "x" * SUMMARY_CHAR_LIMIT
 
 
+QUOTED_LOG = (
+    "+++ :test_tube: Command (12/25): pytest -v -s plugins_tests/test_x.py\n"
+    "  FAILED plugins_tests/test_x.py::test_offline - RuntimeError: boom  \n"
+    "=== 1 failed, 4 passed in 93.61s ===\n"
+)
+
+
+@pytest.mark.parametrize(
+    "quotes",
+    [
+        [],
+        ["FAILED plugins_tests/test_x.py::test_offline - RuntimeError: boom"],
+        [
+            "=== 1 failed, 4 passed in 93.61s ===",
+            "  FAILED plugins_tests/test_x.py::test_offline - RuntimeError: boom",
+        ],
+    ],
+)
+def test_read_analysis_keeps_verdict_when_quotes_are_in_the_log(
+    tmp_path: Path, quotes: list[str]
+) -> None:
+    analysis = read_analysis(
+        _write_payload(tmp_path, {**VALID_PAYLOAD, "log_quotes": quotes}),
+        target=_target(),
+        model_version="model",
+        log_text=QUOTED_LOG,
+    )
+
+    assert (analysis.classification, analysis.confidence) == ("infra", "high")
+
+
+@pytest.mark.parametrize(
+    "quotes",
+    [
+        ["AssertionError: current_platform resolved to None."],
+        ["FAILED plugins_tests/test_x.py::test_offline"],
+        "FAILED plugins_tests/test_x.py::test_offline - RuntimeError: boom",
+        [42],
+    ],
+)
+def test_read_analysis_downgrades_quotes_missing_from_the_log(
+    tmp_path: Path, quotes: Any
+) -> None:
+    """A quote the log lacks (made up, or only part of a line) keeps the
+    text but drops the verdict."""
+    analysis = read_analysis(
+        _write_payload(tmp_path, {**VALID_PAYLOAD, "log_quotes": quotes}),
+        target=_target(),
+        model_version="model",
+        log_text=QUOTED_LOG,
+    )
+
+    assert (analysis.classification, analysis.confidence) == ("unknown", "low")
+    assert analysis.summary == VALID_PAYLOAD["summary"]
+
+
 def test_read_analysis_requires_the_output_file(tmp_path: Path) -> None:
     with pytest.raises(AnalyzerError, match="no analysis.json"):
         read_analysis(

@@ -241,10 +241,32 @@ def _parse_fix_prs(payload: Any) -> tuple[SuspectedFixPR, ...]:
     return tuple(parsed)
 
 
+def _unverified_quotes(payload: dict[str, Any], log_text: str) -> bool:
+    """Whether `log_quotes` is malformed or quotes a line the log lacks.
+
+    The prompt asks for 1-3 exact lines from job_log.txt. A quote that is not
+    there is evidence the model wrote rather than read, so the analysis keeps
+    its text but loses its verdict.
+    """
+    quotes = payload.get("log_quotes", [])
+    if not isinstance(quotes, list) or not all(isinstance(q, str) for q in quotes):
+        return True
+    lines = {line.strip() for line in log_text.splitlines()}
+    return any(quote.strip() not in lines for quote in quotes)
+
+
 def read_analysis(
-    path: Path, *, target: MainCIAnalysisTarget, model_version: str
+    path: Path,
+    *,
+    target: MainCIAnalysisTarget,
+    model_version: str,
+    log_text: str | None = None,
 ) -> MainCIJobAnalysis:
-    """Validate the model's strict-JSON output; any defect raises."""
+    """Validate the model's strict-JSON output; any defect raises.
+
+    With `log_text`, an analysis whose `log_quotes` are not in the log is kept
+    but downgraded to an `unknown`, `low`-confidence verdict.
+    """
     if not path.is_file():
         raise AnalyzerError("analyzer wrote no analysis.json")
     try:
@@ -267,6 +289,8 @@ def read_analysis(
     ):
         raise AnalyzerError("analysis evidence_urls is not a list of strings")
     evidence = [url for url in evidence if trusted_url(url)]
+    if log_text is not None and _unverified_quotes(payload, log_text):
+        classification, confidence = "unknown", "low"
 
     return MainCIJobAnalysis(
         alert_id=target.alert_id,
@@ -344,5 +368,6 @@ class MainCIAnalysisHandler:
                 workdir / ANALYSIS_FILE,
                 target=target,
                 model_version=self._model_version,
+                log_text=log_text,
             )
         self._store.commit_main_ci_analysis(analysis=analysis, now=self._clock.now())
