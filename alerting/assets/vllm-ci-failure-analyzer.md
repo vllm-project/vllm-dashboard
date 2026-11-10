@@ -65,13 +65,39 @@ subagent receives build number, job name, current commit, and previous commit.
 It may read Buildkite logs and GitHub metadata using credentials already in the
 environment. Never include credential values in a prompt, file, or output.
 
+Tell each subagent how to read a Buildkite job log. Tool output can be cut to
+its last 40,000 characters, and a long job's failure is often not in that
+tail:
+
+- A job runs several commands in order, each starting with a line like
+  `+++ :test_tube: Command (N/M): <command>`, and keeps going after one
+  fails. Find the earliest `Command (N/M)` marker in what you received;
+  commands 1 to N-1 are not in it.
+- The failure is a `FAILED <test id> - <error>` line, a pytest summary
+  reporting failures or errors, a Python traceback, or a timeout banner. A
+  final `exited with status 1` only says a failure happened somewhere.
+- If none of that is in the tail, say the failing output was not visible and
+  name the commands it could be in. Never fill the gap with a test name,
+  error text, pid or memory figure the log did not show.
+- A GPU out-of-memory error is usually the job's own doing: an earlier server
+  or engine from the same test file still holding memory, or a test asking
+  for too large a share of the GPU ("Free memory on device ... is less than
+  desired GPU memory utilization"). Report it as `_env_` only when the log
+  shows a process from outside the job or a hardware fault.
+
+A subagent's result counts as evidence only when it quotes the log line it
+rests on. Drop any detail it cannot back with a quote.
+
 Classify each new failure with one concise result:
 
 - `_env: <issue>_` for clear infrastructure indicators such as OOM, disk full,
   network failure, CUDA/NCCL environment errors, killed processes, or segfaults;
 - `_suspicious: <https://github.com/vllm-project/vllm/pull/NNN|PR #NNN>
   changed related files_` when one merged PR is materially related; or
-- `_possibly flaky: no environment issue or relevant PR found_` otherwise.
+- `_possibly flaky: no environment issue or relevant PR found_` when the
+  failing output was read and points nowhere; or
+- `_failure not in log tail: commands 1–N-1_` when the failing output was
+  never visible.
 
 Write `.logs/suspicious_prs.json` with `build_number`, `commit`, and a
 `suspicious_prs` array. Each suspicious entry contains `pr_number`, `pr_url`,
