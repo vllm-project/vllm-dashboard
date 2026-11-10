@@ -11,7 +11,9 @@ import pytest
 
 from alerting.commands import ScheduledCommand
 from alerting.daily_summary import (
+    BUCKETS_PER_DAY,
     DailySummaryHandler,
+    ScrapeBuckets,
     SummaryInputs,
     render_summary,
 )
@@ -47,6 +49,32 @@ def counts(**by_host: int) -> list[GpuCountObservation]:
     return [GpuCountObservation(h.replace("_", "-"), n, NOW) for h, n in by_host.items()]
 
 
+# The day's wall-clock five-minute buckets, most recent complete one first.
+SLOTS = [NOW - timedelta(minutes=5) * n for n in range(1, BUCKETS_PER_DAY + 1)]
+
+
+def reporting(missing: dict[str, int] | None = None) -> dict[str, frozenset[datetime]]:
+    """Every pool host reports the whole day; each host in `missing` skips an
+    interior run of `n` buckets (a mid-day flap, not joining or leaving)."""
+    by_host: dict[str, frozenset[datetime]] = {
+        host: frozenset(SLOTS) for host in POOLS
+    }
+    for host, n in (missing or {}).items():
+        by_host[host] = frozenset(SLOTS[:100] + SLOTS[100 + n:])
+    return by_host
+
+
+def scrape(
+    missing: dict[str, int] | None = None, *, eligible: Iterable[str] | None = None
+) -> ScrapeBuckets:
+    """reporting() plus eligibility from the day before: every pool host,
+    unless `eligible` says otherwise."""
+    return ScrapeBuckets(
+        by_host=reporting(missing),
+        eligible=frozenset(POOLS if eligible is None else eligible),
+    )
+
+
 def episode(
     alert_type: str,
     host: str,
@@ -73,7 +101,7 @@ def inputs(**overrides: Any) -> SummaryInputs:
         baselines={},
         exceptions={},
         episodes=[],
-        scrape_buckets={},
+        scrape_buckets=ScrapeBuckets(by_host={}, eligible=frozenset()),
         allocatable={},
         cordoned={},
     )
@@ -116,7 +144,17 @@ def test_busy_day_lists_changes_then_standing_and_hides_empty_sections() -> None
                 ),
                 episode("unreporting", "h200-ci-9"),
             ],
-            scrape_buckets={"h200-ci-2": 200, "h200-ci-1": 280, "h200-ci-9": 100},
+            scrape_buckets=ScrapeBuckets(
+                by_host=reporting()
+                | {
+                    # 88 missed mid-day, vouched for by `h200-ci-1` reporting them.
+                    "h200-ci-2": frozenset(SLOTS[:100] + SLOTS[188:]),
+                    # 8 missed at a different time, under the 10% threshold.
+                    "h200-ci-1": frozenset(SLOTS[:200] + SLOTS[208:]),
+                    "h200-ci-9": frozenset(SLOTS[:100]),
+                },
+                eligible=frozenset(POOLS),
+            ),
         )
     )
     assert text == "\n".join(
@@ -183,7 +221,10 @@ def test_a_silent_host_is_not_also_reported_as_a_failing_scrape() -> None:
     text = render_summary(
         inputs(
             episodes=[episode("unreporting", "h200-ci-1")],
-            scrape_buckets={"h200-ci-1": 10},
+            scrape_buckets=ScrapeBuckets(
+                by_host={k: v for k, v in reporting().items() if k != "h200-ci-1"},
+                eligible=frozenset(POOLS),
+            ),
         )
     )
     assert "scrape failing" not in text
@@ -191,8 +232,8 @@ def test_a_silent_host_is_not_also_reported_as_a_failing_scrape() -> None:
 
 
 def test_a_scrape_at_the_failing_threshold_is_flagged_and_just_under_is_not() -> None:
-    assert "failing 10%" in render_summary(inputs(scrape_buckets={"h200-ci-1": 259}))
-    assert "failing" not in render_summary(inputs(scrape_buckets={"h200-ci-1": 260}))
+    assert "failing 10%" in render_summary(inputs(scrape_buckets=scrape({"h200-ci-1": 29})))
+    assert "failing" not in render_summary(inputs(scrape_buckets=scrape({"h200-ci-1": 28})))
 
 
 def test_old_standing_quarantine_shows_days_and_is_not_a_change() -> None:
@@ -374,7 +415,14 @@ def test_a_closed_held_episode_does_not_hide_the_ones_after_it() -> None:
 
 def test_an_offline_bare_metal_host_keeps_its_pool_from_its_last_agents() -> None:
     handler, outbox, source = handler_parts()
-    source.buckets = {"h200-ci-1": 200}
+    source.queues = [("h200-ci-1", "h200_35gb"), ("h200-ci-2", "h200_35gb")]
+    source.buckets = ScrapeBuckets(
+        by_host={
+            "h200-ci-1": frozenset(SLOTS[:100] + SLOTS[188:]),
+            "h200-ci-2": frozenset(SLOTS),
+        },
+        eligible=frozenset({"h200-ci-1", "h200-ci-2"}),
+    )
     source.episodes = [
         episode("gpu_count", "gpu-count:h200-ci-1", observed_gpus=7, baseline_gpus=8)
     ]
@@ -453,7 +501,9 @@ def test_a_cordoned_node_is_standing_even_on_an_otherwise_quiet_day() -> None:
 
 def test_only_the_summarys_own_hosts_are_looked_up_in_agent_snapshots() -> None:
     handler, outbox, source = handler_parts()
-    source.buckets = {"h200-ci-2": 288}
+    source.buckets = ScrapeBuckets(
+        by_host={"h200-ci-2": frozenset(SLOTS)}, eligible=frozenset()
+    )
     source.episodes = [episode("gpu_count", "gpu-count:h200-ci-3")]
     source.allocatable = {"inf-4x8h100-9": (8, 8)}
     handler(ScheduledCommand("daily_summary", NOW))
@@ -484,9 +534,20 @@ def test_hostnames_normalize_like_the_dashboard() -> None:
 
 def test_a_pool_that_went_dark_is_still_on_the_roster() -> None:
     handler, outbox, source = handler_parts()
-    source.buckets = {"inf-4x8h100-1": 100}
+    # Eligible from the day before but reported nothing since: the roster
+    # still names its pool.
+    source.buckets = ScrapeBuckets(by_host={}, eligible=frozenset({"inf-4x8h100-1"}))
     handler(ScheduledCommand("daily_summary", NOW))
     assert "h100 dry run" in outbox.records()[0].payload["text"]
+
+
+def test_the_scrape_window_starts_at_the_first_aligned_slot() -> None:
+    # The bucket grid starts at the five-minute floor of now minus a day; the
+    # store must be asked from exactly there, or an unaligned run loses the
+    # first expected slot (and the eligibility day before it stays whole).
+    handler, _, source = handler_parts()
+    handler(ScheduledCommand("daily_summary", NOW + timedelta(minutes=7)))
+    assert source.scrape_since == [YESTERDAY + timedelta(minutes=5)]
 
 
 def test_a_host_named_only_by_a_gpu_count_episode_is_on_the_roster() -> None:
@@ -525,8 +586,331 @@ def test_hosts_outside_the_pools_do_not_hide_the_ones_after_them() -> None:
 
 
 def test_scrape_percent_is_the_share_of_missing_buckets() -> None:
-    assert "failing 100% (24 h)" in render_summary(inputs(scrape_buckets={"h200-ci-1": 0}))
-    assert "failing 50% (24 h)" in render_summary(inputs(scrape_buckets={"h200-ci-1": 144}))
+    # A host that reported only the day's first and last bucket: every
+    # interior bucket is its own covered miss. (100% is unreachable: a
+    # host's own first and last buckets bound its span.)
+    nearly_all = ScrapeBuckets(
+        by_host=reporting() | {"h200-ci-1": frozenset({SLOTS[0], SLOTS[-1]})},
+        eligible=frozenset(POOLS),
+    )
+    assert "failing 99% (24 h)" in render_summary(inputs(scrape_buckets=nearly_all))
+    assert "failing 50% (24 h)" in render_summary(
+        inputs(scrape_buckets=scrape({"h200-ci-1": 144}))
+    )
+
+
+def test_a_stretch_no_h200_host_reported_is_charged_when_the_fleet_reported() -> None:
+    # Each h200 host reports for itself; the shared-scraper nodes reporting
+    # the same stretch prove the ingestion pipeline was up, so every h200
+    # host's miss is its own.
+    by_host = reporting()
+    for host in ("h200-ci-1", "h200-ci-2"):
+        by_host[host] = frozenset(SLOTS[:100] + SLOTS[140:])
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset(POOLS))
+    text = render_summary(inputs(scrape_buckets=buckets))
+    assert "`h200-ci-1` scrape failing 14%" in text
+    assert "`h200-ci-2` scrape failing 14%" in text
+
+
+def test_a_single_h200_host_warns_when_the_fleet_keeps_reporting() -> None:
+    # The only h200 host missing a stretch while the k8s scraper reports:
+    # ingestion was up, so the misses are the host's own.
+    pools = {
+        "h200-ci-1": ("h200", "h200_35gb"),
+        "inf-4x8h100-1": ("h100", "mithril-h100-pool"),
+    }
+    buckets = ScrapeBuckets(
+        by_host={
+            "h200-ci-1": frozenset(SLOTS[:100] + SLOTS[140:]),
+            "inf-4x8h100-1": frozenset(SLOTS),
+        },
+        eligible=frozenset(pools),
+    )
+    assert "`h200-ci-1` scrape failing 14%" in render_summary(
+        inputs(pools=pools, scrape_buckets=buckets)
+    )
+
+
+def test_a_gap_is_the_hosts_own_when_a_peer_reported_it() -> None:
+    # Each h200 host reports independently: one peer reporting a bucket
+    # proves the pipeline was up, so the other host's miss is charged to it.
+    text = render_summary(inputs(scrape_buckets=scrape({"h200-ci-1": 40})))
+    assert "`h200-ci-1` scrape failing 14%" in text
+    assert "`h200-ci-2` scrape" not in text
+
+
+def test_two_independent_reporters_flapping_together_are_both_charged() -> None:
+    # Two of three h200 hosts missing the same stretch while the third
+    # reports is two host failures, not a central outage.
+    by_host = {host: frozenset(SLOTS) for host in THREE_H200}
+    for host in ("h200-ci-1", "h200-ci-3"):
+        by_host[host] = frozenset(SLOTS[:100] + SLOTS[140:])
+    text = render_summary(
+        inputs(
+            pools=THREE_H200,
+            scrape_buckets=ScrapeBuckets(
+                by_host=by_host, eligible=frozenset(THREE_H200)
+            ),
+        )
+    )
+    assert "`h200-ci-1` scrape failing 14%" in text
+    assert "`h200-ci-3` scrape failing 14%" in text
+    assert "`h200-ci-2` scrape" not in text
+
+
+def test_ingestion_gaps_plus_a_small_host_gap_stay_under_the_threshold() -> None:
+    # Most of the host's missing buckets are ones no host anywhere reported
+    # (the ingestion pipeline down), the rest its own; only the host-only
+    # share counts toward the 10% threshold.
+    by_host = reporting()
+    for host in POOLS:
+        by_host[host] = frozenset(SLOTS[:100] + SLOTS[119:])
+    by_host["h200-ci-1"] = frozenset(SLOTS[:100] + SLOTS[119:130] + SLOTS[143:])
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset(POOLS))
+    assert "scrape failing" not in render_summary(inputs(scrape_buckets=buckets))
+
+
+def test_a_new_host_is_not_expected_before_its_first_bucket() -> None:
+    # Not eligible from the day before: a genuinely new host is measured
+    # from its first bucket on.
+    by_host = reporting()
+    by_host["h200-ci-1"] = frozenset(SLOTS[:144])
+    buckets = ScrapeBuckets(
+        by_host=by_host, eligible=frozenset({"h200-ci-2", "inf-4x8h100-1"})
+    )
+    assert "scrape failing" not in render_summary(inputs(scrape_buckets=buckets))
+    # Gaps inside its span still count.
+    by_host["h200-ci-1"] = frozenset(SLOTS[:100] + SLOTS[129:144])
+    assert "scrape failing 10%" in render_summary(inputs(scrape_buckets=buckets))
+
+
+def test_an_eligible_host_that_returns_is_charged_for_its_start_gap() -> None:
+    # Eligible from the day before: expected for the whole window, so the
+    # half-day it was dead before returning counts — the same buckets as a
+    # new host, with the opposite outcome.
+    by_host = reporting()
+    by_host["h200-ci-1"] = frozenset(SLOTS[:144])
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset(POOLS))
+    assert "`h200-ci-1` scrape failing 50%" in render_summary(
+        inputs(scrape_buckets=buckets)
+    )
+
+
+def test_trailing_silence_after_the_last_bucket_is_unreportings_job() -> None:
+    # Spans end at the host's last bucket of the day: trailing silence is
+    # not a flap, for an eligible host and for a genuinely new one alike.
+    # Sustained silence is the unreporting alert's job, and an open
+    # unreporting episode still suppresses this line.
+    by_host = reporting()
+    by_host["h200-ci-1"] = frozenset(SLOTS[144:])  # oldest half only
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset(POOLS))
+    assert "scrape failing" not in render_summary(inputs(scrape_buckets=buckets))
+    new_host = ScrapeBuckets(
+        by_host=by_host, eligible=frozenset({"h200-ci-2", "inf-4x8h100-1"})
+    )
+    assert "scrape failing" not in render_summary(inputs(scrape_buckets=new_host))
+
+
+def test_an_eligible_host_silent_all_window_is_never_charged() -> None:
+    # Eligible but nothing today: a removed or long-dead host has no
+    # expected slots — its silence belongs to the unreporting alert and the
+    # roster, not the flap percentage, even with its cluster healthy.
+    by_host = reporting()
+    del by_host["h200-ci-1"]
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset(POOLS))
+    assert "scrape failing" not in render_summary(inputs(scrape_buckets=buckets))
+
+
+THREE_H200 = {
+    "h200-ci-1": ("h200", "h200_35gb"),
+    "h200-ci-2": ("h200", "h200_35gb"),
+    "h200-ci-3": ("h200", "h200_35gb"),
+    "inf-4x8h100-1": ("h100", "mithril-h100-pool"),
+}
+
+TWO_H100 = {
+    "inf-4x8h100-1": ("h100", "mithril-h100-pool"),
+    "inf-4x8h100-2": ("h100", "mithril-h100-pool"),
+}
+
+THREE_H100 = {
+    "inf-4x8h100-1": ("h100", "mithril-h100-pool"),
+    "inf-4x8h100-2": ("h100", "mithril-h100-pool"),
+    "inf-4x8h100-3": ("h100", "mithril-h100-pool"),
+    "h200-ci-1": ("h200", "h200_35gb"),
+}
+
+
+def test_no_buckets_in_the_window_means_no_host_is_charged() -> None:
+    # Nothing reported anywhere: for hosts that each report for themselves,
+    # no bucket can be told apart from the pipeline being down. (A
+    # single-host shared-scraper pool has no way to tell and is charged
+    # directly — see the shared-scraper tests.)
+    pools = {"h200-ci-1": ("h200", "h200_35gb"), "h200-ci-2": ("h200", "h200_35gb")}
+    buckets = ScrapeBuckets(by_host={}, eligible=frozenset(pools))
+    assert "scrape failing" not in render_summary(
+        inputs(pools=pools, scrape_buckets=buckets)
+    )
+
+
+def test_a_shared_scraper_outage_is_not_charged_to_its_nodes() -> None:
+    # One control-plane scraper reports every h100 node: all nodes missing
+    # the same stretch is the scraper down, not the hosts. Once a majority
+    # reports, the remaining miss is the host's own.
+    by_host = {host: frozenset(SLOTS) for host in TWO_H100}
+    for host in TWO_H100:
+        by_host[host] = frozenset(SLOTS[:100] + SLOTS[140:])
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset(TWO_H100))
+    assert "scrape failing" not in render_summary(
+        inputs(pools=TWO_H100, scrape_buckets=buckets)
+    )
+    by_host["inf-4x8h100-2"] = frozenset(SLOTS)
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset(TWO_H100))
+    assert "`inf-4x8h100-1` scrape failing 14%" in render_summary(
+        inputs(pools=TWO_H100, scrape_buckets=buckets)
+    )
+
+
+def test_a_third_of_the_shared_scrapers_nodes_reporting_is_not_a_majority() -> None:
+    # One of three nodes reported by the shared scraper: not a majority, so
+    # the missing two are not charged — the scraper may be limping.
+    by_host = {host: frozenset(SLOTS) for host in THREE_H100}
+    by_host["inf-4x8h100-1"] = frozenset(SLOTS[:100] + SLOTS[140:])
+    by_host["inf-4x8h100-2"] = frozenset(SLOTS[:100] + SLOTS[140:])
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset(THREE_H100))
+    assert "scrape failing" not in render_summary(
+        inputs(pools=THREE_H100, scrape_buckets=buckets)
+    )
+
+
+def test_a_single_host_shared_scraper_pool_still_warns() -> None:
+    # With fewer than two expected hosts there is no majority to prove a
+    # scraper outage, so the host's misses are charged directly.
+    pools = {"inf-4x8h100-1": ("h100", "mithril-h100-pool")}
+    buckets = ScrapeBuckets(
+        by_host={"inf-4x8h100-1": frozenset(SLOTS[:100] + SLOTS[140:])},
+        eligible=frozenset(pools),
+    )
+    assert "scrape failing 14%" in render_summary(
+        inputs(pools=pools, scrape_buckets=buckets)
+    )
+
+
+def test_silent_nodes_do_not_dilute_coverage_for_the_live_one() -> None:
+    # Nodes with an open unreporting episode belong to the unreporting alert:
+    # they neither get this warning nor count toward their cluster's expected
+    # hosts — or two silent nodes would suppress the live node's flap.
+    pools = {
+        "inf-4x8h100-2": ("h100", "mithril-h100-pool"),
+        "inf-4x8h100-3": ("h100", "mithril-h100-pool"),
+        "inf-4x8h100-1": ("h100", "mithril-h100-pool"),
+    }
+    by_host = {host: frozenset(SLOTS) for host in pools}
+    by_host["inf-4x8h100-1"] = frozenset(SLOTS[:100] + SLOTS[140:])
+    by_host["inf-4x8h100-2"] = frozenset()
+    by_host["inf-4x8h100-3"] = frozenset()
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset(pools))
+    text = render_summary(
+        inputs(
+            pools=pools,
+            scrape_buckets=buckets,
+            episodes=[
+                episode("unreporting", "inf-4x8h100-2"),
+                episode("unreporting", "inf-4x8h100-3"),
+            ],
+        )
+    )
+    assert "`inf-4x8h100-1` scrape failing 14%" in text
+    assert "`inf-4x8h100-2` scrape" not in text
+
+
+def test_a_pool_host_that_never_reported_does_not_hide_the_rest() -> None:
+    # Never reported and not eligible from the day before: not measured, and
+    # the hosts after it still are.
+    pools = {
+        "h200-ci-0": ("h200", "h200_35gb"),
+        "h200-ci-1": ("h200", "h200_35gb"),
+        "h200-ci-2": ("h200", "h200_35gb"),
+    }
+    buckets = ScrapeBuckets(
+        by_host={
+            "h200-ci-1": frozenset(SLOTS[:100] + SLOTS[140:]),
+            "h200-ci-2": frozenset(SLOTS),
+        },
+        eligible=frozenset({"h200-ci-1", "h200-ci-2"}),
+    )
+    assert "`h200-ci-1` scrape failing 14%" in render_summary(
+        inputs(pools=pools, scrape_buckets=buckets)
+    )
+
+
+def test_a_joining_hosts_first_bucket_counts_toward_shared_coverage() -> None:
+    # A new h100 node joined mid-day. At its first bucket it is expected and
+    # the scraper reported it while both other nodes miss it: one of three
+    # expected is not a majority, so the miss is not charged to them.
+    by_host = {host: frozenset(SLOTS) for host in THREE_H100}
+    by_host["inf-4x8h100-3"] = frozenset(SLOTS[:100])
+    by_host["inf-4x8h100-1"] = frozenset(SLOTS[:99] + SLOTS[100:150] + SLOTS[178:])
+    by_host["inf-4x8h100-2"] = frozenset(SLOTS[:99] + SLOTS[100:])
+    buckets = ScrapeBuckets(
+        by_host=by_host,
+        eligible=frozenset({"inf-4x8h100-1", "inf-4x8h100-2", "h200-ci-1"}),
+    )
+    assert "scrape failing" not in render_summary(
+        inputs(pools=THREE_H100, scrape_buckets=buckets)
+    )
+
+
+def test_the_days_first_slot_counts_for_an_eligible_host() -> None:
+    # An eligible host missing the day's first bucket plus 28 interior ones
+    # crosses the 10% threshold only if the first slot is expected.
+    by_host = reporting({"h200-ci-1": 28})
+    by_host["h200-ci-1"] = by_host["h200-ci-1"] - {SLOTS[-1]}
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset(POOLS))
+    assert "scrape failing 10%" in render_summary(inputs(scrape_buckets=buckets))
+
+
+def test_a_hosts_last_bucket_counts_toward_shared_coverage() -> None:
+    # inf-4x8h100-3 last reported at SLOTS[100]. That bucket it is still
+    # expected and reporting while both other nodes miss it: one of three
+    # expected is not a majority, so the miss is not charged to them.
+    by_host = {host: frozenset(SLOTS) for host in THREE_H100}
+    by_host["inf-4x8h100-3"] = frozenset(SLOTS[100:])
+    by_host["inf-4x8h100-1"] = frozenset(SLOTS[:100] + SLOTS[101:150] + SLOTS[178:])
+    by_host["inf-4x8h100-2"] = frozenset(SLOTS[:100] + SLOTS[101:])
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset(THREE_H100))
+    assert "scrape failing" not in render_summary(
+        inputs(pools=THREE_H100, scrape_buckets=buckets)
+    )
+
+
+def test_a_cluster_of_only_new_hosts_still_measures_their_spans() -> None:
+    # No host eligible from the day before: slots before anyone's first
+    # bucket have no expected host and must not stop the rest of the day
+    # from being measured.
+    pools = {"h200-ci-1": ("h200", "h200_35gb"), "h200-ci-2": ("h200", "h200_35gb")}
+    by_host = {
+        "h200-ci-1": frozenset(SLOTS[:100] + SLOTS[129:144]),
+        "h200-ci-2": frozenset(SLOTS[:144]),
+    }
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset())
+    assert "`h200-ci-1` scrape failing 10%" in render_summary(
+        inputs(pools=pools, scrape_buckets=buckets)
+    )
+
+
+def test_the_days_slots_stay_wall_clock_aligned_for_an_unaligned_run() -> None:
+    # Rollup buckets are UTC wall-clock aligned; a run at :07 must expect the
+    # aligned slots or no reported bucket ever matches one.
+    now = NOW + timedelta(minutes=7)
+    end = NOW + timedelta(minutes=5)  # 16:05, the five-minute floor of 16:07
+    aligned = [end - timedelta(minutes=5) * n for n in range(1, BUCKETS_PER_DAY + 1)]
+    by_host = {host: frozenset(aligned) for host in POOLS}
+    by_host["h200-ci-1"] = frozenset(aligned[:100] + aligned[129:])
+    buckets = ScrapeBuckets(by_host=by_host, eligible=frozenset(POOLS))
+    assert "scrape failing 10%" in render_summary(
+        inputs(now=now, scrape_buckets=buckets)
+    )
 
 
 def test_dry_run_is_named_in_the_mode_line_and_pools_without_hosts_not_started() -> None:
@@ -556,6 +940,7 @@ class FakeSource:
     def __init__(self, episodes: list[InfraAlertEpisode]) -> None:
         self.episodes = episodes
         self.since: list[datetime] = []
+        self.scrape_since: list[datetime] = []
 
     def episodes_since(self, since: datetime) -> list[InfraAlertEpisode]:
         self.since.append(since)
@@ -564,7 +949,7 @@ class FakeSource:
     def expected_gpu_exceptions(self) -> dict[str, int]:
         return {}
 
-    buckets: dict[str, int] = {}
+    buckets = ScrapeBuckets(by_host={}, eligible=frozenset())
     allocatable: dict[str, tuple[int, int]] = {}
     queues: list[tuple[str, str]] = [("h200-ci-1", "h200_35gb")]
 
@@ -575,7 +960,8 @@ class FakeSource:
         self.agents_since = since
         return [q for q in self.queues if q[0] in self.asked]
 
-    def scrape_buckets(self, since: datetime) -> dict[str, int]:
+    def scrape_buckets(self, since: datetime) -> ScrapeBuckets:
+        self.scrape_since.append(since)
         return self.buckets
 
     def allocatable_gpus(self) -> dict[str, tuple[int, int]]:
@@ -683,6 +1069,40 @@ class Recorder:
         return self.rows[0] if self.rows else None
 
 
+def test_postgres_scrape_buckets_give_each_hosts_buckets() -> None:
+    on_edge = YESTERDAY
+    inside = YESTERDAY + timedelta(hours=12)
+    recorder = Recorder(
+        [
+            # Mixed case, a bucket exactly on the window edge and one inside,
+            # and eligible from the day before.
+            ("H200-CI-1", [on_edge, inside], True),
+            # The same host under another casing: buckets merge, and it stays
+            # eligible though this casing's group saw nothing before.
+            ("h200-ci-1", [inside + timedelta(hours=1)], False),
+            # Eligible but silent all window: not padded into by_host.
+            ("h200-ci-2", None, True),
+            # Reported today but nothing the day before: new, not eligible.
+            ("h200-ci-3", [inside], False),
+        ]
+    )
+    buckets = PostgresAlertStore(lambda: recorder).scrape_buckets(YESTERDAY)
+    assert buckets == ScrapeBuckets(
+        by_host={
+            "h200-ci-1": frozenset({on_edge, inside, inside + timedelta(hours=1)}),
+            "h200-ci-3": frozenset({inside}),
+        },
+        eligible=frozenset({"h200-ci-1", "h200-ci-2"}),
+    )
+    # One two-day scan: window buckets by FILTER, eligibility by bool_or, so
+    # there is no second query a fake connection could confuse it with.
+    assert len(recorder.calls) == 1
+    sql, params = recorder.calls[0]
+    assert "array_agg(DISTINCT time_bucket) FILTER (WHERE time_bucket >= %s)" in sql
+    assert "bool_or(time_bucket < %s)" in sql
+    assert params == (YESTERDAY, YESTERDAY, YESTERDAY - timedelta(days=1))
+
+
 def test_postgres_reads_map_rows_and_bound_the_window() -> None:
     recorder = Recorder(
         [(1, "quarantine", "h200-ci-1", YESTERDAY, NOW, {"stage": "held"})]
@@ -701,13 +1121,6 @@ def test_postgres_reads_map_rows_and_bound_the_window() -> None:
     }
     assert recorder.calls[0][0] == (
         "SELECT host, expected_gpus FROM alerting_expected_gpu_exceptions"
-    )
-
-    recorder = Recorder([("H200-CI-1", 280)])
-    store = PostgresAlertStore(lambda: recorder)
-    assert store.scrape_buckets(YESTERDAY) == {"h200-ci-1": 280}
-    assert recorder.calls[0][1] == (
-        YESTERDAY, YESTERDAY - timedelta(days=1), YESTERDAY,
     )
 
     # The database returns the newest snapshot per host, whatever its spelling.
