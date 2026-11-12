@@ -95,6 +95,70 @@ def test_runner_writes_report_and_terminates(tmp_path: Path) -> None:
 
     assert (tmp_path / ".logs/ci_report.txt").read_text() == "report body"
     assert len(transport.payloads) == 2
+    payload = transport.payloads[0]
+    assert payload["tools"] is kimi._TOOLS
+    assert payload["tool_choice"] == "auto"
+
+
+def test_shorten_report_uses_one_tool_less_completion() -> None:
+    transport = ScriptedTransport([final("short report")])
+    runner = KimiCodeRunner(api_key="key", transport=transport)
+    report = "x" * 2900
+
+    result = runner.shorten_report(
+        report, raw_limit=2750, normalized_len=2928
+    )
+
+    assert result == "short report"
+    payload = transport.payloads[0]
+    assert "tools" not in payload
+    assert "tool_choice" not in payload
+    assert payload["messages"] == [
+        {
+            "role": "system",
+            "content": "You condense CI reports for Slack. Return only the rewritten report text.",
+        },
+        {
+            "role": "user",
+            "content": (
+                "The report below has 2900 raw characters and 2928 characters "
+                "after Slack normalization. Rewrite it to at most 2750 raw "
+                "characters. Preserve the Build and Stats lines, canonical section "
+                "headings, every failure entry and its links. Condense investigation "
+                "prose and omit Notes first. Return only the rewritten report text."
+                f"\n\n{report}"
+            ),
+        },
+    ]
+
+
+def test_shorten_report_rejects_non_string_content() -> None:
+    transport = ScriptedTransport(
+        [{"choices": [{"message": {"role": "assistant", "content": None}}]}]
+    )
+    runner = KimiCodeRunner(api_key="key", transport=transport)
+
+    result = runner.shorten_report("report", raw_limit=100, normalized_len=120)
+
+    assert result == ""
+
+
+def test_shorten_report_uses_remaining_analyzer_budget(tmp_path: Path) -> None:
+    now = [0.0]
+    transport = RecordingUrllibTransport(final("short report"))
+    runner = KimiCodeRunner(
+        api_key="key",
+        transport=transport,
+        clock=lambda: now[0],
+        request_timeout_seconds=300,
+    )
+    runner.run(tmp_path)
+    now[0] = 3400.0
+
+    result = runner.shorten_report("report", raw_limit=100, normalized_len=120)
+
+    assert result == "short report"
+    assert transport.timeout_seconds == 200.0
 
 
 def test_read_returns_file_contents(tmp_path: Path) -> None:

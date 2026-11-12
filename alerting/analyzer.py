@@ -30,7 +30,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -78,6 +78,24 @@ ANALYZER_AGENT_FILE = Path(".claude/agents/vllm-ci-failure-analyzer.md")
 
 class AnalyzerError(Exception):
     """The analyzer failed or produced an invalid result. Nothing persists."""
+
+
+class ReportTooLongError(AnalyzerError):
+    """The normalized report is over the Slack character limit."""
+
+    def __init__(
+        self,
+        *,
+        raw_report: str,
+        normalized_len: int,
+        attributions: Mapping[str, ReportAttribution],
+    ) -> None:
+        self.raw_report = raw_report
+        self.normalized_len = normalized_len
+        self.attributions = attributions
+        super().__init__(
+            f"report exceeds {REPORT_CHAR_LIMIT} characters: {normalized_len}"
+        )
 
 
 class CheckpointUnavailable(AnalyzerError):
@@ -208,6 +226,12 @@ class AnalyzerRunner(Protocol):
 
     def run(self, working_dir: Path) -> None:
         """Raise AnalyzerError on any LLM failure."""
+        ...
+
+    def shorten_report(
+        self, report: str, *, raw_limit: int, normalized_len: int
+    ) -> str:
+        """Condense report text without tools or access to other analysis files."""
         ...
 
 
@@ -677,18 +701,20 @@ def _read_outputs(
     report_path = workdir / REPORT_FILE
     if not report_path.is_file():
         raise AnalyzerError("analyzer wrote no report")
-    report_text = report_path.read_text()
-    if not report_text.strip():
+    raw_report = report_path.read_text()
+    if not raw_report.strip():
         raise AnalyzerError("analyzer wrote an empty report")
-    if report_text.strip() == "SKIP":
+    if raw_report.strip() == "SKIP":
         raise AnalyzerError("analyzer skipped a comparison the adapter deemed ready")
-    report_text = _plain_bullet_names(report_text)
+    report_text = _plain_bullet_names(raw_report)
     report_text = _authoritative_stats(report_text, stats)
     report_text = _canonical_sections(report_text)
     report_text = safe_slack_mrkdwn(report_text)
     if len(report_text) > REPORT_CHAR_LIMIT:
-        raise AnalyzerError(
-            f"report exceeds {REPORT_CHAR_LIMIT} characters: {len(report_text)}"
+        raise ReportTooLongError(
+            raw_report=raw_report,
+            normalized_len=len(report_text),
+            attributions=parse_report_attributions(report_text),
         )
 
     raw_cache = _read_json_file(workdir / CACHE_FILE, "failure cache")
@@ -889,13 +915,34 @@ class FullCIAnalysisHandler:
                 memory_files=memory_files,
             )
             self._runner.run(workdir)
-            outputs = _read_outputs(
-                workdir,
-                expected_failures=expected_failures,
-                build_number=context.current.build_number,
-                commit_sha=commit_sha,
-                stats=summary["stats"],
-            )
+            try:
+                outputs = _read_outputs(
+                    workdir,
+                    expected_failures=expected_failures,
+                    build_number=context.current.build_number,
+                    commit_sha=commit_sha,
+                    stats=summary["stats"],
+                )
+            except ReportTooLongError as error:
+                raw_limit = REPORT_CHAR_LIMIT - (
+                    error.normalized_len - len(error.raw_report)
+                )
+                shortened = self._runner.shorten_report(
+                    error.raw_report,
+                    raw_limit=raw_limit,
+                    normalized_len=error.normalized_len,
+                )
+                (workdir / REPORT_FILE).write_text(shortened)
+                outputs = _read_outputs(
+                    workdir,
+                    expected_failures=expected_failures,
+                    build_number=context.current.build_number,
+                    commit_sha=commit_sha,
+                    stats=summary["stats"],
+                )
+                if set(error.attributions) != set(outputs.attributions):
+                    raise AnalyzerError("report rewrite changed failure bullet names")
+                outputs = replace(outputs, attributions=error.attributions)
             conditions = self._classify(context, jobs, cache, outputs)
             checkpoint = self._checkpoints.upload(_read_memory(workdir))
             report_text = outputs.report_text

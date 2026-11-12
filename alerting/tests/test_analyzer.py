@@ -176,6 +176,8 @@ class FakeRunner:
         self._behaviors: list[Callable[[Path], None]] = []
         self._fail = False
         self.runs = 0
+        self.shorten_result: str | None = None
+        self.shorten_calls: list[tuple[str, int, int]] = []
 
     def on_run(self, behavior: Callable[[Path], None]) -> None:
         self._behaviors.append(behavior)
@@ -192,6 +194,12 @@ class FakeRunner:
             self._behaviors.pop(0)(working_dir)
         else:
             well_behaved(working_dir)
+
+    def shorten_report(
+        self, report: str, *, raw_limit: int, normalized_len: int
+    ) -> str:
+        self.shorten_calls.append((report, raw_limit, normalized_len))
+        return self.shorten_result if self.shorten_result is not None else report
 
 
 class FakeCheckpoints:
@@ -1221,6 +1229,122 @@ def test_invalid_analyzer_result_preserves_baseline(
     )
     harness.seed_analysis(run1, failed_tests=())
     harness.runner.on_run(behavior)
+
+    result = harness.analyze()
+
+    assert result.status is ProcessStatus.FAILED
+    assert len(harness.store.analyses()) == 1
+    assert harness.new_notifications() == []
+
+
+def test_oversized_analyzer_report_gets_one_bounded_rewrite() -> None:
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs([("Job A", "failed", False)]),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+    harness.seed_analysis(run1, failed_tests=())
+    harness.runner.on_run(
+        lambda wd: well_behaved(
+            wd,
+            report="*Stats:* 1 passed, 0 failed\n" + "x" * (REPORT_CHAR_LIMIT + 78),
+        )
+    )
+    harness.runner.shorten_result = "*Build:* fine\n*Stats:* 999 passed, 999 failed"
+
+    result = harness.analyze()
+
+    assert result.status is ProcessStatus.COMPLETED
+    assert harness.runner.runs == 1
+    assert len(harness.runner.shorten_calls) == 1
+    _, raw_limit, normalized_len = harness.runner.shorten_calls[0]
+    assert normalized_len == 2928
+    assert raw_limit < REPORT_CHAR_LIMIT
+    report = notification_for(harness, run2.build_id).payload["text"]
+    assert len(report) <= REPORT_CHAR_LIMIT
+
+
+def test_still_oversized_after_rewrite_preserves_baseline() -> None:
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs([("Job A", "failed", False)]),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+    harness.seed_analysis(run1, failed_tests=())
+    harness.runner.on_run(
+        lambda wd: well_behaved(
+            wd, report="*Stats:* 1 passed, 0 failed\n" + "x" * REPORT_CHAR_LIMIT
+        )
+    )
+
+    result = harness.analyze()
+
+    assert result.status is ProcessStatus.FAILED
+    assert harness.runner.runs == 1
+    assert len(harness.runner.shorten_calls) == 1
+    assert len(harness.store.analyses()) == 1
+    assert harness.new_notifications() == []
+
+
+def harness_with_attributed_oversized_report() -> Harness:
+    run1 = make_run(1, RUN1_AT)
+    run2 = make_run(2, RUN2_AT)
+    harness = Harness(
+        runs=[run1, run2],
+        builds={
+            2: build_json(
+                2,
+                mostly_passing_jobs([("Job A", "failed", False)]),
+                scheduled_at=RUN2_AT,
+            )
+        },
+    )
+    harness.seed_analysis(run1, failed_tests=())
+    harness.runner.on_run(
+        lambda wd: well_behaved(
+            wd,
+            report=(
+                "*Stats:* 1 passed, 0 failed\n"
+                "• Job A — _suspicious: PR #101 changed related files_\n"
+                + "x" * REPORT_CHAR_LIMIT
+            ),
+            suspicious=(suspicious_pr(101, ["Job A"]),),
+        )
+    )
+    return harness
+
+
+def test_rewrite_preserves_original_failure_attribution() -> None:
+    harness = harness_with_attributed_oversized_report()
+    harness.runner.shorten_result = "*Stats:* 1 passed, 0 failed\n• Job A — _short_"
+
+    result = harness.analyze()
+
+    assert result.status is ProcessStatus.COMPLETED
+    analysis = harness.store.analyses()[-1]
+    condition = analysis.conditions[0]
+    assert condition.cause is CauseCategory.CODE
+    assert condition.culprit_pr is not None
+    assert condition.culprit_pr.number == 101
+
+
+def test_rewrite_rejects_changed_failure_bullet_names() -> None:
+    harness = harness_with_attributed_oversized_report()
+    harness.runner.shorten_result = "*Stats:* 1 passed, 0 failed\n• Job B — _short_"
 
     result = harness.analyze()
 
