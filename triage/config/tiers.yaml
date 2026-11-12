@@ -1,0 +1,52 @@
+# Model and hardware tiers used by scoring. These carry a lot of weight and
+# will be argued about: change them by PR so the history is reviewable.
+# Patterns are case-insensitive globs matched against facets.models[].name
+# and facets.models[].family.
+version: "2026-11-12.1"
+
+models:
+  tier1:
+    - "deepseek*"
+    - "qwen3*"
+    - "qwen2.5*"
+    - "llama-3*"
+    - "llama-4*"
+    - "llama3*"
+    - "llama4*"
+    - "gpt-oss*"
+    - "kimi*"
+    - "glm-4.5*"
+    - "glm-4.6*"
+    - "glm-5*"
+    - "glm4.5*"
+    - "glm5*"
+    - "gemma-3*"
+    - "gemma-4*"
+    - "gemma3*"
+    - "gemma4*"
+    - "mistral*"
+    - "mixtral*"
+    - "minimax*"
+  tier2:
+    - "phi*"
+    - "granite*"
+    - "command*"
+    - "cohere*"
+    - "internvl*"
+    - "nemotron*"
+    - "olmo*"
+    - "ernie*"
+    - "hunyuan*"
+    - "llava*"
+    - "pixtral*"
+    - "whisper*"
+    - "bge*"
+    - "e5*"
+    - "jamba*"
+    - "falcon*"
+    - "step*"
+    - "seed*"
+
+hardware:
+  tier1: [H100, H200, B200, B300, GB200, GB300, MI300X, MI355X]
+  tier2: [A100, MI325X, TPU, L40S, CPU_x86, CPU_arm, Gaudi, XPU]

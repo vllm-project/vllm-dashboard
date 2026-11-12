@@ -30,3 +30,22 @@ _Avoid_: Coverage dashboard
 **Queue Wait Alert**:
 An active or resolved warning that a CI queue's observed wait is excessive. It belongs to CI Dashboard rather than Alert Production.
 _Avoid_: Fast CI alert, Full CI alert
+
+**Triage Queue**:
+The maintainers-only view of in-scope vLLM issues and PRs produced by Triage
+Production: each item's current score and band, its latest extracted facets,
+and its open assignments. Readable only with a signed-in maintainer session.
+_Avoid_: Issue tracker, inbox
+
+**Assignment**:
+One routing of one triage item to one maintainer as primary or backup, with
+a status (`open`, `acked`, `done`, or closed as `not_mine`, `reassigned`,
+`dropped`, `slop`). The router creates them; maintainers move them.
+_Avoid_: Ticket, claim
+
+**Triage Action**:
+An append-only record of what a maintainer did to an item (ack, not mine,
+reassign, drop, slop, done, reopen), written in the same transaction as the
+assignment change it causes. It is the feedback the router and scorer are
+tuned against.
+_Avoid_: Event, vote

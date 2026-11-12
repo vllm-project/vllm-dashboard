@@ -48,6 +48,7 @@ def test_reconcile_controls_defaults_missing_path_to_shadow_and_disables_one_pat
             AlertPath.MAIN_CI: ControlMode.DISABLED,
             AlertPath.INFRA: ControlMode.DISABLED,
             AlertPath.SELECTOR: ControlMode.DISABLED,
+            AlertPath.TRIAGE: ControlMode.DISABLED,
         }
     )
     units = RecordingUnits()
@@ -78,6 +79,9 @@ def test_reconcile_controls_defaults_missing_path_to_shadow_and_disables_one_pat
         "alerting-daily-summary.timer",
         "alerting-selector-health.timer",
         "alerting-selector-health-pr.timer",
+        "alerting-triage-ingest.timer",
+        "alerting-triage-route.timer",
+        "alerting-triage-digest.timer",
     ]
     assert units.stopped == [
         "alerting-full-ci.service",
@@ -89,6 +93,9 @@ def test_reconcile_controls_defaults_missing_path_to_shadow_and_disables_one_pat
         "alerting-daily-summary.service",
         "alerting-selector-health.service",
         "alerting-selector-health-pr.service",
+        "alerting-triage-ingest.service",
+        "alerting-triage-route.service",
+        "alerting-triage-digest.service",
     ]
 
 
@@ -100,6 +107,7 @@ def test_live_control_enables_only_selected_path(tmp_path: Path) -> None:
             AlertPath.MAIN_CI: ControlMode.DISABLED,
             AlertPath.INFRA: ControlMode.DISABLED,
             AlertPath.SELECTOR: ControlMode.DISABLED,
+            AlertPath.TRIAGE: ControlMode.DISABLED,
         }
     )
     units = RecordingUnits()
@@ -121,6 +129,7 @@ def test_main_ci_live_control_enables_its_independent_timers(tmp_path: Path) -> 
             AlertPath.MAIN_CI: ControlMode.LIVE,
             AlertPath.INFRA: ControlMode.DISABLED,
             AlertPath.SELECTOR: ControlMode.DISABLED,
+            AlertPath.TRIAGE: ControlMode.DISABLED,
         }
     )
     units = RecordingUnits()
@@ -145,6 +154,7 @@ def test_infra_live_control_enables_its_timer_and_mode(tmp_path: Path) -> None:
             AlertPath.MAIN_CI: ControlMode.DISABLED,
             AlertPath.INFRA: ControlMode.LIVE,
             AlertPath.SELECTOR: ControlMode.DISABLED,
+            AlertPath.TRIAGE: ControlMode.DISABLED,
         }
     )
     units = RecordingUnits()
@@ -166,6 +176,7 @@ def test_missing_infra_control_defaults_to_shadow(tmp_path: Path) -> None:
             AlertPath.MAIN_CI: ControlMode.DISABLED,
             AlertPath.INFRA: None,
             AlertPath.SELECTOR: ControlMode.DISABLED,
+            AlertPath.TRIAGE: ControlMode.DISABLED,
         }
     )
     units = RecordingUnits()
@@ -190,6 +201,7 @@ def test_missing_selector_control_defaults_to_shadow_with_both_timers(
             AlertPath.MAIN_CI: ControlMode.DISABLED,
             AlertPath.INFRA: ControlMode.DISABLED,
             AlertPath.SELECTOR: None,
+            AlertPath.TRIAGE: ControlMode.DISABLED,
         }
     )
     units = RecordingUnits()

@@ -1,0 +1,13 @@
+[Unit]
+Description=Schedule: Send daily triage digests
+
+[Timer]
+OnBootSec=3min
+OnCalendar=*-*-* 15:00:00 UTC
+Persistent=true
+AccuracySec=30s
+RandomizedDelaySec=0
+Unit=alerting-triage-digest.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "triage"
+version = "0.1.0"
+description = "vLLM issue/PR triage: ingest, LLM facet extraction, impact scoring, maintainer routing."
+requires-python = ">=3.12"
+dependencies = ["alerting", "pyyaml>=6.0"]
+
+[project.scripts]
+vllm-triage = "triage.cli:main"
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2"]
+dev = [
+    "pytest>=8.0",
+    "mypy>=1.11",
+    "types-PyYAML",
+    "psycopg[binary]>=3.2",
+    "ruff==0.14.0",
+]
+
+[tool.uv.sources]
+alerting = { path = "../alerting", editable = true }
+
+[tool.setuptools]
+packages = ["triage"]
+package-dir = {triage = "."}
+
+[tool.setuptools.package-data]
+triage = ["config/*.yaml", "assets/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["alerting.*"]
+follow_imports = "silent"
+
+[[tool.mypy.overrides]]
+module = ["pgserver", "psycopg.*"]
+ignore_missing_imports = true

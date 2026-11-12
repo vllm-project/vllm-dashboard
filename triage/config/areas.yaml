@@ -1,0 +1,58 @@
+# Changed-path -> area rules for the deterministic prepass.
+# Seeded from vllm-project/vllm .github/mergify.yml label rules and mapped
+# onto the shared area vocabulary in triage/docs/data-model.md.
+# Each pattern is a Python regex searched against the repo-relative path.
+version: 1
+areas:
+  docs: ['^docs/', '^examples/', '^recipes/']
+  ci: ['^\.github/', '^\.buildkite/']
+  build_install: ['^cmake/', '^docker/Dockerfile', '^requirements.*\.txt', '^setup\.py$', '^pyproject\.toml$', '^CMakeLists\.txt$', '^rust/']
+  frontend_api: ['^vllm/entrypoints/', '^vllm/renderers/']
+  tool_calling: ['^vllm/tool_parsers/', '^vllm/parser/', '^vllm/reasoning/', '^tests/tool_use/', '^tests/tool_parsers/']
+  structured_output: ['^vllm/v1/structured_output/', '^tests/v1/structured_output/']
+  multimodal: ['^vllm/multimodal/', '^tests/multimodal/', '^tests/models/multimodal/']
+  benchmarks: ['^benchmarks/', '^vllm/benchmarks/', '^\.buildkite/performance-benchmarks/']
+  quantization: ['^vllm/model_executor/layers/quantization/']
+  moe: ['fused_moe', '/moe/', '_moe\.py$']
+  attention: ['^vllm/v1/attention/', '^vllm/attention/', 'flash_attn', 'flashinfer', '/mla/']
+  kernels: ['^csrc/', '^vllm/_custom_ops\.py$', '^vllm/kernels/', 'triton', 'cutlass']
+  spec_decode: ['^vllm/v1/spec_decode/', '^vllm/v1/worker/gpu/spec_decode/', 'eagle', 'medusa', 'mtp']
+  lora: ['^vllm/lora/', '^tests/lora/']
+  scheduler: ['^vllm/v1/core/sched/']
+  kv_cache: ['^vllm/v1/core/(kv_cache|block_pool|single_type_kv_cache)', 'prefix_caching', 'kv_offload']
+  kv_connector: ['^vllm/distributed/kv_transfer/', '^vllm/distributed/ec_transfer/', 'nixl', 'mooncake', 'lmcache']
+  disagg: ['^examples/disaggregated/', 'disagg']
+  distributed: ['^vllm/distributed/', '^vllm/v1/executor/', 'ray_', 'expert_parallel', 'all2all', 'deepep']
+  compilation: ['^vllm/compilation/', '^tests/compile/', 'cuda_graph', 'cudagraph']
+  model_loading: ['^vllm/model_executor/model_loader/', 'weight_utils', 'safetensors']
+  models: ['^vllm/model_executor/models/', '^vllm/models/', '^vllm/transformers_utils/']
+  sampling: ['^vllm/v1/sample/', 'sampling_params', 'logits_processor']
+  tokenizer: ['tokenizer', 'detokenizer']
+  engine_core: ['^vllm/v1/engine/', '^vllm/engine/', '^vllm/v1/worker/']
+  rocm: ['^csrc/rocm/', 'rocm', 'aiter', '^docker/Dockerfile\.rocm']
+  tpu: ['tpu']
+  cpu: ['^(?!.*kv_offload)(?!.*cpu_offload).*\bcpu']
+  xpu: ['xpu', '^\.buildkite/intel_jobs/']
+  memory: ['memory_profil', 'gpu_memory', 'cpu_offload']
+  performance: ['^vllm/v1/worker/gpu_model_runner\.py$']
+
+# GitHub labels -> areas (issues get areas from labels before the LLM runs).
+labels:
+  rocm: rocm
+  tpu: tpu
+  cpu: cpu
+  intel-gpu: xpu
+  multi-modality: multimodal
+  structured-output: structured_output
+  speculative-decoding: spec_decode
+  tool-calling: tool_calling
+  quantization: quantization
+  frontend: frontend_api
+  kv-connector: kv_connector
+  scheduler: scheduler
+  kv-cache-manager: kv_cache
+  torch.compile: compilation
+  performance: performance
+  documentation: docs
+  ci/build: ci
+  ci-failure: ci

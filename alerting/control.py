@@ -63,6 +63,13 @@ _UNITS = {
             "alerting-selector-health-pr.service",
         ),
     ),
+    # Issue/PR triage: GitHub ingest, scoring + routing, and the daily
+    # digests. The LLM extractor runs on a separate host (deploy/triage-extractor).
+    AlertPath.TRIAGE: (
+        ("alerting-triage-ingest.timer", "alerting-triage-ingest.service"),
+        ("alerting-triage-route.timer", "alerting-triage-route.service"),
+        ("alerting-triage-digest.timer", "alerting-triage-digest.service"),
+    ),
 }
 _MODE_FILES = {
     AlertPath.FAST_CI: "fast-ci.mode",
@@ -70,6 +77,7 @@ _MODE_FILES = {
     AlertPath.MAIN_CI: "main-ci.mode",
     AlertPath.INFRA: "infra.mode",
     AlertPath.SELECTOR: "selector.mode",
+    AlertPath.TRIAGE: "triage.mode",
 }
 
 
