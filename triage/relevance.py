@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 from xml.sax.saxutils import escape
 
-from triage.extract import BudgetExhausted, ExtractionError, LLMBackend, LLMResult
+from triage.extract import BudgetExhausted, ExtractionError, LLMBackend
 
 RELEVANCE_LEVELS = ("high", "medium", "low", "none")
 PROMPT_VERSION = "rel-v1"
@@ -183,34 +185,50 @@ def run_relevance(
     now: datetime,
     min_score: int,
     limit: int = 40,
+    workers: int = 1,
 ) -> RelevanceRunResult:
     """Judge routable items (score >= min_score) that lack a current
     judgement for some active maintainer. One call per item covers every
-    maintainer, with all profiles in the (cached) system prompt."""
+    maintainer, with all profiles in the (cached) system prompt. Run one of
+    these at a time: the queue is not leased."""
     result = RelevanceRunResult()
     profiles = {p.login: p for p in store.maintainer_profiles()}
     if not profiles:
         result.stopped_reason = "no maintainer profiles yet"
         return result
     system = render_profiles(list(profiles.values()))
+    tasks = []
     for task in store.relevance_queue(limit=limit, min_score=min_score):
         task = RelevanceTask(**{**task.__dict__, "maintainers": [m for m in task.maintainers if m in profiles]})
-        if not task.maintainers:
-            continue
+        if task.maintainers:
+            tasks.append(task)
+    stop = threading.Event()
+
+    def judge(task: RelevanceTask) -> tuple[RelevanceTask, Any]:
+        if stop.is_set():
+            return task, None
         try:
-            llm: LLMResult = backend.complete(
-                system=system, prompt=render_item(task), schema=schema(sorted(task.maintainers))
-            )
-            judgments = parse_judgments(llm.output, task, profiles)
+            llm = backend.complete(system=system, prompt=render_item(task), schema=schema(sorted(task.maintainers)))
+            return task, (llm, parse_judgments(llm.output, task, profiles))
         except BudgetExhausted as exc:
-            result.stopped_reason = str(exc)
-            break
+            stop.set()
+            return task, exc
         except ExtractionError as exc:
-            result.failed += 1
-            result.errors.append(f"{task.item_key}: {exc}")
-            continue
-        store.save_relevance(task, judgments, profiles=profiles, model=llm.model, now=now)
-        result.judged += 1
+            return task, exc
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for task, outcome in pool.map(judge, tasks):
+            if outcome is None:
+                continue
+            if isinstance(outcome, BudgetExhausted):
+                result.stopped_reason = str(outcome)
+            elif isinstance(outcome, ExtractionError):
+                result.failed += 1
+                result.errors.append(f"{task.item_key}: {outcome}")
+            else:
+                llm, judgments = outcome
+                store.save_relevance(task, judgments, profiles=profiles, model=llm.model, now=now)
+                result.judged += 1
     return result
 
 
