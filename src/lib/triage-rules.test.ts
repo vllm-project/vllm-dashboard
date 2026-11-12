@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import yaml from "js-yaml";
 import {
   EMPTY_RULES,
+  maintainerEntryYaml,
   fnmatchToRegExp,
   matchRules,
   normalizeRules,
@@ -128,4 +130,90 @@ test("settings validation accepts a full body and rejects bad values", () => {
   ]) {
     assert.equal(validateMaintainerSettings(bad).ok, false, JSON.stringify(bad));
   }
+});
+
+test("maintainers.yaml entry: exact format, key order, quoting", () => {
+  const text = maintainerEntryYaml("gau-nernst", {
+    slackUserId: "U0123456789",
+    minScore: 45,
+    capacityPerWeek: 8,
+    notifyMode: "digest",
+    away: [{ start: "2026-12-20", end: "2027-01-03" }],
+    rules: {
+      areas: ["moe", "kernels"],
+      hardware: ["B200"],
+      models: ["qwen4*", "kimi-k3*"],
+      paths: ["vllm/models/qwen4_exp/**"],
+      keywords: ["deepgemm"],
+      types: ["bug", "regression"],
+      exclude: { types: ["question"], areas: [], hardware: ["MI300X"] },
+      natural_language: "free text",
+    },
+  });
+  assert.equal(
+    text,
+    [
+      "- github_login: gau-nernst",
+      "  slack_user_id: U0123456789",
+      "  min_score: 45",
+      "  capacity_per_week: 8",
+      "  notify_mode: digest",
+      "  away:",
+      "    - {start: 2026-12-20, end: 2027-01-03}",
+      "  rules:",
+      "    areas: [moe, kernels]",
+      "    hardware: [B200]",
+      '    models: ["qwen4*", "kimi-k3*"]',
+      '    paths: ["vllm/models/qwen4_exp/**"]',
+      '    keywords: ["deepgemm"]',
+      "    types: [bug, regression]",
+      "    exclude: {types: [question], hardware: [MI300X]}",
+      '    natural_language: "free text"',
+      "",
+    ].join("\n"),
+  );
+});
+
+test("an empty draft keeps only github_login and the scalar settings", () => {
+  assert.equal(
+    maintainerEntryYaml("newbie", {
+      slackUserId: null,
+      minScore: 40,
+      capacityPerWeek: 10,
+      notifyMode: "digest",
+      away: [],
+      rules: EMPTY_RULES,
+    }),
+    "- github_login: newbie\n  min_score: 40\n  capacity_per_week: 10\n  notify_mode: digest\n",
+  );
+});
+
+test("the entry parses back to the same values, including awkward strings", () => {
+  const rules = {
+    ...EMPTY_RULES,
+    models: ["Qwen/Qwen3-*", "a: b", 'say "hi"'],
+    keywords: ["#tag", "yes", "multi\nline"],
+    natural_language: "colons: here, and 'quotes' \\ backslash",
+  };
+  const parsed = yaml.load(
+    `maintainers:\n${maintainerEntryYaml("true", {
+      slackUserId: "U01",
+      minScore: 0,
+      capacityPerWeek: 0,
+      notifyMode: "off",
+      away: [{ start: "2026-12-20", end: "2027-01-03" }],
+      rules,
+    })}`,
+    { schema: yaml.JSON_SCHEMA },
+  ) as { maintainers: Record<string, unknown>[] };
+  const entry = parsed.maintainers[0] as {
+    github_login: unknown;
+    rules: Record<string, unknown>;
+    away: unknown;
+  };
+  assert.equal(entry.github_login, "true");
+  assert.deepEqual(entry.rules.models, rules.models);
+  assert.deepEqual(entry.rules.keywords, rules.keywords);
+  assert.equal(entry.rules.natural_language, rules.natural_language);
+  assert.deepEqual(entry.away, [{ start: "2026-12-20", end: "2027-01-03" }]);
 });

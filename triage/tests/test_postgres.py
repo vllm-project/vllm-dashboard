@@ -75,6 +75,14 @@ def store(database_url: str) -> PostgresTriageStore:
     return PostgresTriageStore(database_url)
 
 
+def seed(store: PostgresTriageStore, rows: list[dict[str, Any]]) -> None:
+    import yaml
+
+    from triage.maintainers import parse_maintainers
+
+    store.sync_maintainers(parse_maintainers(yaml.safe_dump({"maintainers": rows})))
+
+
 def ingest(store: PostgresTriageStore, item: Item) -> None:
     config = default_config()
     prepass = compute_prepass(item, config)
@@ -138,10 +146,10 @@ def test_full_pipeline_extract_score_route_notify(store: PostgresTriageStore, da
     ingest(store, issue(2, "max_model_len question"))
     ingest(store, issue(3, "refactor", kind="pr", author_association="MEMBER",
                         files=[FileChange("vllm/x.py")]))  # out of scope: maintainer, unlinked
-    store.seed_maintainers([
-        {"github_login": "moe-person", "slack_user_id": "U1", "rules": {"areas": ["moe"]}},
-        {"github_login": "b200-person", "slack_user_id": "U2", "rules": {"hardware": ["B200"]}},
-        {"github_login": "frontend-person", "slack_user_id": "U3", "rules": {"areas": ["frontend_api"]}},
+    seed(store, [
+        {"github_login": "moe-person", "slack_user_id": "U0000000001", "rules": {"areas": ["moe"]}},
+        {"github_login": "b200-person", "slack_user_id": "U0000000002", "rules": {"hardware": ["B200"]}},
+        {"github_login": "frontend-person", "slack_user_id": "U0000000003", "rules": {"areas": ["frontend_api"]}},
     ])
 
     backend = FakeBackend({"DeepSeek startup crash": SEVERE, "max_model_len question": MINOR})
@@ -166,8 +174,8 @@ def test_full_pipeline_extract_score_route_notify(store: PostgresTriageStore, da
                         ("vllm-project/vllm#1", "moe-person", "backup")]
     sent = outbox(database_url)
     assert [(d, mode, dest) for d, mode, dest, _ in sent] == [
-        ("triage:page:vllm-project/vllm#1:b200-person:primary", "shadow", "U2"),
-        ("triage:page:vllm-project/vllm#1:moe-person:backup", "shadow", "U1"),
+        ("triage:page:vllm-project/vllm#1:b200-person:primary", "shadow", "U0000000002"),
+        ("triage:page:vllm-project/vllm#1:moe-person:backup", "shadow", "U0000000001"),
     ]
     assert "DeepSeek-V3.1 fails to start" in json.dumps(sent[0][3])
 
@@ -181,7 +189,7 @@ def test_full_pipeline_extract_score_route_notify(store: PostgresTriageStore, da
 
 def test_not_mine_reroutes_and_drop_stops_routing(store: PostgresTriageStore, database_url: str) -> None:
     ingest(store, issue(10, "DeepSeek startup crash"))
-    store.seed_maintainers([
+    seed(store, [
         {"github_login": "a", "rules": {"areas": ["moe"]}, "notify_mode": "digest"},
         {"github_login": "b", "rules": {"hardware": ["B200"], "areas": ["moe"]}, "notify_mode": "digest"},
     ])
@@ -214,7 +222,7 @@ def test_not_mine_reroutes_and_drop_stops_routing(store: PostgresTriageStore, da
 
 def test_digest_marks_notified_and_is_idempotent_per_day(store: PostgresTriageStore, database_url: str) -> None:
     ingest(store, issue(20, "DeepSeek startup crash"))
-    store.seed_maintainers([{"github_login": "d", "slack_user_id": "U9", "rules": {"areas": ["moe"]},
+    seed(store, [{"github_login": "d", "slack_user_id": "U0000000009", "rules": {"areas": ["moe"]},
                              "notify_mode": "digest"}])
     with psycopg.connect(database_url, autocommit=True) as c:
         c.execute("UPDATE triage_items SET prepass = prepass || '{}'::jsonb")
@@ -281,3 +289,37 @@ def test_extractor_role_can_extract_and_nothing_else(store: PostgresTriageStore,
         ):
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
                 c.execute(statement)
+
+
+def test_maintainers_file_is_the_source_of_truth(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.maintainers import parse_maintainers
+
+    def file(*entries: str) -> str:
+        return "maintainers:\n" + "".join(entries)
+
+    a = "  - github_login: a\n    rules: {areas: [moe]}\n"
+    b = "  - github_login: b\n    min_score: 60\n    rules: {hardware: [B200]}\n"
+    with psycopg.connect(database_url, autocommit=True) as c:
+        # Someone not in the file who acked an item on the dashboard.
+        c.execute("INSERT INTO triage_maintainers (github_login, updated_by) VALUES ('walk-in', 'walk-in')")
+    assert store.sync_maintainers(parse_maintainers(file(a, b))) == (2, 0)
+    # b's PR changes their rules; a is removed from the file.
+    b2 = "  - github_login: b\n    min_score: 70\n    rules: {hardware: [B200, GB200]}\n"
+    assert store.sync_maintainers(parse_maintainers(file(b2))) == (1, 1)
+    with psycopg.connect(database_url) as c:
+        rows = dict((r[0], r[1:]) for r in c.execute(
+            "SELECT github_login, active, min_score, rules->'hardware', updated_by FROM triage_maintainers"))
+    assert rows["a"][0] is False
+    assert rows["b"] == (True, 70, ["B200", "GB200"], "repo")
+    assert rows["walk-in"] == (True, 40, None, "walk-in")
+
+
+def test_a_broken_file_keeps_the_last_good_rules(store: PostgresTriageStore, database_url: str) -> None:
+    good = "maintainers:\n  - github_login: a\n    rules: {areas: [moe]}\n"
+    bad = "maintainers:\n  - github_login: a\n    rules: {areas: [not-an-area]}\n"
+    sources = iter([(good, "test"), (bad, "test")])
+    route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
+                         delivery_mode=DeliveryMode.SHADOW, maintainers_source=lambda: next(sources))
+    route(ScheduledCommand("triage_route", NOW))
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=5)))
+    assert [m.rules["areas"] for m in store.active_maintainers()] == [["moe"]]

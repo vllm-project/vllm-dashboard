@@ -3,6 +3,7 @@ import test from "node:test";
 import { GET as items } from "./items/route";
 import { POST as actions } from "./actions/route";
 import { PUT as putRules } from "./rules/route";
+import { POST as previewRules } from "./rules/preview/route";
 import { GET as login } from "./auth/login/route";
 import { signSession } from "@/lib/triage-auth";
 
@@ -66,7 +67,7 @@ test("mutations refuse cross-origin requests even with a session", async () => {
   await withEnv(ENABLED, async () => {
     for (const [handler, method] of [
       [actions, "POST"],
-      [putRules, "PUT"],
+      [previewRules, "POST"],
     ] as const) {
       const response = await handler(
         new Request("https://ci.vllm.ai/api/triage/x", {
@@ -104,5 +105,25 @@ test("sign-in is 503 until the OAuth app is configured", async () => {
     assert.equal(location.host, "github.com");
     assert.equal(location.searchParams.get("redirect_uri"), "https://ci.vllm.ai/api/triage/auth/callback");
     assert.match(response.headers.get("set-cookie") ?? "", /triage_oauth=.*HttpOnly/i);
+  });
+});
+
+test("rules are read-only: PUT is 405 and points at maintainers.yaml", async () => {
+  await withEnv(ENABLED, async () => {
+    const response = await putRules(
+      new Request("https://ci.vllm.ai/api/triage/rules", {
+        method: "PUT",
+        body: "{}",
+        headers: { cookie: session(), host: "ci.vllm.ai", origin: "https://ci.vllm.ai" },
+      }),
+    );
+    assert.equal(response.status, 405);
+    assert.equal(response.headers.get("allow"), "GET");
+    const body = (await response.json()) as { error: string; file: string };
+    assert.match(body.error, /maintainers\.yaml/);
+    assert.match(body.file, /triage\/config\/maintainers\.yaml$/);
+  });
+  await withEnv({ ...ENABLED, TRIAGE_ENABLED: undefined }, async () => {
+    assert.equal((await putRules(new Request("https://ci.vllm.ai/api/triage/rules", { method: "PUT" }))).status, 404);
   });
 });

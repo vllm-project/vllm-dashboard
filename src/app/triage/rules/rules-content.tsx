@@ -5,6 +5,12 @@ import useSWR from "swr";
 import { MultiSelect } from "@/components/multi-select";
 import { BandBadge, GithubLink } from "@/components/triage/badges";
 import { sendJson, triageFetcher } from "@/lib/triage-format";
+import {
+  RULES_FILE_EDIT_URL,
+  RULES_FILE_PATH,
+  maintainerEntryYaml,
+  validateMaintainerSettings,
+} from "@/lib/triage-rules";
 import type { TriageMaintainer } from "@/lib/triage-types";
 import {
   NOTIFY_MODES,
@@ -116,53 +122,54 @@ function toBody(form: FormState) {
 }
 
 export default function RulesContent() {
-  const { data, error, mutate } = useSWR<RulesResponse>("/api/triage/rules", triageFetcher, {
+  const { data, error } = useSWR<RulesResponse>("/api/triage/rules", triageFetcher, {
     revalidateOnFocus: false,
   });
   if (error) return <p className="text-sm text-red-600 dark:text-red-400">{error.message}</p>;
   if (!data) return <p className="text-sm text-zinc-400">Loading…</p>;
-  return (
-    <RulesForm
-      key={data.maintainer.githubLogin}
-      data={data}
-      onSaved={(saved) => void mutate(saved, { revalidate: false })}
-    />
-  );
+  return <RulesDraft key={data.maintainer.githubLogin} data={data} />;
 }
 
-function RulesForm({
-  data,
-  onSaved,
-}: {
-  data: RulesResponse;
-  onSaved: (saved: RulesResponse) => void;
-}) {
+/**
+ * Rules are read-only here: they live in triage/config/maintainers.yaml and
+ * change by pull request. This page loads the current (synced) rules into a
+ * local draft, previews the draft against recent items, and hands the draft
+ * back as the YAML entry to paste into the file.
+ */
+function RulesDraft({ data }: { data: RulesResponse }) {
   const [form, setForm] = useState<FormState>(() => toForm(data.maintainer));
   const [status, setStatus] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
 
-  const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
+  const set = <K extends keyof FormState>(key: K, value: FormState[K]) => {
+    setStatus(null);
     setForm((current) => ({ ...current, [key]: value }));
+  };
 
-  async function run(kind: "save" | "preview") {
+  const validated = validateMaintainerSettings(toBody(form));
+  const yaml = validated.ok ? maintainerEntryYaml(data.maintainer.githubLogin, validated.value) : null;
+
+  async function runPreview() {
     setBusy(true);
     setFormError(null);
-    setStatus(null);
     try {
-      if (kind === "save") {
-        const saved = await sendJson<RulesResponse>("/api/triage/rules", "PUT", toBody(form));
-        setForm(toForm(saved.maintainer));
-        setStatus("Saved.");
-        onSaved(saved);
-      } else {
-        setPreview(await sendJson<PreviewResponse>("/api/triage/rules/preview", "POST", toBody(form)));
-      }
+      setPreview(await sendJson<PreviewResponse>("/api/triage/rules/preview", "POST", toBody(form)));
     } catch (err) {
       setFormError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function copyYaml() {
+    if (!yaml) return;
+    try {
+      await navigator.clipboard.writeText(yaml);
+      setStatus("Copied.");
+    } catch {
+      setStatus("Copy failed; select the YAML below and copy it.");
     }
   }
 
@@ -174,13 +181,19 @@ function RulesForm({
         className="space-y-4"
         onSubmit={(event) => {
           event.preventDefault();
-          void run("save");
+          void runPreview();
         }}
       >
+        <div className="rounded-md border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200">
+          Rules live in <code className="font-mono">{RULES_FILE_PATH}</code>. Changes take effect about 5 minutes after the PR merges.
+          Edits here are a draft only: preview them, then copy the YAML into a pull request.
+        </div>
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
           Rules decide which items the router sends to <span className="font-medium">{data.maintainer.githubLogin}</span>.
-          An item matches when any area, hardware, model, path or keyword matches, it passes the type filter, and nothing in Exclude matches.
-          {!data.exists && " You have no rules yet; saving creates your maintainer entry."}
+          An item matches when any area, hardware, model, path or keyword matches, it passes the type filter, and nothing in Exclude matches.{" "}
+          {data.exists
+            ? `Loaded your current rules${data.maintainer.updatedAt ? ` (last synced ${new Date(data.maintainer.updatedAt).toLocaleString()}${data.maintainer.updatedBy ? ` by ${data.maintainer.updatedBy}` : ""})` : ""}.`
+            : "You are not in the file yet; this draft starts empty."}
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
           <MultiSelect label="Areas" options={[...TRIAGE_AREAS]} selected={form.areas} onChange={(value) => set("areas", value)} placeholder="None" />
@@ -240,20 +253,35 @@ function RulesForm({
         </Field>
         <div className="flex flex-wrap items-center gap-2">
           <button type="submit" disabled={busy} className="dashboard-control min-h-9 rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900">
-            Save
-          </button>
-          <button type="button" disabled={busy} onClick={() => void run("preview")} className="dashboard-control min-h-9 rounded-md border border-zinc-200 px-4 text-sm font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
             Preview last 30 days
           </button>
+          <button type="button" disabled={!yaml} onClick={() => void copyYaml()} className="dashboard-control min-h-9 rounded-md border border-zinc-200 px-4 text-sm font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
+            Copy as YAML
+          </button>
+          <a
+            href={RULES_FILE_EDIT_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="dashboard-control inline-flex min-h-9 items-center rounded-md border border-zinc-200 px-4 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            Propose this change on GitHub
+          </a>
           {status && <span className="text-xs text-emerald-600">{status}</span>}
           {formError && <span className="text-xs text-red-600 dark:text-red-400">{formError}</span>}
         </div>
+        <Field label="Your maintainers.yaml entry" hint="replace your entry under maintainers:, or add it">
+          {yaml ? (
+            <pre className="max-h-80 overflow-auto rounded-md bg-zinc-50 p-3 font-mono text-xs leading-5 text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200">{yaml}</pre>
+          ) : (
+            <p className="text-xs text-red-600 dark:text-red-400">{!validated.ok && validated.error}</p>
+          )}
+        </Field>
       </form>
 
       <section>
         <h2 className="mb-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">Preview</h2>
         {!preview ? (
-          <p className="text-sm text-zinc-500">Preview shows which items from the last 30 days these rules would have matched, before you save.</p>
+          <p className="text-sm text-zinc-500">Preview shows which items from the last 30 days this draft would have matched.</p>
         ) : (
           <>
             <p className="mb-3 text-xs text-zinc-500">

@@ -180,7 +180,7 @@ const MAX_LIST = 50;
 const MAX_TEXT = 200;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** Validates a PUT /api/triage/rules body. Returns an error message or the settings. */
+/** Validates a rules draft (the preview body). Returns an error message or the settings. */
 export function validateMaintainerSettings(
   body: unknown,
 ): { ok: true; value: MaintainerSettingsInput } | { ok: false; error: string } {
@@ -283,4 +283,81 @@ export function validateMaintainerSettings(
       slackUserId: slack === "" ? null : (slack as string | null),
     },
   };
+}
+
+/** Maintainer rules are owned by this repo file and changed by pull request. */
+export const RULES_FILE_PATH = "triage/config/maintainers.yaml";
+export const RULES_FILE_URL =
+  "https://github.com/vllm-project/vllm-dashboard/blob/main/triage/config/maintainers.yaml";
+export const RULES_FILE_EDIT_URL =
+  "https://github.com/vllm-project/vllm-dashboard/edit/main/triage/config/maintainers.yaml";
+
+// A bare YAML scalar is safe when it is plain word characters and would not be
+// read back as a bool, null or number.
+const PLAIN_SCALAR = /^[A-Za-z_][A-Za-z0-9_.\/-]*$/;
+const YAML_KEYWORDS = /^(?:true|false|yes|no|on|off|null|y|n|~)$/i;
+
+function plainOrQuoted(value: string): string {
+  return PLAIN_SCALAR.test(value) && !YAML_KEYWORDS.test(value) ? value : quoted(value);
+}
+
+/** Double-quoted YAML scalar; JSON string escapes are valid YAML. */
+function quoted(value: string): string {
+  return JSON.stringify(value);
+}
+
+function flowList(values: readonly string[], render: (value: string) => string): string {
+  return `[${values.map(render).join(", ")}]`;
+}
+
+/**
+ * One maintainer's entry in triage/config/maintainers.yaml, as a list item
+ * under `maintainers:`. Key order is fixed; empty lists and optional keys are
+ * omitted (github_login always appears). Enum values (areas, hardware, types,
+ * notify_mode) are plain; models, paths, keywords and natural_language are
+ * always double-quoted.
+ */
+export function maintainerEntryYaml(login: string, settings: MaintainerSettingsInput): string {
+  const lines = [`- github_login: ${plainOrQuoted(login)}`];
+  if (settings.slackUserId) lines.push(`  slack_user_id: ${plainOrQuoted(settings.slackUserId)}`);
+  lines.push(`  min_score: ${settings.minScore}`);
+  lines.push(`  capacity_per_week: ${settings.capacityPerWeek}`);
+  lines.push(`  notify_mode: ${settings.notifyMode}`);
+  if (settings.away.length > 0) {
+    lines.push("  away:");
+    for (const range of settings.away) {
+      lines.push(`    - {start: ${range.start}, end: ${range.end}}`);
+    }
+  }
+
+  const { rules } = settings;
+  const ruleLines: string[] = [];
+  const list = (key: string, values: readonly string[], render: (value: string) => string) => {
+    if (values.length > 0) ruleLines.push(`    ${key}: ${flowList(values, render)}`);
+  };
+  list("areas", rules.areas, plainOrQuoted);
+  list("hardware", rules.hardware, plainOrQuoted);
+  list("models", rules.models, quoted);
+  list("paths", rules.paths, quoted);
+  list("keywords", rules.keywords, quoted);
+  list("types", rules.types, plainOrQuoted);
+  const exclude = (
+    [
+      ["types", rules.exclude.types],
+      ["areas", rules.exclude.areas],
+      ["hardware", rules.exclude.hardware],
+    ] as const
+  ).filter(([, values]) => values.length > 0);
+  if (exclude.length > 0) {
+    ruleLines.push(
+      `    exclude: {${exclude
+        .map(([key, values]) => `${key}: ${flowList(values, plainOrQuoted)}`)
+        .join(", ")}}`,
+    );
+  }
+  if (rules.natural_language) {
+    ruleLines.push(`    natural_language: ${quoted(rules.natural_language)}`);
+  }
+  if (ruleLines.length > 0) lines.push("  rules:", ...ruleLines);
+  return `${lines.join("\n")}\n`;
 }

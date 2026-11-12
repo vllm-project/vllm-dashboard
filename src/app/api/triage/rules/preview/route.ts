@@ -10,7 +10,7 @@ import { validateMaintainerSettings } from "@/lib/triage-rules";
 
 export const dynamic = "force-dynamic";
 
-/** POST the same body as PUT /api/triage/rules; nothing is saved. */
+/** POST a draft (rules, minScore, …) and see which recent items it matches; nothing is saved. */
 export async function POST(request: Request) {
   const guard = guardTriageRequest(request, { mutating: true });
   if (!("login" in guard)) return guard;

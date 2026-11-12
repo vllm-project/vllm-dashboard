@@ -6,7 +6,7 @@ import {
   type AssignmentState,
   type PlanResult,
 } from "@/lib/triage-actions";
-import { matchRules, normalizeRules, type MaintainerSettingsInput } from "@/lib/triage-rules";
+import { matchRules, normalizeRules } from "@/lib/triage-rules";
 import type {
   TriageAssignment,
   TriageBreakdownEntry,
@@ -464,35 +464,6 @@ export async function getMaintainer(login: string): Promise<TriageMaintainer | n
   return row ? toMaintainer(row) : null;
 }
 
-/** Creates or updates the signed-in maintainer's own row. */
-export async function saveOwnMaintainer(
-  login: string,
-  settings: MaintainerSettingsInput,
-): Promise<TriageMaintainer> {
-  const db = getDb();
-  const existing = await getMaintainer(login);
-  const key = existing?.githubLogin ?? login;
-  const [row] = await db<MaintainerRow[]>`
-    INSERT INTO triage_maintainers
-      (github_login, slack_user_id, rules, min_score, capacity_per_week, away,
-       notify_mode, updated_by)
-    VALUES (${key}, ${settings.slackUserId}, ${db.json(settings.rules as never)}::jsonb,
-            ${settings.minScore}, ${settings.capacityPerWeek},
-            ${db.json(settings.away as never)}::jsonb, ${settings.notifyMode}, ${login})
-    ON CONFLICT (github_login) DO UPDATE SET
-      slack_user_id = EXCLUDED.slack_user_id,
-      rules = EXCLUDED.rules,
-      min_score = EXCLUDED.min_score,
-      capacity_per_week = EXCLUDED.capacity_per_week,
-      away = EXCLUDED.away,
-      notify_mode = EXCLUDED.notify_mode,
-      updated_by = EXCLUDED.updated_by
-    RETURNING github_login, slack_user_id, active, rules, min_score, capacity_per_week,
-              away, notify_mode, updated_by, updated_at
-  `;
-  return toMaintainer(row);
-}
-
 export interface RulePreviewMatch {
   itemKey: string;
   title: string;
@@ -661,7 +632,10 @@ export async function applyTriageAction(
       `;
       if (!target) {
         // `ack` on an unassigned item by someone without a maintainer row:
-        // create a minimal row so the assignment FK holds.
+        // create a minimal row so the assignment FK holds. updated_by is the
+        // actor, never 'repo': the maintainers.yaml sync only manages rows
+        // listed in the file or marked updated_by='repo', so it leaves this
+        // row alone until the person adds themselves to the file.
         await tx`
           INSERT INTO triage_maintainers (github_login, updated_by)
           VALUES (${plan.insert.maintainer}, ${actor})
