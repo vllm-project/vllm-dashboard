@@ -59,6 +59,7 @@ def build_runtime(consumer: str) -> tuple[AlertingRuntime, ScheduledCommand]:
         handler = RouteHandler(  # type: ignore[assignment]
             store=store, config=config, clock=clock, delivery_mode=mode,
             maintainers_source=lambda: fetch_main_files(token),
+            github=GitHubClient(token, min_remaining=1) if token else None,
         )
     else:
         handler = DigestHandler(  # type: ignore[assignment]

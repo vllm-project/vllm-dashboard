@@ -1,34 +1,22 @@
-# Thien Tran. Draft from vLLM history (2026-11-12) for them to review:
-# CODEOWNERS for qwen4_exp, kimi_k3 KDA, GDN CuTe-DSL, BF16x3 router GEMM,
-# CuTe-DSL GEMM-RS/AR, cute_utils; recent PRs are NVIDIA/Blackwell
-# performance on Qwen4Exp, Qwen3.5, Kimi-K3, MiniMax-M3, DeepGEMM MegaMoE.
+# Thien Tran. Drafted 2026-11-12 from their vLLM history; edit freely.
+#
+# Who gets what is judged by Claude from your recent vLLM PRs (authored and
+# reviewed, refreshed daily) plus the notes below. Write the notes however
+# you like. `rules` is optional: use it only for hard limits or "always send me".
 github_login: gau-nernst
-min_score: 40          # the route threshold; raise it to see only bigger items
+min_score: 40
 capacity_per_week: 8
 notify_mode: digest
+
+notes: |
+  I work on NVIDIA (Hopper/Blackwell) performance and correctness for new MoE
+  and hybrid-attention models (Qwen4Exp, Qwen3.5/3.8, Kimi-K3, MiniMax-M3) and
+  the kernels behind them: GDN, KDA, DeepGEMM MegaMoE, the BF16x3 router GEMM,
+  CuTe DSL kernels, FP8/FP4 activation quant (per_token_group_quant, Humming),
+  and kernel warmup.
+  Don't send me: AMD/ROCm, TPU or CPU issues; model loading or GGUF; frontend
+  or API questions.
+
 rules:
-  # Owned models plus Qwen3.5 / Qwen3.8 (many of their NVIDIA perf PRs and
-  # about 40% of their reviews). Added after vllm#65906 (Qwen3.5 FP8
-  # regression from their #61343) went unrouted.
-  models: ["qwen4*", "qwen3.5*", "qwen3.8*", "kimi-k3*", "kimi*k3*", "minimax-m3*"]
-  paths:
-    - "vllm/models/qwen4_exp/**"
-    - "vllm/models/kimi_k3/nvidia/**"
-    - "vllm/models/minimax_m3/nvidia/**"
-    - "vllm/model_executor/layers/mamba/**"
-    - "vllm/model_executor/layers/fused_moe/router/**"
-    - "vllm/model_executor/kernels/linear/cute_dsl/**"
-    - "vllm/cute_utils/**"
-    - "vllm/model_executor/warmup/**"
-    - "vllm/model_executor/layers/quantization/utils/fp8_utils.py"
-    - "csrc/quantization/fp8/**"
-  # FP8/FP4 activation-quant kernels too (#61343, #61773, #64494, #65077).
-  keywords: ["gdn", "gated delta", "megamoe", "deepgemm", "router gemm", "cute dsl", "cutedsl", "kda",
-             "fp8", "nvfp4", "mxfp8", "per_token_group_quant", "humming"]
   exclude:
-    types: [question, usage, docs]
     hardware: [MI300X, MI325X, MI355X, other_amd, TPU, Gaudi, XPU, CPU_x86, CPU_arm, Apple]
-  natural_language: >-
-    NVIDIA (Hopper/Blackwell) performance and correctness for new MoE and
-    hybrid-attention models, and the kernels behind them (GDN, KDA,
-    DeepGEMM MegaMoE, router GEMM, CuTe DSL).

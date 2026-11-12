@@ -23,6 +23,15 @@ _LINKED_ISSUE = re.compile(
     r"\s*:?\s+(?:https://github\.com/vllm-project/vllm/issues/|#)(\d+)"
 )
 _ISSUE_URL = re.compile(r"https://github\.com/vllm-project/vllm/issues/(\d+)")
+# PRs an item points at: pull URLs, "PR #123", and commit subjects "... (#123)".
+_PR_REFS = (
+    re.compile(r"https://github\.com/vllm-project/vllm/pull/(\d+)"),
+    re.compile(r"(?i)\b(?:PR|pull request)\s*#\s*(\d{3,6})\b"),
+    re.compile(r"\(#(\d{4,6})\)"),
+)
+# Comment lines as stored by GitHubClient.comments: "[login (ASSOCIATION)]: body".
+_COMMENTER = re.compile(r"(?m)^\[([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\s\((\w*)\)\]: ")
+MAX_REFERENCED_PRS = 5
 
 # Ordered: more specific first so "GB200" is not also counted as "B200".
 _HARDWARE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
@@ -75,6 +84,26 @@ def linked_issues(text: str) -> list[int]:
     found = {int(n) for n in _LINKED_ISSUE.findall(text)}
     found.update(int(n) for n in _ISSUE_URL.findall(text))
     return sorted(found)
+
+
+def referenced_prs(text: str, *, exclude: set[int] | None = None) -> list[int]:
+    """PR numbers the text names (e.g. the commit a regression was bisected
+    to), in order of first mention, capped."""
+    seen: dict[int, None] = {}
+    for pattern in _PR_REFS:
+        for match in pattern.finditer(text):
+            seen.setdefault(int(match.group(1)), None)
+    out = [n for n in sorted(seen, key=lambda n: text.find(str(n))) if n not in (exclude or set())]
+    return out[:MAX_REFERENCED_PRS]
+
+
+def commenters(comments: list[str] | str) -> list[str]:
+    """Logins that commented, in order, from stored comment text."""
+    text = comments if isinstance(comments, str) else "\n\n".join(comments)
+    seen: dict[str, None] = {}
+    for login, _association in _COMMENTER.findall(text):
+        seen.setdefault(login, None)
+    return list(seen)
 
 
 def hardware_hints(text: str) -> list[str]:
@@ -163,6 +192,8 @@ def compute_prepass(item: Item, config: TriageConfig) -> dict[str, Any]:
         "template": template,
         "slop_hints": _slop_hints(item, template),
         "scope_reason": reason,
+        "referenced_prs": referenced_prs(text, exclude={item.number, *links}),
+        "commenters": commenters(item.comments),
     }
 
 

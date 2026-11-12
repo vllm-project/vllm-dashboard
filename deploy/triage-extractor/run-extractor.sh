@@ -20,6 +20,8 @@ set -a
 source "$env_file"
 set +a
 
-exec flock -n "$lock" \
-  uv run --project "$repo_root/triage" --extra postgres \
-  vllm-triage extract >> "$log_dir/extractor.log" 2>&1
+# Label new items, then judge which maintainers the routable ones are for.
+exec flock -n "$lock" bash -c '
+  uv run --project "$0/triage" --extra postgres vllm-triage extract
+  uv run --project "$0/triage" --extra postgres vllm-triage relevance
+' "$repo_root" >> "$log_dir/extractor.log" 2>&1

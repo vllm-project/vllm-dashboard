@@ -150,3 +150,19 @@ no rules, and are never touched by the sync.
 An item matches a maintainer when at least one positive criterion matches
 and no exclude matches. Each matched criterion is recorded in
 `triage_assignments.reason.matched` as `"area:moe"`, `"hardware:B200"`, …
+
+## Relevance (migration 0039)
+
+`triage_maintainer_profiles`: per active maintainer, their recent authored
+and reviewed PRs (`[{"number", "kind", "title"}]`), rebuilt daily by
+`triage-route`. `profile_hash` covers the PRs and the maintainer's notes
+(`rules.natural_language`).
+
+`triage_relevance`: one row per (item, maintainer): `relevance` in high /
+medium / low / none, `evidence_prs` (only PRs from that maintainer's
+profile), `reason`, plus the item `content_hash` and `profile_hash` it was
+judged against. A change to either re-queues the judgement. Written by the
+extractor host (`vllm-triage relevance`) for open items scoring at least the
+route threshold. Routing waits for judgements unless a maintainer is
+already involved, and records them in `triage_assignments.reason`
+(`matched`, `why`).

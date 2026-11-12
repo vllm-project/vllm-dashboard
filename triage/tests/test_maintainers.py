@@ -21,7 +21,7 @@ min_score: 500
 colour: blue
 rules: {areas: [moe, made-up], hardware: [H9000], types: [urgent]}
 """,
-        "b.yaml": "github_login: c\nrules: {types: [bug]}\n",
+        "b.yaml": "github_login: c\nrules: {types: [bug]}\nnotes: 7\n",
         "d.yaml": "- github_login: d\n",
         "e.yaml": "github_login: [",
     }
@@ -29,8 +29,8 @@ rules: {areas: [moe, made-up], hardware: [H9000], types: [urgent]}
         parse_maintainer_files(files)
     problems = "\n".join(exc.value.problems)
     for expected in ("min_score", "unknown key `colour`", "made-up", "H9000", "urgent",
-                     "file name must be <github_login>.yaml", "needs at least one of",
-                     "d.yaml: must be a single mapping", "e.yaml: not valid YAML"):
+                     "file name must be <github_login>.yaml",
+                     "d.yaml: must be a single mapping", "e.yaml: not valid YAML", "notes: must be text"):
         assert expected in problems, expected
 
 
@@ -51,3 +51,10 @@ rules: {models: ["Qwen3*"]}
 def test_file_name_is_case_insensitive_like_github() -> None:
     [m] = parse_maintainer_files({"Gau-Nernst.yaml": "github_login: gau-nernst\nrules: {areas: [moe]}\n"})
     assert m.github_login == "gau-nernst"
+
+
+def test_notes_alone_are_enough_and_merge_with_natural_language() -> None:
+    [m] = parse_maintainer_files({"x.yaml": "github_login: x\nnotes: |\n  I own the scheduler.\n"
+                                            "rules: {natural_language: no TPU please}\n"})
+    assert m.rules["natural_language"] == "I own the scheduler.\n\nno TPU please"
+    assert not any(m.rules[k] for k in ("areas", "hardware", "models", "paths", "keywords"))

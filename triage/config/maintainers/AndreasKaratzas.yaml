@@ -1,0 +1,14 @@
+# Andreas Karatzas (AMD). Drafted 2026-11-12 from their vLLM history; edit freely.
+# See gau-nernst.yaml for how this file is used.
+github_login: AndreasKaratzas
+min_score: 40
+capacity_per_week: 10
+notify_mode: digest
+
+notes: |
+  I work on vLLM on AMD GPUs (MI355X/MI300X, gfx950/gfx942): ROCm kernels and
+  backends (AITER, ROCM_AITER_MLA and sparse MLA, FP8/MXFP4 MoE on ROCm),
+  Mamba/GDN on ROCm, DeepSeek-V4.x / GLM / Qwen3.5 / MiniMax-M3 on AMD, and the
+  AMD CI mirrors of the NVIDIA test jobs.
+  Send me anything that fails or regresses on AMD hardware, and ROCm CI.
+  Don't send me NVIDIA-only kernel issues.

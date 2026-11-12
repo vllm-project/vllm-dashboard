@@ -1,52 +1,53 @@
-# Maintainer rules
+# Maintainers
 
-One file per maintainer: `<your-github-login>.yaml`. It decides which vLLM
-issues and PRs the triage system routes to you.
+One file per maintainer: `<your-github-login>.yaml`. Edit yours however you
+like and open a PR. It takes effect about 5 minutes after the PR merges.
 
-## Changing your rules
+## How items reach you
 
-1. Edit your file, or add one, and open a PR. CI checks it.
-2. It takes effect about 5 minutes after the PR merges, when the triage
-   worker reads this folder from `main`.
+You don't need to write matching rules. For each important item (score 40+),
+Claude reads:
 
-To try a change first, use **Rules** on [ci.vllm.ai/triage](https://ci.vllm.ai/triage).
-It previews what a draft would have matched over the last 30 days, then
-gives you the YAML or opens this file on GitHub for you.
+- **your recent vLLM work:** the PRs you authored and reviewed in the last
+  6 months, refreshed daily, and
+- **your `notes`:** anything you write in your file,
 
-Check locally: `cd triage && uv run python -m triage.maintainers check config/maintainers`
+and decides whether the item is **high**, **medium**, **low** or **none**
+for you, citing your PRs as evidence. You get it if:
 
-To stop getting items, delete your file, or set `active: false` to pause.
+1. you're already **involved**: you wrote a PR the item names (e.g. the
+   commit a regression was bisected to) or you've commented on it; or
+2. it's **high** or **medium** for you; or
+3. it matches a **rule** you wrote (optional, for "always send me X").
 
-## Format
+The dashboard shows why, e.g. `relevance:high (like #61343)`.
+
+## Your file
 
 ```yaml
 github_login: your-login          # must match the file name
-min_score: 40                     # only items scoring at least this (route band is 40+, page 70+)
-capacity_per_week: 8              # page-band items ignore this
+min_score: 40                     # only items scoring at least this (route band 40+, page 70+)
+capacity_per_week: 10             # new page-band items (last 3 days) may exceed it
 notify_mode: digest               # immediate | digest | off  (Slack is off for now)
 away:                             # optional
   - {start: 2026-12-20, end: 2027-01-03}
-rules:
-  areas: [moe, kernels]
-  hardware: [B200, GB200]
-  models: ["deepseek*", "qwen3*"]          # lowercase globs on extracted model names
-  paths: ["vllm/model_executor/layers/fused_moe/**"]   # globs on files a PR changes
-  keywords: ["expert parallel"]            # case-insensitive, in the title or summary
-  types: [bug, regression]                 # optional: only these types
-  exclude: {types: [question], hardware: [MI300X]}
-  natural_language: "One sentence about what you own (for humans)."
+
+notes: |
+  Write anything in plain words: what you own, what to send you, what not
+  to send you. Claude reads this when judging relevance.
+
+rules:                            # optional
+  exclude: {hardware: [MI300X], types: [question]}   # hard limits
+  areas: [moe]                    # "always send me" overrides (any one matches)
+  models: ["deepseek*"]
+  keywords: ["expert parallel"]
 ```
 
-## How matching works
+To stop getting items, delete your file, or set `active: false` to pause.
+Check it locally with
+`cd triage && uv run python -m triage.maintainers check config/maintainers`.
 
-- An item matches you if **any** of `areas`, `hardware`, `models`, `paths`
-  or `keywords` matches, and nothing in `exclude` does.
-- `types` only narrows the match. If you set it, the item must be one of
-  those types.
-- If several people match, the one with more matching criteria wins. A tie
-  goes to whoever has the most room under `capacity_per_week`.
-
-## Allowed values
+## Allowed values (for `rules`)
 
 - **areas:** scheduler, kv_cache, attention, moe, quantization, distributed,
   model_loading, models, multimodal, spec_decode, lora, frontend_api,

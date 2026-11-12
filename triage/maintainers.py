@@ -32,7 +32,7 @@ _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 _SLACK_USER = re.compile(r"^[UW][A-Z0-9]{6,}$")
 _TOP_KEYS = {
     "github_login", "slack_user_id", "min_score", "capacity_per_week",
-    "notify_mode", "away", "rules", "active",
+    "notify_mode", "away", "rules", "active", "notes",
 }
 _RULE_KEYS = {"areas", "hardware", "models", "paths", "keywords", "types", "exclude", "natural_language"}
 _EXCLUDE_KEYS = {"types", "areas", "hardware"}
@@ -173,16 +173,17 @@ def _parse_entries(entries: list[Any], problems: list[str]) -> list[Maintainer]:
             "areas": _str_list(exclude.get("areas"), f"{where}.rules.exclude.areas", problems, AREAS),
             "hardware": _str_list(exclude.get("hardware"), f"{where}.rules.exclude.hardware", problems, HARDWARE),
         }
-        natural = raw_rules.get("natural_language")
-        if natural is not None and not isinstance(natural, str):
-            problems.append(f"{where}.rules.natural_language: must be text")
-        if natural:
-            rules["natural_language"] = natural.strip()
-        if not any(rules[k] for k in ("areas", "hardware", "models", "paths", "keywords")):
-            problems.append(
-                f"{where}.rules: needs at least one of areas, hardware, models, paths, keywords "
-                "(types and exclude only narrow a match)"
-            )
+        # Free text Claude reads when judging relevance. `notes` at the top of
+        # the file is the documented place; rules.natural_language is the same
+        # field (the dashboard writes it there).
+        texts = []
+        for key, value in (("notes", entry.get("notes")), ("rules.natural_language", raw_rules.get("natural_language"))):
+            if value is not None and not isinstance(value, str):
+                problems.append(f"{where}.{key}: must be text")
+            elif value and value.strip():
+                texts.append(value.strip())
+        if texts:
+            rules["natural_language"] = "\n\n".join(texts)[:4000]
         out.append(Maintainer(
             github_login=login,
             slack_user_id=slack if isinstance(slack, str) else None,

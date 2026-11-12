@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -18,6 +19,7 @@ from alerting.ports import NotificationIntent
 from alerting.postgres import PostgresAlertStore
 
 from triage.extract import ExtractionTask, LLMResult
+from triage.relevance import Judgment, MaintainerProfile, RelevanceTask, profile_hash
 from triage.model import Item, Maintainer, Score
 from triage.prepass import BODY_LIMIT, COMMENTS_LIMIT, MAX_FILES
 
@@ -29,6 +31,7 @@ class StoredItemState:
     gh_updated_at: datetime
     files: list[dict[str, Any]]
     comments_excerpt: str
+    prepass: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,10 @@ class RoutingRow:
     prepass: dict[str, Any]
     files: list[str]
     excluded: frozenset[str]
+    # {login: {"relevance": "high", "evidence_prs": [...], "reason": "..."}},
+    # only judgements that match the item's current text.
+    relevance: dict[str, dict[str, Any]] = dataclass_field(default_factory=dict)
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -114,11 +121,11 @@ class PostgresTriageStore(PostgresAlertStore):
     def item_state(self, item_key: str) -> StoredItemState | None:
         with self._connection_factory() as c:
             row = c.execute(
-                """SELECT content_hash, comment_count, gh_updated_at, files, comments_excerpt
+                """SELECT content_hash, comment_count, gh_updated_at, files, comments_excerpt, prepass
                    FROM triage_items WHERE item_key = %s""",
                 (item_key,),
             ).fetchone()
-        return StoredItemState(*row) if row else None
+        return StoredItemState(row[0], row[1], row[2], list(row[3]), row[4], dict(row[5])) if row else None
 
     def upsert_item(
         self,
@@ -365,9 +372,16 @@ class PostgresTriageStore(PostgresAlertStore):
             rows = c.execute(
                 """
                 SELECT i.item_key, i.kind, i.title, i.html_url, s.score, s.band, e.facets, i.prepass,
-                       i.files,
+                       i.files, i.comments_excerpt,
                        COALESCE((SELECT array_agg(DISTINCT a.actor) FROM triage_actions a
-                                 WHERE a.item_key = i.item_key AND a.action = 'not_mine'), '{}')
+                                 WHERE a.item_key = i.item_key AND a.action = 'not_mine'), '{}'),
+                       COALESCE((SELECT jsonb_object_agg(r.maintainer, jsonb_build_object(
+                                     'relevance', r.relevance, 'evidence_prs', r.evidence_prs,
+                                     'reason', r.reason))
+                                 FROM triage_relevance r
+                                 WHERE r.item_key = i.item_key AND r.content_hash = i.content_hash),
+                                '{}'::jsonb),
+                       i.gh_created_at
                 FROM triage_items i
                 JOIN triage_scores s ON s.item_key = i.item_key
                 JOIN triage_extractions e ON e.id = s.extraction_id
@@ -384,8 +398,9 @@ class PostgresTriageStore(PostgresAlertStore):
         return [
             RoutingRow(
                 item_key=r[0], kind=r[1], title=r[2], html_url=r[3], score=r[4], band=r[5],
-                facets=dict(r[6]), prepass=dict(r[7]), files=[f["path"] for f in r[8]],
-                excluded=frozenset(r[9]),
+                facets=dict(r[6]), prepass=_with_commenters(dict(r[7]), r[9]),
+                files=[f["path"] for f in r[8]], excluded=frozenset(r[10]),
+                relevance=dict(r[11]), created_at=r[12],
             )
             for r in rows
         ]
@@ -455,6 +470,95 @@ class PostgresTriageStore(PostgresAlertStore):
                         (now, assignment_ids),
                     )
 
+    # --- profiles and relevance --------------------------------------------
+
+    def profile_ages(self) -> dict[str, datetime | None]:
+        """Active maintainers and when their profile was last built."""
+        with self._connection_factory() as c:
+            rows = c.execute(
+                """SELECT m.github_login, p.built_at FROM triage_maintainers m
+                   LEFT JOIN triage_maintainer_profiles p USING (github_login) WHERE m.active"""
+            ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def save_profile(self, login: str, prs: list[dict[str, Any]], *, now: datetime) -> None:
+        with self._connection_factory() as c:
+            notes = c.execute(
+                "SELECT COALESCE(rules->>'natural_language', '') FROM triage_maintainers WHERE github_login = %s",
+                (login,),
+            ).fetchone()
+            c.execute(
+                """INSERT INTO triage_maintainer_profiles (github_login, prs, profile_hash, built_at)
+                   VALUES (%s, %s::jsonb, %s, %s)
+                   ON CONFLICT (github_login) DO UPDATE SET prs = EXCLUDED.prs,
+                       profile_hash = EXCLUDED.profile_hash, built_at = EXCLUDED.built_at""",
+                (login, json.dumps(prs), profile_hash(prs, notes[0] if notes else ""), now),
+            )
+
+    def maintainer_profiles(self) -> list[MaintainerProfile]:
+        """Active maintainers' profiles; the hash also covers their current
+        notes, so editing notes re-queues their judgements."""
+        with self._connection_factory() as c:
+            rows = c.execute(
+                """SELECT m.github_login, p.prs, COALESCE(m.rules->>'natural_language', '')
+                   FROM triage_maintainers m JOIN triage_maintainer_profiles p USING (github_login)
+                   WHERE m.active ORDER BY m.github_login"""
+            ).fetchall()
+        return [MaintainerProfile(r[0], list(r[1]), r[2], profile_hash(list(r[1]), r[2])) for r in rows]
+
+    def relevance_queue(self, *, limit: int, min_score: int) -> list[RelevanceTask]:
+        """Open, extracted items scoring >= min_score with at least one active
+        maintainer whose judgement is missing or stale (item text changed or
+        that maintainer's profile changed)."""
+        profiles = {p.login: p.profile_hash for p in self.maintainer_profiles()}
+        if not profiles:
+            return []
+        with self._connection_factory() as c:
+            rows = c.execute(
+                """
+                SELECT i.item_key, i.kind, i.title, e.facets, i.content_hash,
+                       COALESCE((SELECT jsonb_object_agg(r.maintainer, r.profile_hash)
+                                 FROM triage_relevance r
+                                 WHERE r.item_key = i.item_key AND r.content_hash = i.content_hash),
+                                '{}'::jsonb)
+                FROM triage_items i
+                JOIN triage_scores s USING (item_key)
+                JOIN triage_extractions e ON e.id = s.extraction_id
+                WHERE i.in_scope AND i.state = 'open' AND s.score >= %s
+                  AND e.content_hash = i.content_hash
+                ORDER BY s.score DESC, i.gh_created_at DESC
+                """,
+                (min_score,),
+            ).fetchall()
+        tasks: list[RelevanceTask] = []
+        for key, kind, title, facets, chash, judged in rows:
+            todo = [login for login, h in profiles.items() if judged.get(login) != h]
+            if todo:
+                tasks.append(RelevanceTask(key, kind, title, dict(facets), chash, todo))
+                if len(tasks) >= limit:
+                    break
+        return tasks
+
+    def save_relevance(
+        self, task: RelevanceTask, judgments: list[Judgment], *, profiles: dict[str, MaintainerProfile],
+        model: str, now: datetime,
+    ) -> None:
+        with self._connection_factory() as c:
+            with c.transaction():
+                for j in judgments:
+                    c.execute(
+                        """INSERT INTO triage_relevance (item_key, maintainer, relevance, evidence_prs, reason,
+                               content_hash, profile_hash, model, created_at)
+                           VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s)
+                           ON CONFLICT (item_key, maintainer) DO UPDATE SET
+                               relevance = EXCLUDED.relevance, evidence_prs = EXCLUDED.evidence_prs,
+                               reason = EXCLUDED.reason, content_hash = EXCLUDED.content_hash,
+                               profile_hash = EXCLUDED.profile_hash, model = EXCLUDED.model,
+                               created_at = EXCLUDED.created_at""",
+                        (task.item_key, j.maintainer, j.relevance, json.dumps(j.evidence_prs), j.reason,
+                         task.content_hash, profiles[j.maintainer].profile_hash, model, now),
+                    )
+
     # --- maintainers (synced from triage/config/maintainers/*.yaml) --------
 
     def sync_maintainers(self, maintainers: list[Maintainer], *, owner: str = "repo") -> tuple[int, int]:
@@ -492,6 +596,16 @@ class PostgresTriageStore(PostgresAlertStore):
                     (owner, logins),
                 ).rowcount
         return len(maintainers), int(deactivated or 0)
+
+
+def _with_commenters(prepass: dict[str, Any], comments_excerpt: str) -> dict[str, Any]:
+    """Items ingested before commenters were recorded: read them from the
+    stored comment text."""
+    if "commenters" not in prepass:
+        from triage.prepass import commenters
+
+        prepass = {**prepass, "commenters": commenters(comments_excerpt or "")}
+    return prepass
 
 
 def week_ago(now: datetime) -> datetime:
