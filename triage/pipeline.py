@@ -24,7 +24,7 @@ from alerting.ports import Clock, DeliveryMode
 from triage.config import TriageConfig
 from triage.github import GitHubClient, item_from_raw
 from triage.model import Item, Score
-from triage.maintainers import MaintainersFileError, parse_maintainers
+from triage.maintainers import MaintainersFileError, parse_maintainer_files
 from triage.notify import maintainer_digest, page_dm, team_digest
 from triage.prepass import (
     COMMENTS_LIMIT,
@@ -93,8 +93,9 @@ class RouteHandler:
     config: TriageConfig
     clock: Clock
     delivery_mode: DeliveryMode
-    # Returns (maintainers.yaml text, where it came from). None skips the sync.
-    maintainers_source: Callable[[], tuple[str, str]] | None = None
+    # Returns {"<login>.yaml": text} from main, or None when it could not be
+    # fetched completely (the sync is then skipped). None here disables sync.
+    maintainers_source: Callable[[], dict[str, str] | None] | None = None
     repo: str = "vllm-project/vllm"
     score_limit: int = 3000
     route_limit: int = 200
@@ -108,12 +109,15 @@ class RouteHandler:
     def _sync_maintainers(self) -> None:
         if self.maintainers_source is None:
             return
-        text, source = self.maintainers_source()
+        files = self.maintainers_source()
+        if files is None:
+            log.warning("maintainer files could not be fetched; keeping current rules")
+            return
         try:
-            maintainers = parse_maintainers(text)
+            maintainers = parse_maintainer_files(files)
         except MaintainersFileError as exc:
             # Keep the last good rules; a broken merge must not unroute everyone.
-            log.error("maintainers.yaml from %s rejected: %s", source, exc)
+            log.error("maintainer files rejected: %s", exc)
             return
         self.store.sync_maintainers(maintainers)
 

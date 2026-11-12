@@ -6,9 +6,10 @@ import { MultiSelect } from "@/components/multi-select";
 import { BandBadge, GithubLink } from "@/components/triage/badges";
 import { sendJson, triageFetcher } from "@/lib/triage-format";
 import {
-  RULES_FILE_EDIT_URL,
-  RULES_FILE_PATH,
-  maintainerEntryYaml,
+  maintainerFileCreateUrl,
+  maintainerFileEditUrl,
+  maintainerFilePath,
+  maintainerFileYaml,
   validateMaintainerSettings,
 } from "@/lib/triage-rules";
 import type { TriageMaintainer } from "@/lib/triage-types";
@@ -131,7 +132,7 @@ export default function RulesContent() {
 }
 
 /**
- * Rules are read-only here: they live in triage/config/maintainers.yaml and
+ * Rules are read-only here: they live in triage/config/maintainers/<login>.yaml and
  * change by pull request. This page loads the current (synced) rules into a
  * local draft, previews the draft against recent items, and hands the draft
  * back as the YAML entry to paste into the file.
@@ -149,7 +150,11 @@ function RulesDraft({ data }: { data: RulesResponse }) {
   };
 
   const validated = validateMaintainerSettings(toBody(form));
-  const yaml = validated.ok ? maintainerEntryYaml(data.maintainer.githubLogin, validated.value) : null;
+  const login = data.maintainer.githubLogin;
+  const yaml = validated.ok ? maintainerFileYaml(login, validated.value) : null;
+  // A row the repo sync owns means the file exists on main; anything else
+  // (no row, or a bare row created by Ack) means it still has to be created.
+  const hasFile = data.exists && data.maintainer.updatedBy === "repo";
 
   async function runPreview() {
     setBusy(true);
@@ -185,15 +190,15 @@ function RulesDraft({ data }: { data: RulesResponse }) {
         }}
       >
         <div className="rounded-md border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200">
-          Rules live in <code className="font-mono">{RULES_FILE_PATH}</code>. Changes take effect about 5 minutes after the PR merges.
-          Edits here are a draft only: preview them, then copy the YAML into a pull request.
+          Your rules live in <code className="font-mono">{maintainerFilePath(login)}</code>. Changes take effect about 5 minutes after the PR merges.
+          Edits here are a draft only: preview them, then open a pull request with the YAML below.
         </div>
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
           Rules decide which items the router sends to <span className="font-medium">{data.maintainer.githubLogin}</span>.
           An item matches when any area, hardware, model, path or keyword matches, it passes the type filter, and nothing in Exclude matches.{" "}
           {data.exists
             ? `Loaded your current rules${data.maintainer.updatedAt ? ` (last synced ${new Date(data.maintainer.updatedAt).toLocaleString()}${data.maintainer.updatedBy ? ` by ${data.maintainer.updatedBy}` : ""})` : ""}.`
-            : "You are not in the file yet; this draft starts empty."}
+            : "You have no rules file yet; this draft starts empty."}
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
           <MultiSelect label="Areas" options={[...TRIAGE_AREAS]} selected={form.areas} onChange={(value) => set("areas", value)} placeholder="None" />
@@ -258,18 +263,29 @@ function RulesDraft({ data }: { data: RulesResponse }) {
           <button type="button" disabled={!yaml} onClick={() => void copyYaml()} className="dashboard-control min-h-9 rounded-md border border-zinc-200 px-4 text-sm font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
             Copy as YAML
           </button>
-          <a
-            href={RULES_FILE_EDIT_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="dashboard-control inline-flex min-h-9 items-center rounded-md border border-zinc-200 px-4 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-          >
-            Propose this change on GitHub
-          </a>
+          {hasFile ? (
+            <a
+              href={maintainerFileEditUrl(login)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="dashboard-control inline-flex min-h-9 items-center rounded-md border border-zinc-200 px-4 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              Edit your rules file on GitHub
+            </a>
+          ) : yaml ? (
+            <a
+              href={maintainerFileCreateUrl(login, yaml)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="dashboard-control inline-flex min-h-9 items-center rounded-md border border-zinc-200 px-4 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              Create your rules file on GitHub
+            </a>
+          ) : null}
           {status && <span className="text-xs text-emerald-600">{status}</span>}
           {formError && <span className="text-xs text-red-600 dark:text-red-400">{formError}</span>}
         </div>
-        <Field label="Your maintainers.yaml entry" hint="replace your entry under maintainers:, or add it">
+        <Field label={`${maintainerFilePath(login)}`} hint={hasFile ? "replace the file's content with this" : "the new file's content"}>
           {yaml ? (
             <pre className="max-h-80 overflow-auto rounded-md bg-zinc-50 p-3 font-mono text-xs leading-5 text-zinc-800 dark:bg-zinc-900 dark:text-zinc-200">{yaml}</pre>
           ) : (

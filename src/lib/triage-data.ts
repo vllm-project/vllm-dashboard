@@ -633,9 +633,9 @@ export async function applyTriageAction(
       if (!target) {
         // `ack` on an unassigned item by someone without a maintainer row:
         // create a minimal row so the assignment FK holds. updated_by is the
-        // actor, never 'repo': the maintainers.yaml sync only manages rows
-        // listed in the file or marked updated_by='repo', so it leaves this
-        // row alone until the person adds themselves to the file.
+        // actor, never 'repo': the triage/config/maintainers/ sync only manages
+        // rows with a file or marked updated_by='repo', so it leaves this row
+        // alone until the person adds their own file.
         await tx`
           INSERT INTO triage_maintainers (github_login, updated_by)
           VALUES (${plan.insert.maintainer}, ${actor})

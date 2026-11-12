@@ -12,7 +12,7 @@ contributors' work (including "slop" flags), so nothing is public.
 |---|---|
 | `/triage` | Queue: in-scope items with score and band, kind, title, one-line summary, areas, models, hardware, serving config, assignees and age. Filters for band (default page/route/watch; `ignore` and `unscored` are opt-in), kind, area, hardware, model text, assignee, assignment status, search, and include-closed; sort by score, age or last update. Header: items ingested in 24h, extraction coverage over 7 days, page-band items nobody has acked, and the not-mine rate over 7 days. Clicking a row opens the item drawer (`?item=owner/repo#N`). |
 | `/triage/me` | My plate: the signed-in maintainer's open and acked assignments with Ack / Not mine / Reassign / Drop / Slop / Done, why the router picked them, and assignments closed in the last 14 days with Reopen. |
-| `/triage/rules` | Draft & preview. Loads the signed-in maintainer's current rules from the database (synced from `triage/config/maintainers.yaml`) into a local draft with the same fields (areas, hardware, model globs, path globs, keywords, type filter, excludes, minimum score, weekly capacity, away dates, Slack notification mode and user ID). **Preview last 30 days** lists which recent items the draft matches. **Copy as YAML** copies the maintainer's full `maintainers.yaml` entry; **Propose this change on GitHub** opens the file's editor on `main`. Nothing is saved from the dashboard. Someone not yet in the file starts from an empty draft whose YAML already carries their `github_login`. |
+| `/triage/rules` | Draft & preview. Loads the signed-in maintainer's current rules from the database (synced from `triage/config/maintainers/<login>.yaml`) into a local draft with the same fields (areas, hardware, model globs, path globs, keywords, type filter, excludes, minimum score, weekly capacity, away dates, Slack notification mode and user ID). **Preview last 30 days** lists which recent items the draft matches. **Copy as YAML** copies the full file content. If the maintainer already has a file (their row has `updated_by = 'repo'`), **Edit your rules file on GitHub** opens it in GitHub's editor on `main`; otherwise **Create your rules file on GitHub** opens GitHub's new-file page pre-filled with `<login>.yaml` and the draft's YAML. Nothing is saved from the dashboard. |
 
 The item drawer shows the score breakdown, every extracted facet, the
 deterministic prepass, the routing reason of each assignment, and the full
@@ -59,42 +59,45 @@ assignment change. The router reads those: it never re-routes an item with a
 
 ## Where rules live
 
-Maintainer rules are owned by `triage/config/maintainers.yaml` in this repo
-and changed by pull request. The triage worker syncs `main`'s copy into
-`triage_maintainers` every 5 minutes, so a change takes effect about 5
-minutes after its PR merges. Rows the sync owns have `updated_by = 'repo'`.
+Each maintainer's rules are one file in this repo,
+`triage/config/maintainers/<github_login>.yaml`, changed by pull request.
+The file name stem must equal `github_login`. The triage worker syncs
+`main`'s copies into `triage_maintainers` every 5 minutes, so a change takes
+effect about 5 minutes after its PR merges. Rows the sync owns have
+`updated_by = 'repo'`; the rules page uses that to choose between the
+"Edit your rules file" and "Create your rules file" links.
 
 The dashboard only reads rules: `GET /api/triage/rules` returns the current
 row, `POST /api/triage/rules/preview` evaluates a draft without saving, and
-`PUT /api/triage/rules` returns 405 with a pointer to the file.
+`PUT /api/triage/rules` returns 405 with a pointer to the directory.
 
 The one row the dashboard can create is a bare `triage_maintainers` row
-(default settings, empty rules) when someone who is not in the file uses
+(default settings, empty rules) when someone without a rules file uses
 **Ack** to take an unassigned item, so the assignment has a maintainer to
-point to. That row gets `updated_by` = their login, never `repo`, so the sync
-leaves it alone until they add themselves to the file.
+point to. That row gets `updated_by` = their login, never `repo`, so the
+sync leaves it alone until they add their own file.
 
-Entry format (one list item under `maintainers:`; key order fixed; empty
-lists and optional keys omitted except `github_login`; enum values plain,
-globs and free text double-quoted):
+File format (one top-level mapping; key order fixed; empty lists and
+optional keys omitted except `github_login`; enum values plain, globs and
+free text double-quoted):
 
 ```yaml
-- github_login: gau-nernst
-  slack_user_id: U0123456789
-  min_score: 45
-  capacity_per_week: 8
-  notify_mode: digest
-  away:
-    - {start: 2026-12-20, end: 2027-01-03}
-  rules:
-    areas: [moe, kernels]
-    hardware: [B200]
-    models: ["qwen4*", "kimi-k3*"]
-    paths: ["vllm/models/qwen4_exp/**"]
-    keywords: ["deepgemm"]
-    types: [bug, regression]
-    exclude: {types: [question], hardware: [MI300X]}
-    natural_language: "free text"
+github_login: gau-nernst
+slack_user_id: U0123456789
+min_score: 45
+capacity_per_week: 8
+notify_mode: digest
+away:
+  - {start: 2026-12-20, end: 2027-01-03}
+rules:
+  areas: [moe, kernels]
+  hardware: [B200]
+  models: ["qwen4*", "kimi-k3*"]
+  paths: ["vllm/models/qwen4_exp/**"]
+  keywords: ["deepgemm"]
+  types: [bug, regression]
+  exclude: {types: [question], hardware: [MI300X]}
+  natural_language: "free text"
 ```
 
 ## Environment variables (Vercel)

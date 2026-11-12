@@ -124,11 +124,12 @@ never routes an item to a maintainer who said `not_mine` for it.
 
 ## `triage_maintainers.rules`
 
-Source of truth: `triage/config/maintainers.yaml`, changed by PR. The route
-consumer reads the file from `main` every run, validates it
-(`triage/maintainers.py`) and syncs it: listed maintainers are upserted with
-`updated_by = 'repo'`, and file-owned rows no longer listed are deactivated.
-An invalid file is rejected whole and the last good rules stay. The dashboard
+Source of truth: `triage/config/maintainers/<github_login>.yaml`, one file
+per maintainer, changed by PR. The route consumer reads every file from
+`main` each run, validates the set (`triage/maintainers.py`) and syncs it:
+listed maintainers are upserted with `updated_by = 'repo'`, and file-owned
+rows whose file is gone are deactivated. If any file is invalid or any fetch
+fails, the sync is skipped and the last good rules stay. The dashboard
 only drafts and previews rules; it never writes them. Rows the dashboard
 creates for unlisted people who ack an item carry `updated_by = <login>`, have
 no rules, and are never touched by the sync.

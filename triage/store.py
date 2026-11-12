@@ -455,7 +455,7 @@ class PostgresTriageStore(PostgresAlertStore):
                         (now, assignment_ids),
                     )
 
-    # --- maintainers (synced from triage/config/maintainers.yaml) ----------
+    # --- maintainers (synced from triage/config/maintainers/*.yaml) --------
 
     def sync_maintainers(self, maintainers: list[Maintainer], *, owner: str = "repo") -> tuple[int, int]:
         """Make the database match the file: upsert every listed maintainer,

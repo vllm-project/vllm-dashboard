@@ -30,7 +30,7 @@ packages = ["triage"]
 package-dir = {triage = "."}
 
 [tool.setuptools.package-data]
-triage = ["config/*.yaml", "assets/*.md"]
+triage = ["config/*.yaml", "config/maintainers/*.yaml", "assets/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

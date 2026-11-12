@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { guardTriageRequest, triageDbError, triageJson } from "@/lib/triage-http";
 import { getMaintainer } from "@/lib/triage-data";
-import { EMPTY_RULES, RULES_FILE_URL } from "@/lib/triage-rules";
+import { EMPTY_RULES, RULES_DIR_URL } from "@/lib/triage-rules";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +32,7 @@ export async function GET(request: Request) {
 }
 
 /**
- * Rules are owned by triage/config/maintainers.yaml and changed by PR; the
+ * Rules are owned by triage/config/maintainers/<login>.yaml and changed by PR; the
  * worker syncs main's copy into triage_maintainers. The dashboard never
  * writes them.
  */
@@ -42,8 +42,8 @@ export async function PUT(request: Request) {
   return NextResponse.json(
     {
       error:
-        "Rules are read-only here. Edit triage/config/maintainers.yaml by pull request; changes take effect about 5 minutes after it merges.",
-      file: RULES_FILE_URL,
+        "Rules are read-only here. Edit triage/config/maintainers/<your-login>.yaml by pull request; changes take effect about 5 minutes after it merges.",
+      file: RULES_DIR_URL,
     },
     { status: 405, headers: { Allow: "GET", "Cache-Control": "private, no-store" } },
   );

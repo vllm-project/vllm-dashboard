@@ -1,14 +1,15 @@
-"""triage/config/maintainers.yaml: the source of truth for maintainer rules.
+"""triage/config/maintainers/<github_login>.yaml: maintainer rules, one file each.
 
-Maintainers change their rules by PR. The route consumer reads the copy on
-`main` every run, validates it, and syncs it into triage_maintainers (rows it
-owns carry updated_by='repo'). An invalid file is rejected as a whole and
-the last good rules stay in place. CI runs `python -m triage.maintainers
-check` on every PR that touches the file.
+Maintainers change their rules by PR. The route consumer reads every file on
+`main` each run, validates the set, and syncs it into triage_maintainers
+(rows it owns carry updated_by='repo'). If any file is invalid, or any fetch
+fails, the whole sync is skipped and the last good rules stay in place. CI
+runs `python -m triage.maintainers check` on every PR that touches triage/.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from datetime import date
@@ -22,8 +23,9 @@ import yaml
 from triage.config import CONFIG_DIR
 from triage.model import AREAS, HARDWARE, ITEM_TYPES, Maintainer
 
-REPO_FILE = "triage/config/maintainers.yaml"
-CONTENTS_URL = f"https://api.github.com/repos/vllm-project/vllm-dashboard/contents/{REPO_FILE}?ref=main"
+REPO_DIR = "triage/config/maintainers"
+LOCAL_DIR = CONFIG_DIR / "maintainers"
+CONTENTS_URL = f"https://api.github.com/repos/vllm-project/vllm-dashboard/contents/{REPO_DIR}?ref=main"
 REPO_OWNER = "repo"
 
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
@@ -68,19 +70,44 @@ def _date(value: Any) -> date | None:
     return None
 
 
-def parse_maintainers(text: str) -> list[Maintainer]:
-    """Validate the whole file; raise MaintainersFileError listing every problem."""
-    problems: list[str] = []
+def _load_entry(name: str, text: str, problems: list[str]) -> dict[str, Any] | None:
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as exc:
-        raise MaintainersFileError([f"not valid YAML: {exc}"]) from exc
-    if not isinstance(data, dict) or not isinstance(data.get("maintainers", []), list):
-        raise MaintainersFileError(["top level must be a mapping with a `maintainers:` list"])
+        problems.append(f"{name}: not valid YAML: {exc}")
+        return None
+    if not isinstance(data, dict):
+        problems.append(f"{name}: must be a single mapping (github_login, rules, ...)")
+        return None
+    login = data.get("github_login")
+    stem = name.rsplit("/", 1)[-1].removesuffix(".yaml")
+    if isinstance(login, str) and login.lower() != stem.lower():
+        problems.append(f"{name}: file name must be <github_login>.yaml (found github_login: {login})")
+    return data
 
+
+def parse_maintainer_files(files: dict[str, str]) -> list[Maintainer]:
+    """Validate a set of `<login>.yaml` files; raise listing every problem."""
+    problems: list[str] = []
+    entries = []
+    for name in sorted(files):
+        entry = _load_entry(name, files[name], problems)
+        if entry is not None:
+            entries.append(entry)
+    maintainers = _parse_entries(entries, problems)
+    if problems:
+        raise MaintainersFileError(problems)
+    return maintainers
+
+
+def load_local_dir(directory: Path = LOCAL_DIR) -> dict[str, str]:
+    return {p.name: p.read_text() for p in sorted(directory.glob("*.yaml"))}
+
+
+def _parse_entries(entries: list[Any], problems: list[str]) -> list[Maintainer]:
     out: list[Maintainer] = []
     seen: set[str] = set()
-    for index, entry in enumerate(data.get("maintainers") or []):
+    for index, entry in enumerate(entries):
         where = f"maintainers[{index}]"
         if not isinstance(entry, dict):
             problems.append(f"{where}: must be a mapping")
@@ -166,36 +193,41 @@ def parse_maintainers(text: str) -> list[Maintainer]:
             away=away,
             notify_mode=notify if notify in ("immediate", "digest", "off") else "digest",
         ))
-    if problems:
-        raise MaintainersFileError(problems)
     return out
 
 
-def fetch_main_copy(token: str | None, *, timeout: float = 15.0) -> tuple[str, str]:
-    """The file on vllm-dashboard `main`, and where it came from.
-
-    Tries the contents API with the worker's token, then anonymously (the
-    repo is public), then falls back to the copy installed with the package.
-    """
+def fetch_main_files(token: str | None, *, timeout: float = 15.0) -> dict[str, str] | None:
+    """Every `<login>.yaml` in the directory on vllm-dashboard `main`, or None
+    if anything could not be fetched (the caller then keeps the current
+    rules rather than syncing a partial set). Tries the worker's token, then
+    anonymously (the repo is public)."""
     for auth in ([token] if token else []) + [None]:
-        headers = {"Accept": "application/vnd.github.raw+json", "User-Agent": "vllm-ci-triage"}
+        headers = {"Accept": "application/vnd.github+json", "User-Agent": "vllm-ci-triage"}
         if auth:
             headers["Authorization"] = f"Bearer {auth}"
         try:
             with urlopen(Request(CONTENTS_URL, headers=headers), timeout=timeout) as response:
-                return response.read().decode(), "github:main"
-        except (HTTPError, URLError, TimeoutError):
+                listing = json.loads(response.read())
+            files: dict[str, str] = {}
+            for entry in listing:
+                if entry.get("type") != "file" or not str(entry.get("name", "")).endswith(".yaml"):
+                    continue
+                raw_headers = {**headers, "Accept": "application/vnd.github.raw+json"}
+                with urlopen(Request(entry["url"], headers=raw_headers), timeout=timeout) as response:
+                    files[entry["name"]] = response.read().decode()
+            return files
+        except (HTTPError, URLError, TimeoutError, ValueError, KeyError, TypeError):
             continue
-    return (CONFIG_DIR / "maintainers.yaml").read_text(), "packaged"
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 2 or args[0] != "check":
-        print("usage: python -m triage.maintainers check <maintainers.yaml>", file=sys.stderr)
+        print("usage: python -m triage.maintainers check <maintainers dir>", file=sys.stderr)
         return 2
     try:
-        maintainers = parse_maintainers(Path(args[1]).read_text())
+        maintainers = parse_maintainer_files(load_local_dir(Path(args[1])))
     except MaintainersFileError as exc:
         print(f"{args[1]} has {len(exc.problems)} problem(s):", file=sys.stderr)
         for problem in exc.problems:

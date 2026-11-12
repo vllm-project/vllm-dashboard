@@ -19,7 +19,7 @@ from alerting.worker import SystemClock, _delivery_mode, _record_failure, _requi
 
 from triage.config import default_config
 from triage.github import GitHubClient
-from triage.maintainers import fetch_main_copy
+from triage.maintainers import fetch_main_files
 from triage.pipeline import DigestHandler, IngestHandler, RouteHandler
 from triage.store import PostgresTriageStore
 
@@ -58,7 +58,7 @@ def build_runtime(consumer: str) -> tuple[AlertingRuntime, ScheduledCommand]:
         token = os.environ.get("GITHUB_TOKEN")
         handler = RouteHandler(  # type: ignore[assignment]
             store=store, config=config, clock=clock, delivery_mode=mode,
-            maintainers_source=lambda: fetch_main_copy(token),
+            maintainers_source=lambda: fetch_main_files(token),
         )
     else:
         handler = DigestHandler(  # type: ignore[assignment]

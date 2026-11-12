@@ -78,9 +78,10 @@ def store(database_url: str) -> PostgresTriageStore:
 def seed(store: PostgresTriageStore, rows: list[dict[str, Any]]) -> None:
     import yaml
 
-    from triage.maintainers import parse_maintainers
+    from triage.maintainers import parse_maintainer_files
 
-    store.sync_maintainers(parse_maintainers(yaml.safe_dump({"maintainers": rows})))
+    store.sync_maintainers(parse_maintainer_files(
+        {f"{row['github_login']}.yaml": yaml.safe_dump(row) for row in rows}))
 
 
 def ingest(store: PostgresTriageStore, item: Item) -> None:
@@ -291,21 +292,18 @@ def test_extractor_role_can_extract_and_nothing_else(store: PostgresTriageStore,
                 c.execute(statement)
 
 
-def test_maintainers_file_is_the_source_of_truth(store: PostgresTriageStore, database_url: str) -> None:
-    from triage.maintainers import parse_maintainers
+def test_maintainer_files_are_the_source_of_truth(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.maintainers import parse_maintainer_files
 
-    def file(*entries: str) -> str:
-        return "maintainers:\n" + "".join(entries)
-
-    a = "  - github_login: a\n    rules: {areas: [moe]}\n"
-    b = "  - github_login: b\n    min_score: 60\n    rules: {hardware: [B200]}\n"
+    a = {"a.yaml": "github_login: a\nrules: {areas: [moe]}\n"}
+    b = {"b.yaml": "github_login: b\nmin_score: 60\nrules: {hardware: [B200]}\n"}
     with psycopg.connect(database_url, autocommit=True) as c:
-        # Someone not in the file who acked an item on the dashboard.
+        # Someone without a file who acked an item on the dashboard.
         c.execute("INSERT INTO triage_maintainers (github_login, updated_by) VALUES ('walk-in', 'walk-in')")
-    assert store.sync_maintainers(parse_maintainers(file(a, b))) == (2, 0)
-    # b's PR changes their rules; a is removed from the file.
-    b2 = "  - github_login: b\n    min_score: 70\n    rules: {hardware: [B200, GB200]}\n"
-    assert store.sync_maintainers(parse_maintainers(file(b2))) == (1, 1)
+    assert store.sync_maintainers(parse_maintainer_files({**a, **b})) == (2, 0)
+    # b's PR changes their file; a deletes theirs.
+    b2 = {"b.yaml": "github_login: b\nmin_score: 70\nrules: {hardware: [B200, GB200]}\n"}
+    assert store.sync_maintainers(parse_maintainer_files(b2)) == (1, 1)
     with psycopg.connect(database_url) as c:
         rows = dict((r[0], r[1:]) for r in c.execute(
             "SELECT github_login, active, min_score, rules->'hardware', updated_by FROM triage_maintainers"))
@@ -314,12 +312,17 @@ def test_maintainers_file_is_the_source_of_truth(store: PostgresTriageStore, dat
     assert rows["walk-in"] == (True, 40, None, "walk-in")
 
 
-def test_a_broken_file_keeps_the_last_good_rules(store: PostgresTriageStore, database_url: str) -> None:
-    good = "maintainers:\n  - github_login: a\n    rules: {areas: [moe]}\n"
-    bad = "maintainers:\n  - github_login: a\n    rules: {areas: [not-an-area]}\n"
-    sources = iter([(good, "test"), (bad, "test")])
+def test_a_broken_or_unfetchable_set_keeps_the_last_good_rules(
+    store: PostgresTriageStore, database_url: str
+) -> None:
+    good = {"a.yaml": "github_login: a\nrules: {areas: [moe]}\n"}
+    bad = {"a.yaml": "github_login: a\nrules: {areas: [not-an-area]}\n"}
+    sources = iter([good, bad, None, {}])
     route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
                          delivery_mode=DeliveryMode.SHADOW, maintainers_source=lambda: next(sources))
-    route(ScheduledCommand("triage_route", NOW))
-    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=5)))
-    assert [m.rules["areas"] for m in store.active_maintainers()] == [["moe"]]
+    for minutes in (0, 5, 10):  # good, then invalid, then fetch failed
+        route(ScheduledCommand("triage_route", NOW + timedelta(minutes=minutes)))
+        assert [m.rules["areas"] for m in store.active_maintainers()] == [["moe"]]
+    # An empty folder that fetched fine is real: everyone is deactivated.
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=15)))
+    assert store.active_maintainers() == []

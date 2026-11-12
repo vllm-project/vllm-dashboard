@@ -108,7 +108,7 @@ test("sign-in is 503 until the OAuth app is configured", async () => {
   });
 });
 
-test("rules are read-only: PUT is 405 and points at maintainers.yaml", async () => {
+test("rules are read-only: PUT is 405 and points at the maintainers directory", async () => {
   await withEnv(ENABLED, async () => {
     const response = await putRules(
       new Request("https://ci.vllm.ai/api/triage/rules", {
@@ -120,8 +120,8 @@ test("rules are read-only: PUT is 405 and points at maintainers.yaml", async () 
     assert.equal(response.status, 405);
     assert.equal(response.headers.get("allow"), "GET");
     const body = (await response.json()) as { error: string; file: string };
-    assert.match(body.error, /maintainers\.yaml/);
-    assert.match(body.file, /triage\/config\/maintainers\.yaml$/);
+    assert.match(body.error, /triage\/config\/maintainers\//);
+    assert.match(body.file, /\/tree\/main\/triage\/config\/maintainers$/);
   });
   await withEnv({ ...ENABLED, TRIAGE_ENABLED: undefined }, async () => {
     assert.equal((await putRules(new Request("https://ci.vllm.ai/api/triage/rules", { method: "PUT" }))).status, 404);

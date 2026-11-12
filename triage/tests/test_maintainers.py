@@ -1,56 +1,53 @@
-"""triage/config/maintainers.yaml validation."""
+"""triage/config/maintainers/<login>.yaml validation."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from triage.maintainers import MaintainersFileError, main, parse_maintainers
-
-REAL_FILE = Path(__file__).resolve().parents[1] / "config" / "maintainers.yaml"
+from triage.maintainers import LOCAL_DIR, MaintainersFileError, load_local_dir, main, parse_maintainer_files
 
 
-def test_the_checked_in_file_is_valid() -> None:
-    assert main(["check", str(REAL_FILE)]) == 0
-    logins = [m.github_login for m in parse_maintainers(REAL_FILE.read_text())]
+def test_the_checked_in_files_are_valid() -> None:
+    assert main(["check", str(LOCAL_DIR)]) == 0
+    logins = [m.github_login for m in parse_maintainer_files(load_local_dir())]
     assert "gau-nernst" in logins
 
 
 def test_every_problem_is_reported_at_once() -> None:
-    text = """
-maintainers:
-  - github_login: a
-    min_score: 500
-    colour: blue
-    rules: {areas: [moe, made-up], hardware: [H9000], types: [urgent]}
-  - github_login: a
-    rules: {types: [bug]}
-  - github_login: "not a login!"
-"""
+    files = {
+        "a.yaml": """
+github_login: a
+min_score: 500
+colour: blue
+rules: {areas: [moe, made-up], hardware: [H9000], types: [urgent]}
+""",
+        "b.yaml": "github_login: c\nrules: {types: [bug]}\n",
+        "d.yaml": "- github_login: d\n",
+        "e.yaml": "github_login: [",
+    }
     with pytest.raises(MaintainersFileError) as exc:
-        parse_maintainers(text)
+        parse_maintainer_files(files)
     problems = "\n".join(exc.value.problems)
     for expected in ("min_score", "unknown key `colour`", "made-up", "H9000", "urgent",
-                     "listed twice", "needs at least one of", "github_login"):
-        assert expected in problems
+                     "file name must be <github_login>.yaml", "needs at least one of",
+                     "d.yaml: must be a single mapping", "e.yaml: not valid YAML"):
+        assert expected in problems, expected
 
 
 def test_away_dates_and_defaults() -> None:
-    [m] = parse_maintainers("""
-maintainers:
-  - github_login: x
-    away: [{start: 2026-12-20, end: 2027-01-03}]
-    rules: {models: ["Qwen3*"]}
-""")
+    [m] = parse_maintainer_files({"x.yaml": """
+github_login: x
+away: [{start: 2026-12-20, end: 2027-01-03}]
+rules: {models: ["Qwen3*"]}
+"""})
     assert m.away == [{"start": "2026-12-20", "end": "2027-01-03"}]
     assert m.rules["models"] == ["qwen3*"]
     assert (m.min_score, m.capacity_per_week, m.notify_mode, m.active) == (40, 10, "digest", True)
     with pytest.raises(MaintainersFileError):
-        parse_maintainers("maintainers:\n  - github_login: x\n    away: [{start: 2027-01-03, end: 2026-12-20}]\n"
-                          "    rules: {areas: [moe]}\n")
+        parse_maintainer_files({"x.yaml": "github_login: x\naway: [{start: 2027-01-03, end: 2026-12-20}]\n"
+                                          "rules: {areas: [moe]}\n"})
 
 
-def test_not_yaml() -> None:
-    with pytest.raises(MaintainersFileError):
-        parse_maintainers("maintainers: [")
+def test_file_name_is_case_insensitive_like_github() -> None:
+    [m] = parse_maintainer_files({"Gau-Nernst.yaml": "github_login: gau-nernst\nrules: {areas: [moe]}\n"})
+    assert m.github_login == "gau-nernst"
