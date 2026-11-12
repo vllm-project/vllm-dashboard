@@ -7,9 +7,10 @@ min_score: 40          # the route threshold; raise it to see only bigger items
 capacity_per_week: 8
 notify_mode: digest
 rules:
-  # Owned models only. Qwen3.5/3.8 are left out on purpose (too broad);
-  # their GDN kernel work is covered by the paths and keywords below.
-  models: ["qwen4*", "kimi-k3*", "kimi*k3*", "minimax-m3*"]
+  # Owned models plus Qwen3.5 / Qwen3.8 (many of their NVIDIA perf PRs and
+  # about 40% of their reviews). Added after vllm#65906 (Qwen3.5 FP8
+  # regression from their #61343) went unrouted.
+  models: ["qwen4*", "qwen3.5*", "qwen3.8*", "kimi-k3*", "kimi*k3*", "minimax-m3*"]
   paths:
     - "vllm/models/qwen4_exp/**"
     - "vllm/models/kimi_k3/nvidia/**"
@@ -19,7 +20,11 @@ rules:
     - "vllm/model_executor/kernels/linear/cute_dsl/**"
     - "vllm/cute_utils/**"
     - "vllm/model_executor/warmup/**"
-  keywords: ["gdn", "gated delta", "megamoe", "deepgemm", "router gemm", "cute dsl", "cutedsl", "kda"]
+    - "vllm/model_executor/layers/quantization/utils/fp8_utils.py"
+    - "csrc/quantization/fp8/**"
+  # FP8/FP4 activation-quant kernels too (#61343, #61773, #64494, #65077).
+  keywords: ["gdn", "gated delta", "megamoe", "deepgemm", "router gemm", "cute dsl", "cutedsl", "kda",
+             "fp8", "nvfp4", "mxfp8", "per_token_group_quant", "humming"]
   exclude:
     types: [question, usage, docs]
     hardware: [MI300X, MI325X, MI355X, other_amd, TPU, Gaudi, XPU, CPU_x86, CPU_arm, Apple]
