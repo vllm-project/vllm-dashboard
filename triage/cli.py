@@ -4,7 +4,7 @@
   vllm-triage backtest extract --dir D --limit 150 [--workers 4] [--model sonnet]
   vllm-triage backtest report  --dir D
   vllm-triage extract          (extractor host: one budgeted run against Postgres)
-  vllm-triage seed-maintainers (insert maintainers.yaml rows that do not exist)
+  vllm-triage sync-maintainers (sync config/maintainers/*.yaml into the database now)
 
 Worker consumers (ingest/route/digest) run through `python -m triage.worker`.
 """
@@ -83,13 +83,15 @@ def _extract(args: argparse.Namespace) -> int:
     return 0 if result.failed == 0 or result.extracted else 1
 
 
-def _seed(args: argparse.Namespace) -> int:
-    from triage.config import load_maintainer_seed
+def _sync(args: argparse.Namespace) -> int:
+    """Sync local maintainer files now (the route consumer does this from
+    `main` every run; this is for first setup or an urgent fix)."""
+    from triage.maintainers import LOCAL_DIR, load_local_dir, parse_maintainer_files
     from triage.store import PostgresTriageStore
 
-    store = PostgresTriageStore(os.environ["DATABASE_URL"])
-    inserted = store.seed_maintainers(load_maintainer_seed())
-    print(json.dumps({"inserted": inserted}))
+    maintainers = parse_maintainer_files(load_local_dir(Path(args.dir) if args.dir else LOCAL_DIR))
+    upserted, deactivated = PostgresTriageStore(os.environ["DATABASE_URL"]).sync_maintainers(maintainers)
+    print(json.dumps({"maintainers": upserted, "deactivated": deactivated}))
     return 0
 
 
@@ -113,14 +115,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     ex.add_argument("--max-items-per-day", type=int, default=int(os.environ.get("TRIAGE_MAX_ITEMS_PER_DAY", "150")))
     ex.add_argument("--max-tokens-per-day", type=int, default=int(os.environ.get("TRIAGE_MAX_TOKENS_PER_DAY", "2000000")))
 
-    sub.add_parser("seed-maintainers")
+    sync = sub.add_parser("sync-maintainers")
+    sync.add_argument("--dir")
 
     args = parser.parse_args(argv)
     if args.command == "backtest":
         return _backtest(args)
     if args.command == "extract":
         return _extract(args)
-    return _seed(args)
+    return _sync(args)
 
 
 if __name__ == "__main__":

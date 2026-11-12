@@ -1,0 +1,33 @@
+name: Triage
+
+# Maintainers change their routing rules by editing their own
+# triage/config/maintainers/<github_login>.yaml in a PR. This checks the file (and runs the
+# triage unit tests) so a typo fails here instead of in production; the
+# worker also refuses an invalid file and keeps the last good rules.
+on:
+  pull_request:
+    paths:
+      - "triage/**"
+      - ".github/workflows/triage.yml"
+  push:
+    branches: [main]
+    paths:
+      - "triage/**"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: triage
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: astral-sh/setup-uv@e92bafb6253dcd438e0484186d7669ea7a8ca1cc  # v6.4.3
+      - name: Check maintainer rule files
+        run: uv run python -m triage.maintainers check config/maintainers
+      - name: Unit tests
+        run: uv run --extra dev pytest -q tests/test_core.py tests/test_maintainers.py

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import yaml from "js-yaml";
 import {
   EMPTY_RULES,
+  maintainerFileCreateUrl,
+  maintainerFileEditUrl,
+  maintainerFilePath,
+  maintainerFileYaml,
   fnmatchToRegExp,
   matchRules,
   normalizeRules,
@@ -128,4 +133,141 @@ test("settings validation accepts a full body and rejects bad values", () => {
   ]) {
     assert.equal(validateMaintainerSettings(bad).ok, false, JSON.stringify(bad));
   }
+});
+
+test("rules file: exact format, key order, quoting", () => {
+  const text = maintainerFileYaml("gau-nernst", {
+    slackUserId: "U0123456789",
+    minScore: 45,
+    capacityPerWeek: 8,
+    notifyMode: "digest",
+    away: [{ start: "2026-12-20", end: "2027-01-03" }],
+    rules: {
+      areas: ["moe", "kernels"],
+      hardware: ["B200"],
+      models: ["qwen4*", "kimi-k3*"],
+      paths: ["vllm/models/qwen4_exp/**"],
+      keywords: ["deepgemm"],
+      types: ["bug", "regression"],
+      exclude: { types: ["question"], areas: [], hardware: ["MI300X"] },
+      natural_language: "free text",
+    },
+  });
+  assert.equal(
+    text,
+    [
+      "github_login: gau-nernst",
+      "slack_user_id: U0123456789",
+      "min_score: 45",
+      "capacity_per_week: 8",
+      "notify_mode: digest",
+      "away:",
+      "  - {start: 2026-12-20, end: 2027-01-03}",
+      "rules:",
+      "  areas: [moe, kernels]",
+      "  hardware: [B200]",
+      '  models: ["qwen4*", "kimi-k3*"]',
+      '  paths: ["vllm/models/qwen4_exp/**"]',
+      '  keywords: ["deepgemm"]',
+      "  types: [bug, regression]",
+      "  exclude: {types: [question], hardware: [MI300X]}",
+      '  natural_language: "free text"',
+      "",
+    ].join("\n"),
+  );
+});
+
+test("the coordinator's example file is reproduced exactly", () => {
+  assert.equal(
+    maintainerFileYaml("gau-nernst", {
+      slackUserId: null,
+      minScore: 40,
+      capacityPerWeek: 8,
+      notifyMode: "digest",
+      away: [],
+      rules: {
+        ...EMPTY_RULES,
+        models: ["qwen4*", "kimi-k3*"],
+        paths: ["vllm/models/qwen4_exp/**"],
+        keywords: ["deepgemm"],
+        exclude: { types: ["question"], areas: [], hardware: ["MI300X"] },
+      },
+    }),
+    `github_login: gau-nernst
+min_score: 40
+capacity_per_week: 8
+notify_mode: digest
+rules:
+  models: ["qwen4*", "kimi-k3*"]
+  paths: ["vllm/models/qwen4_exp/**"]
+  keywords: ["deepgemm"]
+  exclude: {types: [question], hardware: [MI300X]}
+`,
+  );
+});
+
+test("an empty draft keeps only github_login and the scalar settings", () => {
+  assert.equal(
+    maintainerFileYaml("newbie", {
+      slackUserId: null,
+      minScore: 40,
+      capacityPerWeek: 10,
+      notifyMode: "digest",
+      away: [],
+      rules: EMPTY_RULES,
+    }),
+    "github_login: newbie\nmin_score: 40\ncapacity_per_week: 10\nnotify_mode: digest\n",
+  );
+});
+
+test("the file parses back to the same values, including awkward strings", () => {
+  const rules = {
+    ...EMPTY_RULES,
+    areas: ["moe"],
+    models: ["Qwen/Qwen3-*", "a: b", 'say "hi"'],
+    keywords: ["#tag", "yes", "multi\nline"],
+    exclude: { types: ["docs"], areas: [], hardware: ["MI300X"] },
+    natural_language: "colons: here, and 'quotes' \\ backslash",
+  };
+  const parsed = yaml.load(
+    maintainerFileYaml("true", {
+      slackUserId: "U01",
+      minScore: 0,
+      capacityPerWeek: 0,
+      notifyMode: "off",
+      away: [{ start: "2026-12-20", end: "2027-01-03" }],
+      rules,
+    }),
+    { schema: yaml.JSON_SCHEMA },
+  ) as {
+    github_login: unknown;
+    slack_user_id: unknown;
+    min_score: unknown;
+    notify_mode: unknown;
+    away: unknown;
+    rules: Record<string, unknown>;
+  };
+  assert.equal(parsed.github_login, "true");
+  assert.equal(parsed.slack_user_id, "U01");
+  assert.equal(parsed.min_score, 0);
+  assert.equal(parsed.notify_mode, "off");
+  assert.deepEqual(parsed.away, [{ start: "2026-12-20", end: "2027-01-03" }]);
+  assert.deepEqual(parsed.rules.areas, ["moe"]);
+  assert.deepEqual(parsed.rules.models, rules.models);
+  assert.deepEqual(parsed.rules.keywords, rules.keywords);
+  assert.deepEqual(parsed.rules.exclude, { types: ["docs"], hardware: ["MI300X"] });
+  assert.equal(parsed.rules.natural_language, rules.natural_language);
+});
+
+test("rules file paths and GitHub links", () => {
+  assert.equal(maintainerFilePath("gau-nernst"), "triage/config/maintainers/gau-nernst.yaml");
+  assert.equal(
+    maintainerFileEditUrl("gau-nernst"),
+    "https://github.com/vllm-project/vllm-dashboard/edit/main/triage/config/maintainers/gau-nernst.yaml",
+  );
+  const content = 'github_login: gau-nernst\nrules:\n  models: ["qwen4*"]\n';
+  const url = new URL(maintainerFileCreateUrl("gau-nernst", content));
+  assert.equal(url.origin + url.pathname, "https://github.com/vllm-project/vllm-dashboard/new/main/triage/config/maintainers");
+  assert.equal(url.searchParams.get("filename"), "gau-nernst.yaml");
+  assert.equal(url.searchParams.get("value"), content);
 });

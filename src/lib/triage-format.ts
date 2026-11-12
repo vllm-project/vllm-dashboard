@@ -16,7 +16,7 @@ export function percent(numerator: number, denominator: number): string {
   return `${Math.round((numerator / denominator) * 100)}%`;
 }
 
-export async function sendJson<T>(url: string, method: "POST" | "PUT", body: unknown): Promise<T> {
+export async function sendJson<T>(url: string, method: "POST", body: unknown): Promise<T> {
   const response = await fetch(url, {
     method,
     headers: { "Content-Type": "application/json" },

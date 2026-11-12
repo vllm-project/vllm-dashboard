@@ -13,6 +13,7 @@ notification is rendered and stored but never delivered.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -23,6 +24,7 @@ from alerting.ports import Clock, DeliveryMode
 from triage.config import TriageConfig
 from triage.github import GitHubClient, item_from_raw
 from triage.model import Item, Score
+from triage.maintainers import MaintainersFileError, parse_maintainer_files
 from triage.notify import maintainer_digest, page_dm, team_digest
 from triage.prepass import (
     COMMENTS_LIMIT,
@@ -91,14 +93,33 @@ class RouteHandler:
     config: TriageConfig
     clock: Clock
     delivery_mode: DeliveryMode
+    # Returns {"<login>.yaml": text} from main, or None when it could not be
+    # fetched completely (the sync is then skipped). None here disables sync.
+    maintainers_source: Callable[[], dict[str, str] | None] | None = None
     repo: str = "vllm-project/vllm"
     score_limit: int = 3000
     route_limit: int = 200
 
     def __call__(self, command: ScheduledCommand) -> None:
         now = self.clock.now()
+        self._sync_maintainers()
         self._rescore(now)
         self._route(now)
+
+    def _sync_maintainers(self) -> None:
+        if self.maintainers_source is None:
+            return
+        files = self.maintainers_source()
+        if files is None:
+            log.warning("maintainer files could not be fetched; keeping current rules")
+            return
+        try:
+            maintainers = parse_maintainer_files(files)
+        except MaintainersFileError as exc:
+            # Keep the last good rules; a broken merge must not unroute everyone.
+            log.error("maintainer files rejected: %s", exc)
+            return
+        self.store.sync_maintainers(maintainers)
 
     def _rescore(self, now: datetime) -> None:
         rows = self.store.scoring_candidates(scoring_version=self.config.version, limit=self.score_limit)
