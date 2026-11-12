@@ -58,11 +58,3 @@ def load_config(config_dir: Path | None = None) -> TriageConfig:
 @cache
 def default_config() -> TriageConfig:
     return load_config()
-
-
-def load_maintainer_seed(config_dir: Path | None = None) -> list[dict[str, Any]]:
-    data = _load("maintainers.yaml", config_dir)
-    rows = data.get("maintainers") or []
-    if not isinstance(rows, list):
-        raise ValueError("maintainers.yaml: `maintainers` must be a list")
-    return rows

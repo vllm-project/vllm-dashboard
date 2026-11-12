@@ -29,7 +29,7 @@ GitHub ─► triage-ingest (worker, 5 min) ─► triage_items + deterministic 
 | Scope | `prepass.scope_reason` | Issues, PRs from non-maintainers, and maintainer PRs that link an issue. Maintainer PRs without a linked issue and bot PRs are stored but not extracted. |
 | Extract | `extract.py`, `facets.py`, `assets/extractor-system.md` | Claude Code headless, with no tools and schema-constrained JSON. Runs on a separate host: [deploy/triage-extractor](../deploy/triage-extractor/README.md). |
 | Score | `scoring.py`, `config/scoring.yaml`, `config/tiers.yaml` | Deterministic. `severity × reach (model × hardware × config) + additive factors`. The breakdown always sums to the score. |
-| Route | `routing.py` | Explicit maintainer rules only (`triage_maintainers.rules`). The most specific match wins, then lowest load relative to capacity. Page-band items also get a backup. |
+| Route | `routing.py`, `maintainers.py`, `config/maintainers.yaml` | Explicit maintainer rules only, from `config/maintainers.yaml`. Maintainers change their rules by PR; the worker syncs `main`'s copy every 5 minutes, and CI (`.github/workflows/triage.yml`) checks the file. The most specific match wins, then lowest load relative to capacity. Page-band items also get a backup. |
 | Notify | `notify.py` | Immediate DM for page band, daily DM digest, daily team digest. **Shadow only for now.** |
 | Act | dashboard ([docs/triage-dashboard.md](../docs/triage-dashboard.md)) | ack / not mine / reassign / drop / slop / done / reopen. The router never re-routes dropped or slop items, and never routes an item back to someone who said it isn't theirs. |
 

@@ -455,22 +455,43 @@ class PostgresTriageStore(PostgresAlertStore):
                         (now, assignment_ids),
                     )
 
-    # --- seeding -------------------------------------------------------------
+    # --- maintainers (synced from triage/config/maintainers.yaml) ----------
 
-    def seed_maintainers(self, rows: list[dict[str, Any]]) -> int:
-        inserted = 0
+    def sync_maintainers(self, maintainers: list[Maintainer], *, owner: str = "repo") -> tuple[int, int]:
+        """Make the database match the file: upsert every listed maintainer,
+        deactivate file-owned rows that are no longer listed. Rows created by
+        the dashboard for unlisted people (updated_by = their login) are left
+        alone. Returns (upserted, deactivated)."""
+        logins = [m.github_login for m in maintainers]
         with self._connection_factory() as c:
-            for r in rows:
-                result = c.execute(
-                    """INSERT INTO triage_maintainers (github_login, slack_user_id, rules, min_score,
-                           capacity_per_week, notify_mode, updated_by)
-                       VALUES (%s,%s,%s::jsonb,%s,%s,%s,'seed') ON CONFLICT DO NOTHING RETURNING 1""",
-                    (r["github_login"], r.get("slack_user_id"), json.dumps(r.get("rules") or {}),
-                     int(r.get("min_score", 40)), int(r.get("capacity_per_week", 10)),
-                     r.get("notify_mode", "digest")),
-                ).fetchone()
-                inserted += 1 if result else 0
-        return inserted
+            with c.transaction():
+                for m in maintainers:
+                    c.execute(
+                        """INSERT INTO triage_maintainers (github_login, slack_user_id, active, rules,
+                               min_score, capacity_per_week, away, notify_mode, updated_by)
+                           VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s,%s)
+                           ON CONFLICT (github_login) DO UPDATE SET
+                               slack_user_id = EXCLUDED.slack_user_id, active = EXCLUDED.active,
+                               rules = EXCLUDED.rules, min_score = EXCLUDED.min_score,
+                               capacity_per_week = EXCLUDED.capacity_per_week, away = EXCLUDED.away,
+                               notify_mode = EXCLUDED.notify_mode, updated_by = EXCLUDED.updated_by
+                           WHERE (triage_maintainers.slack_user_id, triage_maintainers.active,
+                                  triage_maintainers.rules, triage_maintainers.min_score,
+                                  triage_maintainers.capacity_per_week, triage_maintainers.away,
+                                  triage_maintainers.notify_mode, triage_maintainers.updated_by)
+                             IS DISTINCT FROM
+                                 (EXCLUDED.slack_user_id, EXCLUDED.active, EXCLUDED.rules,
+                                  EXCLUDED.min_score, EXCLUDED.capacity_per_week, EXCLUDED.away,
+                                  EXCLUDED.notify_mode, EXCLUDED.updated_by)""",
+                        (m.github_login, m.slack_user_id, m.active, json.dumps(m.rules), m.min_score,
+                         m.capacity_per_week, json.dumps(m.away), m.notify_mode, owner),
+                    )
+                deactivated = c.execute(
+                    """UPDATE triage_maintainers SET active = false
+                       WHERE updated_by = %s AND active AND NOT (github_login = ANY(%s))""",
+                    (owner, logins),
+                ).rowcount
+        return len(maintainers), int(deactivated or 0)
 
 
 def week_ago(now: datetime) -> datetime:
