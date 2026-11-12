@@ -1,6 +1,11 @@
-# NVIDIA to AMD gating parity
+# NVIDIA to AMD gating parity (API only)
 
-The Parity page (`/parity`) answers one question: of the gating test jobs
+> The Parity page was replaced by the Platform Scope page; see
+> [platform-scope.md](platform-scope.md). `/parity` redirects to `/platforms`.
+> The `/api/parity` and `/api/parity/history` routes below remain for existing
+> clients.
+
+The Parity page answered one question: of the gating test jobs
 vLLM runs on NVIDIA GPUs and includes in AMD parity, how many declare an AMD mirror?
 The page shows gating jobs only, with no all-jobs scope selector.
 
@@ -98,4 +103,3 @@ the API rate limit is exhausted, and never cache the error.
   `gpu-parity.test.ts`.
 - `src/lib/gpu-parity-source.ts` — GitHub reads, blob cache, weekly sampling.
 - `src/app/api/parity/route.ts`, `src/app/api/parity/history/route.ts`.
-- `src/app/parity/page.tsx`, `src/components/parity-trend-chart.tsx`.

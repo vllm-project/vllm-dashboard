@@ -30,13 +30,13 @@ test("Health owns builds, jobs, tests, runner queue, alerts and the Metrics page
   assert.deepEqual(
     metrics?.links.map((link) => [link.label, link.href]),
     [
-      ["AMD Parity", "/parity"],
+      ["Platform Scope", "/platforms"],
       ["Force-merges", "/force-merges"],
       ["Automatic sharding", "/sharding"],
       ["CI Selector", "/selector"],
     ],
   );
-  const routes = ["/", "/jobs", "/tests", "/queue", "/alerts", "/parity", "/force-merges", "/sharding", "/selector"];
+  const routes = ["/", "/jobs", "/tests", "/queue", "/alerts", "/platforms", "/force-merges", "/sharding", "/selector"];
   for (const pathname of routes) {
     assert.equal(sectionForPathname(pathname)?.label, "Health");
   }

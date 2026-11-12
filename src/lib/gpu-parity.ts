@@ -42,7 +42,8 @@ const CPU_DEVICES = new Set([
   "zen5",
 ]);
 const OTHER_DEVICES = new Set(["intel_hpu", "intel_gpu", "ascend_npu"]);
-const AMD_GPU_DEVICE = /^mi\d{3}_\d+$/;
+// mi300_1, mi355_8, and partitioned devices such as mi355_dpx.
+const AMD_GPU_DEVICE = /^mi\d{3}_[a-z0-9]+$/;
 
 export interface StepHardware {
   device?: string | null;
