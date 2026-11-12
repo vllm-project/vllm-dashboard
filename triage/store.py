@@ -29,6 +29,7 @@ class StoredItemState:
     gh_updated_at: datetime
     files: list[dict[str, Any]]
     comments_excerpt: str
+    prepass: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -114,11 +115,11 @@ class PostgresTriageStore(PostgresAlertStore):
     def item_state(self, item_key: str) -> StoredItemState | None:
         with self._connection_factory() as c:
             row = c.execute(
-                """SELECT content_hash, comment_count, gh_updated_at, files, comments_excerpt
+                """SELECT content_hash, comment_count, gh_updated_at, files, comments_excerpt, prepass
                    FROM triage_items WHERE item_key = %s""",
                 (item_key,),
             ).fetchone()
-        return StoredItemState(*row) if row else None
+        return StoredItemState(row[0], row[1], row[2], list(row[3]), row[4], dict(row[5])) if row else None
 
     def upsert_item(
         self,
@@ -365,7 +366,7 @@ class PostgresTriageStore(PostgresAlertStore):
             rows = c.execute(
                 """
                 SELECT i.item_key, i.kind, i.title, i.html_url, s.score, s.band, e.facets, i.prepass,
-                       i.files,
+                       i.files, i.comments_excerpt,
                        COALESCE((SELECT array_agg(DISTINCT a.actor) FROM triage_actions a
                                  WHERE a.item_key = i.item_key AND a.action = 'not_mine'), '{}')
                 FROM triage_items i
@@ -384,8 +385,8 @@ class PostgresTriageStore(PostgresAlertStore):
         return [
             RoutingRow(
                 item_key=r[0], kind=r[1], title=r[2], html_url=r[3], score=r[4], band=r[5],
-                facets=dict(r[6]), prepass=dict(r[7]), files=[f["path"] for f in r[8]],
-                excluded=frozenset(r[9]),
+                facets=dict(r[6]), prepass=_with_commenters(dict(r[7]), r[9]),
+                files=[f["path"] for f in r[8]], excluded=frozenset(r[10]),
             )
             for r in rows
         ]
@@ -492,6 +493,16 @@ class PostgresTriageStore(PostgresAlertStore):
                     (owner, logins),
                 ).rowcount
         return len(maintainers), int(deactivated or 0)
+
+
+def _with_commenters(prepass: dict[str, Any], comments_excerpt: str) -> dict[str, Any]:
+    """Items ingested before commenters were recorded: read them from the
+    stored comment text."""
+    if "commenters" not in prepass:
+        from triage.prepass import commenters
+
+        prepass = {**prepass, "commenters": commenters(comments_excerpt or "")}
+    return prepass
 
 
 def week_ago(now: datetime) -> datetime:

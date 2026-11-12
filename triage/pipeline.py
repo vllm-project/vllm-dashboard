@@ -77,6 +77,10 @@ class IngestHandler:
             elif comments_excerpt:
                 item.comments = comments_excerpt.split("\n\n")
         prepass = compute_prepass(item, self.config) if scoped else light
+        if scoped and prepass.get("referenced_prs"):
+            prepass["referenced_pr_authors"] = self._pr_authors(
+                prepass["referenced_prs"], stored.prepass if stored else {}
+            )
         self.store.upsert_item(
             item,
             prepass=prepass,
@@ -85,6 +89,21 @@ class IngestHandler:
             in_scope=scoped,
             comments_excerpt=comments_excerpt,
         )
+
+
+    def _pr_authors(self, numbers: list[int], previous: dict[str, Any]) -> dict[str, str]:
+        """Authors of the PRs an item names; reuses earlier lookups."""
+        known: dict[str, str] = dict(previous.get("referenced_pr_authors") or {})
+        out: dict[str, str] = {}
+        for number in numbers:
+            key = str(number)
+            if key not in known:
+                author = self.github.pull_author(self.repo, number)
+                if author is None:
+                    continue
+                known[key] = author
+            out[key] = known[key]
+        return out
 
 
 @dataclass
@@ -168,7 +187,8 @@ class RouteHandler:
                 if wants_now and maintainer.notify_mode != "off" and maintainer.slack_user_id:
                     entry = DigestEntry(
                         0, row.item_key, row.title, row.html_url, row.score, row.band,
-                        str(row.facets.get("summary") or ""), list(candidate.matched),
+                        str(row.facets.get("summary") or ""),
+                        [*candidate.involvement, *candidate.matched],
                     )
                     notification = page_dm(
                         assignment_key=f"{row.item_key}:{maintainer.github_login}:{role}",
@@ -177,8 +197,8 @@ class RouteHandler:
                     )
                 assignments.append(NewAssignment(
                     maintainer=maintainer.github_login, role=role,
-                    reason={"matched": list(candidate.matched), "load": candidate.load,
-                            "capacity": maintainer.capacity_per_week},
+                    reason={"matched": [*candidate.involvement, *candidate.matched],
+                            "load": candidate.load, "capacity": maintainer.capacity_per_week},
                     notification=notification,
                 ))
                 if role == "primary":

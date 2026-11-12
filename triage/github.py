@@ -124,6 +124,13 @@ class GitHubClient:
                 break
         return files
 
+    def pull_author(self, repo: str, number: int) -> str | None:
+        pull = self._get(f"/repos/{repo}/pulls/{number}")
+        if not isinstance(pull, dict):
+            return None  # not a PR (e.g. an issue number) or gone
+        login = (pull.get("user") or {}).get("login")
+        return login if isinstance(login, str) else None
+
     def comments(self, repo: str, number: int) -> list[str]:
         batch = self._get(f"/repos/{repo}/issues/{number}/comments", {"per_page": MAX_COMMENTS}) or []
         out = []

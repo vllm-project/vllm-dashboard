@@ -36,6 +36,28 @@ class Candidate:
     maintainer: Maintainer
     matched: tuple[str, ...]
     load: int
+    involvement: tuple[str, ...] = ()
+
+    @property
+    def rank(self) -> tuple[int, int, int]:
+        authored = any(i.startswith("authored") for i in self.involvement)
+        commented = "commented" in self.involvement
+        return (-int(authored), -int(commented), -len(self.matched))
+
+
+def involvement(login: str, ctx: RoutingContext) -> list[str]:
+    """How a maintainer is already part of this item, strongest first:
+    they wrote a PR the item names (e.g. the commit a regression was
+    bisected to), or they have commented on it."""
+    me = login.lower()
+    out = [
+        f"authored #{number}"
+        for number, author in (ctx.prepass.get("referenced_pr_authors") or {}).items()
+        if str(author).lower() == me
+    ]
+    if me in (str(c).lower() for c in ctx.prepass.get("commenters") or []):
+        out.append("commented")
+    return out
 
 
 def _lower(values: Iterable[Any]) -> list[str]:
@@ -102,6 +124,12 @@ def choose_owners(
 ) -> list[Candidate]:
     """Primary (and a backup for page-band items), best match first.
 
+    Being involved in the item outranks any rule match: whoever wrote the
+    PR an item names comes first, then maintainers who already commented,
+    then the most specific rule match. Involvement routes even when no rule
+    matches (and despite `exclude`), but min_score, time away, not_mine
+    and capacity still apply.
+
     `load` is each maintainer's assignments opened in the last 7 days;
     `excluded` are maintainers who already said not_mine to this item.
     A maintainer at capacity is skipped unless the item is in the page band.
@@ -116,11 +144,12 @@ def choose_owners(
         if current >= maintainer.capacity_per_week and ctx.band != "page":
             continue
         matched = match_rules(maintainer.rules, ctx)
-        if matched:
-            candidates.append(Candidate(maintainer, tuple(matched), current))
+        involved = involvement(maintainer.github_login, ctx)
+        if matched or involved:
+            candidates.append(Candidate(maintainer, tuple(matched), current, tuple(involved)))
     candidates.sort(
         key=lambda c: (
-            -len(c.matched),
+            c.rank,
             c.load / max(1, c.maintainer.capacity_per_week),
             c.maintainer.github_login,
         )

@@ -326,3 +326,38 @@ def test_a_broken_or_unfetchable_set_keeps_the_last_good_rules(
     # An empty folder that fetched fine is real: everyone is deactivated.
     route(ScheduledCommand("triage_route", NOW + timedelta(minutes=15)))
     assert store.active_maintainers() == []
+
+
+class FakeGitHub:
+    def __init__(self, authors: dict[int, str]) -> None:
+        self.authors = authors
+        self.lookups: list[int] = []
+
+    def pull_author(self, repo: str, number: int) -> str | None:
+        self.lookups.append(number)
+        return self.authors.get(number)
+
+    def pull_files(self, repo: str, number: int) -> list[FileChange]:
+        return []
+
+    def comments(self, repo: str, number: int) -> list[str]:
+        return ["[gau-nernst (MEMBER)]: looking into it"]
+
+
+def test_regression_goes_to_the_author_of_the_bisected_pr(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.pipeline import IngestHandler
+
+    gh = FakeGitHub({61343: "gau-nernst"})
+    ingest_handler = IngestHandler(store=store, github=gh, config=default_config(), clock=FixedClock(NOW))  # type: ignore[arg-type]
+    body = "Accuracy drops after vLLM PR #61343 (https://github.com/vllm-project/vllm/pull/61343)." + " x" * 50
+    ingest_handler._ingest(issue(65906, "Qwen3.5 FP8 GSM8K accuracy drop", body=body, comment_count=2))
+    ingest_handler._ingest(issue(65906, "Qwen3.5 FP8 GSM8K accuracy drop", body=body, comment_count=2))
+    assert gh.lookups == [61343]  # looked up once, then reused
+    seed(store, [{"github_login": "gau-nernst", "rules": {"areas": ["moe"]}}])
+    run_extraction(store, FakeBackend({"Qwen3.5": {**SEVERE, "areas": ["quantization"], "hardware": ["B200"]}}),
+                   budget=Budget(), now=NOW, workers=1)
+    RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
+                 delivery_mode=DeliveryMode.SHADOW)(ScheduledCommand("triage_route", NOW))
+    with psycopg.connect(database_url) as c:
+        row = c.execute("SELECT maintainer, reason->'matched' FROM triage_assignments").fetchone()
+    assert row == ("gau-nernst", ["authored #61343", "commented"])

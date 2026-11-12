@@ -315,3 +315,44 @@ def test_triage_never_goes_live_without_explicit_switch(
     else:
         monkeypatch.setenv("TRIAGE_SLACK_ENABLED", slack_enabled)
     assert triage_delivery_mode().value == expected
+
+
+# --- involvement routing -----------------------------------------------------
+
+
+def test_referenced_prs_and_commenters() -> None:
+    from triage.prepass import commenters, referenced_prs
+
+    text = ("Bisected to vLLM PR #61343 (https://github.com/vllm-project/vllm/pull/61343). "
+            "Commit 0fae39a [Perf] multiply by reciprocal (#61343). Fixes #65000. See issue #12.")
+    assert referenced_prs(text, exclude={65000}) == [61343]
+    stored = "[gau-nernst (MEMBER)]: I can reproduce\n\nmore text\n\n[YYuJLiu (NONE)]: thanks\n[gau-nernst (MEMBER)]: fix in #66694"
+    assert commenters(stored) == ["gau-nernst", "YYuJLiu"]
+
+
+def test_author_of_the_culprit_pr_outranks_rule_matches() -> None:
+    f = facets(type="regression", areas=["quantization"], hardware=["B200"])
+    ctx = RoutingContext(
+        item_key="r#65906", kind="issue", title="GSM8K accuracy drop", score=79, band="page",
+        facets=f, files=[],
+        prepass={"areas": [], "hardware_hints": [], "commenters": ["someone", "gau-nernst"],
+                 "referenced_pr_authors": {"61343": "gau-nernst"}},
+    )
+    # gau-nernst's rules match nothing here and even exclude regressions.
+    author = Maintainer(github_login="gau-nernst", rules={"areas": ["moe"], "exclude": {"types": ["regression"]}})
+    quant = Maintainer(github_login="quant-owner", rules={"areas": ["quantization"], "hardware": ["B200"]})
+    owners = choose_owners(ctx, [quant, author], load={}, excluded=set(), today=date(2026, 11, 12))
+    assert [o.maintainer.github_login for o in owners] == ["gau-nernst", "quant-owner"]
+    assert owners[0].involvement == ("authored #61343", "commented")
+    # Saying "not mine" still wins over involvement.
+    owners = choose_owners(ctx, [quant, author], load={}, excluded={"gau-nernst"}, today=date(2026, 11, 12))
+    assert [o.maintainer.github_login for o in owners] == ["quant-owner"]
+
+
+def test_a_commenter_is_routed_even_without_a_rule_match() -> None:
+    ctx = RoutingContext(item_key="r#1", kind="issue", title="t", score=50, band="route",
+                         facets=facets(areas=["frontend_api"]), files=[],
+                         prepass={"commenters": ["Gau-Nernst"]})
+    owners = choose_owners(ctx, [Maintainer(github_login="gau-nernst", rules={"areas": ["moe"]})],
+                           load={}, excluded=set(), today=date(2026, 11, 12))
+    assert [(o.maintainer.github_login, o.involvement) for o in owners] == [("gau-nernst", ("commented",))]
