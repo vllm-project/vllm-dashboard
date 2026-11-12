@@ -22,7 +22,7 @@ from alerting.commands import ScheduledCommand
 from alerting.ports import Clock, DeliveryMode
 
 from triage.config import TriageConfig
-from triage.github import GitHubClient, item_from_raw
+from triage.github import GitHubClient, GitHubError, item_from_raw
 from triage.model import Item, Score
 from triage.maintainers import MaintainersFileError, parse_maintainer_files
 from triage.notify import maintainer_digest, page_dm, team_digest
@@ -33,12 +33,17 @@ from triage.prepass import (
     in_scope,
     prepass_priority,
 )
+from triage.relevance import profile_is_stale
 from triage.routing import RoutingContext, choose_owners
 from triage.scoring import score_item
 from triage.store import DigestEntry, NewAssignment, PostgresTriageStore, week_ago
 
 log = logging.getLogger(__name__)
 CURSOR_OVERLAP = timedelta(minutes=10)
+PROFILE_WINDOW = timedelta(days=180)
+# Page-band items opened within this window may exceed a maintainer's weekly
+# capacity; older (backlog) items are spread out under it.
+FRESH_WINDOW = timedelta(days=3)
 FIRST_RUN_LOOKBACK = timedelta(days=2)
 
 
@@ -115,6 +120,8 @@ class RouteHandler:
     # Returns {"<login>.yaml": text} from main, or None when it could not be
     # fetched completely (the sync is then skipped). None here disables sync.
     maintainers_source: Callable[[], dict[str, str] | None] | None = None
+    # Builds maintainer profiles (recent PRs) once a day. None disables it.
+    github: GitHubClient | None = None
     repo: str = "vllm-project/vllm"
     score_limit: int = 3000
     route_limit: int = 200
@@ -122,8 +129,22 @@ class RouteHandler:
     def __call__(self, command: ScheduledCommand) -> None:
         now = self.clock.now()
         self._sync_maintainers()
+        self._refresh_profiles(now)
         self._rescore(now)
         self._route(now)
+
+    def _refresh_profiles(self, now: datetime) -> None:
+        if self.github is None:
+            return
+        for login, built_at in self.store.profile_ages().items():
+            if not profile_is_stale(built_at, now):
+                continue
+            try:
+                prs = self.github.maintainer_prs(self.repo, login, since=now - PROFILE_WINDOW)
+            except GitHubError as exc:
+                log.warning("profile for %s not refreshed: %s", login, exc)
+                continue
+            self.store.save_profile(login, prs, now=now)
 
     def _sync_maintainers(self) -> None:
         if self.maintainers_source is None:
@@ -169,11 +190,21 @@ class RouteHandler:
             return
         by_login = {m.github_login: m for m in maintainers}
         load = self.store.maintainer_load(since=week_ago(now))
+        judged_by = {m.github_login for m in maintainers}
         for row in self.store.routing_candidates(limit=self.route_limit):
+            # Wait for relevance judgements unless someone is already involved,
+            # so an early rule match doesn't pre-empt the right person.
+            people = {str(c).lower() for c in row.prepass.get("commenters") or []}
+            people |= {str(a).lower() for a in (row.prepass.get("referenced_pr_authors") or {}).values()}
+            involved = bool(people & {login.lower() for login in judged_by})
+            if self.github is not None and not (judged_by <= set(row.relevance)) and not involved:
+                continue
             ctx = RoutingContext(
                 item_key=row.item_key, kind=row.kind, title=row.title, score=row.score,
                 band=row.band,  # type: ignore[arg-type]
                 facets=row.facets, prepass=row.prepass, files=row.files,
+                relevance=row.relevance,
+                fresh=row.created_at is None or now - row.created_at <= FRESH_WINDOW,
             )
             owners = choose_owners(ctx, maintainers, load=load, excluded=set(row.excluded), today=now.date())
             if not owners:
@@ -188,7 +219,7 @@ class RouteHandler:
                     entry = DigestEntry(
                         0, row.item_key, row.title, row.html_url, row.score, row.band,
                         str(row.facets.get("summary") or ""),
-                        [*candidate.involvement, *candidate.matched],
+                        candidate.reasons,
                     )
                     notification = page_dm(
                         assignment_key=f"{row.item_key}:{maintainer.github_login}:{role}",
@@ -197,7 +228,8 @@ class RouteHandler:
                     )
                 assignments.append(NewAssignment(
                     maintainer=maintainer.github_login, role=role,
-                    reason={"matched": [*candidate.involvement, *candidate.matched],
+                    reason={"matched": candidate.reasons,
+                            "why": str((row.relevance.get(maintainer.github_login) or {}).get("reason") or ""),
                             "load": candidate.load, "capacity": maintainer.capacity_per_week},
                     notification=notification,
                 ))

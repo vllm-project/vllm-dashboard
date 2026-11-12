@@ -1,0 +1,14 @@
+# Kevin Luu. Drafted 2026-11-12 from their vLLM history; edit freely.
+# See gau-nernst.yaml for how this file is used.
+github_login: khluu
+min_score: 40
+capacity_per_week: 10
+notify_mode: digest
+
+notes: |
+  I own vLLM CI, build and release infrastructure: Buildkite pipelines and
+  test jobs, CI images and caching, Docker/release image publishing, wheels and
+  installation problems, the ci-selector, flaky or hanging CI tests, and test
+  isolation (GPU state leaking between tests).
+  Send me CI failures and build/install/release breakage on any hardware.
+  Don't send me model or kernel bugs unless they come from CI or packaging.

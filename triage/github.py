@@ -124,6 +124,33 @@ class GitHubClient:
                 break
         return files
 
+    def maintainer_prs(
+        self, repo: str, login: str, *, since: datetime, per_kind: int = 120
+    ) -> list[dict[str, Any]]:
+        """A maintainer's recent PRs, newest first: what they authored, then
+        what they reviewed (excluding their own). Uses the search API, which
+        has its own 30/minute budget, so calls are spaced out."""
+        out: list[dict[str, Any]] = []
+        day = since.astimezone(timezone.utc).strftime("%Y-%m-%d")
+        for kind, query in (
+            ("authored", f"repo:{repo} is:pr author:{login} created:>={day}"),
+            ("reviewed", f"repo:{repo} is:pr reviewed-by:{login} -author:{login} created:>={day}"),
+        ):
+            got = 0
+            for page in (1, 2):
+                time.sleep(2.2)
+                result = self._get("/search/issues", {"q": query, "sort": "created", "order": "desc",
+                                                      "per_page": 100, "page": page}) or {}
+                items = result.get("items") or []
+                for raw in items:
+                    if got >= per_kind:
+                        break
+                    out.append({"number": int(raw["number"]), "kind": kind, "title": str(raw.get("title") or "")})
+                    got += 1
+                if len(items) < 100 or got >= per_kind:
+                    break
+        return out
+
     def pull_author(self, repo: str, number: int) -> str | None:
         pull = self._get(f"/repos/{repo}/pulls/{number}")
         if not isinstance(pull, dict):

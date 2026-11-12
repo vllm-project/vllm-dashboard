@@ -279,8 +279,12 @@ def test_extractor_role_can_extract_and_nothing_else(store: PostgresTriageStore,
     assert restricted.extraction_usage_since(NOW - timedelta(days=1)) == (1, 1100)
 
     with psycopg.connect(role_url, autocommit=True) as c:
-        for statement in (
-            "SELECT * FROM triage_maintainers",
+        # It reads maintainers and their profiles to judge relevance...
+        c.execute("SELECT * FROM triage_maintainers")
+        c.execute("SELECT * FROM triage_maintainer_profiles")
+        for statement in (  # ...but writes nothing except extractions and judgements.
+            "UPDATE triage_maintainers SET min_score = 0",
+            "INSERT INTO triage_maintainer_profiles (github_login, prs, profile_hash) VALUES ('x', '[]', 'h')",
             "SELECT * FROM alerting_notification_outbox",
             "INSERT INTO triage_scores (item_key, score, band, breakdown, scoring_version) "
             "VALUES ('vllm-project/vllm#50', 1, 'watch', '[]', 'x')",
@@ -361,3 +365,40 @@ def test_regression_goes_to_the_author_of_the_bisected_pr(store: PostgresTriageS
     with psycopg.connect(database_url) as c:
         row = c.execute("SELECT maintainer, reason->'matched' FROM triage_assignments").fetchone()
     assert row == ("gau-nernst", ["authored #61343", "commented"])
+
+
+class FakeProfiles:
+    def maintainer_prs(self, repo: str, login: str, *, since: datetime, per_kind: int = 120) -> list[dict[str, Any]]:
+        return {"gau-nernst": [{"number": 61343, "kind": "authored", "title": "per_token_group_quant reciprocal"}],
+                "amd-person": [{"number": 7, "kind": "reviewed", "title": "[ROCm] AITER MLA"}]}[login]
+
+
+def test_relevance_end_to_end(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.relevance import run_relevance
+
+    ingest(store, issue(65906, "Qwen3.5 FP8 GSM8K accuracy drop"))
+    seed(store, [{"github_login": "gau-nernst", "notes": "FP8 kernels"},
+                 {"github_login": "amd-person", "notes": "ROCm"}])
+    run_extraction(store, FakeBackend({"Qwen3.5": SEVERE}), budget=Budget(), now=NOW, workers=1)
+    route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
+                         delivery_mode=DeliveryMode.SHADOW, github=FakeProfiles())  # type: ignore[arg-type]
+    route(ScheduledCommand("triage_route", NOW))  # builds profiles, scores; waits for judgements
+    with psycopg.connect(database_url) as c:
+        assert c.execute("SELECT count(*) FROM triage_maintainer_profiles").fetchone()[0] == 2
+        assert c.execute("SELECT count(*) FROM triage_assignments").fetchone()[0] == 0
+
+    class Judge:
+        def complete(self, *, system: str, prompt: str, schema: dict[str, Any]) -> LLMResult:
+            assert "per_token_group_quant reciprocal" in system and "<notes>FP8 kernels</notes>" in system
+            return LLMResult(output={"judgments": [
+                {"github_login": "gau-nernst", "relevance": "high", "evidence_prs": [61343], "reason": "his PR"},
+                {"github_login": "amd-person", "relevance": "none", "evidence_prs": [], "reason": "NVIDIA only"},
+            ]}, model="fake")
+
+    result = run_relevance(store, Judge(), now=NOW, min_score=40)
+    assert (result.judged, result.failed) == (1, 0)
+    assert run_relevance(store, Judge(), now=NOW, min_score=40).judged == 0  # nothing stale
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=5)))
+    with psycopg.connect(database_url) as c:
+        rows = c.execute("SELECT maintainer, role, reason->'matched', reason->>'why' FROM triage_assignments").fetchall()
+    assert rows == [("gau-nernst", "primary", ["relevance:high (like #61343)"], "his PR")]

@@ -4,6 +4,7 @@
   vllm-triage backtest extract --dir D --limit 150 [--workers 4] [--model sonnet]
   vllm-triage backtest report  --dir D
   vllm-triage extract          (extractor host: one budgeted run against Postgres)
+  vllm-triage relevance        (extractor host: judge routable items against maintainer profiles)
   vllm-triage sync-maintainers (sync config/maintainers/*.yaml into the database now)
 
 Worker consumers (ingest/route/digest) run through `python -m triage.worker`.
@@ -83,6 +84,21 @@ def _extract(args: argparse.Namespace) -> int:
     return 0 if result.failed == 0 or result.extracted else 1
 
 
+def _relevance(args: argparse.Namespace) -> int:
+    from triage.extract import ClaudeCodeBackend
+    from triage.relevance import run_relevance
+    from triage.store import PostgresTriageStore
+
+    store = PostgresTriageStore(os.environ["DATABASE_URL"])
+    result = run_relevance(
+        store, ClaudeCodeBackend(model=args.model), now=datetime.now(timezone.utc),
+        min_score=args.min_score, limit=args.limit,
+    )
+    print(json.dumps({"judged": result.judged, "failed": result.failed,
+                      "stopped_reason": result.stopped_reason, "errors": result.errors[:3]}))
+    return 0 if result.failed == 0 or result.judged else 1
+
+
 def _sync(args: argparse.Namespace) -> int:
     """Sync local maintainer files now (the route consumer does this from
     `main` every run; this is for first setup or an urgent fix)."""
@@ -115,6 +131,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     ex.add_argument("--max-items-per-day", type=int, default=int(os.environ.get("TRIAGE_MAX_ITEMS_PER_DAY", "150")))
     ex.add_argument("--max-tokens-per-day", type=int, default=int(os.environ.get("TRIAGE_MAX_TOKENS_PER_DAY", "2000000")))
 
+    rel = sub.add_parser("relevance")
+    rel.add_argument("--model", default=os.environ.get("TRIAGE_MODEL", "sonnet"))
+    rel.add_argument("--min-score", type=int, default=int(os.environ.get("TRIAGE_RELEVANCE_MIN_SCORE", "40")))
+    rel.add_argument("--limit", type=int, default=int(os.environ.get("TRIAGE_RELEVANCE_PER_RUN", "40")))
+
     sync = sub.add_parser("sync-maintainers")
     sync.add_argument("--dir")
 
@@ -123,6 +144,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _backtest(args)
     if args.command == "extract":
         return _extract(args)
+    if args.command == "relevance":
+        return _relevance(args)
     return _sync(args)
 
 

@@ -32,3 +32,26 @@ CREATE POLICY triage_extractor_items ON triage_items
 DROP POLICY IF EXISTS triage_extractor_extractions ON triage_extractions;
 CREATE POLICY triage_extractor_extractions ON triage_extractions
     FOR ALL TO triage_extractor USING (true) WITH CHECK (true);
+
+-- Relevance judging (migration 0039 grants these too when the role exists).
+-- Only valid once 0039 is applied.
+DO $$
+BEGIN
+    IF to_regclass('public.triage_relevance') IS NOT NULL THEN
+        GRANT SELECT ON triage_maintainers, triage_maintainer_profiles, triage_scores TO triage_extractor;
+        GRANT SELECT, INSERT, UPDATE ON triage_relevance TO triage_extractor;
+        DROP POLICY IF EXISTS triage_extractor_maintainers ON triage_maintainers;
+        CREATE POLICY triage_extractor_maintainers ON triage_maintainers
+            FOR SELECT TO triage_extractor USING (true);
+        DROP POLICY IF EXISTS triage_extractor_profiles ON triage_maintainer_profiles;
+        CREATE POLICY triage_extractor_profiles ON triage_maintainer_profiles
+            FOR SELECT TO triage_extractor USING (true);
+        DROP POLICY IF EXISTS triage_extractor_scores ON triage_scores;
+        CREATE POLICY triage_extractor_scores ON triage_scores
+            FOR SELECT TO triage_extractor USING (true);
+        DROP POLICY IF EXISTS triage_extractor_relevance ON triage_relevance;
+        CREATE POLICY triage_extractor_relevance ON triage_relevance
+            FOR ALL TO triage_extractor USING (true) WITH CHECK (true);
+    END IF;
+END
+$$;
