@@ -639,3 +639,24 @@ def test_the_notifier_holds_before_secrets_and_a_held_episode_resolves_silently(
     assert silent in script
     assert script.index(silent) < script.index("load-secrets")
     assert "bin/hold-failure /opt/alerting/bin/hold-failure" in read("install.sh")
+
+
+def test_triage_consumers_run_the_triage_module_under_their_own_control() -> None:
+    runner = read("bin/run-worker")
+    installer = read("install.sh")
+
+    assert "triage-ingest|triage-route|triage-digest) alert_path=triage ;;" in runner
+    assert "triage-*) module=triage.worker ;;" in runner
+    assert '-m "$module" "$consumer"' in runner
+    assert '"${source_root}/triage[postgres]"' in installer
+    # Timers are enabled by the S3 control reconciler, never by the installer,
+    # and the LLM extractor never runs on this worker.
+    assert "alerting-triage" not in installer
+    assert "claude" not in installer.lower()
+    for consumer in ("ingest", "route", "digest"):
+        service = read(f"systemd/alerting-triage-{consumer}.service")
+        timer = read(f"systemd/alerting-triage-{consumer}.timer")
+        assert f"run-worker triage-{consumer}\n" in service
+        assert "User=alerting" in service
+        assert "StandardOutput=null" in service
+        assert f"Unit=alerting-triage-{consumer}.service" in timer

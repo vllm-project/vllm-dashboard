@@ -35,6 +35,11 @@ client credentials are needed for dashboard reads.
   device objects, symbols, csrc sources); the builds and kernel backends PR
   decisions actually use; and daily PR decision outcomes and selector run
   time.
+- **Triage** (maintainers only, behind `TRIAGE_ENABLED` and GitHub sign-in) —
+  incoming vLLM issues and PRs with their LLM-read facets, impact score and
+  routed maintainers; a personal "My plate" with Ack / Not mine / Reassign /
+  Drop / Slop / Done; and each maintainer's own routing rules with a 30-day
+  preview. See [triage dashboard](./docs/triage-dashboard.md).
 
 ## Architecture
 

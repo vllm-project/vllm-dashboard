@@ -19,6 +19,7 @@ fi
 
 python3.12 -m venv /opt/alerting/venv
 /opt/alerting/venv/bin/pip install --no-cache-dir "${source_root}/alerting[aws,postgres]"
+/opt/alerting/venv/bin/pip install --no-cache-dir "${source_root}/triage[postgres]"
 
 install -d -m 0755 /opt/alerting/bin /etc/alerting
 install -m 0755 "$source_root"/deploy/aws/bin/load-secrets /opt/alerting/bin/load-secrets

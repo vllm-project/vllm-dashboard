@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   isNavGroup,
+  navItemActive,
   type DashboardNavItem,
   routeMatches,
   sectionForPathname,
@@ -39,7 +40,9 @@ export function SectionNav() {
           {section.links.map((entry) => {
             const group = isNavGroup(entry) ? entry : null;
             const href = group ? group.links[0].href : (entry as DashboardNavItem).href;
-            const active = group ? group === activeGroup : routeMatches(pathname, href);
+            const active = group
+              ? group === activeGroup
+              : navItemActive(pathname, entry as DashboardNavItem);
             return (
               <Link
                 key={entry.label}

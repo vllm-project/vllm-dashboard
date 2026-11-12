@@ -1,0 +1,80 @@
+# Impact scoring. Every change here bumps `version`; the router re-scores all
+# open items when the version changes, without any new LLM calls.
+#
+#   score = severity x reach  +  additive factors, clamped at 0
+#
+# where reach = model x hardware x config multipliers, so "serving broken" on
+# a popular model with default flags on H100 is worth far more than the same
+# symptom on an unusual setup, and a feature request on a popular model is
+# not urgent just because the model is popular.
+version: "2026-11-12.3"
+
+thresholds:
+  page: 70     # routed + immediate Slack DM (once Slack is enabled)
+  route: 40    # routed + daily digest
+  watch: 20    # dashboard only
+
+# The largest one applies (a crash that breaks serving is not double counted).
+# Security is not scaled by reach.
+severity:
+  serving_broken: 50
+  security: 50
+  wrong_output: 42
+  crash: 36
+  hang: 32
+  memory_regression: 18
+  perf_regression_per_10pct: 9
+  perf_regression_cap: 40
+  # A PR is not the incident itself; it inherits part of the severity of the
+  # bug it fixes (plus pr.fixes_issue when the issue is in the queue).
+  pr_fraction: 0.5
+  # Issue types whose severity flags count (feature requests and RFCs that
+  # mention a symptom are not incidents).
+  defect_types: [bug, regression, perf_regression, performance, ci]
+
+reach:
+  model: {tier1: 1.0, tier2: 0.8, other: 0.6, unknown: 0.75}
+  hardware: {tier1: 1.0, tier2: 0.8, other: 0.55, unknown: 0.85}
+  config: {default: 1.15, exotic: 0.55, unknown: 0.9}
+
+# Additive points that do not depend on severity.
+type:
+  regression: 12        # "worked in version X, broken in Y"
+  perf_regression: 10
+  bug: 3
+  ci: 4
+  performance: 0
+  feature: 0
+  spam: -100
+
+popularity:             # small: popular model alone does not make it urgent
+  model: {tier1: 6, tier2: 3, other: 0}
+  hardware: {tier1: 3, tier2: 1, other: 0}
+
+recency:
+  affects_latest_release: 10
+  affects_main: 4       # only if not already counted as latest release
+
+evidence:
+  has_repro: 4
+  low_confidence: -6    # extraction confidence < 0.4
+
+social:
+  per_reaction: 0.5
+  per_comment: 0.4
+  cap: 15
+
+pr:
+  # A PR inherits this fraction of the best score among open issues it fixes.
+  fixes_issue_fraction: 0.6
+  hot_path: 6
+  has_tests: 2
+  low_effort: -25
+  draft: -15
+  size: {xs: 2, s: 2, m: 0, l: -2, xl: -4}
+
+# Only LLM-reported slop signals score; deterministic prepass hints (e.g. an
+# empty test plan) are shown on the dashboard but are too noisy to score.
+slop:
+  per_signal: -10
+  cap: -40

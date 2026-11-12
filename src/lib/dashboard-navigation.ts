@@ -1,6 +1,8 @@
 export interface DashboardNavItem {
   href: string;
   label: string;
+  /** Active only on this exact path, not on its sub-paths. */
+  exact?: boolean;
 }
 
 /** A section tab that opens a row of its own tabs (e.g. Health → Metrics). */
@@ -74,11 +76,40 @@ export const DASHBOARD_SECTIONS = [
   },
 ] as const satisfies readonly DashboardSection[];
 
-export const TOP_LEVEL_NAV_ITEMS = DASHBOARD_SECTIONS.map((section) => ({
+/**
+ * Maintainers-only issue/PR triage. Its routes always resolve to this section
+ * (so the section tabs render), but the top-level nav shows it only when the
+ * build sets NEXT_PUBLIC_TRIAGE_ENABLED=1; the pages themselves are gated by
+ * TRIAGE_ENABLED and a GitHub sign-in.
+ */
+export const TRIAGE_SECTION = {
+  href: "/triage",
+  label: "Triage",
+  description:
+    "Incoming vLLM issues and PRs, scored by impact and routed to maintainers.",
+  links: [
+    { href: "/triage", label: "Queue", exact: true },
+    { href: "/triage/me", label: "My plate" },
+    { href: "/triage/rules", label: "Rules" },
+  ],
+} as const satisfies DashboardSection;
+
+export const TRIAGE_NAV_ENABLED = process.env.NEXT_PUBLIC_TRIAGE_ENABLED === "1";
+
+const ALL_SECTIONS: readonly DashboardSection[] = [...DASHBOARD_SECTIONS, TRIAGE_SECTION];
+
+export const TOP_LEVEL_NAV_ITEMS = (
+  TRIAGE_NAV_ENABLED ? ALL_SECTIONS : DASHBOARD_SECTIONS
+).map((section) => ({
   href: section.href,
   label: section.label,
   routes: sectionPages(section).map((link) => link.href),
 }));
+
+/** Whether a section link is the current page, honouring `exact`. */
+export function navItemActive(pathname: string, link: DashboardNavItem): boolean {
+  return link.exact ? pathname === link.href : routeMatches(pathname, link.href);
+}
 
 export function routeMatches(pathname: string, href: string): boolean {
   return href === "/"
@@ -89,7 +120,7 @@ export function routeMatches(pathname: string, href: string): boolean {
 export function sectionForPathname(
   pathname: string,
 ): DashboardSection | undefined {
-  return DASHBOARD_SECTIONS.find((section) =>
+  return ALL_SECTIONS.find((section) =>
     sectionPages(section).some((link) => routeMatches(pathname, link.href)),
   );
 }

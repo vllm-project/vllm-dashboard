@@ -9,6 +9,7 @@ case "$consumer" in
   main-ci|main-ci-analyze|main-ci-backstop) alert_path=main-ci ;;
   infra|daily-summary) alert_path=infra ;;
   selector-health|selector-health-pr) alert_path=selector ;;
+  triage-ingest|triage-route|triage-digest) alert_path=triage ;;
   *) echo "unknown consumer: $consumer" >&2; exit 2 ;;
 esac
 mode_path="/run/alerting/${alert_path}.mode"
@@ -40,4 +41,8 @@ install -d -m 0700 "$HOME"
 rm -f "$credentials_path"
 trap - EXIT HUP INT TERM
 
-exec /opt/alerting/venv/bin/python -m alerting.worker "$consumer"
+module=alerting.worker
+case "$consumer" in
+  triage-*) module=triage.worker ;;
+esac
+exec /opt/alerting/venv/bin/python -m "$module" "$consumer"

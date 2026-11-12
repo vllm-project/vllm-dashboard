@@ -55,6 +55,7 @@ class AlertPath(StrEnum):
     MAIN_CI = "main_ci"
     INFRA = "infra"
     SELECTOR = "selector"
+    TRIAGE = "triage"
 
 
 class DeliveryMode(StrEnum):

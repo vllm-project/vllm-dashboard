@@ -59,3 +59,17 @@ test("every page is linked from exactly one section", () => {
   );
   assert.equal(new Set(pages).size, pages.length);
 });
+
+test("Triage routes resolve to the Triage section and Queue is exact-match", async () => {
+  const navigation = await import("./dashboard-navigation");
+  assert.equal(navigation.sectionForPathname("/triage/me")?.label, "Triage");
+  const [queue, me] = navigation.TRIAGE_SECTION.links;
+  assert.equal(navigation.navItemActive("/triage", queue), true);
+  assert.equal(navigation.navItemActive("/triage/me", queue), false);
+  assert.equal(navigation.navItemActive("/triage/me", me), true);
+  // The top-level nav hides Triage unless the build enables it.
+  assert.equal(
+    TOP_LEVEL_NAV_ITEMS.some((item) => item.label === "Triage"),
+    process.env.NEXT_PUBLIC_TRIAGE_ENABLED === "1",
+  );
+});
