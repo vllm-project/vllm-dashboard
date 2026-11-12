@@ -25,6 +25,12 @@ const nextConfig: NextConfig = {
   async redirects() {
     return [
       {
+        // The AMD parity page became the platform scope page.
+        source: "/parity",
+        destination: "/platforms",
+        permanent: true,
+      },
+      {
         // Keep ingestion APIs on their configured hostname: cross-host
         // redirects can cause reporters to drop their Authorization header.
         source: "/gpu",
