@@ -81,6 +81,10 @@ function toQueueItem(row: QueueRow): TriageQueueItem {
       : [],
     hardware: strings(facets.hardware),
     serving: strings(facets.serving),
+    severity:
+      facets.severity && typeof facets.severity === "object" && !Array.isArray(facets.severity)
+        ? facets.severity
+        : null,
     assignments: row.assignments ?? [],
   };
 }
@@ -526,33 +530,64 @@ export async function previewRules(
 
 export async function getStats(): Promise<TriageStats> {
   const db = getDb();
-  const [row] = await db<
-    {
-      ingested_24h: string;
-      in_scope_7d: string;
-      extracted_7d: string;
-      page_unacked: string;
-      assigned_7d: string;
-      not_mine_7d: string;
-    }[]
-  >`
-    SELECT
-      (SELECT count(*) FROM triage_items WHERE first_seen_at > now() - interval '24 hours') AS ingested_24h,
-      (SELECT count(*) FROM triage_items
-        WHERE in_scope AND first_seen_at > now() - interval '7 days') AS in_scope_7d,
-      (SELECT count(*) FROM triage_items
-        WHERE in_scope AND first_seen_at > now() - interval '7 days'
-          AND extraction_status = 'done') AS extracted_7d,
-      (SELECT count(*) FROM triage_scores s JOIN triage_items i ON i.item_key = s.item_key
-        WHERE s.band = 'page' AND i.state = 'open'
-          AND NOT EXISTS (SELECT 1 FROM triage_assignments a
-                          WHERE a.item_key = s.item_key AND a.status IN ('acked', 'done'))) AS page_unacked,
-      (SELECT count(*) FROM triage_assignments
-        WHERE assigned_at > now() - interval '7 days') AS assigned_7d,
-      (SELECT count(*) FROM triage_actions
-        WHERE action = 'not_mine' AND created_at > now() - interval '7 days') AS not_mine_7d
-  `;
+  const [[row], bands] = await Promise.all([
+    db<
+      {
+        ingested_24h: string;
+        new_today: string;
+        in_scope_7d: string;
+        extracted_7d: string;
+        page_unacked: string;
+        unowned: string;
+        unowned_page: string;
+        assigned_7d: string;
+        not_mine_7d: string;
+      }[]
+    >`
+      SELECT
+        (SELECT count(*) FROM triage_items WHERE first_seen_at > now() - interval '24 hours') AS ingested_24h,
+        (SELECT count(*) FROM triage_items
+          WHERE first_seen_at >= date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS new_today,
+        (SELECT count(*) FROM triage_items
+          WHERE in_scope AND first_seen_at > now() - interval '7 days') AS in_scope_7d,
+        (SELECT count(*) FROM triage_items
+          WHERE in_scope AND first_seen_at > now() - interval '7 days'
+            AND extraction_status = 'done') AS extracted_7d,
+        (SELECT count(*) FROM triage_scores s JOIN triage_items i ON i.item_key = s.item_key
+          WHERE s.band = 'page' AND i.state = 'open'
+            AND NOT EXISTS (SELECT 1 FROM triage_assignments a
+                            WHERE a.item_key = s.item_key AND a.status IN ('acked', 'done'))) AS page_unacked,
+        (SELECT count(*) FROM triage_scores s JOIN triage_items i ON i.item_key = s.item_key
+          WHERE s.band IN ('page', 'route') AND i.state = 'open' AND i.in_scope
+            AND NOT EXISTS (SELECT 1 FROM triage_assignments a
+                            WHERE a.item_key = s.item_key AND a.status IN ('open', 'acked'))) AS unowned,
+        (SELECT count(*) FROM triage_scores s JOIN triage_items i ON i.item_key = s.item_key
+          WHERE s.band = 'page' AND i.state = 'open' AND i.in_scope
+            AND NOT EXISTS (SELECT 1 FROM triage_assignments a
+                            WHERE a.item_key = s.item_key AND a.status IN ('open', 'acked'))) AS unowned_page,
+        (SELECT count(*) FROM triage_assignments
+          WHERE assigned_at > now() - interval '7 days') AS assigned_7d,
+        (SELECT count(*) FROM triage_actions
+          WHERE action = 'not_mine' AND created_at > now() - interval '7 days') AS not_mine_7d
+    `,
+    db<{ band: string | null; n: string }[]>`
+      SELECT s.band, count(*) AS n
+      FROM triage_items i
+      LEFT JOIN triage_scores s ON s.item_key = i.item_key
+      WHERE i.in_scope AND i.state = 'open'
+      GROUP BY s.band
+    `,
+  ]);
+  const bandCounts: TriageStats["bandCounts"] = { page: 0, route: 0, watch: 0, ignore: 0, unscored: 0 };
+  for (const { band, n } of bands) {
+    const key = band === "page" || band === "route" || band === "watch" || band === "ignore" ? band : "unscored";
+    bandCounts[key] += Number(n);
+  }
   return {
+    bandCounts,
+    unowned: Number(row.unowned),
+    unownedPage: Number(row.unowned_page),
+    newToday: Number(row.new_today),
     ingestedLast24h: Number(row.ingested_24h),
     inScopeLast7d: Number(row.in_scope_7d),
     extractedLast7d: Number(row.extracted_7d),
