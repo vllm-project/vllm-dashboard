@@ -3,7 +3,12 @@
 import { usePathname, useSearchParams } from "next/navigation";
 
 const ERRORS: Record<string, string> = {
-  not_maintainer: "Your GitHub account is not on the vLLM maintainer team for triage.",
+  not_maintainer:
+    "GitHub says your account is not an active member of the triage maintainer team. If you are, the vllm-project org may need to approve this app (see below).",
+  org_restricted:
+    "The vllm-project organization has not approved this sign-in app yet, so GitHub won't share team membership with it. An org owner can approve \"vLLM Triage\" under vllm-project → Settings → Third-party access.",
+  team_config: "Sign-in is not set up correctly on this dashboard (TRIAGE_MAINTAINER_TEAM must look like vllm-project/team-slug).",
+  github_error: "GitHub didn't answer the membership check. Try again in a minute.",
   state: "The sign-in link expired or was opened in another browser. Try again.",
   denied: "GitHub sign-in was cancelled.",
   exchange: "GitHub sign-in failed. Try again.",

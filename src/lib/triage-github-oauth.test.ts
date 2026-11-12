@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { authorizeUrl, isTriageMaintainer } from "./triage-github-oauth";
+import { authorizeUrl, checkTriageMaintainer, isTriageMaintainer } from "./triage-github-oauth";
 
 function fakeFetch(status: number, body: unknown, calls: string[] = []) {
   return (async (url: string | URL | Request) => {
@@ -36,4 +36,13 @@ test("team membership must be active", async () => {
 
 test("with neither allowlist nor team, nobody is a maintainer", async () => {
   assert.equal(await isTriageMaintainer("bob", "t", {}, fakeFetch(200, { state: "active" })), false);
+});
+
+test("a refusal says why: org restriction, missing config, not a member", async () => {
+  const env = { TRIAGE_MAINTAINER_TEAM: "vllm-project/vllm-committers" };
+  assert.equal(await checkTriageMaintainer("bob", "t", env, fakeFetch(403, { message: "OAuth App access restrictions" })), "org_restricted");
+  assert.equal(await checkTriageMaintainer("bob", "t", env, fakeFetch(404, {})), "not_member");
+  assert.equal(await checkTriageMaintainer("bob", "t", env, fakeFetch(502, {})), "github_error");
+  assert.equal(await checkTriageMaintainer("bob", "t", { TRIAGE_MAINTAINER_TEAM: "@vllm-project/vllm-committers" }, fakeFetch(200, { state: "active" })), "team_config");
+  assert.equal(await checkTriageMaintainer("bob", "t", env, fakeFetch(200, { state: "active" })), "ok");
 });

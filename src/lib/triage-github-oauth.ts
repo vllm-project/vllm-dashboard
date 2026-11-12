@@ -64,17 +64,36 @@ export async function fetchLogin(token: string, fetchImpl: Fetch = fetch): Promi
   return typeof body.login === "string" ? body.login : null;
 }
 
+export type MaintainerCheck = "ok" | "not_member" | "team_config" | "org_restricted" | "github_error";
+
+/**
+ * Team membership as GitHub reports it to this OAuth app. GitHub answers 404
+ * both for "not a member" and for a team it hides from the app, and 403 when
+ * the org's OAuth App access restrictions (or SAML) block an app the org has
+ * not approved, which is the usual reason a real member is refused.
+ */
+export async function teamMembership(
+  token: string,
+  team: { org: string; team: string },
+  login: string,
+  fetchImpl: Fetch = fetch,
+): Promise<MaintainerCheck> {
+  const url = `${GITHUB_API}/orgs/${encodeURIComponent(team.org)}/teams/${encodeURIComponent(team.team)}/memberships/${encodeURIComponent(login)}`;
+  const response = await fetchImpl(url, { headers: githubHeaders(token), cache: "no-store" });
+  if (response.status === 403) return "org_restricted";
+  if (response.status === 404) return "not_member";
+  if (!response.ok) return "github_error";
+  const body = (await response.json()) as { state?: unknown };
+  return body.state === "active" ? "ok" : "not_member";
+}
+
 export async function isActiveTeamMember(
   token: string,
   team: { org: string; team: string },
   login: string,
   fetchImpl: Fetch = fetch,
 ): Promise<boolean> {
-  const url = `${GITHUB_API}/orgs/${encodeURIComponent(team.org)}/teams/${encodeURIComponent(team.team)}/memberships/${encodeURIComponent(login)}`;
-  const response = await fetchImpl(url, { headers: githubHeaders(token), cache: "no-store" });
-  if (!response.ok) return false;
-  const body = (await response.json()) as { state?: unknown };
-  return body.state === "active";
+  return (await teamMembership(token, team, login, fetchImpl)) === "ok";
 }
 
 /**
@@ -82,14 +101,27 @@ export async function isActiveTeamMember(
  * an active member of TRIAGE_MAINTAINER_TEAM (checked with the user's own
  * read:org token, which is then discarded).
  */
+/**
+ * Whether a GitHub login may use triage, and if not, why: listed in
+ * TRIAGE_ALLOWED_LOGINS, or an active member of TRIAGE_MAINTAINER_TEAM.
+ */
+export async function checkTriageMaintainer(
+  login: string,
+  token: string,
+  env: Env = process.env,
+  fetchImpl: Fetch = fetch,
+): Promise<MaintainerCheck> {
+  if (allowedLogins(env).has(login.toLowerCase())) return "ok";
+  const team = maintainerTeam(env);
+  if (!team) return "team_config";
+  return teamMembership(token, team, login, fetchImpl);
+}
+
 export async function isTriageMaintainer(
   login: string,
   token: string,
   env: Env = process.env,
   fetchImpl: Fetch = fetch,
 ): Promise<boolean> {
-  if (allowedLogins(env).has(login.toLowerCase())) return true;
-  const team = maintainerTeam(env);
-  if (!team) return false;
-  return isActiveTeamMember(token, team, login, fetchImpl);
+  return (await checkTriageMaintainer(login, token, env, fetchImpl)) === "ok";
 }

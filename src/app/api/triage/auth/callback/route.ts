@@ -15,7 +15,7 @@ import {
   callbackUrl,
   exchangeCode,
   fetchLogin,
-  isTriageMaintainer,
+  checkTriageMaintainer,
   oauthConfig,
 } from "@/lib/triage-github-oauth";
 import { triageError } from "@/lib/triage-http";
@@ -49,8 +49,11 @@ export async function GET(request: Request) {
     if (!token) return redirectWithError(request, "exchange");
     const login = await fetchLogin(token);
     if (!login) return redirectWithError(request, "exchange");
-    if (!(await isTriageMaintainer(login, token))) {
-      return redirectWithError(request, "not_maintainer");
+    const check = await checkTriageMaintainer(login, token);
+    if (check !== "ok") {
+      // Shows up in Vercel logs; no token or secret in it.
+      console.warn(`Triage sign-in refused for ${login}: ${check}`);
+      return redirectWithError(request, check === "not_member" ? "not_maintainer" : check);
     }
     const response = NextResponse.redirect(new URL(stored.next, request.url), {
       status: 303,
