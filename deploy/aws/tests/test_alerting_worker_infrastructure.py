@@ -342,6 +342,32 @@ def test_retention_timer_prunes_daily_without_sensitive_data() -> None:
         assert sensitive_name not in service + timer
 
 
+def test_timings_snapshot_timer_publishes_hourly_without_sensitive_data() -> None:
+    service = read("systemd/alerting-timings-snapshot.service")
+    timer = read("systemd/alerting-timings-snapshot.timer")
+    installer = read("install.sh")
+
+    assert "run-timings-snapshot" in service
+    assert "StandardOutput=null" in service
+    assert "StandardError=null" in service
+    assert "OnFailure=alerting-failure-notify@%n.service" in service
+    assert "ReadWritePaths=/run/alerting" in service
+    assert "OnCalendar=*-*-* *:05:00 UTC" in timer
+    assert "Persistent=true" in timer
+    assert "run-timings-snapshot" in installer
+    assert "systemctl enable --now alerting-timings-snapshot.timer" in installer
+    assert "alerting.timings_snapshot" in read("bin/run-timings-snapshot")
+    for sensitive_name in ("DATABASE_URL", "TOKEN", "PASSWORD"):
+        assert sensitive_name not in service + timer
+
+
+def test_instance_role_writes_only_the_timings_snapshot_prefix() -> None:
+    template = read("alerting-worker.yaml")
+
+    assert "Resource: arn:aws:s3:::vllm-ci-timings/ci/timings/*" in template
+    assert "arn:aws:s3:::vllm-ci-timings/*" not in template
+
+
 @pytest.mark.parametrize(
     ("consumer", "command_type"),
     [
