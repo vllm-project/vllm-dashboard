@@ -1,72 +1,41 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
-import {
-  perfDataStartCondition,
-  resolvePerfDataStartDate,
-} from "@/lib/perf-data";
-import { escapeSqlString } from "@/lib/sql-literal";
+import { resolvePerfDataStartDate } from "@/lib/perf-data";
+import { perfEvalStore, resolvePerfEvalSource } from "@/lib/perf-eval-store";
 
 // Perf data refreshes at most nightly, so a longer cache keeps repeat loads
 // instant without serving stale numbers.
 const TTL = 300_000;
 const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
 
+function intParam(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const sp = request.nextUrl.searchParams;
+    const source = resolvePerfEvalSource(sp);
     const model = sp.get("model");
     const device = sp.get("device");
     const tp = sp.get("tp");
     const conc = sp.get("conc");
     const startDate = resolvePerfDataStartDate(sp.get("start"));
 
-    const cacheKey = `perf:${startDate}:${model}:${device}:${tp}:${conc}`;
+    const cacheKey = `perf:${source}:${startDate}:${model}:${device}:${tp}:${conc}`;
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
 
-    const conditions = [
-      "message:model IS NOT NULL",
-      perfDataStartCondition(startDate),
-    ];
-    if (model) conditions.push(`message:model::STRING = '${escapeSqlString(model)}'`);
-    if (device) conditions.push(`message:device::STRING = '${escapeSqlString(device)}'`);
-    if (tp) conditions.push(`message:tp::INT = ${parseInt(tp, 10)}`);
-    if (conc) conditions.push(`message:conc::INT = ${parseInt(conc, 10)}`);
-
-    const where = conditions.join(" AND ");
-
-    const rows = await queryDatabricks(`
-      SELECT
-        message:date::STRING AS date,
-        message:model::STRING AS model,
-        message:device::STRING AS device,
-        message:tp::INT AS tp,
-        message:conc::INT AS conc,
-        message:isl::INT AS isl,
-        message:osl::INT AS osl,
-        message:precision::STRING AS precision,
-        message:image::STRING AS image,
-        message:tput_per_gpu::DOUBLE AS tput_per_gpu,
-        message:input_tput_per_gpu::DOUBLE AS input_tput_per_gpu,
-        message:output_tput_per_gpu::DOUBLE AS output_tput_per_gpu,
-        message:mean_ttft::DOUBLE AS mean_ttft,
-        message:mean_tpot::DOUBLE AS mean_tpot,
-        message:mean_itl::DOUBLE AS mean_itl,
-        message:mean_e2el::DOUBLE AS mean_e2el,
-        message:p99_ttft::DOUBLE AS p99_ttft,
-        message:p99_tpot::DOUBLE AS p99_tpot,
-        message:p99_itl::DOUBLE AS p99_itl,
-        message:p99_e2el::DOUBLE AS p99_e2el,
-        message:median_ttft::DOUBLE AS median_ttft,
-        message:median_tpot::DOUBLE AS median_tpot,
-        message:median_itl::DOUBLE AS median_itl,
-        message:median_e2el::DOUBLE AS median_e2el
-      FROM vllm_data_warehouse.default.vllm_perf_data_ingest
-      WHERE ${where}
-      ORDER BY message:date::STRING ASC, message:conc::INT ASC
-    `);
+    const rows = await perfEvalStore(source).perfRows({
+      startDate,
+      model,
+      device,
+      tp: intParam(tp),
+      conc: intParam(conc),
+    });
 
     const result = { rows };
     setCache(cacheKey, result, TTL);

@@ -1,7 +1,9 @@
-import { queryDatabricks } from "@/lib/databricks";
 import type { EvalMetric, EvalRow } from "@/lib/eval-data";
-import { PERF_DATA_START_CONDITION } from "@/lib/perf-data";
-import { escapeSqlString } from "@/lib/sql-literal";
+import {
+  perfEvalStore,
+  type PerfEvalSource,
+  type PerfRunRow,
+} from "@/lib/perf-eval-store";
 
 export type Area = "perf" | "eval";
 export type DeltaStatus = "regression" | "improvement" | "unchanged" | "noisy";
@@ -26,29 +28,6 @@ export const PERF_METRICS: PerfMetricInfo[] = [
   { key: "p99_itl", label: "P99 ITL", unit: "s", higherIsBetter: false },
   { key: "p99_e2el", label: "P99 E2E Latency", unit: "s", higherIsBetter: false },
 ];
-
-interface RawPerfRow {
-  date: string | null;
-  model: string | null;
-  device: string | null;
-  tp: string | number | null;
-  conc: string | number | null;
-  isl: string | number | null;
-  osl: string | number | null;
-  precision: string | null;
-  image: string | null;
-  tput_per_gpu: string | number | null;
-  input_tput_per_gpu: string | number | null;
-  output_tput_per_gpu: string | number | null;
-  mean_ttft: string | number | null;
-  mean_tpot: string | number | null;
-  mean_itl: string | number | null;
-  mean_e2el: string | number | null;
-  p99_ttft: string | number | null;
-  p99_tpot: string | number | null;
-  p99_itl: string | number | null;
-  p99_e2el: string | number | null;
-}
 
 export interface PerfRun {
   date: string;
@@ -129,12 +108,12 @@ function latestRun<T>(current: T | undefined, next: T, getTime: (row: T) => numb
   return getTime(next) >= getTime(current) ? next : current;
 }
 
-function normalizePerfRow(row: RawPerfRow): PerfRun | null {
+function normalizePerfRow(row: PerfRunRow): PerfRun | null {
   if (!row.image || !row.model) return null;
 
   const metrics: Record<string, number> = {};
   for (const metric of PERF_METRICS) {
-    const value = numberValue(row[metric.key as keyof RawPerfRow]);
+    const value = numberValue(row[metric.key as keyof PerfRunRow]);
     if (value !== null) metrics[metric.key] = value;
   }
 
@@ -244,48 +223,13 @@ function classifyEvalDelta(
 
 export async function loadPerfRowsByImages(
   images: string[],
-  opts: { model?: string | null; device?: string | null } = {}
+  opts: { model?: string | null; device?: string | null; source?: PerfEvalSource } = {}
 ): Promise<PerfRun[]> {
   if (images.length === 0) return [];
-  const escapedImages = images.map((i) => `'${escapeSqlString(i)}'`).join(", ");
-  const conditions = [
-    "message:model IS NOT NULL",
-    PERF_DATA_START_CONDITION,
-    `message:image::STRING IN (${escapedImages})`,
-  ];
-  if (opts.model) {
-    conditions.push(`message:model::STRING = '${escapeSqlString(opts.model)}'`);
-  }
-  if (opts.device) {
-    conditions.push(`message:device::STRING = '${escapeSqlString(opts.device)}'`);
-  }
-
-  const rows = await queryDatabricks<RawPerfRow>(`
-    SELECT
-      message:date::STRING AS date,
-      message:model::STRING AS model,
-      message:device::STRING AS device,
-      message:tp::INT AS tp,
-      message:conc::INT AS conc,
-      message:isl::INT AS isl,
-      message:osl::INT AS osl,
-      message:precision::STRING AS precision,
-      message:image::STRING AS image,
-      message:tput_per_gpu::DOUBLE AS tput_per_gpu,
-      message:input_tput_per_gpu::DOUBLE AS input_tput_per_gpu,
-      message:output_tput_per_gpu::DOUBLE AS output_tput_per_gpu,
-      message:mean_ttft::DOUBLE AS mean_ttft,
-      message:mean_tpot::DOUBLE AS mean_tpot,
-      message:mean_itl::DOUBLE AS mean_itl,
-      message:mean_e2el::DOUBLE AS mean_e2el,
-      message:p99_ttft::DOUBLE AS p99_ttft,
-      message:p99_tpot::DOUBLE AS p99_tpot,
-      message:p99_itl::DOUBLE AS p99_itl,
-      message:p99_e2el::DOUBLE AS p99_e2el
-    FROM vllm_data_warehouse.default.vllm_perf_data_ingest
-    WHERE ${conditions.join(" AND ")}
-    ORDER BY message:date::STRING DESC
-  `);
+  const rows = await perfEvalStore(opts.source ?? "databricks").perfRowsByImages(images, {
+    model: opts.model,
+    device: opts.device,
+  });
 
   return rows
     .map(normalizePerfRow)
@@ -297,13 +241,15 @@ export function loadPerfRows({
   candidate,
   model,
   device,
+  source,
 }: {
   baseline: string;
   candidate: string;
   model?: string | null;
   device?: string | null;
+  source?: PerfEvalSource;
 }): Promise<PerfRun[]> {
-  return loadPerfRowsByImages([baseline, candidate], { model, device });
+  return loadPerfRowsByImages([baseline, candidate], { model, device, source });
 }
 
 export function comparePerfRows(

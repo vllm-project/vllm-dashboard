@@ -1,13 +1,8 @@
 import { NextResponse } from "next/server";
 import { resolveEvalImage } from "@/lib/eval-images";
-import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
-
-interface RawRow {
-  m: string;
-  d: number | null;
-}
+import { perfEvalStore, resolvePerfEvalSource } from "@/lib/perf-eval-store";
 
 interface LmEvalCore {
   config?: { model_args?: { model?: string } };
@@ -45,30 +40,12 @@ export async function GET(request: Request) {
       endEpoch += 24 * 3600 - 1;
     }
 
-    const cacheKey = `eval:filters:${searchParams.get("start")}:${searchParams.get("end")}`;
+    const source = resolvePerfEvalSource(searchParams);
+    const cacheKey = `eval:filters:${source}:${searchParams.get("start")}:${searchParams.get("end")}`;
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
 
-    const conditions = [
-      "(message:results IS NOT NULL OR message:data:results IS NOT NULL)",
-    ];
-    if (startEpoch !== null) {
-      conditions.push(
-        `COALESCE(message:date::DOUBLE, message:data:date::DOUBLE) >= ${startEpoch}`
-      );
-    }
-    if (endEpoch !== null) {
-      conditions.push(
-        `COALESCE(message:date::DOUBLE, message:data:date::DOUBLE) <= ${endEpoch}`
-      );
-    }
-
-    const rawRows = await queryDatabricks<RawRow>(`
-      SELECT CAST(message AS STRING) AS m,
-        COALESCE(message:date::DOUBLE, message:data:date::DOUBLE) AS d
-      FROM vllm_data_warehouse.default.vllm_eval_data_ingest
-      WHERE ${conditions.join(" AND ")}
-    `);
+    const rawRows = await perfEvalStore(source).evalFilterMessages({ startEpoch, endEpoch });
 
     const models = new Set<string>();
     const tasks = new Set<string>();

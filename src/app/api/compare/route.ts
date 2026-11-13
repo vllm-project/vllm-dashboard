@@ -9,6 +9,7 @@ import {
   sortDeltas,
 } from "@/lib/compare";
 import { getCached, setCache } from "@/lib/api-cache";
+import { resolvePerfEvalSource } from "@/lib/perf-eval-store";
 import { cachedJson } from "@/lib/api-response";
 
 const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
@@ -31,13 +32,14 @@ export async function GET(request: NextRequest) {
     const perfThreshold = parseThreshold(sp.get("perf_threshold"), 0.02);
     const evalSigma = parseThreshold(sp.get("eval_sigma"), 2);
 
-    const cacheKey = `compare:${baseline}:${candidate}:${model}:${device}:${task}`;
+    const source = resolvePerfEvalSource(sp);
+    const cacheKey = `compare:${source}:${baseline}:${candidate}:${model}:${device}:${task}`;
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
 
     const [perfRows, evalRows] = await Promise.all([
-      loadPerfRows({ baseline, candidate, model, device }),
-      loadEvalRows({ model, task, images: [baseline, candidate] }),
+      loadPerfRows({ baseline, candidate, model, device, source }),
+      loadEvalRows({ model, task, images: [baseline, candidate], source }),
     ]);
 
     const perf = comparePerfRows(perfRows, baseline, candidate, perfThreshold);

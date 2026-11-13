@@ -12,9 +12,3 @@ export function resolvePerfDataStartDate(value?: string | null): string {
 
   return value;
 }
-
-export function perfDataStartCondition(value?: string | null): string {
-  return `message:date::STRING >= '${resolvePerfDataStartDate(value)}'`;
-}
-
-export const PERF_DATA_START_CONDITION = perfDataStartCondition();

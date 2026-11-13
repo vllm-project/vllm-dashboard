@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { loadEvalRows } from "@/lib/eval-data";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
+import { resolvePerfEvalSource } from "@/lib/perf-eval-store";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
@@ -9,7 +10,8 @@ const CDN_CACHE = { maxAge: 300, staleWhileRevalidate: 3_600 };
 export async function GET(request: NextRequest) {
   try {
     const sp = request.nextUrl.searchParams;
-    const cacheKey = `eval:${sp.get("model")}:${sp.get("task")}:${sp.get("image")}`;
+    const source = resolvePerfEvalSource(sp);
+    const cacheKey = `eval:${source}:${sp.get("model")}:${sp.get("task")}:${sp.get("image")}`;
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
 
@@ -17,6 +19,7 @@ export async function GET(request: NextRequest) {
       model: sp.get("model"),
       task: sp.get("task"),
       image: sp.get("image"),
+      source,
     });
 
     const result = { rows };

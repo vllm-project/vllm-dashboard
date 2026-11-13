@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
-import { escapeSqlString } from "@/lib/sql-literal";
+import { perfEvalStore, resolvePerfEvalSource } from "@/lib/perf-eval-store";
 
 export interface EvalSample {
   doc_id: number;
@@ -15,59 +14,6 @@ export interface EvalSample {
   response: string;
   filtered_response: string;
   metrics: string[];
-}
-
-interface FlatRow {
-  task: string;
-  doc_id: string | number | null;
-  filter: string | null;
-  exact_match: string | number | null;
-  question: string | null;
-  prompt: string | null;
-  target: string | null;
-  response: string | null;
-  filtered_response: string | null;
-}
-
-interface CountRow {
-  correct: string | number | null;
-  incorrect: string | number | null;
-}
-
-// Schema applied via from_json to the message:samples array. Older `kind=sample`
-// (singular) rows wrap the single entry into a 1-element array via SQL.
-const SAMPLE_SCHEMA = `array<struct<
-  doc_id: bigint,
-  task: string,
-  filter: string,
-  exact_match: double,
-  doc: struct<question: string, answer: string>,
-  arguments: map<string, struct<arg_0: string>>,
-  target: string,
-  resps: array<array<string>>,
-  filtered_resps: array<string>
->>`.replace(/\s+/g, " ");
-
-function buildBaseCte(conds: string[]): string {
-  return `
-    WITH src AS (
-      SELECT
-        CAST(message:task AS STRING) AS task,
-        from_json(
-          COALESCE(
-            CAST(message:samples AS STRING),
-            CONCAT('[', CAST(message:sample AS STRING), ']')
-          ),
-          '${SAMPLE_SCHEMA}'
-        ) AS arr
-      FROM vllm_data_warehouse.default.vllm_eval_data_ingest
-      WHERE ${conds.join(" AND ")}
-    ),
-    flat AS (
-      SELECT src.task AS task, s
-      FROM src LATERAL VIEW EXPLODE(arr) AS s
-    )
-  `;
 }
 
 export async function GET(request: NextRequest) {
@@ -84,7 +30,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Missing build_id" }, { status: 400 });
     }
 
-    const cacheKey = `eval:samples:${buildId}:${taskParam}:${workloadParam}:${correct}:${limit}`;
+    const source = resolvePerfEvalSource(sp);
+    const cacheKey = `eval:samples:${source}:${buildId}:${taskParam}:${workloadParam}:${correct}:${limit}`;
     const cached = getCached(cacheKey);
     if (cached) {
       return cachedJson(cached, {
@@ -93,60 +40,15 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    const escBuild = escapeSqlString(buildId);
-    const escTask = taskParam ? escapeSqlString(taskParam) : null;
-    const escWorkload = workloadParam ? escapeSqlString(workloadParam) : null;
-
-    const conds = [
-      "CAST(message:kind AS STRING) IN ('sample', 'samples')",
-      `CAST(message:buildkite_build_id AS STRING) = '${escBuild}'`,
-    ];
-    if (escTask) conds.push(`CAST(message:task AS STRING) = '${escTask}'`);
-    // Without workload, a multi-workload build's drawer would merge samples
-    // from every model run against this task.
-    if (escWorkload) conds.push(`CAST(message:workload AS STRING) = '${escWorkload}'`);
-
-    const cte = buildBaseCte(conds);
-
-    const correctnessClause =
-      correct === "true"
-        ? "WHERE s.exact_match >= 1"
-        : correct === "false"
-        ? "WHERE s.exact_match < 1 OR s.exact_match IS NULL"
-        : "";
-
     // Fetch one extra row to detect truncation without a separate COUNT.
-    const samplesSql = `
-      ${cte}
-      SELECT
-        task,
-        s.doc_id AS doc_id,
-        COALESCE(s.filter, '') AS filter,
-        COALESCE(s.exact_match, 0.0) AS exact_match,
-        COALESCE(s.doc.question, '') AS question,
-        COALESCE(MAP_VALUES(s.arguments)[0].arg_0, '') AS prompt,
-        COALESCE(s.target, s.doc.answer, '') AS target,
-        COALESCE(s.resps[0][0], '') AS response,
-        COALESCE(s.filtered_resps[0], '') AS filtered_response
-      FROM flat
-      ${correctnessClause}
-      ORDER BY doc_id, filter
-      LIMIT ${limit + 1}
-    `;
-
     // Counts always reflect the FULL set so the drawer's filter pills show totals.
-    const countsSql = `
-      ${cte}
-      SELECT
-        SUM(CASE WHEN s.exact_match >= 1 THEN 1 ELSE 0 END) AS correct,
-        SUM(CASE WHEN s.exact_match < 1 OR s.exact_match IS NULL THEN 1 ELSE 0 END) AS incorrect
-      FROM flat
-    `;
-
-    const [flatRows, countRows] = await Promise.all([
-      queryDatabricks<FlatRow>(samplesSql),
-      queryDatabricks<CountRow>(countsSql),
-    ]);
+    const { rows: flatRows, counts } = await perfEvalStore(source).evalSamples({
+      buildId,
+      task: taskParam,
+      workload: workloadParam,
+      correct: correct === "true" || correct === "false" ? correct : null,
+      limit: limit + 1,
+    });
 
     const truncated = flatRows.length > limit;
     const sliced = truncated ? flatRows.slice(0, limit) : flatRows;
@@ -164,8 +66,8 @@ export async function GET(request: NextRequest) {
       metrics: [],
     }));
 
-    const correctCount = Number(countRows[0]?.correct ?? 0);
-    const incorrectCount = Number(countRows[0]?.incorrect ?? 0);
+    const correctCount = Number(counts.correct ?? 0);
+    const incorrectCount = Number(counts.incorrect ?? 0);
 
     const result = {
       samples,

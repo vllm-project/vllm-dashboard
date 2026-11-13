@@ -1,10 +1,9 @@
-import { queryDatabricks } from "@/lib/databricks";
 import {
   imageFromMessage,
   resolveEvalImage,
   workloadFromSourceFile,
 } from "@/lib/eval-images";
-import { escapeSqlString } from "@/lib/sql-literal";
+import { perfEvalStore, type PerfEvalSource } from "@/lib/perf-eval-store";
 
 export interface EvalMetric {
   name: string;
@@ -15,7 +14,7 @@ export interface EvalMetric {
 }
 
 export interface EvalRow {
-  ingest_ts: string;
+  ingest_ts: string | null;
   run_date: string;
   run_epoch: number;
   model: string;
@@ -32,11 +31,6 @@ export interface EvalRow {
   buildkite_commit: string | null;
   vllm_commit: string | null;
   workload: string | null;
-}
-
-interface RawRow {
-  ingest_ts: string;
-  m: string;
 }
 
 interface LmEvalCore {
@@ -74,6 +68,7 @@ export interface EvalRowsQuery {
   task?: string | null;
   image?: string | null;
   images?: string[];
+  source?: PerfEvalSource;
 }
 
 
@@ -131,25 +126,9 @@ export async function loadEvalRows({
   task,
   image,
   images,
+  source = "databricks",
 }: EvalRowsQuery = {}): Promise<EvalRow[]> {
-  const conditions = [
-    "(message:results IS NOT NULL OR message:data:results IS NOT NULL)",
-  ];
-  if (model) {
-    const esc = escapeSqlString(model);
-    conditions.push(
-      `(message:config:model_args:model::STRING = '${esc}' OR message:data:config:model_args:model::STRING = '${esc}' OR message:config:model_args::STRING LIKE '%model=${esc}%' OR message:data:config:model_args::STRING LIKE '%model=${esc}%')`
-    );
-  }
-
-  const rawRows = await queryDatabricks<RawRow>(`
-    SELECT
-      CAST(request_metadata:timestamp AS STRING) AS ingest_ts,
-      CAST(message AS STRING) AS m
-    FROM vllm_data_warehouse.default.vllm_eval_data_ingest
-    WHERE ${conditions.join(" AND ")}
-    ORDER BY COALESCE(message:date::DOUBLE, message:data:date::DOUBLE) DESC
-  `);
+  const rawRows = await perfEvalStore(source).evalResultMessages({ model });
 
   const out: EvalRow[] = [];
   const imageBackfills: {
