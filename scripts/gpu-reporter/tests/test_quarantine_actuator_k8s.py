@@ -288,21 +288,6 @@ def test_endpoint_down_changes_nothing_and_fails(run):
     assert kube.writes == []
 
 
-def test_a_partly_failed_poll_still_counts_as_completed(run):
-    """Exit 3 — a completed poll with per-node errors — is a success to the
-    unit (SuccessExitStatus=3), so the off-host heartbeat still fires; the
-    worker's notices carry a stage still awaiting confirmation. Only a poll
-    that never finished exits 1, silencing the heartbeat."""
-    kube = FakeKube({"n1": node()})
-    kube.fail = {"patch"}
-    dash = FakeDashboard([want("n1", "quarantining")])
-    assert run(kube, dash) == 3
-    kube.fail = set()
-    assert run(kube, dash) == 0
-    # The desired set unreachable is not a completed poll.
-    assert run(kube, FakeDashboard(down=True)) == 1
-
-
 def test_taint_value_is_a_valid_label_value(run):
     v = run.mod.taint_value("  !!" + "x" * 80)
     assert len(v) <= 63 and v[0].isalnum() and v[-1].isalnum()

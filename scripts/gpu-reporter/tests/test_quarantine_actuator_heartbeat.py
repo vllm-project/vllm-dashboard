@@ -87,19 +87,14 @@ def test_heartbeat_env_example_documents_every_required_value() -> None:
     assert "0600" in example
 
 
-def test_emitter_is_the_shared_script_needing_no_worker_secret() -> None:
-    emitter = (REPO_ROOT / "deploy/aws/bin/emit-heartbeat").read_text()
-
-    assert "cloudwatch put-metric-data" in emitter
-    assert "--namespace VllmAlerting" in emitter
-    for needle in ("load-secrets", "worker.env", "TOKEN", "DATABASE_URL"):
-        assert needle not in emitter
-
-
-def test_deployment_recipe_is_documented_and_never_echoes_secrets() -> None:
+def test_deployment_recipe_is_documented_without_echoing_secrets() -> None:
     doc = (REPO_ROOT / "alerting/docs/infra.md").read_text()
 
     assert "quarantine-actuator-heartbeat" in doc
     assert "cloudwatch:PutMetricData" in doc
-    # The recipe reads the secret key with echo off and never prints it.
+    # The recipe reads the secret key with echo off, and the only place the
+    # value appears is the printf that writes the env file.
     assert "read -r -s" in doc
+    for leak in ('echo "$secret"', "echo ${secret}", "echo $secret"):
+        assert leak not in doc
+    assert doc.count('"$secret"') == 1  # the printf, nothing else

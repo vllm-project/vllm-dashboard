@@ -273,9 +273,8 @@ chat):
    read -r -p 'Access key ID: ' akid
    read -r -s -p 'Secret access key: ' secret; echo
    read -r -p 'Worker stack region: ' region
-   umask 077
-   printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\nAWS_DEFAULT_REGION=%s\nHEARTBEAT_JOB=quarantine-actuator-%s\n' \
-     "$akid" "$secret" "$region" "$cluster" > /etc/gpu-reporter/heartbeat-aws.env
+   ( umask 077; printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\nAWS_DEFAULT_REGION=%s\nHEARTBEAT_JOB=quarantine-actuator-%s\n' \
+     "$akid" "$secret" "$region" "$cluster" > /etc/gpu-reporter/heartbeat-aws.env )
    chown root:root /etc/gpu-reporter/heartbeat-aws.env
    chmod 600 /etc/gpu-reporter/heartbeat-aws.env   # also fixes a rotation over a looser file
    unset akid secret region
@@ -295,7 +294,10 @@ chat):
    then read its journal. Then prove the chain, not just the unit:
    `systemctl start quarantine-actuator-k8s.service`, wait a few seconds, and
    check `journalctl -u quarantine-actuator-heartbeat.service` for a run you
-   did not start by hand. From off the host, confirm the datapoint with
+   did not start by hand. (`OnSuccess=` needs systemd 249 or newer — check
+   `systemctl --version`; an older systemd ignores the key with only a
+   warning, and this check is what catches it.) From off the host, confirm
+   the datapoint with
    `aws cloudwatch get-metric-statistics --namespace VllmAlerting
    --metric-name Heartbeat --dimensions Name=Job,Value=quarantine-actuator-<cluster>`.
    From then on the actuator's `OnSuccess=` emits every minute.
@@ -303,13 +305,14 @@ chat):
    already flow, instead of opening in ALARM.
 
 The delivery test is `aws cloudwatch set-alarm-state --state-value ALARM` on
-each alarm; the silence test is `systemctl mask --runtime
-quarantine-actuator-heartbeat.service` on one control plane (the actuator
-itself keeps running; `--runtime` because a real unit file sits in
-/etc/systemd/system, which plain `mask` refuses to override), waiting out the
-window (allow 20 minutes: up to 15 of silence plus evaluation lag) for the
-ALARM mail, then `unmask --runtime`
-and expecting the OK mail.
+each alarm. The silence test silences the emit the way it really fails:
+`mv /etc/gpu-reporter/heartbeat-aws.env /etc/gpu-reporter/heartbeat-aws.env.off`
+on one control plane — the unit then fails on its missing EnvironmentFile
+and nothing is emitted. (`systemctl mask` won't do it: a plain mask refuses
+over a real unit file, and a `--runtime` mask is shadowed by it, since
+/etc/systemd/system outranks /run/systemd/system.) Wait out the window
+(allow 20 minutes: up to 15 of silence plus evaluation lag) for the ALARM
+mail, then move the file back and expect the OK mail.
 
 ## Tables
 
