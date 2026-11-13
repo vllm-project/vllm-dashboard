@@ -25,9 +25,12 @@ set, so a sick host doesn't look like a dead one. The process only exits
 non-zero when the POST itself fails (or GPU_REPORT_URL is unset).
 
 Hardware-fault readings (recovery action, row-remap failure, uncorrected ECC,
-Xids, MIG slice count, root-owned checkout slots) each come from their own
-query and fail independently: a failed read is reported as null, never as a
-passing value.
+Xids, root-owned checkout slots) each come from their own query and fail
+independently: a failed read is reported as null, never as a passing value.
+The MIG slice count comes from DCGM discovery (one compute-instance entry
+per MIG device) whenever any GPU lacks a utilization reading: 0 when every
+GPU has one or when discovery has no compute instances. The count is null
+when discovery is skipped for time, cannot run, fails, or cannot be parsed.
 
 Two host-fault readings are explicit values instead: gpu_query_hung is true
 (with gpu_query_error) when the main nvidia-smi query errors or runs past
@@ -91,14 +94,14 @@ NETWORK_PROBES = (
 CPU_SAMPLE_INTERVAL = 1.0  # seconds between the two /proc/stat reads
 DISK_STAT_TIMEOUT = float(os.environ.get("GPU_REPORT_DISK_TIMEOUT", "5"))
 COMPUTE_APPS_TIMEOUT = float(os.environ.get("GPU_REPORT_COMPUTE_APPS_TIMEOUT", "10"))
-FAULT_QUERY_TIMEOUT = 5  # nvidia-smi -L, fault query and journalctl; the unit's TimeoutSec is 90
+FAULT_QUERY_TIMEOUT = 5  # fault query and journalctl; the unit's TimeoutSec is 90
 # Whole DCGM step on MIG hosts (two dcgmi calls): about 12 s with 56 slices,
 # where each dmon sample takes about 4 s. Shared, so the step can't push
 # the run past the unit's TimeoutSec of 90.
 DCGM_BUDGET = 25
 # Seconds into the run by which DCGM must be done, leaving time for the Xid,
-# Docker and slot checks and the POST; DCGM is skipped with less than
-# DCGM_MIN_TIME left.
+# Docker and slot checks and the POST; DCGM and the MIG slice count are skipped
+# with less than DCGM_MIN_TIME left.
 DCGM_RUN_DEADLINE = 50
 DCGM_MIN_TIME = 5
 RUN_START = time.monotonic()
@@ -146,6 +149,7 @@ SKIP_FSTYPES = frozenset({
 
 
 def query_gpus():
+    """Return per-GPU readings from the one main nvidia-smi query."""
     result = subprocess.run(
         [
             "nvidia-smi",
@@ -324,35 +328,24 @@ def query_fault_fields():
     return parse_fault_query(result.stdout)
 
 
-def count_mig_slices(text):
-    """Count MIG devices in `nvidia-smi -L` output (0 on a non-MIG host)."""
-    return sum(1 for line in text.splitlines() if line.strip().startswith("MIG "))
+def parse_dcgm_discovery(text):
+    """Parse GPU instances, compute-instance count and GPU-row presence once.
 
-
-def query_mig_slices():
-    result = subprocess.run(
-        ["nvidia-smi", "-L"],
-        capture_output=True,
-        text=True,
-        timeout=FAULT_QUERY_TIMEOUT,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"nvidia-smi -L failed: {result.stderr.strip()}")
-    return count_mig_slices(result.stdout)
-
-
-def parse_dcgm_instances(text):
-    """`dcgmi discovery -c` -> {GPU-instance entity id: GPU index}.
-
-    DCGM numbers GPUs in nvidia-smi index order (checked against UUIDs on
-    every MIG host), so the first part of "I <gpu>/<gi>" is the GPU index.
+    DCGM numbers GPUs in nvidia-smi index order, so I <gpu>/<gi> maps to the
+    nvidia-smi index used by the rest of the report.
     """
     instances = {}
+    mig_slices = 0
+    saw_gpu_row = False
     for line in text.splitlines():
-        m = re.match(r"\|\s*-> I (\d+)/\d+\s.*\(EntityID: (\d+)\)", line)
-        if m:
-            instances[int(m.group(2))] = int(m.group(1))
-    return instances
+        if re.match(r"\|\s*GPU \d+\s", line):
+            saw_gpu_row = True
+        instance = re.match(r"\|\s*-> I (\d+)/\d+\s.*\(EntityID: (\d+)\)", line)
+        if instance:
+            instances[int(instance.group(2))] = int(instance.group(1))
+        if re.match(r"\|\s*-> CI \d+/\d+/\d+", line):
+            mig_slices += 1
+    return instances, mig_slices, saw_gpu_row
 
 
 def parse_mig_util(text, instances):
@@ -391,38 +384,53 @@ def _dcgmi(deadline, *args):
 
 
 def query_mig_util():
+    """Return MIG utilization and the discovery compute-instance count.
+
+    A discovery failure raises. A dmon failure returns empty utilization with
+    the count already obtained from discovery.
+    """
     now = time.monotonic()
     deadline = min(now + DCGM_BUDGET, RUN_START + DCGM_RUN_DEADLINE)
     if deadline - now < DCGM_MIN_TIME:
         raise RuntimeError("no time left in this run for DCGM")
-    instances = parse_dcgm_instances(_dcgmi(deadline, "discovery", "-c"))
+    discovery = _dcgmi(deadline, "discovery", "-c")
+    instances, mig_slices, saw_gpu_row = parse_dcgm_discovery(discovery)
+    if not saw_gpu_row:
+        raise RuntimeError("DCGM discovery output has no GPU rows")
     if not instances:
-        return {}
+        return {}, mig_slices
     ids = ",".join(f"i:{entity}" for entity in sorted(instances))
     # Fields 1001-1005 together: watching 1001 alone stayed N/A on a GPU
     # instance. Three samples: the first is often N/A while the watch warms
     # up, and each one takes seconds on a host with dozens of slices.
-    text = _dcgmi(deadline, "dmon", "-e", "1001,1002,1003,1004,1005",
-                  "-c", "3", "-d", "1000", "-i", ids)
-    return parse_mig_util(text, instances)
-
-
-def fill_mig_util(gpus):
-    """Fill in utilization nvidia-smi couldn't read (MIG GPUs) from DCGM.
-
-    DCGM is only queried when some GPU lacks utilization, so non-MIG hosts
-    never pay for it. GPUs it has no reading for stay null, never 0.
-    """
-    if all(gpu["gpu_util"] is not None for gpu in gpus):
-        return
     try:
-        mig_util = query_mig_util()
+        text = _dcgmi(deadline, "dmon", "-e", "1001,1002,1003,1004,1005",
+                      "-c", "3", "-d", "1000", "-i", ids)
+        mig_util = parse_mig_util(text, instances)
     except Exception as e:
         print(f"DCGM MIG utilization query failed: {e}", file=sys.stderr)
-        return
+        return {}, mig_slices
+    return mig_util, mig_slices
+
+
+def query_mig(gpus):
+    """Fill in MIG utilization and return the slice count.
+
+    A full set of utilization readings means no MIG and no DCGM call. Otherwise
+    DCGM discovery supplies the count and dmon supplies utilization; a DCGM
+    failure leaves the count null. GPUs with no reading stay null, never 0.
+    """
+    if all(gpu["gpu_util"] is not None for gpu in gpus):
+        return 0
+    try:
+        mig_util, mig_slices = query_mig_util()
+    except Exception as e:
+        print(f"DCGM MIG query failed: {e}", file=sys.stderr)
+        return None
     for gpu in gpus:
         if gpu["gpu_util"] is None:
             gpu["gpu_util"] = mig_util.get(gpu["index"])
+    return mig_slices
 
 
 def parse_xid_events(journal_json):
@@ -841,13 +849,10 @@ def main():
             for gpu in gpus:
                 gpu.update(fault_fields.get(gpu["index"], {}))
 
-        # Skipped when nvidia-smi already failed: a hung driver would cost
-        # another timeout for a reading that can't be trusted.
-        try:
-            faults["mig_slices"] = query_mig_slices()
-        except Exception as e:
-            print(f"MIG slice query failed: {e}", file=sys.stderr)
-        fill_mig_util(gpus)
+        # MIG utilization and the slice count both come from DCGM. Skipped
+        # when nvidia-smi already failed: a hung driver would cost another
+        # timeout for a reading that can't be trusted.
+        faults["mig_slices"] = query_mig(gpus)
 
     # Xids are read even when nvidia-smi fails: Xid 79 (fallen off the bus)
     # is exactly when it does.

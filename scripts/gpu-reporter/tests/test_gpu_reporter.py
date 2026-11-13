@@ -169,7 +169,6 @@ def test_nvidia_smi_failure_posts_degraded_payload(reporter, monkeypatch):
     monkeypatch.setattr(reporter, "report", fake_report)
     monkeypatch.setattr(reporter, "query_gpus", boom)
     monkeypatch.setattr(reporter, "query_xids", lambda path: ([], None))
-    monkeypatch.setattr(reporter, "query_mig_slices", lambda: 0)
     monkeypatch.setattr(reporter, "find_root_owned_slots", lambda: [])
     monkeypatch.setattr(reporter, "check_docker",
                         lambda: (False, "the docker0 bridge is missing"))
@@ -185,7 +184,8 @@ def test_nvidia_smi_failure_posts_degraded_payload(reporter, monkeypatch):
     assert calls["last_error"] == "nvidia-smi failed: not found"
     assert calls["gpus"] == []
     assert set(calls["host"]) == HOST_KEYS
-    # nvidia-smi -L is skipped once nvidia-smi has failed; Xids still flow.
+    # DCGM (MIG utilization and the slice count) is skipped once nvidia-smi
+    # has failed; Xids still flow.
     # The failed query is a hang, sent as an explicit failing value.
     assert calls["faults"] == {
         "xids": [], "mig_slices": None, "root_owned_slots": [],
@@ -239,18 +239,6 @@ FAULT_QUERY_MIXED = "\n".join([
     "3, Node Reboot, 1, [N/A]",
 ])
 
-NVIDIA_SMI_L_MIG = "\n".join([
-    "GPU 0: NVIDIA H200 (UUID: GPU-8800a3cd-38c6-154e-6fa4-d736a65e5535)",
-    "  MIG 1g.35gb     Device  0: (UUID: MIG-a280c447-dfd8-519d-a151-88ac82b0a056)",
-    "  MIG 1g.35gb     Device  1: (UUID: MIG-495c7ac0-6b37-54e9-8508-47707b9ca404)",
-    "GPU 1: NVIDIA H200 (UUID: GPU-0f026f38-fd99-c806-7633-6f5cf38f5ade)",
-    "  MIG 1g.35gb     Device  0: (UUID: MIG-ead74451-97af-5b6d-9a86-3da61df40ba9)",
-])
-NVIDIA_SMI_L_PLAIN = "\n".join(
-    f"GPU {i}: NVIDIA H200 (UUID: GPU-{i})" for i in range(8)
-)
-
-
 def journal_line(message, usec, cursor):
     import json
 
@@ -295,9 +283,18 @@ def test_parse_fault_query_values_and_unreadable_cells(reporter):
     assert faults[3]["ecc_uncorrected"] is None
 
 
-def test_count_mig_slices(reporter):
-    assert reporter.count_mig_slices(NVIDIA_SMI_L_MIG) == 3
-    assert reporter.count_mig_slices(NVIDIA_SMI_L_PLAIN) == 0
+def test_fault_query_keeps_the_short_timeout(reporter, monkeypatch):
+    timeouts = []
+
+    def fake_run(cmd, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(cmd, 0, "0, None, no, 0\n", "")
+
+    monkeypatch.setattr(reporter.subprocess, "run", fake_run)
+    assert reporter.query_fault_fields() == {
+        0: {"recovery_action": "None", "remapped_rows_failure": False,
+            "ecc_uncorrected": 0}}
+    assert timeouts == [5]
 
 
 def test_parse_xid_events(reporter):
@@ -474,15 +471,15 @@ def run_main(reporter, monkeypatch, tmp_path, post_ok=True, **queries):
     monkeypatch.setattr(reporter, "report", fake_report)
     monkeypatch.setattr(reporter, "NETWORK_PROBES", ())
     monkeypatch.setattr(reporter, "collect_host_metrics", lambda: {})
-    monkeypatch.setattr(reporter, "query_gpus", lambda: [
+    monkeypatch.setattr(reporter, "query_gpus", queries.get("gpus", lambda: [
         {"index": 0, "gpu_util": 10.0, "dead_proc_mem_mb": None, "recovery_action": None,
-         "remapped_rows_failure": None, "ecc_uncorrected": None}])
+         "remapped_rows_failure": None, "ecc_uncorrected": None}]))
     monkeypatch.setattr(reporter, "query_dead_proc_memory", lambda: {0: 0.0})
     monkeypatch.setattr(reporter, "query_fault_fields", queries.get("fault", lambda: {
         0: {"recovery_action": "None", "remapped_rows_failure": False,
             "ecc_uncorrected": 0}}))
     monkeypatch.setattr(reporter, "query_xids", queries.get("xids", boom))
-    monkeypatch.setattr(reporter, "query_mig_slices", queries.get("mig", boom))
+    monkeypatch.setattr(reporter, "query_mig_util", queries.get("dcgm", boom))
     monkeypatch.setattr(reporter, "find_root_owned_slots", queries.get("slots", boom))
     monkeypatch.setattr(reporter, "check_docker", queries.get("docker", boom))
     try:
@@ -492,12 +489,55 @@ def run_main(reporter, monkeypatch, tmp_path, post_ok=True, **queries):
     return sent
 
 
+def mig_host():
+    """One GPU with MIG enabled: nvidia-smi cannot read its utilization."""
+    return [{"index": 0, "gpu_util": None, "dead_proc_mem_mb": None,
+             "recovery_action": None, "remapped_rows_failure": None,
+             "ecc_uncorrected": None}]
+
+
+def test_main_reports_the_dcgm_slice_count_on_a_mig_host(reporter, monkeypatch, tmp_path):
+    sent = run_main(reporter, monkeypatch, tmp_path,
+                    gpus=mig_host,
+                    dcgm=lambda: ({0: 50.0}, 3),
+                    xids=lambda path: ([], None), slots=lambda: [],
+                    docker=lambda: (True, None))
+    assert sent["gpus"][0]["gpu_util"] == 50.0
+    assert sent["faults"]["mig_slices"] == 3
+
+
+def test_main_reports_zero_slices_when_dcgm_is_never_queried(reporter, monkeypatch, tmp_path):
+    # MIG mode is disabled, so DCGM is skipped and the count is a clean 0.
+    sent = run_main(reporter, monkeypatch, tmp_path,
+                    xids=lambda path: ([], None), slots=lambda: [],
+                    docker=lambda: (True, None))
+    assert sent["faults"]["mig_slices"] == 0
+
+
+def test_main_reports_null_slices_when_dcgm_fails(reporter, monkeypatch, tmp_path):
+    def boom():
+        raise RuntimeError("dcgmi not found")
+
+    sent = run_main(reporter, monkeypatch, tmp_path,
+                    gpus=mig_host,
+                    dcgm=boom,
+                    xids=lambda path: ([], None), slots=lambda: ["/x"],
+                    docker=lambda: (True, None))
+    assert sent["faults"]["mig_slices"] is None
+    assert sent["gpus"][0]["gpu_util"] is None
+    # The failure does not hurt the other readings.
+    assert sent["faults"]["xids"] == []
+    assert sent["faults"]["root_owned_slots"] == ["/x"]
+    assert sent["faults"]["docker_ok"] is True
+
+
 def test_each_failed_query_reports_null_independently(reporter, monkeypatch, tmp_path):
     def boom():
         raise RuntimeError("query failed")
 
     sent = run_main(reporter, monkeypatch, tmp_path, fault=boom,
-                    mig=lambda: 12)  # xids, slots and the Docker check fail
+                    gpus=mig_host,
+                    dcgm=lambda: ({0: 50.0}, 12))  # xids, slots and the Docker check fail
     assert sent["faults"] == {"xids": None, "mig_slices": 12, "root_owned_slots": None,
                               "gpu_query_hung": False, "gpu_query_error": None,
                               "docker_ok": None, "docker_error": None,
@@ -513,7 +553,7 @@ def test_successful_queries_fill_the_payload(reporter, monkeypatch, tmp_path):
                     xids=lambda path: ([{"bus_id": "0000:7f:00", "xid": 48,
                                     "at": "2026-10-11T00:00:00.000000+00:00",
                                     "message": ""}], "c7"),
-                    mig=lambda: 0, slots=lambda: ["/mnt/x/vllm/ci"])
+                    slots=lambda: ["/mnt/x/vllm/ci"])
     assert sent["faults"]["xids"][0]["xid"] == 48
     assert sent["faults"]["mig_slices"] == 0
     assert sent["faults"]["root_owned_slots"] == ["/mnt/x/vllm/ci"]
@@ -524,7 +564,7 @@ def test_successful_queries_fill_the_payload(reporter, monkeypatch, tmp_path):
 
 def test_cursor_is_not_saved_when_the_post_fails(reporter, monkeypatch, tmp_path):
     run_main(reporter, monkeypatch, tmp_path, post_ok=False,
-             xids=lambda path: ([], "c7"), mig=lambda: 0, slots=lambda: [])
+             xids=lambda path: ([], "c7"), slots=lambda: [])
     assert reporter.read_cursor(reporter.JOURNAL_CURSOR_FILE) is None
 
 
@@ -679,14 +719,14 @@ GPU-I 22  N/A          N/A          N/A          N/A          N/A
 """
 
 
-def test_parse_dcgm_instances_maps_slices_to_gpus(reporter):
-    assert reporter.parse_dcgm_instances(DCGM_DISCOVERY_FIXTURE) == {
+def test_parse_dcgm_discovery_maps_slices_to_gpus(reporter):
+    assert reporter.parse_dcgm_discovery(DCGM_DISCOVERY_FIXTURE)[0] == {
         0: 0, 1: 0, 21: 1, 22: 1,
     }
 
 
 def test_mig_util_averages_each_gpus_slices(reporter):
-    instances = reporter.parse_dcgm_instances(DCGM_DISCOVERY_FIXTURE)
+    instances = reporter.parse_dcgm_discovery(DCGM_DISCOVERY_FIXTURE)[0]
     # GPU 0: slices average 0.9 and 0.1 over the samples after warm-up, so
     # the GPU is 50% busy. GPU 1: slice 22 never warmed up and is left out.
     assert reporter.parse_mig_util(DCGM_DMON_FIXTURE, instances) == {
@@ -703,25 +743,26 @@ def test_mig_util_omits_gpus_with_no_readable_slice(reporter):
 def test_main_fills_mig_utilization_from_dcgm(reporter, monkeypatch):
     gpus = [{"index": 0, "gpu_util": None}, {"index": 1, "gpu_util": 30.0},
             {"index": 2, "gpu_util": None}]
-    monkeypatch.setattr(reporter, "query_mig_util", lambda: {0: 12.5, 1: 99.0})
-    reporter.fill_mig_util(gpus)
+    monkeypatch.setattr(reporter, "query_mig_util", lambda: ({0: 12.5, 1: 99.0}, 2))
+    assert reporter.query_mig(gpus) == 2
     # Only unreadable GPUs are filled; one DCGM has no reading for stays null.
     assert [g["gpu_util"] for g in gpus] == [12.5, 30.0, None]
 
 
-def test_fill_mig_util_skips_dcgm_when_every_gpu_reported(reporter, monkeypatch):
+def test_query_mig_reports_zero_without_dcgm_on_a_non_mig_host(reporter, monkeypatch):
     def boom():
         raise AssertionError("DCGM queried on a non-MIG host")
     monkeypatch.setattr(reporter, "query_mig_util", boom)
-    reporter.fill_mig_util([{"index": 0, "gpu_util": 5.0}])
+    # A complete utilization reading means no MIG and no DCGM call.
+    assert reporter.query_mig([{"index": 0, "gpu_util": 5.0}]) == 0
 
 
-def test_fill_mig_util_leaves_null_when_dcgm_fails(reporter, monkeypatch):
+def test_query_mig_leaves_null_when_dcgm_fails(reporter, monkeypatch):
     def fail():
         raise RuntimeError("dcgmi not found")
     monkeypatch.setattr(reporter, "query_mig_util", fail)
     gpus = [{"index": 0, "gpu_util": None}]
-    reporter.fill_mig_util(gpus)
+    assert reporter.query_mig(gpus) is None
     assert gpus[0]["gpu_util"] is None
 
 
@@ -745,7 +786,7 @@ def test_query_mig_util_runs_discovery_then_dmon_on_the_slices(reporter, monkeyp
         return subprocess.CompletedProcess(cmd, 0, out, "")
 
     monkeypatch.setattr(reporter.subprocess, "run", fake_run)
-    assert reporter.query_mig_util() == {0: 50.0, 1: 50.0}
+    assert reporter.query_mig_util() == ({0: 50.0, 1: 50.0}, 4)
     assert calls == [
         ["dcgmi", "discovery", "-c"],
         ["dcgmi", "dmon", "-e", "1001,1002,1003,1004,1005",
@@ -753,16 +794,113 @@ def test_query_mig_util_runs_discovery_then_dmon_on_the_slices(reporter, monkeyp
     ]
 
 
-def test_query_mig_util_without_slices_skips_dmon(reporter, monkeypatch):
+def test_query_mig_util_raises_when_discovery_has_no_gpu_rows(reporter, monkeypatch):
+    # An unrecognized discovery table is unknown, never a clean 0.
+    import pytest
+
     calls = []
 
     def fake_run(cmd, **kw):
         calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, "| GPU 0 | GPU GPU-x (EntityID: 0) |\n", "")
+        return subprocess.CompletedProcess(cmd, 0, "unexpected DCGM output\n", "")
 
     monkeypatch.setattr(reporter.subprocess, "run", fake_run)
-    assert reporter.query_mig_util() == {}
-    assert len(calls) == 1
+    with pytest.raises(RuntimeError) as exc:
+        reporter.query_mig_util()
+    assert str(exc.value) == "DCGM discovery output has no GPU rows"
+    assert len(calls) == 1  # dmon is never reached
+
+
+def test_query_mig_util_returns_zero_when_discovery_has_no_slices(reporter, monkeypatch):
+    # Valid GPU rows with no GPU instances mean the slices are gone.
+    discovery = "| GPU 0             | GPU GPU-x (EntityID: 0)         |\n"
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, discovery, "")
+
+    monkeypatch.setattr(reporter.subprocess, "run", fake_run)
+    assert reporter.query_mig_util() == ({}, 0)
+    assert calls == [["dcgmi", "discovery", "-c"]]
+
+
+def test_query_mig_util_returns_zero_without_compute_instances(reporter, monkeypatch):
+    # A GPU instance with no compute instances yet is valid during reconfiguration.
+    discovery = ("| GPU 0             | GPU GPU-x (EntityID: 0)         |\n"
+                 "| -> I 0/3          | GPU Instance (EntityID: 0)         |\n")
+    monkeypatch.setattr(reporter.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, discovery, ""))
+    assert reporter.query_mig_util() == ({}, 0)
+
+
+def test_query_mig_util_keeps_the_count_without_gpu_instance_rows(reporter, monkeypatch):
+    # The CI count is still known when the GPU-instance mapping cannot be parsed.
+    discovery = ("| GPU 0             | GPU GPU-x (EntityID: 0)         |\n"
+                 "|    -> CI 0/3/0    | Compute Instance (EntityID: 0)      |\n")
+    monkeypatch.setattr(reporter.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, discovery, ""))
+    assert reporter.query_mig_util() == ({}, 1)
+
+
+def test_parse_dcgm_discovery_ignores_text_outside_table_rows(reporter):
+    text = "description mentioning -> CI 0/3/0\n|    -> CI 0/3/0    | Compute Instance |\n"
+    assert reporter.parse_dcgm_discovery(text)[1] == 1
+
+
+def test_query_mig_util_counts_compute_instances_not_gpu_instances(reporter, monkeypatch):
+    # One GPU instance holding two compute instances: the slice count follows
+    # the CI entries (what the old query counted); the I entries still map
+    # the dmon IDs.
+    discovery = (
+        "| GPU 0             | GPU GPU-x (EntityID: 0)         |\n"
+        "| -> I 0/3          | GPU Instance (EntityID: 0)         |\n"
+        "|    -> CI 0/3/0    | Compute Instance (EntityID: 0)      |\n"
+        "|    -> CI 0/3/1    | Compute Instance (EntityID: 1)      |\n"
+    )
+
+    def fake_run(cmd, **kw):
+        out = discovery if cmd[1] == "discovery" else DCGM_DMON_FIXTURE
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    monkeypatch.setattr(reporter.subprocess, "run", fake_run)
+    assert reporter.query_mig_util() == ({0: 90.0}, 2)
+
+
+def test_query_mig_util_dmon_failure_keeps_the_discovery_count(reporter, monkeypatch, capsys):
+    # Discovery succeeded, so the slice count is known even though the
+    # utilization sampling failed.
+    def fake_run(cmd, **kw):
+        if cmd[1] == "discovery":
+            return subprocess.CompletedProcess(cmd, 0, DCGM_DISCOVERY_FIXTURE, "")
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    monkeypatch.setattr(reporter.subprocess, "run", fake_run)
+    assert reporter.query_mig_util() == ({}, 4)
+    assert capsys.readouterr().err.startswith("DCGM MIG utilization query failed: ")
+
+
+def test_query_mig_util_bad_dmon_output_keeps_the_discovery_count(reporter, monkeypatch):
+    def fake_run(cmd, **kw):
+        out = DCGM_DISCOVERY_FIXTURE if cmd[1] == "discovery" else "GPU-I nope 0.5\n"
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    monkeypatch.setattr(reporter.subprocess, "run", fake_run)
+    assert reporter.query_mig_util() == ({}, 4)
+
+
+def test_main_keeps_the_slice_count_when_only_dmon_fails(reporter, monkeypatch, tmp_path):
+    sent = run_main(reporter, monkeypatch, tmp_path,
+                    gpus=mig_host,
+                    dcgm=lambda: ({}, 3),  # what query_mig_util returns then
+                    xids=lambda path: ([], None), slots=lambda: ["/x"],
+                    docker=lambda: (True, None))
+    assert sent["faults"]["mig_slices"] == 3
+    # Utilization stays unknown, and the rest of the report is unhurt.
+    assert sent["gpus"][0]["gpu_util"] is None
+    assert sent["faults"]["xids"] == []
+    assert sent["faults"]["root_owned_slots"] == ["/x"]
+    assert sent["faults"]["docker_ok"] is True
 
 
 def test_query_mig_util_raises_when_dcgmi_fails(reporter, monkeypatch):
@@ -776,23 +914,23 @@ def test_query_mig_util_raises_when_dcgmi_fails(reporter, monkeypatch):
         raise AssertionError("expected RuntimeError")
 
 
-def test_fill_mig_util_fills_a_host_where_every_gpu_is_mig(reporter, monkeypatch, capsys):
-    monkeypatch.setattr(reporter, "query_mig_util", lambda: {0: 40.0, 1: 0.0})
+def test_query_mig_fills_a_host_where_every_gpu_is_mig(reporter, monkeypatch, capsys):
+    monkeypatch.setattr(reporter, "query_mig_util", lambda: ({0: 40.0, 1: 0.0}, 2))
     gpus = [{"index": 0, "gpu_util": None}, {"index": 1, "gpu_util": None}]
-    reporter.fill_mig_util(gpus)
+    assert reporter.query_mig(gpus) == 2
     assert [g["gpu_util"] for g in gpus] == [40.0, 0.0]
 
 
-def test_fill_mig_util_logs_dcgm_failures(reporter, monkeypatch, capsys):
+def test_query_mig_logs_dcgm_failures(reporter, monkeypatch, capsys):
     def fail():
         raise RuntimeError("dcgmi not found")
     monkeypatch.setattr(reporter, "query_mig_util", fail)
-    reporter.fill_mig_util([{"index": 0, "gpu_util": None}])
-    assert "DCGM MIG utilization query failed: dcgmi not found" in capsys.readouterr().err
+    reporter.query_mig([{"index": 0, "gpu_util": None}])
+    assert capsys.readouterr().err == "DCGM MIG query failed: dcgmi not found\n"
 
 
 def test_query_mig_util_shares_one_deadline_across_dcgmi_calls(reporter, monkeypatch):
-    # discovery uses 15 s of the budget, so dmon gets only what is left.
+    # Discovery uses 15 s of the shared budget, so dmon gets the remaining 10 s.
     clock = iter([100.0, 100.0, 115.0])
     monkeypatch.setattr(reporter.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(reporter, "RUN_START", 100.0)
@@ -816,11 +954,12 @@ def test_query_mig_util_stops_at_the_run_deadline(reporter, monkeypatch):
 
     def fake_run(cmd, **kw):
         timeouts.append(kw["timeout"])
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        out = DCGM_DISCOVERY_FIXTURE if cmd[1] == "discovery" else DCGM_DMON_FIXTURE
+        return subprocess.CompletedProcess(cmd, 0, out, "")
 
     monkeypatch.setattr(reporter.subprocess, "run", fake_run)
     reporter.query_mig_util()
-    assert timeouts == [reporter.DCGM_RUN_DEADLINE - 40.0]
+    assert timeouts == [reporter.DCGM_RUN_DEADLINE - 40.0] * 2
 
 
 def test_query_mig_util_skips_dcgm_late_in_the_run(reporter, monkeypatch):
@@ -831,7 +970,7 @@ def test_query_mig_util_skips_dcgm_late_in_the_run(reporter, monkeypatch):
     try:
         reporter.query_mig_util()
     except RuntimeError as e:
-        assert "no time left" in str(e)
+        assert str(e) == "no time left in this run for DCGM"
     else:
         raise AssertionError("expected RuntimeError")
 
