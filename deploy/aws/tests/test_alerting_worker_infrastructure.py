@@ -734,10 +734,12 @@ def test_missing_heartbeat_alarms_through_sns_outside_the_worker(job: str) -> No
     assert "Threshold: 1" in block
     assert "Stat: Sum" in block
     assert f"Value: {job}\n" in block
-    # The window outlasts one timed-out run plus one full-length success
-    # (which already paged through OnFailure), so a single timeout does not
-    # page twice: cadence + TimeoutStartSec + cadence + 10 min.
-    expected = {"control": 3, "fast-ci": 9, "main-ci": 5, "infra": 6, "h200-pauser": 3}[job]
-    assert periods.group(1) == str(expected)  # x 5 min: 15/45/25/30/15
+    # The window outlasts one timed-out run plus one successful run at the
+    # durations we observe (max 3 min over 7 days of executions), with one
+    # full bucket of margin in case FILL counts the in-progress bucket as a
+    # zero — so one timed-out run (which already paged through OnFailure)
+    # never trips the alarm: cadence + TimeoutStartSec + cadence + success.
+    expected = {"control": 3, "fast-ci": 10, "main-ci": 5, "infra": 7, "h200-pauser": 4}[job]
+    assert periods.group(1) == str(expected)  # x 5 min: 15/50/25/35/20
     assert block.count("Ref: HeartbeatTopic") == 2  # alarm and recovery
     assert "Condition: HasHeartbeatEmail" in template  # target is a parameter
