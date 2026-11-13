@@ -355,7 +355,9 @@ FABRIC_SCRIPT = """
 read u _ < /proc/uptime; echo "uptime ${u%%.*}"
 k=$(dmesg) && echo "dmesg ok"
 printf '%s\n' "$k" | grep -F NV_ERR_FABRIC_MANAGER_NOT_PRESENT | tail -n 1
-nvidia-smi --query-gpu=index,fabric.state,fabric.status,fabric.health.summary \\
+nvidia-smi --query-gpu=index,fabric.state,fabric.status,fabric.health.summary,\
+fabric.health.bandwidth,fabric.health.route_recovery_in_progress,\
+fabric.health.route_unhealthy,fabric.health.access_timeout_recovery \\
   --format=csv,noheader
 """
 # Refusals come only when a job asks for multicast; the longest gap between
@@ -367,8 +369,10 @@ FABRIC_ERROR_WINDOW = 3600
 def parse_fabric_output(text):
     """FABRIC_SCRIPT output -> (fabric_ok, fabric_error).
 
-    A GPU whose fabric is registering or failed, or reports unhealthy, fails
-    the host; N/A (no NVSwitch fabric, or no health summary) does not.
+    A GPU whose fabric is registering or failed, reports unhealthy, or
+    reports degraded bandwidth, route recovery, an unhealthy route or access
+    timeout recovery (each critical in NVIDIA's health validation) fails the
+    host; N/A (no NVSwitch fabric, or no health detail) does not.
     Raises when the uptime, the dmesg read or every GPU row is missing: no
     reading.
     """
@@ -384,15 +388,24 @@ def parse_fabric_output(text):
             refused_at_s = float(line[1:line.index("]")])
         else:
             cols = [col.strip() for col in line.split(",")]
-            if len(cols) != 4 or not cols[0].isdigit():
+            if len(cols) != 8 or not cols[0].isdigit():
                 continue
-            index, state, status, health = cols
+            index, state, status, health, bandwidth, *flags = cols
+            recovery, unhealthy, timeout = (flag == "True" for flag in flags)
             if state not in ("Completed", "N/A"):
                 problem = f"fabric state {state}"
             elif state == "Completed" and status != "Success":
                 problem = f"fabric status {status}"
             elif health not in ("Healthy", "N/A"):
                 problem = f"fabric health {health}"
+            elif bandwidth not in ("Full", "N/A"):
+                problem = f"fabric bandwidth {bandwidth}"
+            elif recovery:
+                problem = "fabric route recovery in progress"
+            elif unhealthy:
+                problem = "fabric route unhealthy"
+            elif timeout:
+                problem = "fabric access timeout recovery"
             else:
                 problem = ""
             problems.setdefault(problem, []).append(int(index))

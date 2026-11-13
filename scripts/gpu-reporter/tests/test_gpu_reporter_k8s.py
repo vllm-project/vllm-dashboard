@@ -499,8 +499,12 @@ DCGM_TWO_GPU = (DCGM_FIXTURE.replace("GPU-aaaa", "GPU-bbbb")
                 + DCGM_FIXTURE.replace('gpu="0"', 'gpu="1"'))
 
 
-# FABRIC_SCRIPT output captured 2026-11-13 from device-plugin pods.
+# FABRIC_SCRIPT output captured 2026-11-13 from device-plugin pods. A row
+# given as state, status, summary gets the health detail a healthy B200
+# reports (bandwidth, route recovery, route unhealthy, access timeout).
 def fabric_output(uptime, rows, dmesg=None):
+    rows = [row if row.count(",") == 6 else row + ", N/A, N/A, N/A, False"
+            for row in rows]
     return "\n".join([f"uptime {uptime}", "dmesg ok", *([dmesg] if dmesg else []),
                       *(f"{i}, {row}" for i, row in enumerate(rows))])
 
@@ -742,27 +746,44 @@ def test_parse_fabric_output_names_each_bad_gpu(reporter_k8s):
                      "Unhealthy")
 
 
+def test_fabric_health_detail_fails_the_gpu(reporter_k8s):
+    # NVIDIA's health validation treats each of these as critical.
+    rows = ["Completed, Success, Healthy, Full, N/A, N/A, False",
+            "Completed, Success, Healthy, Degraded, N/A, N/A, False",
+            "Completed, Success, Healthy, N/A, True, N/A, False",
+            "Completed, Success, Healthy, N/A, N/A, True, False",
+            "Completed, Success, Healthy, N/A, N/A, N/A, True"]
+    ok, error = reporter_k8s.parse_fabric_output(fabric_output(10, rows))
+    assert ok is False
+    assert error == ("GPU 1 fabric bandwidth Degraded; GPU 2 fabric route "
+                     "recovery in progress; GPU 3 fabric route unhealthy; "
+                     "GPU 4 fabric access timeout recovery")
+
+
 def test_fabric_output_without_gpu_rows_is_no_reading(reporter_k8s):
     with pytest.raises(RuntimeError, match="^no fabric reading$"):
         reporter_k8s.parse_fabric_output("uptime 368\n")
     with pytest.raises(RuntimeError, match="^no fabric reading$"):
-        reporter_k8s.parse_fabric_output("0, Completed, Success, Healthy")
+        reporter_k8s.parse_fabric_output(
+            "dmesg ok\n0, Completed, Success, Healthy, N/A, N/A, N/A, False")
     # dmesg failed (e.g. "Operation not permitted"): the kernel check this
     # detector depends on didn't run, so healthy GPU rows are no reading.
     with pytest.raises(RuntimeError, match="^no fabric reading$"):
         reporter_k8s.parse_fabric_output(
-            "uptime 368\n0, Completed, Success, Healthy")
+            "uptime 368\n0, Completed, Success, Healthy, N/A, N/A, N/A, False")
 
 
 def test_parse_fabric_output_skips_other_lines(reporter_k8s):
     text = "\n".join([
         "uptime 368",
         "dmesg ok",
-        "index, fabric.state, fabric.status, fabric.health.summary",
+        "index, fabric.state, fabric.status, fabric.health.summary, "
+        "fabric.health.bandwidth, fabric.health.route_recovery_in_progress, "
+        "fabric.health.route_unhealthy, fabric.health.access_timeout_recovery",
         "0, Completed",
-        "0, Completed, Success, Healthy",
+        "0, Completed, Success, Healthy, N/A, N/A, N/A, False",
         # A GPU outside any NVSwitch fabric.
-        "1, N/A, N/A, N/A",
+        "1, N/A, N/A, N/A, N/A, N/A, N/A, N/A",
     ])
     assert reporter_k8s.parse_fabric_output(text) == (True, None)
 
