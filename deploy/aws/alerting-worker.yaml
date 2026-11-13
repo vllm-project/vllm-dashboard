@@ -436,12 +436,13 @@ Resources:
   # The k8s quarantine actuators run on the cluster control planes, not on
   # this worker: each control plane emits Job=quarantine-actuator-<cluster>
   # after a completed poll (scripts/gpu-reporter/quarantine-actuator-heartbeat.service;
-  # a poll that finishes with per-node errors exits 2 and still emits, only a
+  # a poll that finishes with per-node errors exits 3 and still emits, only a
   # poll that never finished emits nothing) with per-host static credentials
   # scoped to PutMetricData in this namespace. The window is at least 15
   # minutes of silence: it outlasts one timed-out run (2 min) and a brief
   # endpoint blip, while a dead timer, a dead control plane or dead
-  # credentials still page fast — nothing else on a control plane can.
+  # heartbeat credentials still page fast — nothing else on a control plane
+  # can.
   HeartbeatQuarantineActuatorH100Alarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
