@@ -350,3 +350,27 @@ test("accepts the Docker health fields, and leaves them null when absent", () =>
     /docker_error/,
   );
 });
+
+test("accepts the fabric health fields, and leaves them null when absent", () => {
+  const report = parseGpuReportPayload({
+    ...legacyPayload,
+    fabric_ok: false,
+    fabric_error: "the driver logged NV_ERR_FABRIC_MANAGER_NOT_PRESENT 3 min ago",
+  });
+  assert.equal(report.fabric_ok, false);
+  assert.equal(
+    report.fabric_error,
+    "the driver logged NV_ERR_FABRIC_MANAGER_NOT_PRESENT 3 min ago",
+  );
+  const legacy = parseGpuReportPayload(legacyPayload);
+  assert.equal(legacy.fabric_ok, null);
+  assert.equal(legacy.fabric_error, null);
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, fabric_ok: "no" }),
+    /fabric_ok/,
+  );
+  assert.throws(
+    () => parseGpuReportPayload({ ...legacyPayload, fabric_error: "x".repeat(5000) }),
+    /fabric_error/,
+  );
+});
