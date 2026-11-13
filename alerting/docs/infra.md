@@ -232,19 +232,18 @@ per-node errors exits 3, which `SuccessExitStatus=3` still counts as
 success, so one broken node cannot silence the heartbeat and page with the
 wrong cause — the worker's notices carry a stage still awaiting
 confirmation, and the journal's "(with errors)" line carries the rest (a
-unit in `failed` state no longer means a node error). (Not
-exit 2: Python and argparse exit 2 on their own failures, and a broken
-deploy must never heartbeat health.) The worker stack's alarms
+unit in `failed` state no longer means a node error). Not exit 2:
+Python and argparse exit 2 on their own failures, and a broken deploy must
+never heartbeat health. The worker stack's alarms
 (`<stack-name>-heartbeat-quarantine-actuator-h100` / `-b200`) count a
 missing period as zero (`FILL(m1, 0)`, missing = breaching; three 5-minute
 periods, so at least 15 minutes of silence) and notify the same SNS topic
-as the worker's own heartbeat alarms, so a dead actuator timer, a dead
-control plane, or dead heartbeat credentials page
-off-host. A partly decayed kubeconfig (can list nodes, cannot write) fails
+as the worker's own heartbeat alarms, so a dead actuator timer, a
+dead control plane, or dead heartbeat credentials page off-host. A partly decayed kubeconfig (can list nodes, cannot write) fails
 every node instead: the poll still completes, and the worker's notices carry
-any stage still awaiting confirmation. The heartbeat proves the poll loop is
-alive — in dry run too — not
-that the actuator changes anything. The control planes are not EC2, so there is no instance role:
+any stage still awaiting confirmation. The heartbeat proves the poll loop
+is alive — in dry run too — not that the actuator changes anything. The
+control planes are not EC2, so there is no instance role:
 each one holds its own static IAM credentials in
 `/etc/gpu-reporter/heartbeat-aws.env` (root 0600, one IAM user per control
 plane so a key revokes per host), allowed only `cloudwatch:PutMetricData`
@@ -306,9 +305,9 @@ The delivery test is `aws cloudwatch set-alarm-state --state-value ALARM` on
 each alarm; the silence test is `systemctl mask --runtime
 quarantine-actuator-heartbeat.service` on one control plane (the actuator
 itself keeps running; `--runtime` because a real unit file sits in
-/etc/systemd/system, which plain `mask` refuses to override), waiting out
-the window (at least 15 minutes) for the
-ALARM mail, then `unmask --runtime` and expecting the OK mail.
+/etc/systemd/system, which plain `mask` refuses to override), waiting out the
+window (at least 15 minutes) for the ALARM mail, then `unmask --runtime`
+and expecting the OK mail.
 
 ## Tables
 
