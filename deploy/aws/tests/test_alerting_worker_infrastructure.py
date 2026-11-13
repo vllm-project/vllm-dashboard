@@ -668,7 +668,7 @@ def test_triage_consumers_run_the_triage_module_under_their_own_control() -> Non
         assert f"Unit=alerting-triage-{consumer}.service" in timer
 
 
-HEARTBEAT_JOBS = ["control", "fast-ci", "main-ci", "infra"]
+HEARTBEAT_JOBS = ["control", "fast-ci", "main-ci", "infra", "h200-pauser"]
 
 
 @pytest.mark.parametrize("job", HEARTBEAT_JOBS)
@@ -737,7 +737,7 @@ def test_missing_heartbeat_alarms_through_sns_outside_the_worker(job: str) -> No
     # The window outlasts one timed-out run plus one full-length success
     # (which already paged through OnFailure), so a single timeout does not
     # page twice: cadence + TimeoutStartSec + cadence + 10 min.
-    expected = {"control": 3, "fast-ci": 9, "main-ci": 5, "infra": 6}[job]
-    assert periods.group(1) == str(expected)  # x 5 min: 15/45/25/30
+    expected = {"control": 3, "fast-ci": 9, "main-ci": 5, "infra": 6, "h200-pauser": 3}[job]
+    assert periods.group(1) == str(expected)  # x 5 min: 15/45/25/30/15
     assert block.count("Ref: HeartbeatTopic") == 2  # alarm and recovery
     assert "Condition: HasHeartbeatEmail" in template  # target is a parameter

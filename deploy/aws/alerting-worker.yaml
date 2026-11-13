@@ -381,6 +381,43 @@ Resources:
       OKActions:
         - Ref: HeartbeatTopic
 
+  HeartbeatH200PauserAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName:
+        Fn::Sub: ${AWS::StackName}-heartbeat-h200-pauser
+      AlarmDescription: >-
+        No successful h200-pauser run for 15 minutes. Check the worker's timers
+        and its secret (Operations Handbook, Off-worker heartbeat).
+      # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
+      # reaches back past EvaluationPeriods for an older heartbeat that would
+      # hold the alarm at OK after the job went silent.
+      Metrics:
+        - Id: m1
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: VllmAlerting
+              MetricName: Heartbeat
+              Dimensions:
+                - Name: Job
+                  Value: h200-pauser
+            Period: 300
+            Stat: Sum
+        - Id: e1
+          Expression: FILL(m1, 0)
+          Label: Heartbeats per 5 minutes
+          ReturnData: true
+      EvaluationPeriods: 3
+      DatapointsToAlarm: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - Ref: HeartbeatTopic
+      OKActions:
+        - Ref: HeartbeatTopic
+
 Outputs:
   CheckpointBucketName:
     Value:

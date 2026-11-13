@@ -107,7 +107,7 @@ Buildkite agents of quarantined H200 hosts (see `alerting/docs/infra.md`).
 
 ## Off-worker heartbeat
 
-`control`, `fast-ci`, `main-ci` and `infra` each chain
+`control`, `fast-ci`, `main-ci`, `infra` and `h200-pauser` each chain
 `alerting-heartbeat@<job>.service` from their `OnSuccess=`, which runs
 `bin/emit-heartbeat` as its own oneshot unit (so it never shares the job
 unit's start timeout) and puts a `VllmAlerting/Heartbeat` datapoint
@@ -122,13 +122,13 @@ once; empty means no subscriber. A job whose timer is intentionally disabled
 OK email when the path resumes; that is the alarm working, so don't mute its
 actions (a muted alarm left in ALARM notifies nobody when the path comes
 back broken). `control` doesn't load the worker secret, so its alarm covers
-a dead instance or timers, not the secret. Windows (15/45/25/30 min for
-control/fast-ci/main-ci/infra) outlast one timed-out run plus one
+a dead instance or timers, not the secret. Windows (15/45/25/30/15 min
+for control/fast-ci/main-ci/infra/h200-pauser) outlast one timed-out run plus one
 full-length success — a timeout already pages through `OnFailure`, and must
-not page twice; on main-ci and infra a timeout is held for ten minutes
-before it pages at all (bin/hold-failure), so the heartbeat alarm matches
-that: one timeout pages nobody, a timeout that keeps happening pages through
-`OnFailure`. The metric has only the `Job` dimension:
+not page twice; on main-ci, infra and h200-pauser a timeout is held for ten
+minutes before it pages at all (bin/hold-failure), so the heartbeat alarm
+matches that: one timeout pages nobody, a timeout that keeps happening pages
+through `OnFailure`. The metric has only the `Job` dimension:
 one worker per account and region, or a second emitter would hold the
 alarms at OK.
 
@@ -140,7 +140,8 @@ Whether each alarm fires ALARM on missing data at deploy or goes straight to
 OK depends on whether a heartbeat lands before its first evaluation; either
 is fine, and each alarm also mails on recovery, so an "OK" email from a new
 alarm is the subscription working, not a recovered incident. A dead worker
-pages all four alarms (15/25/30/45 min in) and mails OK again on recovery.
+pages all five alarms (15/25/30/45 min in) and mails OK again on
+recovery.
 The delivery test is `aws cloudwatch set-alarm-state --state-value ALARM`;
 the physical alarm names carry the stack name, so read them from the stack
 (`aws cloudformation describe-stack-resource --stack-name <stack> --logical-resource-id HeartbeatInfraAlarm`).
