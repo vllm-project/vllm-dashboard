@@ -1,0 +1,28 @@
+[Unit]
+Description=Put an off-worker CloudWatch heartbeat for this cluster's quarantine actuator
+
+[Service]
+Type=oneshot
+# Per-control-plane static credentials and the heartbeat's job name, root
+# 0600 (heartbeat-aws.env.example). Never the worker secret and never the
+# reporter env: the alarm path must survive a secret this host cannot load.
+# Runs as root because only root may read that file.
+EnvironmentFile=/etc/gpu-reporter/heartbeat-aws.env
+# HEARTBEAT_JOB is quarantine-actuator-<cluster>, so the same unit file
+# serves both control planes.
+ExecStart=/opt/gpu-reporter/emit-heartbeat ${HEARTBEAT_JOB}
+# The only bound on the emit (the CLI retries run inside it).
+TimeoutStartSec=30s
+StandardOutput=null
+# Not inherited from StandardOutput: a heartbeat that fails silently is worse
+# than no heartbeat. Its stderr carries no secrets.
+StandardError=journal
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictSUIDSGID=true
+LockPersonality=true
+# No failure chaining here: a dead heartbeat is not the actuator failing,
+# and the off-host CloudWatch alarm is the thing that notices it.

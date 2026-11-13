@@ -117,7 +117,14 @@ an old heartbeat cannot hold an alarm at OK) and notify the stack's SNS
 topic (`<stack-name>-heartbeat`), so a dead timer, a dead instance, or a
 secret the worker cannot load all alarm without the worker, its database or
 its secret. Set `HeartbeatAlertEmail` and click SNS's confirmation link
-once; empty means no subscriber. A job whose timer is intentionally stopped
+once; empty means no subscriber. The two k8s quarantine actuators emit too,
+from their control planes (`Job=quarantine-actuator-h100` /
+`-b200`, 15-minute alarms on the same topic): they are not EC2, so each
+control plane holds its own static credentials scoped to `PutMetricData` in
+this namespace — setup and the silence test are in
+`alerting/docs/infra.md` ("Control-plane heartbeat"). Deploy the
+control-plane units and credentials before the stack update so the new
+alarms are born OK. A job whose timer is intentionally stopped
 or disabled (a path turned off in S3 control; the pauser's timer is enabled
 by hand, not by S3 control) will alarm once — one ALARM email, and an OK
 email when the job resumes; that is the alarm working, so don't mute its
