@@ -682,9 +682,11 @@ def test_heartbeat_emitter_needs_no_worker_secret() -> None:
     script = read("bin/emit-heartbeat")
 
     assert "cloudwatch put-metric-data" in script
-    # A stalled call must not outlive the unit's start timeout.
-    assert "timeout 20 aws" in script
-    assert "--cli-connect-timeout" in script and "AWS_MAX_ATTEMPTS=1" in script
+    # A stalled call must not outlive the unit's start timeout: 10 s of wall
+    # clock, one attempt, 5+4 s of CLI timeouts.
+    assert "timeout 10 aws" in script
+    assert "--cli-connect-timeout 5" in script and "--cli-read-timeout 4" in script
+    assert "AWS_MAX_ATTEMPTS=1" in script
     assert "--namespace VllmAlerting" in script
     for needle in ("load-secrets", "worker.env", "TOKEN", "DATABASE_URL"):
         assert needle not in script
@@ -708,6 +710,9 @@ def test_missing_heartbeat_alarms_through_sns_outside_the_worker(job: str) -> No
     assert periods and f"DatapointsToAlarm: {periods.group(1)}" in block
     assert "TreatMissingData: breaching" in block
     assert "ComparisonOperator: LessThanThreshold" in block
+    # Threshold 0 or an average stat would never fire on a silent job.
+    assert "Threshold: 1" in block
+    assert "Stat: Sum" in block
     assert f"Value: {job}\n" in block
     expected = {"control": 3, "fast-ci": 6, "main-ci": 3, "infra": 4}[job]
     assert periods.group(1) == str(expected)  # x 5 min: 15/30/15/20
