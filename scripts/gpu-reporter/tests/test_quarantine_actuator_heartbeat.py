@@ -41,6 +41,9 @@ def test_actuator_emits_heartbeat_only_after_a_successful_run() -> None:
     unit = read("quarantine-actuator-heartbeat.service")
     assert "Type=oneshot" in unit
     assert "ExecStart=/opt/gpu-reporter/emit-heartbeat ${HEARTBEAT_JOB}" in unit
+    # The aws CLI needs a writable HOME; the sandbox has none. The worker's
+    # failure notifier died to exactly this on its first deploy.
+    assert "Environment=HOME=/tmp" in unit
     assert "TimeoutStartSec=30s" in unit
     # A dead heartbeat is not the actuator failing; the off-host alarm
     # notices it, and there is no failure notifier on a control plane.
