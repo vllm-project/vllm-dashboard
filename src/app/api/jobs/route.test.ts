@@ -7,16 +7,21 @@ import { GET } from "./route";
 function configureWarehouse(t: TestContext) {
   const saved = { ...process.env };
   Object.assign(process.env, {
-    DATABRICKS_HOST: "https://warehouse.example",
-    DATABRICKS_TOKEN: "test-token",
-    DATABRICKS_WAREHOUSE_ID: "test-warehouse",
+    CLICKHOUSE_URL: "https://clickhouse.example",
+    CLICKHOUSE_READ_USER: "test-user",
+    CLICKHOUSE_READ_PASSWORD: "test-password",
   });
   t.after(() => {
-    for (const key of ["DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_WAREHOUSE_ID"]) {
+    for (const key of ["CLICKHOUSE_URL", "CLICKHOUSE_READ_USER", "CLICKHOUSE_READ_PASSWORD"]) {
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
     }
   });
+}
+
+/** A ClickHouse JSONStringsEachRow response body. */
+function rowsResponse(rows: Record<string, string>[]) {
+  return new Response(rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
 }
 
 test("concurrent jobs requests share queries and expose cache/query timings", async (t) => {
@@ -24,31 +29,27 @@ test("concurrent jobs requests share queries and expose cache/query timings", as
     const url = String(input);
     if (url.includes("api.github.com")) {
       // The optional-job matcher refreshes from GitHub once per hour; an empty
-      // tree keeps the static fallback and stays out of the Databricks counts.
+      // tree keeps the static fallback and stays out of the ClickHouse counts.
       return Response.json({ tree: [] });
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
-    return Response.json({
-      status: { state: "SUCCEEDED" },
-      manifest: { schema: { columns: [{ name: "name" }] } },
-      result: { data_array: [["test job"]] },
-    });
+    return rowsResponse([{ name: "test job" }]);
   });
   configureWarehouse(t);
-  const url = "http://localhost/api/jobs?source=databricks&branch=concurrent-test";
+  const url = "http://localhost/api/jobs?source=clickhouse&branch=concurrent-test";
   const responses = await Promise.all(
     Array.from({ length: 8 }, () => GET(new NextRequest(url))),
   );
-  const databricksCalls = () =>
+  const clickhouseCalls = () =>
     fetchMock.mock.calls.filter((call) => !String(call.arguments[0]).includes("api.github.com")).length;
-  assert.equal(databricksCalls(), 2, "one failure query and one duration query for all eight callers");
+  assert.equal(clickhouseCalls(), 2, "one failure query and one duration query for all eight callers");
   for (const response of responses) {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
       failureRanking: [{ name: "test job", is_optional: "0", is_soft_fail: "0" }],
       durationStats: [{ name: "test job", is_optional: "0", is_soft_fail: "0" }],
     });
-    assert.match(response.headers.get("Server-Timing") ?? "", /source;desc="databricks"/);
+    assert.match(response.headers.get("Server-Timing") ?? "", /source;desc="clickhouse"/);
   }
   assert.match(responses[0].headers.get("Server-Timing") ?? "", /failures;dur=/);
   assert.match(responses[0].headers.get("Server-Timing") ?? "", /duration;dur=/);
@@ -56,10 +57,10 @@ test("concurrent jobs requests share queries and expose cache/query timings", as
   const cached = await GET(new NextRequest(url));
   assert.match(cached.headers.get("Server-Timing") ?? "", /cache;desc="HIT"/);
   assert.doesNotMatch(cached.headers.get("Server-Timing") ?? "", /failures;dur=/);
-  assert.equal(databricksCalls(), 2);
+  assert.equal(clickhouseCalls(), 2);
 
   await GET(new NextRequest(`${url}&pipeline=AMD+CI`));
-  assert.equal(databricksCalls(), 4, "different filters need their own queries");
+  assert.equal(clickhouseCalls(), 4, "different filters need their own queries");
 
 });
 
@@ -68,32 +69,28 @@ test("a relative window uses one stable cache key across resolved dates", async 
   configureWarehouse(t);
   const fetchMock = t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0]) => {
     if (String(input).includes("api.github.com")) return Response.json({ tree: [] });
-    return Response.json({
-      status: { state: "SUCCEEDED" },
-      manifest: { schema: { columns: [{ name: "name" }] } },
-      result: { data_array: [["test job"]] },
-    });
+    return rowsResponse([{ name: "test job" }]);
   });
-  const databricksCalls = () =>
+  const clickhouseCalls = () =>
     fetchMock.mock.calls.filter((call) => !String(call.arguments[0]).includes("api.github.com")).length;
-  const url = "http://localhost/api/jobs?source=databricks&branch=window-test&window=14d";
+  const url = "http://localhost/api/jobs?source=clickhouse&branch=window-test&window=14d";
 
   const first = await GET(new NextRequest(url));
   assert.equal(first.status, 200);
   assert.match(first.headers.get("Server-Timing") ?? "", /cache;desc="MISS"/);
-  assert.equal(databricksCalls(), 2);
+  assert.equal(clickhouseCalls(), 2);
 
   const second = await GET(new NextRequest(url));
   assert.match(second.headers.get("Server-Timing") ?? "", /cache;desc="HIT"/);
-  assert.equal(databricksCalls(), 2, "the stable window key must not requery");
+  assert.equal(clickhouseCalls(), 2, "the stable window key must not requery");
 
   const custom = await GET(new NextRequest(`${url}&startDate=2026-09-01&endDate=2026-09-08`));
   assert.equal(custom.status, 200);
-  assert.equal(databricksCalls(), 4, "explicit dates use their own key");
+  assert.equal(clickhouseCalls(), 4, "explicit dates use their own key");
 
-  const invalid = await GET(new NextRequest("http://localhost/api/jobs?source=databricks&branch=window-test&window=abc"));
+  const invalid = await GET(new NextRequest("http://localhost/api/jobs?source=clickhouse&branch=window-test&window=abc"));
   assert.equal(invalid.status, 200);
-  assert.equal(databricksCalls(), 6, "an invalid window falls back to the no-range key");
+  assert.equal(clickhouseCalls(), 6, "an invalid window falls back to the no-range key");
 });
 
 test("a partial query failure keeps the fill shared until the other query settles", async (t) => {
@@ -103,14 +100,14 @@ test("a partial query failure keeps the fill shared until the other query settle
   let fail = true;
   const fetchMock = t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     if (String(input).includes("api.github.com")) return Response.json({ tree: [] });
-    const { statement } = JSON.parse(String(init?.body));
+    const statement = String(init?.body);
     if (statement.includes("p50_duration")) await duration.promise;
-    else if (fail) return Response.json({}, { status: 503 });
-    return Response.json({ status: { state: "SUCCEEDED" } });
+    else if (fail) return new Response("unavailable", { status: 503 });
+    return rowsResponse([]);
   });
-  const databricksCalls = () =>
+  const clickhouseCalls = () =>
     fetchMock.mock.calls.filter((call) => !String(call.arguments[0]).includes("api.github.com")).length;
-  const url = "http://localhost/api/jobs?source=databricks&branch=partial-failure-test";
+  const url = "http://localhost/api/jobs?source=clickhouse&branch=partial-failure-test";
   let finished = false;
   const first = GET(new NextRequest(url)).then((response) => {
     finished = true;
@@ -121,7 +118,7 @@ test("a partial query failure keeps the fill shared until the other query settle
     assert.equal(finished, false, "do not release the fill while its duration query is still running");
     const follower = GET(new NextRequest(url));
     await setImmediate();
-    assert.equal(databricksCalls(), 2, "a follower must not launch more queries after a partial failure");
+    assert.equal(clickhouseCalls(), 2, "a follower must not launch more queries after a partial failure");
     duration.resolve();
     const [response, shared] = await Promise.all([first, follower]);
     assert.equal(response.status, 500);
@@ -131,9 +128,34 @@ test("a partial query failure keeps the fill shared until the other query settle
     fail = false;
     const retry = await GET(new NextRequest(url));
     assert.equal(retry.status, 200);
-    assert.equal(databricksCalls(), 4, "a fully settled failure can be retried");
+    assert.equal(clickhouseCalls(), 4, "a fully settled failure can be retried");
   } finally {
     duration.resolve();
     await first;
+  }
+});
+
+test("job stats bind filters as ClickHouse parameters and read deduplicated Fivetran rows", async (t) => {
+  configureWarehouse(t);
+  const requests: { url: URL; statement: string }[] = [];
+  t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(input).includes("api.github.com")) return Response.json({ tree: [] });
+    requests.push({ url: new URL(String(input)), statement: String(init?.body) });
+    return rowsResponse([]);
+  });
+  const hostile = "main' OR 1=1 --";
+  const params = new URLSearchParams({ branch: hostile, pipeline: "AMD CI", startDate: "2026-09-01", endDate: "2026-09-08" });
+  const response = await GET(new NextRequest(`http://localhost/api/jobs?${params}`));
+  assert.equal(response.status, 200);
+  assert.equal(requests.length, 2);
+  for (const { url, statement } of requests) {
+    assert.equal(statement.includes(hostile), false);
+    assert.equal(url.searchParams.get("param_branch"), hostile);
+    assert.equal(url.searchParams.get("param_pipeline"), "AMD CI");
+    assert.equal(url.searchParams.get("param_startDate"), "2026-09-01");
+    assert.equal(url.searchParams.get("param_endDate"), "2026-09-08");
+    assert.match(statement, /buildkite\.build FINAL/);
+    assert.match(statement, /buildkite\.build_job AS j FINAL/);
+    assert.match(statement, /NOT j\._fivetran_deleted/);
   }
 });

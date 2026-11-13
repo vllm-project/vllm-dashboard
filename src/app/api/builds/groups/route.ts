@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryDatabricks } from "@/lib/databricks";
+import { queryClickHouse } from "@/lib/clickhouse";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 import { ServerTiming } from "@/lib/server-timing";
@@ -18,7 +18,6 @@ import {
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { getBuildJobRosterRows } from "@/lib/buildkite-build-jobs";
 import { queryBuildJobsFromOtel } from "@/lib/otel-ci";
-import { escapeSqlString } from "@/lib/sql-literal";
 
 const TTL = 30_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -75,24 +74,26 @@ export async function GET(request: NextRequest) {
         jobs = await timing.measure("spans", queryBuildJobsFromOtel(buildIds));
       }
     } else {
-      const idList = buildIds.map((id) => `'${escapeSqlString(id)}'`).join(",");
-      jobs = await timing.measure("warehouse", queryDatabricks(`
+      jobs = await timing.measure("warehouse", queryClickHouse(`
         SELECT
-          j.build_id,
-          j.name,
-          j.state,
-          j.web_url,
-          j.started_at,
+          j.build_id AS build_id,
+          j.name AS name,
+          j.state AS state,
+          j.web_url AS web_url,
+          j.started_at AS started_at,
           b.commit AS commit_sha,
-          b.branch
-        FROM vllm_data_warehouse.buildkite.build_job AS j
-        INNER JOIN vllm_data_warehouse.buildkite.build AS b
-          ON j.build_id = b.id
-        WHERE j.build_id IN (${idList})
-          AND j._fivetran_deleted = false
+          b.branch AS branch
+        FROM buildkite.build_job AS j FINAL
+        INNER JOIN (
+          SELECT id, commit, branch
+          FROM buildkite.build FINAL
+          WHERE id IN {buildIds:Array(String)} AND NOT _fivetran_deleted
+        ) AS b ON j.build_id = b.id
+        WHERE j.build_id IN {buildIds:Array(String)}
+          AND NOT j._fivetran_deleted
           AND j.type = 'script'
           AND j.name IS NOT NULL
-      `));
+      `, { buildIds }));
     }
 
     const jobsByBuild = new Map<

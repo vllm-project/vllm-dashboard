@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryDatabricks } from "@/lib/databricks";
+import { queryClickHouse } from "@/lib/clickhouse";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
@@ -42,18 +42,18 @@ export async function GET(request: NextRequest) {
       };
     } else {
       const [pipelines, branches] = await Promise.all([
-        queryDatabricks(`
-          SELECT DISTINCT p.name
-          FROM vllm_data_warehouse.buildkite.pipeline AS p
-          WHERE p._fivetran_deleted = false
-          ORDER BY p.name
+        queryClickHouse(`
+          SELECT DISTINCT p.name AS name
+          FROM buildkite.pipeline AS p FINAL
+          WHERE NOT p._fivetran_deleted
+          ORDER BY p.name ASC NULLS FIRST
         `),
-        queryDatabricks(`
-          SELECT DISTINCT b.branch
-          FROM vllm_data_warehouse.buildkite.build AS b
-          WHERE b._fivetran_deleted = false
-            AND b.created_at >= CURRENT_DATE - INTERVAL 30 DAY
-          ORDER BY b.branch
+        queryClickHouse(`
+          SELECT DISTINCT b.branch AS branch
+          FROM buildkite.build AS b FINAL
+          WHERE NOT b._fivetran_deleted
+            AND b.created_at >= today() - 30
+          ORDER BY b.branch ASC NULLS FIRST
         `),
       ]);
       result = {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryDatabricks } from "@/lib/databricks";
+import { queryClickHouse, type ClickHouseParam } from "@/lib/clickhouse";
 import {
   aggregateJobsByGroup,
   foldRuntimeShards,
@@ -14,44 +14,119 @@ import { getCached, setCache } from "@/lib/api-cache";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { queryBuildJobsFromOtel, queryBuildsFromOtel } from "@/lib/otel-ci";
-import { escapeSqlString } from "@/lib/sql-literal";
 
 const MAX_PER_PAGE = 30;
 const DEFAULT_PER_PAGE = 10;
 const TTL = 30_000;
 
-function buildJobFilterSubquery(jobGroups: string[], jobNames: string[]): string {
+type QueryParams = Record<string, ClickHouseParam>;
+
+/**
+ * A ClickHouse `match()` condition for a group regex. ClickHouse uses RE2,
+ * which has no lookaround, so a negative lookahead `P(?!N)R` is rewritten as
+ * `match(PR) AND NOT match(PN)`.
+ */
+function regexCondition(
+  expr: string,
+  pattern: string,
+  name: string,
+  params: QueryParams,
+): string {
+  const lookahead = /^(.*?)\(\?!([^()]*)\)(.*)$/.exec(pattern);
+  if (!lookahead) {
+    params[name] = pattern;
+    return `match(${expr}, {${name}:String})`;
+  }
+  const [, prefix, negative, rest] = lookahead;
+  params[name] = prefix + rest;
+  params[`${name}_not`] = prefix + negative;
+  return `(match(${expr}, {${name}:String}) AND NOT match(${expr}, {${name}_not:String}))`;
+}
+
+/**
+ * Restrict builds (alias `b`, already filtered by `buildWhere`) to those that
+ * ran a job matching the selected groups/names. The job scan is scoped to the
+ * filtered build ids so it uses build_job's (build_id, id) sort key.
+ */
+function buildJobFilterSubquery(
+  jobGroups: string[],
+  jobNames: string[],
+  buildWhere: string,
+  params: QueryParams,
+): string {
   const nameConditions: string[] = [];
   // Match a runtime-sharded step by its shards too (see job-shards.ts).
-  const step = `regexp_replace(jf.name, '${SHARD_SUFFIX_SQL}', '')`;
+  const step = `replaceRegexpAll(jf.name, '${SHARD_SUFFIX_SQL}', '')`;
 
   if (jobNames.length > 0) {
-    const escaped = jobNames.map((n) => `'${escapeSqlString(n)}'`);
-    nameConditions.push(`${step} IN (${escaped.join(",")})`);
+    params.jobNames = jobNames;
+    nameConditions.push(`${step} IN {jobNames:Array(String)}`);
   }
 
   if (jobGroups.length > 0) {
     const { exactNames, regexPatterns } = resolveGroupsToJobConditions(jobGroups);
     if (exactNames.length > 0) {
-      const escaped = exactNames.map((n) => `'${escapeSqlString(n)}'`);
-      nameConditions.push(`${step} IN (${escaped.join(",")})`);
+      params.groupJobNames = exactNames;
+      nameConditions.push(`${step} IN {groupJobNames:Array(String)}`);
     }
-    for (const pattern of regexPatterns) {
-      nameConditions.push(`${step} RLIKE '${escapeSqlString(pattern)}'`);
-    }
+    regexPatterns.forEach((pattern, index) => {
+      nameConditions.push(regexCondition(step, pattern, `jobRegex${index}`, params));
+    });
   }
 
   if (nameConditions.length === 0) return "";
 
   return `AND b.id IN (
     SELECT DISTINCT jf.build_id
-    FROM vllm_data_warehouse.buildkite.build_job AS jf
-    WHERE jf._fivetran_deleted = false
+    FROM buildkite.build_job AS jf FINAL
+    WHERE jf.build_id IN (SELECT b.id FROM buildkite.build AS b FINAL WHERE ${buildWhere})
+      AND NOT jf._fivetran_deleted
       AND jf.type = 'script'
       AND jf.name IS NOT NULL
       AND jf.state NOT IN ('blocked', 'skipped', 'not_run', 'canceled', 'canceling')
       AND (${nameConditions.join(" OR ")})
   )`;
+}
+
+/** WHERE conditions on `b` (buildkite.build) for the shared build filters. */
+function buildWhereClause(
+  filters: {
+    pipeline: string | null;
+    branch: string | null;
+    startDate: string | null;
+    endDate: string | null;
+    state: string | null;
+  },
+  params: QueryParams,
+): string {
+  const conditions = ["NOT b._fivetran_deleted"];
+  if (filters.pipeline) {
+    params.pipeline = filters.pipeline;
+    conditions.push(`b.pipeline_id IN (
+      SELECT id FROM buildkite.pipeline FINAL
+      WHERE NOT _fivetran_deleted AND name = {pipeline:String}
+    )`);
+  }
+  if (filters.branch) {
+    params.branch = filters.branch;
+    conditions.push("b.branch = {branch:String}");
+  }
+  if (filters.startDate) {
+    params.startDate = filters.startDate;
+    conditions.push("b.created_at >= parseDateTime64BestEffort({startDate:String}, 3, 'UTC')");
+  }
+  if (filters.endDate) {
+    params.endDate = filters.endDate;
+    // The end date is inclusive.
+    conditions.push(
+      "b.created_at < toStartOfDay(parseDateTime64BestEffort({endDate:String}, 3, 'UTC')) + INTERVAL 1 DAY",
+    );
+  }
+  if (filters.state) {
+    params.state = filters.state;
+    conditions.push("b.state = {state:String}");
+  }
+  return conditions.join(" AND ");
 }
 
 interface BuildRow {
@@ -198,8 +273,8 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
     const state = searchParams.get("state");
-    const page = Math.max(0, parseInt(searchParams.get("page") ?? "0", 10));
-    const perPage = Math.min(MAX_PER_PAGE, Math.max(1, parseInt(searchParams.get("per_page") ?? `${DEFAULT_PER_PAGE}`, 10)));
+    const page = Math.max(0, parseInt(searchParams.get("page") ?? "0", 10) || 0);
+    const perPage = Math.min(MAX_PER_PAGE, Math.max(1, parseInt(searchParams.get("per_page") ?? `${DEFAULT_PER_PAGE}`, 10) || DEFAULT_PER_PAGE));
     const format = searchParams.get("format") === "json" ? "json" : "text";
     const includeJobs = searchParams.get("jobs") !== "false";
     const jobGroups = searchParams.get("jobGroups")?.split(",").filter(Boolean) ?? [];
@@ -296,51 +371,48 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(jsonResult);
     }
 
-    const conditions = ["b._fivetran_deleted = false"];
-    if (pipeline) conditions.push(`p.name = '${escapeSqlString(pipeline)}'`);
-    if (branch) conditions.push(`b.branch = '${escapeSqlString(branch)}'`);
-    if (startDate) conditions.push(`b.created_at >= '${escapeSqlString(startDate)}'`);
-    if (endDate) conditions.push(`b.created_at < DATE_ADD('${escapeSqlString(endDate)}', 1)`);
-    if (state) conditions.push(`b.state = '${escapeSqlString(state)}'`);
-    const where = conditions.join(" AND ");
+    const params: QueryParams = {};
+    const where = buildWhereClause({ pipeline, branch, startDate, endDate, state }, params);
     await ensureTestAreaMapping();
-    const jobFilter = buildJobFilterSubquery(jobGroups, jobNames);
+    const jobFilter = buildJobFilterSubquery(jobGroups, jobNames, where, params);
+    const pipelineJoin = `INNER JOIN (
+          SELECT id, name FROM buildkite.pipeline FINAL WHERE NOT _fivetran_deleted
+        ) AS p ON b.pipeline_id = p.id`;
 
     const [builds, countResult] = await Promise.all([
-      queryDatabricks<BuildRow>(`
+      queryClickHouse<BuildRow>(`
         SELECT
-          b.id,
-          b.web_url,
-          b.message,
+          b.id AS id,
+          b.web_url AS web_url,
+          b.message AS message,
           b.commit AS commit_sha,
           p.name AS pipeline,
-          b.branch,
-          b.state,
-          b.created_at,
-          b.started_at,
-          b.finished_at,
+          b.branch AS branch,
+          b.state AS state,
+          b.created_at AS created_at,
+          b.started_at AS started_at,
+          b.finished_at AS finished_at,
           b.github_author_username AS author,
-          b.pr_number,
-          TIMESTAMPDIFF(MINUTE, b.started_at, b.finished_at) AS duration_mins
-        FROM vllm_data_warehouse.buildkite.build AS b
-        INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p
-          ON b.pipeline_id = p.id
+          b.pr_number AS pr_number,
+          -- Whole elapsed minutes, truncated (Spark TIMESTAMPDIFF semantics).
+          toInt64((toUnixTimestamp64Milli(b.finished_at) - toUnixTimestamp64Milli(b.started_at)) / 60000) AS duration_mins
+        FROM buildkite.build AS b FINAL
+        ${pipelineJoin}
         WHERE ${where}
         ${jobFilter}
-        ORDER BY b.created_at DESC
-        LIMIT ${perPage} OFFSET ${page * perPage}
-      `),
-      queryDatabricks<{ total: string; passed: string; failed: string }>(`
+        ORDER BY b.created_at DESC, b.id DESC
+        LIMIT {limit:UInt32} OFFSET {offset:UInt32}
+      `, { ...params, limit: perPage, offset: page * perPage }),
+      queryClickHouse<{ total: string; passed: string; failed: string }>(`
         SELECT
-          COUNT(*) AS total,
-          SUM(CASE WHEN b.state = 'passed' THEN 1 ELSE 0 END) AS passed,
-          SUM(CASE WHEN b.state IN ('failed', 'failing') THEN 1 ELSE 0 END) AS failed
-        FROM vllm_data_warehouse.buildkite.build AS b
-        INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p
-          ON b.pipeline_id = p.id
+          count() AS total,
+          countIf(b.state = 'passed') AS passed,
+          countIf(b.state IN ('failed', 'failing')) AS failed
+        FROM buildkite.build AS b FINAL
+        ${pipelineJoin}
         WHERE ${where}
         ${jobFilter}
-      `),
+      `, params),
     ]);
 
     const enrichedBuilds = await enrichBuildAuthors(builds);
@@ -348,18 +420,17 @@ export async function GET(request: NextRequest) {
     const jobsByBuild = new Map<string, { name: string; state: string }[]>();
 
     if (buildIds.length > 0) {
-      const idList = buildIds.map((id) => `'${escapeSqlString(id)}'`).join(",");
-      const jobs = await queryDatabricks<JobRow>(`
+      const jobs = await queryClickHouse<JobRow>(`
         SELECT
-          j.build_id,
-          j.name,
-          j.state
-        FROM vllm_data_warehouse.buildkite.build_job AS j
-        WHERE j.build_id IN (${idList})
-          AND j._fivetran_deleted = false
+          j.build_id AS build_id,
+          j.name AS name,
+          j.state AS state
+        FROM buildkite.build_job AS j FINAL
+        WHERE j.build_id IN {buildIds:Array(String)}
+          AND NOT j._fivetran_deleted
           AND j.type = 'script'
           AND j.name IS NOT NULL
-      `);
+      `, { buildIds });
 
       for (const j of jobs) {
         if (!jobsByBuild.has(j.build_id)) jobsByBuild.set(j.build_id, []);

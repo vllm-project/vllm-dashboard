@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryDatabricks } from "@/lib/databricks";
+import { queryClickHouse } from "@/lib/clickhouse";
 import { getOrLoadCached } from "@/lib/api-cache";
 import { ServerTiming } from "@/lib/server-timing";
 import { cachedJson } from "@/lib/api-response";
@@ -12,7 +12,6 @@ import {
   isOptionalJob,
   isSoftFailJob,
 } from "@/lib/test-areas";
-import { escapeSqlString } from "@/lib/sql-literal";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -62,29 +61,32 @@ export async function GET(request: NextRequest) {
         }, timing));
       }
 
-      const conditions = [
-        "j._fivetran_deleted = false",
-        "j.type = 'script'",
-        "j.name IS NOT NULL",
-        "b._fivetran_deleted = false",
-      ];
+      const params: Record<string, string> = {};
+      const buildConditions = ["NOT _fivetran_deleted"];
       if (pipeline) {
-        conditions.push(`p.name = '${escapeSqlString(pipeline)}'`);
+        params.pipeline = pipeline;
+        buildConditions.push(`pipeline_id IN (
+            SELECT id FROM buildkite.pipeline FINAL
+            WHERE NOT _fivetran_deleted AND name = {pipeline:String})`);
       }
       if (branch) {
-        conditions.push(`b.branch = '${escapeSqlString(branch)}'`);
+        params.branch = branch;
+        buildConditions.push("branch = {branch:String}");
       }
       if (startDate) {
-        conditions.push(`b.created_at >= '${escapeSqlString(startDate)}'`);
+        params.startDate = startDate;
+        buildConditions.push("created_at >= parseDateTime64BestEffort({startDate:String}, 3, 'UTC')");
       }
       if (endDate) {
-        conditions.push(`b.created_at < DATE_ADD('${escapeSqlString(endDate)}', 1)`);
+        params.endDate = endDate;
+        buildConditions.push(
+          "created_at < toStartOfDay(parseDateTime64BestEffort({endDate:String}, 3, 'UTC')) + INTERVAL 1 DAY",
+        );
       }
-      const where = conditions.join(" AND ");
       const hasDateRange = startDate || endDate;
       const recencyHaving = hasDateRange
         ? ""
-        : "\n          AND MAX(build_created_at) >= CURRENT_DATE - INTERVAL 7 DAY";
+        : "\n          AND max(build_created_at) >= toStartOfDay(now('UTC')) - INTERVAL 7 DAY";
 
       // One row per run of a step: a job, or the shards of a runtime-sharded
       // step in one build (see job-shards.ts). Attempt k of a step is the k-th
@@ -92,65 +94,79 @@ export async function GET(request: NextRequest) {
       // retried job is. A run fails if any of its jobs failed; its duration is
       // its slowest job's (shards wait for agents apart, so first start to
       // last finish would count queue time), kept only when every shard ran.
+      // Builds are filtered first: build_job is sorted by build_id, so the IN
+      // list prunes it before FINAL deduplicates the Fivetran versions.
+      // Durations truncate to whole seconds, like TIMESTAMPDIFF did.
       const stepRuns = `
-        WITH jobs AS (
+        WITH builds AS (
+          SELECT id, created_at
+          FROM buildkite.build FINAL
+          WHERE ${buildConditions.join("\n            AND ")}
+        ),
+        jobs AS (
           SELECT
-            b.id AS build_id,
+            j.build_id AS build_id,
             b.created_at AS build_created_at,
-            regexp_replace(j.name, '${SHARD_SUFFIX_SQL}', '') AS name,
-            CAST(NULLIF(regexp_extract(j.name, '${SHARD_TOTAL_SQL}', 1), '') AS INT) AS shard_total,
-            j.state,
-            j.soft_failed,
-            j.started_at,
-            j.finished_at,
-            ROW_NUMBER() OVER (PARTITION BY b.id, j.name ORDER BY j.started_at, j.id) AS attempt
-          FROM vllm_data_warehouse.buildkite.build_job AS j
-          INNER JOIN vllm_data_warehouse.buildkite.build AS b ON j.build_id = b.id
-          INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p ON b.pipeline_id = p.id
-          WHERE ${where}
+            replaceRegexpOne(j.name, '${SHARD_SUFFIX_SQL}', '') AS name,
+            toInt32OrNull(extract(j.name, '${SHARD_TOTAL_SQL}')) AS shard_total,
+            j.state AS state,
+            j.soft_failed AS soft_failed,
+            j.started_at AS started_at,
+            j.finished_at AS finished_at,
+            row_number() OVER (PARTITION BY j.build_id, j.name ORDER BY j.started_at ASC NULLS FIRST, j.id) AS attempt
+          FROM buildkite.build_job AS j FINAL
+          INNER JOIN builds AS b ON j.build_id = b.id
+          WHERE j.build_id IN (SELECT id FROM builds)
+            AND NOT j._fivetran_deleted
+            AND j.type = 'script'
+            AND j.name IS NOT NULL
             AND j.state IN ('passed', 'failed', 'failing', 'broken', 'timed_out')
         ),
         step_runs AS (
           SELECT
             name,
-            MAX(build_created_at) AS build_created_at,
-            MAX(CASE WHEN state IN ('failed', 'failing', 'broken', 'timed_out') THEN 1 ELSE 0 END) AS failed,
-            MAX(CASE WHEN soft_failed = 'true' THEN 1 ELSE 0 END) AS soft_failed,
-            CASE WHEN COUNT(*) = COALESCE(MAX(shard_total), 1)
-              AND COUNT(started_at) = COUNT(*) AND COUNT(finished_at) = COUNT(*)
-              THEN MAX(TIMESTAMPDIFF(SECOND, started_at, finished_at)) END AS whole_duration
+            max(build_created_at) AS build_created_at,
+            max(if(state IN ('failed', 'failing', 'broken', 'timed_out'), 1, 0)) AS failed,
+            max(if(coalesce(soft_failed, false), 1, 0)) AS step_soft_failed,
+            if(count() = coalesce(max(shard_total), 1)
+              AND count(started_at) = count() AND count(finished_at) = count(),
+              max(intDiv(toUnixTimestamp64Milli(finished_at) - toUnixTimestamp64Milli(started_at), 1000)),
+              NULL) AS whole_duration
           FROM jobs
           GROUP BY build_id, name, attempt
         )`;
 
+      // ROUND in Databricks rounded half up; ClickHouse rounds floats half to
+      // even, so round through Decimal.
+      const roundWhole = (expr: string) => `toInt64(round(toDecimal128(${expr}, 9), 0))`;
       const queries = await Promise.allSettled([
-        timing.measure("failures", queryDatabricks(`${stepRuns}
+        timing.measure("failures", queryClickHouse(`${stepRuns}
           SELECT
             name,
-            COUNT(*) AS total_runs,
-            SUM(failed) AS failures,
-            SUM(1 - failed) AS passes,
-            ROUND(100.0 * SUM(failed) / NULLIF(COUNT(*), 0), 1) AS failure_rate,
-            MAX(soft_failed) AS has_soft_fail
+            count() AS total_runs,
+            sum(failed) AS failures,
+            sum(1 - failed) AS passes,
+            toDecimalString(round(toDecimal128(100 * sum(failed), 9) / count(), 1), 1) AS failure_rate,
+            max(step_soft_failed) AS has_soft_fail
           FROM step_runs
           GROUP BY name
-          HAVING SUM(failed) > 0${recencyHaving}
-          ORDER BY failure_rate DESC, failures DESC
-        `)),
-        timing.measure("duration", queryDatabricks(`${stepRuns}
+          HAVING sum(failed) > 0${recencyHaving}
+          ORDER BY round(toDecimal128(100 * sum(failed), 9) / count(), 1) DESC, failures DESC
+        `, params)),
+        timing.measure("duration", queryClickHouse(`${stepRuns}
           SELECT
             name,
-            COUNT(*) AS total_runs,
-            ROUND(AVG(whole_duration)) AS avg_duration,
-            ROUND(PERCENTILE(whole_duration, 0.5)) AS p50_duration,
-            ROUND(PERCENTILE(whole_duration, 0.9)) AS p90_duration,
-            ROUND(MAX(whole_duration)) AS max_duration
+            count() AS total_runs,
+            ${roundWhole("avg(whole_duration)")} AS avg_duration,
+            ${roundWhole("quantileExactInclusive(0.5)(whole_duration)")} AS p50_duration,
+            ${roundWhole("quantileExactInclusive(0.9)(whole_duration)")} AS p90_duration,
+            max(whole_duration) AS max_duration
           FROM step_runs
           WHERE failed = 0 AND whole_duration IS NOT NULL
           GROUP BY name
-          HAVING COUNT(*) > 0${recencyHaving}
+          HAVING count() > 0${recencyHaving}
           ORDER BY p50_duration DESC
-        `)),
+        `, params)),
       ]);
 
       // A failed query must not release the shared fill while its sibling

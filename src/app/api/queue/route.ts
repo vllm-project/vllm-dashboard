@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryDatabricks } from "@/lib/databricks";
+import { queryClickHouse } from "@/lib/clickhouse";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { queryQueueFromOtel } from "@/lib/otel-ci";
-import { escapeSqlString } from "@/lib/sql-literal";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -27,38 +26,62 @@ export async function GET(request: NextRequest) {
       return cachedJson(result, CDN_CACHE);
     }
 
-    const conditions = [
-      "j._fivetran_deleted = false",
-      "j.type = 'script'",
-      "j.runnable_at IS NOT NULL",
-      "j.started_at IS NOT NULL",
-      "b._fivetran_deleted = false",
-      "r.rule LIKE 'queue=%'",
-    ];
+    const params: Record<string, string> = {};
+    const buildConditions = ["NOT _fivetran_deleted"];
     if (pipeline) {
-      conditions.push(`p.name = '${escapeSqlString(pipeline)}'`);
-    }
-    if (queue) {
-      conditions.push(`SUBSTRING(r.rule, 7) = '${escapeSqlString(queue)}'`);
+      params.pipeline = pipeline;
+      buildConditions.push(`pipeline_id IN (
+          SELECT id FROM buildkite.pipeline FINAL
+          WHERE NOT _fivetran_deleted AND name = {pipeline:String})`);
     }
     if (startDate) {
-      conditions.push(`b.created_at >= '${escapeSqlString(startDate)}'`);
+      params.startDate = startDate;
+      buildConditions.push("created_at >= parseDateTime64BestEffort({startDate:String}, 3, 'UTC')");
     }
     if (endDate) {
-      conditions.push(`b.created_at < DATE_ADD('${escapeSqlString(endDate)}', 1)`);
+      params.endDate = endDate;
+      buildConditions.push(
+        "created_at < toStartOfDay(parseDateTime64BestEffort({endDate:String}, 3, 'UTC')) + INTERVAL 1 DAY",
+      );
     }
-    const where = conditions.join(" AND ");
+    const ruleConditions = ["NOT r._fivetran_deleted", "r.rule LIKE 'queue=%'"];
+    if (queue) {
+      params.queue = queue;
+      ruleConditions.push("substring(r.rule, 7) = {queue:String}");
+    }
     const hasDateRange = startDate || endDate;
     const recencyHaving = hasDateRange
       ? ""
-      : "\n        HAVING MAX(b.created_at) >= CURRENT_DATE - INTERVAL 7 DAY";
+      : "\n        HAVING max(build_created_at) >= toStartOfDay(now('UTC')) - INTERVAL 7 DAY";
 
-    const joinClause = `
-      FROM vllm_data_warehouse.buildkite.build_job AS j
-      INNER JOIN vllm_data_warehouse.buildkite.build AS b ON j.build_id = b.id
-      INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p ON b.pipeline_id = p.id
-      INNER JOIN vllm_data_warehouse.buildkite.build_job_agent_query_rule AS r ON j.id = r.build_job_id
-    `;
+    // Builds, then their jobs, then those jobs' queue rules: each table is
+    // sorted by its parent's id, so every IN list prunes the next scan.
+    // Waits truncate to whole seconds, like TIMESTAMPDIFF did.
+    const waits = `
+      WITH builds AS (
+        SELECT id, created_at
+        FROM buildkite.build FINAL
+        WHERE ${buildConditions.join("\n          AND ")}
+      ),
+      jobs AS (
+        SELECT j.id AS id, j.started_at AS started_at, b.created_at AS build_created_at,
+          intDiv(toUnixTimestamp64Milli(j.started_at) - toUnixTimestamp64Milli(j.runnable_at), 1000) AS wait
+        FROM buildkite.build_job AS j FINAL
+        INNER JOIN builds AS b ON j.build_id = b.id
+        WHERE j.build_id IN (SELECT id FROM builds)
+          AND NOT j._fivetran_deleted
+          AND j.type = 'script'
+          AND j.runnable_at IS NOT NULL
+          AND j.started_at IS NOT NULL
+      ),
+      waits AS (
+        SELECT substring(r.rule, 7) AS queue, j.started_at AS started_at,
+          j.build_created_at AS build_created_at, j.wait AS wait
+        FROM buildkite.build_job_agent_query_rule AS r FINAL
+        INNER JOIN jobs AS j ON r.build_job_id = j.id
+        WHERE r.build_job_id IN (SELECT id FROM jobs)
+          AND ${ruleConditions.join("\n          AND ")}
+      )`;
 
     // Pick interval based on date range span
     let hourSpan = 14 * 24;
@@ -68,63 +91,60 @@ export async function GET(request: NextRequest) {
       ));
     }
 
+    // Buckets are UTC and aligned as Databricks' DATE_TRUNC arithmetic was.
     let timeBucketExpr: string;
     if (hourSpan <= 6) {
-      // 5-minute buckets
-      timeBucketExpr = `DATE_TRUNC('MINUTE', j.started_at) - MAKE_INTERVAL(0, 0, 0, 0, 0, MINUTE(j.started_at) % 5, 0)`;
+      timeBucketExpr = "toStartOfInterval(started_at, INTERVAL 5 MINUTE)";
     } else if (hourSpan <= 24) {
-      // 15-minute buckets
-      timeBucketExpr = `DATE_TRUNC('MINUTE', j.started_at) - MAKE_INTERVAL(0, 0, 0, 0, 0, MINUTE(j.started_at) % 15, 0)`;
+      timeBucketExpr = "toStartOfInterval(started_at, INTERVAL 15 MINUTE)";
     } else if (hourSpan <= 3 * 24) {
-      // 1-hour buckets
-      timeBucketExpr = `DATE_TRUNC('HOUR', j.started_at)`;
+      timeBucketExpr = "toStartOfHour(started_at)";
     } else if (hourSpan <= 7 * 24) {
-      // 3-hour buckets
-      timeBucketExpr = `DATE_TRUNC('HOUR', j.started_at) - MAKE_INTERVAL(0, 0, 0, 0, HOUR(j.started_at) % 3, 0, 0)`;
+      timeBucketExpr = "toStartOfInterval(started_at, INTERVAL 3 HOUR)";
     } else if (hourSpan <= 14 * 24) {
-      // 6-hour buckets
-      timeBucketExpr = `DATE_TRUNC('HOUR', j.started_at) - MAKE_INTERVAL(0, 0, 0, 0, HOUR(j.started_at) % 6, 0, 0)`;
+      timeBucketExpr = "toStartOfInterval(started_at, INTERVAL 6 HOUR)";
     } else if (hourSpan <= 30 * 24) {
-      // 1-day buckets
-      timeBucketExpr = `DATE_TRUNC('DAY', j.started_at)`;
+      timeBucketExpr = "toStartOfDay(started_at)";
     } else {
-      // 1-week buckets
-      timeBucketExpr = `DATE_TRUNC('WEEK', j.started_at)`;
+      // Weeks start on Monday.
+      timeBucketExpr = "toDateTime(toMonday(started_at), 'UTC')";
     }
+
+    // ROUND in Databricks rounded half up; ClickHouse rounds floats half to
+    // even, so round through Decimal.
+    const roundWhole = (expr: string) => `toInt64(round(toDecimal128(${expr}, 9), 0))`;
 
     const [queueStats, dailyWaitTime, queueNames] = await Promise.all([
       // Per-queue summary
-      queryDatabricks(`
+      queryClickHouse(`${waits}
         SELECT
-          SUBSTRING(r.rule, 7) AS queue,
-          COUNT(*) AS total_jobs,
-          ROUND(AVG(TIMESTAMPDIFF(SECOND, j.runnable_at, j.started_at))) AS avg_wait,
-          ROUND(PERCENTILE(TIMESTAMPDIFF(SECOND, j.runnable_at, j.started_at), 0.5)) AS p50_wait,
-          ROUND(PERCENTILE(TIMESTAMPDIFF(SECOND, j.runnable_at, j.started_at), 0.9)) AS p90_wait,
-          ROUND(MAX(TIMESTAMPDIFF(SECOND, j.runnable_at, j.started_at))) AS max_wait
-        ${joinClause}
-        WHERE ${where}
-        GROUP BY SUBSTRING(r.rule, 7)${recencyHaving}
+          queue,
+          count() AS total_jobs,
+          ${roundWhole("avg(wait)")} AS avg_wait,
+          ${roundWhole("quantileExactInclusive(0.5)(wait)")} AS p50_wait,
+          ${roundWhole("quantileExactInclusive(0.9)(wait)")} AS p90_wait,
+          max(wait) AS max_wait
+        FROM waits
+        GROUP BY queue${recencyHaving}
         ORDER BY p50_wait DESC
-      `),
+      `, params),
       // Wait time trend with adaptive intervals (per queue)
-      queryDatabricks(`
+      queryClickHouse(`${waits}
         SELECT
           ${timeBucketExpr} AS time_bucket,
-          SUBSTRING(r.rule, 7) AS queue,
-          ROUND(PERCENTILE(TIMESTAMPDIFF(SECOND, j.runnable_at, j.started_at), 0.5)) AS p50_wait,
-          ROUND(PERCENTILE(TIMESTAMPDIFF(SECOND, j.runnable_at, j.started_at), 0.9)) AS p90_wait,
-          COUNT(*) AS total_jobs
-        ${joinClause}
-        WHERE ${where}
-        GROUP BY time_bucket, SUBSTRING(r.rule, 7)
+          queue,
+          ${roundWhole("quantileExactInclusive(0.5)(wait)")} AS p50_wait,
+          ${roundWhole("quantileExactInclusive(0.9)(wait)")} AS p90_wait,
+          count() AS total_jobs
+        FROM waits
+        GROUP BY time_bucket, queue
         ORDER BY time_bucket
-      `),
+      `, params),
       // Distinct queue names for filter
-      queryDatabricks(`
-        SELECT DISTINCT SUBSTRING(r.rule, 7) AS queue
-        FROM vllm_data_warehouse.buildkite.build_job_agent_query_rule AS r
-        WHERE r._fivetran_deleted = false AND r.rule LIKE 'queue=%'
+      queryClickHouse(`
+        SELECT DISTINCT substring(rule, 7) AS queue
+        FROM buildkite.build_job_agent_query_rule FINAL
+        WHERE NOT _fivetran_deleted AND rule LIKE 'queue=%'
         ORDER BY queue
       `),
     ]);

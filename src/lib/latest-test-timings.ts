@@ -1,4 +1,9 @@
 import { getDb } from "@/lib/db";
+import {
+  clickHouseMainEverTimed,
+  clickHousePassingBuilds,
+  clickHouseTimingSpans,
+} from "@/lib/latest-test-timings-clickhouse";
 
 // Per-file test timings for one Buildkite step: the 80th percentile over the
 // newest main builds in which every job of the step passed. The runtime shard
@@ -287,8 +292,45 @@ function passingBuilds(
   `;
 }
 
-async function timingsOfBuilds(sql: Sql, builds: PassingBuild[]) {
-  const jobIds = builds.flatMap((build) => build.job_ids);
+// Where the spans are read from. Postgres is the default; TIMINGS_SOURCE=
+// clickhouse reads the same spans from ClickHouse's ci.otel_spans.
+interface TimingStore {
+  passingBuilds(treatment: boolean, stepKey: string, days: number | null, queue: string | null): Promise<PassingBuild[]>;
+  spans(jobIds: string[]): Promise<{ rows: TestSpanRow[]; commands: CommandSpanRow[] }>;
+  mainEverTimed(stepKey: string): Promise<boolean>;
+  // Runs fn against a store whose reads give up after TREATMENT_TIMEOUT_MS.
+  withTreatmentTimeout<T>(fn: (store: TimingStore) => Promise<T>): Promise<T>;
+}
+
+function postgresStore(sql: Sql): TimingStore {
+  return {
+    passingBuilds: (treatment, stepKey, days, queue) => passingBuilds(sql, treatment, stepKey, days, queue),
+    spans: (jobIds) => postgresSpans(sql, jobIds),
+    mainEverTimed: (stepKey) => mainEverTimed(sql, stepKey),
+    withTreatmentTimeout: (fn) => sql.begin(async (transaction) => {
+      const tx = transaction as unknown as Sql;
+      await tx`SELECT set_config('statement_timeout', ${String(TREATMENT_TIMEOUT_MS)}, true)`;
+      return fn(postgresStore(tx));
+    }) as Promise<Awaited<ReturnType<typeof fn>>>,
+  };
+}
+
+function clickHouseStore(timeoutMs?: number): TimingStore {
+  const options = { timeoutMs };
+  return {
+    passingBuilds: (treatment, stepKey, days, queue) =>
+      clickHousePassingBuilds(treatment, stepKey, days, queue, TIMING_BUILDS, options),
+    spans: (jobIds) => clickHouseTimingSpans(jobIds, options),
+    mainEverTimed: (stepKey) => clickHouseMainEverTimed(stepKey, options),
+    withTreatmentTimeout: (fn) => fn(clickHouseStore(TREATMENT_TIMEOUT_MS)),
+  };
+}
+
+function timingStore(): TimingStore {
+  return process.env.TIMINGS_SOURCE === "clickhouse" ? clickHouseStore() : postgresStore(getDb());
+}
+
+async function postgresSpans(sql: Sql, jobIds: string[]) {
   const rows = await sql<TestSpanRow[]>`
     SELECT
       t.job_id,
@@ -311,6 +353,12 @@ async function timingsOfBuilds(sql: Sql, builds: PassingBuild[]) {
     WHERE job_id = ANY(${jobIds})
       AND span_attributes->>'ci.span.kind' = 'command'
   `;
+  return { rows, commands };
+}
+
+async function timingsOfBuilds(store: TimingStore, builds: PassingBuild[]) {
+  const jobIds = builds.flatMap((build) => build.job_ids);
+  const { rows, commands } = await store.spans(jobIds);
   const testLabels = new Set(rows.flatMap((row) => row.command_label ?? []));
   const rowsByJob = new Map<string, TestSpanRow[]>();
   for (const row of rows) {
@@ -375,14 +423,12 @@ async function mainEverTimed(sql: Sql, stepKey: string): Promise<boolean> {
  * step; that check runs under the same timeout.
  */
 async function treatmentTimings(
-  sql: Sql, stepKey: string, days: number, queue: string | null, untimedOnMain = false,
+  store: TimingStore, stepKey: string, days: number, queue: string | null, untimedOnMain = false,
 ): Promise<(BuildTimings & { files: FileTiming[] }) | null> {
   try {
-    return await sql.begin(async (transaction) => {
-      const tx = transaction as unknown as Sql;
-      await tx`SELECT set_config('statement_timeout', ${String(TREATMENT_TIMEOUT_MS)}, true)`;
-      if (untimedOnMain && await mainEverTimed(tx, stepKey)) return null;
-      const builds = await passingBuilds(tx, true, stepKey, days, queue);
+    return await store.withTreatmentTimeout(async (tx) => {
+      if (untimedOnMain && await tx.mainEverTimed(stepKey)) return null;
+      const builds = await tx.passingBuilds(true, stepKey, days, queue);
       if (builds.length === 0) return null;
       const { used, filesPerBuild, setupPerBuild, skippedBuilds } = await timingsOfBuilds(tx, builds);
       if (used.length === 0) return null;
@@ -422,24 +468,24 @@ export async function queryLatestTestTimings(
   stepKey: string,
   { days = 14, queue = null }: { days?: number; queue?: string | null } = {},
 ): Promise<LatestTestTimings | null> {
-  const sql = getDb();
-  let builds = await passingBuilds(sql, false, stepKey, days, queue);
+  const store = timingStore();
+  let builds = await store.passingBuilds(false, stepKey, days, queue);
   if (builds.length === 0) {
     // A step main has never timed (a script step just turned into pytest)
     // gets the treatment branch's timings alone, until main's first passing
     // run replaces them.
-    const treatment = await treatmentTimings(sql, stepKey, days, queue, true);
+    const treatment = await treatmentTimings(store, stepKey, days, queue, true);
     if (treatment) return timingsResponse(stepKey, treatment, treatment.files, treatment.used);
     // A step main passed only before the window (a job disabled for a while)
     // gets its newest older passing builds, so it shards on its first run
     // back instead of running as one job past its timeout.
-    builds = await passingBuilds(sql, false, stepKey, null, queue);
+    builds = await store.passingBuilds(false, stepKey, null, queue);
     if (builds.length === 0) return null;
   }
-  const main = await timingsOfBuilds(sql, builds);
+  const main = await timingsOfBuilds(store, builds);
   if (main.used.length === 0) throw main.firstError;
   const files = p80Files(main.filesPerBuild);
-  const treatment = await treatmentTimings(sql, stepKey, days, queue);
+  const treatment = await treatmentTimings(store, stepKey, days, queue);
   const merged = withTreatmentFiles(files, treatment?.files ?? []);
   return timingsResponse(
     stepKey, main, merged, treatment && merged.length > files.length ? treatment.used : null,

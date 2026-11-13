@@ -1,5 +1,5 @@
 import { getDb } from "@/lib/db";
-import { queryDatabricks } from "@/lib/databricks";
+import { queryClickHouse } from "@/lib/clickhouse";
 import { SHARD_SUFFIX_SQL } from "@/lib/job-shards";
 
 export interface RetryJobRow {
@@ -232,43 +232,67 @@ export function buildOtelRetryRunsQuery(filters: RetryFilters, jobName: string) 
     ` };
 }
 
+/** How long before a window's start a build can still have jobs start in it. */
+const BUILD_LOOKBACK_DAYS = 30;
+
 function buildWarehouseRetryAttempts(filters: RetryFilters, jobName?: string) {
-  const parameters: { name: string; value: string; type: string }[] = [];
+  const parameters: Record<string, string> = {};
   const bind = (name: string, value: string) => {
-    parameters.push({ name, value, type: "STRING" });
-    return `:${name}`;
+    parameters[name] = value;
+    return `{${name}:String}`;
   };
+  const buildConditions = ["NOT _fivetran_deleted"];
+  if (filters.pipeline) {
+    buildConditions.push(`pipeline_id IN (SELECT id FROM buildkite.pipeline FINAL
+            WHERE NOT _fivetran_deleted AND name = ${bind("pipeline", filters.pipeline)})`);
+  }
+  if (filters.branch) buildConditions.push(`branch = ${bind("branch", filters.branch)}`);
   const conditions = [
-    "j._fivetran_deleted = false", "b._fivetran_deleted = false",
+    "j.build_id IN (SELECT id FROM builds)", "NOT j._fivetran_deleted",
     "j.type = 'script'", "j.name IS NOT NULL", "j.started_at IS NOT NULL",
   ];
-  if (filters.pipeline) conditions.push(`p.name = ${bind("pipeline", filters.pipeline)}`);
-  if (filters.branch) conditions.push(`b.branch = ${bind("branch", filters.branch)}`);
-  if (filters.startTime) conditions.push(`j.started_at >= CAST(${bind("startTime", filters.startTime)} AS TIMESTAMP)`);
-  if (filters.endTime) conditions.push(`j.started_at < CAST(${bind("endTime", filters.endTime)} AS TIMESTAMP)`);
+  if (filters.startTime) {
+    const start = `parseDateTime64BestEffort(${bind("startTime", filters.startTime)}, 3, 'UTC')`;
+    conditions.push(`j.started_at >= ${start}`);
+    // Prune builds, which jobs start within hours of (a day at most in
+    // practice), without scanning every older build's jobs.
+    buildConditions.push(`created_at >= ${start} - INTERVAL ${BUILD_LOOKBACK_DAYS} DAY`);
+  }
+  if (filters.endTime) {
+    const end = `parseDateTime64BestEffort(${bind("endTime", filters.endTime)}, 3, 'UTC')`;
+    conditions.push(`j.started_at < ${end}`);
+    // A job starts after its build is created, so this only prunes builds.
+    buildConditions.push(`created_at < ${end}`);
+  }
   if (jobName !== undefined) {
     // The job, or a runtime shard of the step (see job-shards.ts).
     const name = bind("jobName", jobName);
-    conditions.push(`(j.name = ${name} OR (j.name LIKE CONCAT(${name}, ' _hard %')
-      AND regexp_replace(j.name, '${SHARD_SUFFIX_SQL}', '') = ${name}))`);
+    conditions.push(`(j.name = ${name} OR (j.name LIKE concat(${name}, ' _hard %')
+      AND replaceRegexpOne(j.name, '${SHARD_SUFFIX_SQL}', '') = ${name}))`);
   }
   return {
     parameters,
     // retries_count is an ordinal (0, 1, 2...), so count each retry UUID once;
     // summing ordinals overcounts a chain. State never determines retry status.
+    // Builds are filtered first: build_job is sorted by build_id, so the IN
+    // list prunes it before FINAL deduplicates the Fivetran versions.
     statement: `
-      WITH attempts AS (
-        SELECT j.id, regexp_replace(j.name, '${SHARD_SUFFIX_SQL}', '') AS name,
-          MAX(CASE WHEN COALESCE(j.retries_count, 0) > 0
-            OR NULLIF(j.retry_source_job_id, '') IS NOT NULL THEN 1 ELSE 0 END) AS is_retry,
-          MAX(CASE WHEN j.soft_failed = 'true' THEN 1 ELSE 0 END) AS has_soft_fail
-          ${jobName === undefined ? "" : `, MAX(j.web_url) AS web_url,
-          COALESCE(MAX(j.state), 'unknown') AS state, MAX(j.started_at) AS started_at,
-          MAX(j.finished_at) AS finished_at, MAX(b.commit) AS commit_sha,
-          MAX(b.created_at) AS build_created_at, MAX(b.number) AS build_number`}
-        FROM vllm_data_warehouse.buildkite.build_job j
-        INNER JOIN vllm_data_warehouse.buildkite.build b ON j.build_id = b.id
-        INNER JOIN vllm_data_warehouse.buildkite.pipeline p ON b.pipeline_id = p.id
+      WITH builds AS (
+        SELECT id, number, commit, created_at
+        FROM buildkite.build FINAL
+        WHERE ${buildConditions.join("\n          AND ")}
+      ),
+      attempts AS (
+        SELECT j.id AS id, replaceRegexpOne(j.name, '${SHARD_SUFFIX_SQL}', '') AS name,
+          max(if(coalesce(j.retries_count, 0) > 0
+            OR nullIf(j.retry_source_job_id, '') IS NOT NULL, 1, 0)) AS is_retry,
+          max(if(coalesce(j.soft_failed, false), 1, 0)) AS has_soft_fail
+          ${jobName === undefined ? "" : `, max(j.web_url) AS web_url,
+          coalesce(max(j.state), 'unknown') AS state, max(j.started_at) AS started_at,
+          max(j.finished_at) AS finished_at, max(b.commit) AS commit_sha,
+          max(b.created_at) AS build_created_at, max(b.number) AS build_number`}
+        FROM buildkite.build_job AS j FINAL
+        INNER JOIN builds AS b ON j.build_id = b.id
         WHERE ${conditions.join("\n          AND ")}
         GROUP BY j.id, j.name
       )`,
@@ -278,8 +302,8 @@ function buildWarehouseRetryAttempts(filters: RetryFilters, jobName?: string) {
 export function buildWarehouseRetryQuery(filters: RetryFilters) {
   const query = buildWarehouseRetryAttempts(filters);
   return { ...query, statement: `${query.statement}
-      SELECT name, COUNT(*) AS total_runs, SUM(is_retry) AS retries,
-        MAX(has_soft_fail) AS has_soft_fail
+      SELECT name, count() AS total_runs, sum(is_retry) AS retries,
+        max(has_soft_fail) AS has_soft_fail
       FROM attempts
       GROUP BY name
     `,
@@ -290,7 +314,7 @@ export function buildWarehouseRetryRunsQuery(filters: RetryFilters, jobName: str
   const query = buildWarehouseRetryAttempts(filters, jobName);
   return { ...query, statement: `${query.statement}
       SELECT id AS job_id, web_url, state, started_at, finished_at,
-        TIMESTAMPDIFF(SECOND, started_at, finished_at) AS duration_secs,
+        intDiv(toUnixTimestamp64Milli(finished_at) - toUnixTimestamp64Milli(started_at), 1000) AS duration_secs,
         commit_sha, build_created_at, build_number, is_retry
       FROM attempts
       ORDER BY started_at ASC, job_id ASC
@@ -304,7 +328,7 @@ export async function queryRetriesFromOtel(filters: RetryFilters): Promise<Retry
 
 export async function queryRetriesFromWarehouse(filters: RetryFilters): Promise<RetryStatsRow[]> {
   const { statement, parameters } = buildWarehouseRetryQuery(filters);
-  return queryDatabricks<RetryStatsRow>(statement, parameters);
+  return queryClickHouse<RetryStatsRow>(statement, parameters);
 }
 
 export async function queryRetryRunsFromOtel(filters: RetryFilters, jobName: string): Promise<RetryJobRun[]> {
@@ -314,6 +338,6 @@ export async function queryRetryRunsFromOtel(filters: RetryFilters, jobName: str
 
 export async function queryRetryRunsFromWarehouse(filters: RetryFilters, jobName: string): Promise<RetryJobRun[]> {
   const { statement, parameters } = buildWarehouseRetryRunsQuery(filters, jobName);
-  const rows = await queryDatabricks<Omit<RetryJobRun, "is_retry"> & { is_retry: number | string }>(statement, parameters);
+  const rows = await queryClickHouse<Omit<RetryJobRun, "is_retry"> & { is_retry: number | string }>(statement, parameters);
   return rows.map((row) => ({ ...row, is_retry: row.is_retry === 1 || row.is_retry === "1" }));
 }

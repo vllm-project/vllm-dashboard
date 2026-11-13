@@ -1,18 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryDatabricks } from "@/lib/databricks";
+import { queryClickHouse } from "@/lib/clickhouse";
 import { getQueueCost } from "@/lib/queue-costs";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { enrichBuildAuthors } from "@/lib/github-build-authors";
 import { queryCostFromOtel } from "@/lib/otel-ci";
-import { escapeSqlString } from "@/lib/sql-literal";
 
 export const maxDuration = 55;
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 120, staleWhileRevalidate: 3_600 };
 
-// Databricks returns numeric columns as strings; Postgres returns numbers.
+// ClickHouse returns numeric columns as strings; Postgres returns numbers.
 function toNumber(value: unknown): number {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
   const parsed = parseFloat(String(value));
@@ -43,85 +42,109 @@ export async function GET(request: NextRequest) {
       byBuildRaw = raw.byBuild;
       byJobRaw = raw.byJob;
     } else {
-    const conditions = [
-      "j._fivetran_deleted = false",
-      "j.type = 'script'",
-      "j.started_at IS NOT NULL",
-      "j.finished_at IS NOT NULL",
-      "b._fivetran_deleted = false",
-      "r.rule LIKE 'queue=%'",
-    ];
+    const params: Record<string, string> = {};
+    const buildConditions = ["NOT _fivetran_deleted"];
     if (pipeline) {
-      conditions.push(`p.name = '${escapeSqlString(pipeline)}'`);
+      params.pipeline = pipeline;
+      buildConditions.push(`pipeline_id IN (
+          SELECT id FROM buildkite.pipeline FINAL
+          WHERE NOT _fivetran_deleted AND name = {pipeline:String})`);
     }
     if (branch) {
-      conditions.push(`b.branch = '${escapeSqlString(branch)}'`);
+      params.branch = branch;
+      buildConditions.push("branch = {branch:String}");
     }
     if (startDate) {
-      conditions.push(`b.created_at >= '${escapeSqlString(startDate)}'`);
+      params.startDate = startDate;
+      buildConditions.push("created_at >= parseDateTime64BestEffort({startDate:String}, 3, 'UTC')");
     }
     if (endDate) {
-      conditions.push(`b.created_at < DATE_ADD('${escapeSqlString(endDate)}', 1)`);
+      params.endDate = endDate;
+      buildConditions.push(
+        "created_at < toStartOfDay(parseDateTime64BestEffort({endDate:String}, 3, 'UTC')) + INTERVAL 1 DAY",
+      );
     }
-    const where = conditions.join(" AND ");
 
-    const joinClause = `
-      FROM vllm_data_warehouse.buildkite.build_job AS j
-      INNER JOIN vllm_data_warehouse.buildkite.build AS b ON j.build_id = b.id
-      INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p ON b.pipeline_id = p.id
-      INNER JOIN vllm_data_warehouse.buildkite.build_job_agent_query_rule AS r ON j.id = r.build_job_id
-    `;
+    // Builds, then their jobs, then those jobs' queue rules: each table is
+    // sorted by its parent's id, so every IN list prunes the next scan.
+    // Run time truncates to whole seconds, like TIMESTAMPDIFF did.
+    const runs = (buildColumns: string) => `
+      WITH builds AS (
+        SELECT ${buildColumns}
+        FROM buildkite.build FINAL
+        WHERE ${buildConditions.join("\n          AND ")}
+      ),
+      jobs AS (
+        SELECT j.id AS id, j.build_id AS build_id, j.name AS job_name,
+          intDiv(toUnixTimestamp64Milli(j.finished_at) - toUnixTimestamp64Milli(j.started_at), 1000) AS secs
+        FROM buildkite.build_job AS j FINAL
+        WHERE j.build_id IN (SELECT id FROM builds)
+          AND NOT j._fivetran_deleted
+          AND j.type = 'script'
+          AND j.started_at IS NOT NULL
+          AND j.finished_at IS NOT NULL
+      ),
+      runs AS (
+        SELECT j.id AS id, j.build_id AS build_id, j.job_name AS job_name, j.secs AS secs,
+          substring(r.rule, 7) AS queue
+        FROM buildkite.build_job_agent_query_rule AS r FINAL
+        INNER JOIN jobs AS j ON r.build_job_id = j.id
+        WHERE r.build_job_id IN (SELECT id FROM jobs)
+          AND NOT r._fivetran_deleted
+          AND r.rule LIKE 'queue=%'
+      )`;
+    // ROUND in Databricks rounded half up; ClickHouse rounds floats half to
+    // even, so round the exact Decimal hours.
+    const hours = (digits: number) => `toFloat64(round(toDecimal128(sum(secs), 6) / 3600, ${digits}))`;
 
     const [byQueueResult, dailyCostResult, byBuildResult, byJobResult] = await Promise.allSettled([
-      queryDatabricks(`
+      queryClickHouse(`${runs("id")}
         SELECT
-          SUBSTRING(r.rule, 7) AS queue,
-          COUNT(*) AS total_jobs,
-          ROUND(SUM(TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at)) / 3600.0, 2) AS total_hours
-        ${joinClause}
-        WHERE ${where}
-        GROUP BY SUBSTRING(r.rule, 7)
+          queue,
+          count() AS total_jobs,
+          ${hours(2)} AS total_hours
+        FROM runs
+        GROUP BY queue
         ORDER BY total_hours DESC
-      `),
-      queryDatabricks(`
+      `, params),
+      queryClickHouse(`${runs("id, created_at")}
         SELECT
-          DATE(b.created_at) AS date,
-          SUBSTRING(r.rule, 7) AS queue,
-          ROUND(SUM(TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at)) / 3600.0, 2) AS total_hours
-        ${joinClause}
-        WHERE ${where}
-        GROUP BY DATE(b.created_at), SUBSTRING(r.rule, 7)
+          toDate(b.created_at) AS date,
+          queue,
+          ${hours(2)} AS total_hours
+        FROM runs
+        INNER JOIN builds AS b ON runs.build_id = b.id
+        GROUP BY date, queue
         ORDER BY date
-      `),
+      `, params),
       // Top 100 builds by compute hours (no queue dimension = fast)
-      queryDatabricks(`
+      queryClickHouse(`${runs("id, web_url, message, commit, branch, github_author_username, created_at")}
         SELECT
           b.id AS build_id,
-          b.web_url AS build_url,
-          b.message,
-          b.commit AS commit_sha,
-          b.branch,
-          b.github_author_username AS author,
-          b.created_at,
-          COUNT(*) AS total_jobs,
-          ROUND(SUM(TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at)) / 3600.0, 4) AS total_hours
-        ${joinClause}
-        WHERE ${where}
-        GROUP BY b.id, b.web_url, b.message, b.commit, b.branch, b.github_author_username, b.created_at
+          any(b.web_url) AS build_url,
+          any(b.message) AS message,
+          any(b.commit) AS commit_sha,
+          any(b.branch) AS branch,
+          any(b.github_author_username) AS author,
+          any(b.created_at) AS created_at,
+          count() AS total_jobs,
+          ${hours(4)} AS total_hours
+        FROM runs
+        INNER JOIN builds AS b ON runs.build_id = b.id
+        GROUP BY b.id
         ORDER BY total_hours DESC
         LIMIT 100
-      `),
+      `, params),
       // Cost per job (grouped by job name + queue for accurate costing)
-      queryDatabricks(`
+      queryClickHouse(`${runs("id")}
         SELECT
-          j.name AS job_name,
-          SUBSTRING(r.rule, 7) AS queue,
-          COUNT(*) AS total_runs,
-          ROUND(SUM(TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at)) / 3600.0, 4) AS total_hours
-        ${joinClause}
-        WHERE ${where}
-        GROUP BY j.name, SUBSTRING(r.rule, 7)
-      `),
+          job_name,
+          queue,
+          count() AS total_runs,
+          ${hours(4)} AS total_hours
+        FROM runs
+        GROUP BY job_name, queue
+      `, params),
     ]);
 
     byQueue = byQueueResult.status === "fulfilled" ? byQueueResult.value : [];
