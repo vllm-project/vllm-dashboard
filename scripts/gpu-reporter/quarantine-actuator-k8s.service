@@ -1,8 +1,8 @@
 [Unit]
 Description=Apply vLLM CI quarantine decisions to the nodes of this cluster
-# Off-host heartbeat after each successful poll; a failed poll exits 1 and
-# emits nothing, and the CloudWatch alarm on the gap is the only pager a
-# control plane has.
+# Off-host heartbeat after each completed poll; a poll that never finishes
+# exits 1 and emits nothing, and the CloudWatch alarm on the gap is the only
+# pager a control plane has.
 OnSuccess=quarantine-actuator-heartbeat.service
 
 [Service]
