@@ -7,10 +7,10 @@ OnSuccess=quarantine-actuator-heartbeat.service
 
 [Service]
 Type=oneshot
-# A completed poll with per-node errors exits 2: count it as success so the
+# A completed poll with per-node errors exits 3: count it as success so the
 # OnSuccess= heartbeat still fires; only a poll that never finished (exit 1)
-# silences it.
-SuccessExitStatus=2
+# silences it. Not 2: Python and argparse exit 2 on their own failures.
+SuccessExitStatus=3
 # Same env file as gpu-reporter-k8s.service (GPU_REPORT_URL, GPU_REPORT_SECRET),
 # plus QUARANTINE_CLUSTER. The secret must never be written into this unit.
 EnvironmentFile=/etc/gpu-reporter/gpu-reporter-k8s.env

@@ -227,16 +227,20 @@ same bounded script the worker's heartbeat uses — putting one
 `VllmAlerting/Heartbeat` datapoint with `Job=quarantine-actuator-<cluster>`.
 A poll that never finishes (the desired set unreachable, missing env, a
 crashed kubectl) exits 1 and emits nothing; a poll that completes with
-per-node errors exits 2, which `SuccessExitStatus=2` still counts as
+per-node errors exits 3, which `SuccessExitStatus=3` still counts as
 success, so one broken node cannot silence the heartbeat and page with the
-wrong cause — the worker's per-stage stuck notices already carry that. The
-worker stack's alarms
+wrong cause — the worker's per-stage stuck notices already carry that. (Not
+exit 2: Python and argparse exit 2 on their own failures, and a broken
+deploy must never heartbeat health.) The worker stack's alarms
 (`<stack-name>-heartbeat-quarantine-actuator-h100` / `-b200`) count a
 missing period as zero (`FILL(m1, 0)`, missing = breaching; three 5-minute
 periods, so at least 15 minutes of silence) and notify the same SNS topic
 as the worker's own heartbeat alarms, so a dead actuator timer, a dead
-control plane, or dead credentials page
-off-host. The control planes are not EC2, so there is no instance role:
+control plane, or dead heartbeat credentials page
+off-host. A partly decayed kubeconfig (can list nodes, cannot write) fails
+every node instead: the poll still completes and the worker's stuck notices
+carry it. The heartbeat proves the poll loop is alive — in dry run too — not
+that the actuator changes anything. The control planes are not EC2, so there is no instance role:
 each one holds its own static IAM credentials in
 `/etc/gpu-reporter/heartbeat-aws.env` (root 0600, one IAM user per control
 plane so a key revokes per host), allowed only `cloudwatch:PutMetricData`

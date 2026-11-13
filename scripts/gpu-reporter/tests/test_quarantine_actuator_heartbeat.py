@@ -24,11 +24,14 @@ def test_actuator_emits_heartbeat_only_after_a_successful_run() -> None:
 
     assert "ExecStartPost=" not in service
     assert "OnSuccess=quarantine-actuator-heartbeat.service" in service
-    # A completed poll with per-node errors exits 2, still a success, so one
+    # A completed poll with per-node errors exits 3, still a success, so one
     # broken node cannot silence the heartbeat and page with the wrong cause
     # (the worker's per-stage stuck notices carry the node problem). Only a
-    # poll that never finished — the desired set unreachable — exits 1.
-    assert "SuccessExitStatus=2" in service
+    # poll that never finished — the desired set unreachable — exits 1. Not
+    # exit 2: Python itself exits 2 when the script can't be read and
+    # argparse exits 2 on a bad flag, and those must never count as success.
+    assert "SuccessExitStatus=3" in service
+    assert "SuccessExitStatus=2" not in service
 
     unit = read("quarantine-actuator-heartbeat.service")
     assert "Type=oneshot" in unit
@@ -39,6 +42,10 @@ def test_actuator_emits_heartbeat_only_after_a_successful_run() -> None:
     assert "OnFailure=" not in unit
     # Its stderr goes to the journal, not to /dev/null.
     assert "StandardError=journal" in unit
+    # systemd reads EnvironmentFile as PID 1, so the credential file stays
+    # root-only 0600 while the CLI runs unprivileged.
+    assert "DynamicUser=yes" in unit
+    assert "User=root" not in unit
 
 
 def test_heartbeat_credentials_are_per_control_plane_not_the_reporter_secret() -> None:

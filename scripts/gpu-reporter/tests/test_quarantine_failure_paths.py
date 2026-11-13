@@ -46,7 +46,7 @@ def lose_posts(dash, states=None):
 def test_an_actuators_lost_out_post_is_sent_again_and_nothing_is_rewritten(kube_run):
     kube = k8s.FakeKube({"n1": k8s.node()})
     dash = k8s.FakeDashboard([k8s.want("n1", "quarantining")])
-    assert kube_run(kube, lose_posts(dash)) == 2
+    assert kube_run(kube, lose_posts(dash)) == 3
     # Both effects landed, but the dashboard heard nothing: not counted yet.
     assert kube.nodes["n1"]["unschedulable"] and dash.posts == []
     writes = len(kube.writes)
@@ -66,7 +66,7 @@ def test_a_node_that_times_out_listing_pods_is_not_reported_out(kube_run):
         return kube(*args, input=input)
 
     dash = k8s.FakeDashboard([k8s.want("n1", "quarantining")])
-    assert kube_run(slow_pod_list, dash) == 2
+    assert kube_run(slow_pod_list, dash) == 3
     assert dash.posts == []
     assert kube_run(kube, dash) == 0
     assert dash.posts[0][1]["state"] == "drained"
@@ -76,7 +76,7 @@ def test_a_run_that_dies_before_lifting_the_cordon_finishes_on_later_runs(kube_r
     kube = k8s.FakeKube({"n1": k8s.node(True, True)}, checks=dict(k8s.PASSED))
     dash = k8s.FakeDashboard([k8s.want("n1", "resolving")])
     kube.fail = {"patch"}
-    assert kube_run(kube, dash) == 2
+    assert kube_run(kube, dash) == 3
     # The check passed and the taint is off, but the cordon is still ours and
     # on: the host is not back, and nothing says it is.
     assert kube.nodes["n1"]["unschedulable"] is True
@@ -96,7 +96,7 @@ def test_a_run_that_dies_before_lifting_the_cordon_finishes_on_later_runs(kube_r
 def test_a_lost_returned_post_is_sent_again_without_touching_the_node(kube_run):
     kube = k8s.FakeKube({"n1": k8s.node(True, True)}, checks=dict(k8s.PASSED))
     dash = k8s.FakeDashboard([k8s.want("n1", "resolving")])
-    assert kube_run(kube, lose_posts(dash)) == 2
+    assert kube_run(kube, lose_posts(dash)) == 3
     assert kube.nodes["n1"] == k8s.node()
     kube.writes.clear()
     assert kube_run(kube, dash) == 0
@@ -125,7 +125,7 @@ def test_an_actuator_restarted_mid_check_neither_repeats_nor_skips_it(kube_run):
 def test_a_node_that_leaves_the_cluster_is_never_reported_back(kube_run, stage):
     kube = k8s.FakeKube({"n2": k8s.node()})
     dash = k8s.FakeDashboard([k8s.want("gone", stage), k8s.want("n2", "quarantining")])
-    assert kube_run(kube, dash) == 2
+    assert kube_run(kube, dash) == 3
     # The other node is still handled, and the missing one says nothing.
     assert [h for h, _ in dash.posts] == ["n2"]
     assert all("gone" not in w for w in kube.writes)
@@ -134,7 +134,7 @@ def test_a_node_that_leaves_the_cluster_is_never_reported_back(kube_run, stage):
 def test_a_stage_it_does_not_know_fails_the_run_and_touches_nothing(kube_run):
     kube = k8s.FakeKube({"n1": k8s.node(True, True)})
     dash = k8s.FakeDashboard([k8s.want("n1", "evicted")])
-    assert kube_run(kube, dash) == 2
+    assert kube_run(kube, dash) == 3
     assert kube.writes == [] and dash.posts == []
 
 
@@ -210,7 +210,7 @@ def test_a_stale_failed_check_pod_is_not_taken_for_the_next_resolves_check(kube_
             raise RuntimeError("kubectl delete failed: timeout")
         return real(*args, input=input)
 
-    assert kube_run(delete_fails, first) == 2
+    assert kube_run(delete_fails, first) == 3
     assert [b["state"] for _, b in first.posts] == ["verify_failed"]
     # Back in quarantined (still carrying the failed report), or still in
     # resolving before the worker has moved it: the leftover pod is cleaned up.
@@ -247,12 +247,12 @@ def test_a_resolve_that_lands_before_the_cleanup_never_reads_the_old_pod(kube_ru
             raise RuntimeError("kubectl delete failed: timeout")
         return real(*args, input=input)
 
-    assert kube_run(delete_fails, first) == 2
+    assert kube_run(delete_fails, first) == 3
     assert [b["state"] for _, b in first.posts] == ["verifying", "verify_failed"]
     again = k8s.FakeDashboard([dict(k8s.want("n1", "resolving"), actuatorState=None,
                                     resolveRequestedAt="2026-10-21T11:00:00+00:00")])
     # While the delete keeps failing, the old result is never reported.
-    assert kube_run(delete_fails, again) == 2
+    assert kube_run(delete_fails, again) == 3
     assert again.posts == [] and k8s.CHECK in kube.checks
     broken[0] = False
     capsys.readouterr()
@@ -285,7 +285,7 @@ def test_a_failed_cleanup_is_retried_until_it_works_before_the_node_reports(kube
     dash = k8s.FakeDashboard([dict(k8s.want("n1", "quarantined"),
                                    actuatorState="verify_failed")])
     for _ in range(3):
-        assert kube_run(lookup_fails, dash) == 2
+        assert kube_run(lookup_fails, dash) == 3
     assert dash.posts == [] and k8s.CHECK in kube.checks
     broken[0] = False
     assert kube_run(lookup_fails, dash) == 0
@@ -354,7 +354,7 @@ def test_a_dry_run_skips_the_leftover_pod_cleanup_and_other_nodes_still_run(kube
     dash = k8s.FakeDashboard([dict(k8s.want("n1", "quarantined"),
                                    actuatorState="verify_failed"),
                               k8s.want("n2", "quarantining")])
-    assert kube_run(lookup_fails, dash) == 2
+    assert kube_run(lookup_fails, dash) == 3
     assert [h for h, _ in dash.posts] == ["n2"]
 
 

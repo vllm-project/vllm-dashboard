@@ -35,7 +35,7 @@ this cluster from the dashboard and reconciles each node:
 Nodes that carry our taint but are not in the desired set are logged and
 left alone (no automatic return in the pilot). If the desired endpoint is
 unreachable or returns non-2xx, nothing changes and the run exits 1. A poll
-that completes with per-node errors exits 2 (still a success to systemd, so
+that completes with per-node errors exits 3 (still a success to systemd, so
 the off-host heartbeat fires); the worker's per-stage notices carry the
 node problem.
 
@@ -477,12 +477,14 @@ def main(argv=None):
     ok = Actuator(args.dry_run).run(desired, nodes)
     print(f"Done: {len(desired)} desired nodes for {CLUSTER}"
           + ("" if ok else " (with errors)"))
-    # A completed poll with per-node errors is a 2, still a success to the
-    # unit (SuccessExitStatus=2), so the off-host heartbeat fires and the
+    # A completed poll with per-node errors is a 3, still a success to the
+    # unit (SuccessExitStatus=3), so the off-host heartbeat fires and the
     # worker's per-stage stuck notices carry the node problem. Only a poll
     # that never finished — missing env, the desired set unreachable, or a
-    # crashed kubectl — exits 1 and silences the heartbeat.
-    return 0 if ok else 2
+    # crashed kubectl — exits 1 and silences the heartbeat. Not 2: Python
+    # exits 2 when the script can't be read and argparse exits 2 on a bad
+    # flag, and a broken deploy must never heartbeat health.
+    return 0 if ok else 3
 
 
 if __name__ == "__main__":
