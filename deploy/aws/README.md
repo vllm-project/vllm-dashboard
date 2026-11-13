@@ -119,8 +119,8 @@ secret the worker cannot load all alarm without the worker, its database or
 its secret. Set `HeartbeatAlertEmail` and click SNS's confirmation link
 once; empty means no subscriber. The two k8s quarantine actuators emit too,
 from their control planes (`Job=quarantine-actuator-h100` /
-`-b200`, alarms after at least 15 minutes of silence, on the same topic):
-they are not EC2, so each
+`-b200`, 15-minute alarms on the same topic, with the same
+in-progress-bucket margin): they are not EC2, so each
 control plane holds its own static credentials scoped to `PutMetricData` in
 this namespace — setup and the silence test are in
 `alerting/docs/infra.md` ("Control-plane heartbeat"). Deploy the
