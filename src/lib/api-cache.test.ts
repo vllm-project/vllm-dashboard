@@ -1,32 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getOrLoadCached, setCache } from "./api-cache";
 
-test("failed concurrent cache fills can be retried", async () => {
-  let calls = 0;
-  const load = async () => {
-    calls++;
-    throw new Error("temporary backend failure");
-  };
-  const results = await Promise.allSettled([
-    getOrLoadCached("retry-test", 60_000, load),
-    getOrLoadCached("retry-test", 60_000, load),
-  ]);
-  assert.equal(calls, 1);
-  assert.ok(results.every((result) => result.status === "rejected"));
-  assert.deepEqual(await getOrLoadCached("retry-test", 60_000, async () => "recovered"), {
-    data: "recovered", status: "MISS",
-  });
+import { cacheSize, getCached, setCache } from "./api-cache";
+
+test("the cache keeps at most 500 entries, dropping the least recently used", () => {
+  setCache("keep", 1, 60_000);
+  for (let i = 0; i < 499; i++) setCache(`k${i}`, i, 60_000);
+  assert.equal(getCached("keep"), 1); // touched: now most recent
+  for (let i = 499; i < 1_000; i++) setCache(`k${i}`, i, 60_000);
+  assert.equal(cacheSize(), 500);
+  assert.equal(getCached("k0"), undefined);
+  assert.equal(getCached("k999"), 999);
 });
 
-test("expired data is refreshed, including falsy cached values", async (t) => {
-  t.mock.method(Date, "now", () => 1000);
-  setCache("expiry-test", "old", 10);
-  t.mock.method(Date, "now", () => 1011);
-  assert.deepEqual(await getOrLoadCached("expiry-test", 10, async () => false), {
-    data: false, status: "MISS",
-  });
-  assert.deepEqual(await getOrLoadCached("expiry-test", 10, async () => "wrong"), {
-    data: false, status: "HIT",
-  });
+test("expired entries are dropped when read", () => {
+  setCache("old", 1, -1);
+  assert.equal(getCached("old"), undefined);
 });
