@@ -397,3 +397,19 @@ def test_the_old_worker_wide_switch_is_refused_but_dry_run_is_accepted(
     assert str(refused.value) == (
         "QUARANTINE_MODE is replaced by QUARANTINE_LIVE_CLUSTERS, e.g. 'h100'"
     )
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["CLICKHOUSE_URL", "CLICKHOUSE_READ_USER", "CLICKHOUSE_READ_PASSWORD"],
+)
+def test_fast_ci_requires_clickhouse_read_credentials(
+    monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://unused")
+    for name in ("CLICKHOUSE_URL", "CLICKHOUSE_READ_USER", "CLICKHOUSE_READ_PASSWORD"):
+        monkeypatch.setenv(name, "configured")
+    monkeypatch.delenv(missing)
+
+    with pytest.raises(RuntimeError, match=missing):
+        worker._runtime("fast-ci", worker.SystemClock(), DeliveryMode.SHADOW)

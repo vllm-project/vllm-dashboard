@@ -89,9 +89,9 @@ def _runtime(
     if consumer == "fast-ci":
         return build_fast_ci_runtime(
             database_url=database_url,
-            databricks_host=_required_environment("DATABRICKS_HOST"),
-            databricks_token=_required_environment("DATABRICKS_TOKEN"),
-            databricks_warehouse_id=_required_environment("DATABRICKS_WAREHOUSE_ID"),
+            clickhouse_url=_required_environment("CLICKHOUSE_URL"),
+            clickhouse_user=_required_environment("CLICKHOUSE_READ_USER"),
+            clickhouse_password=_required_environment("CLICKHOUSE_READ_PASSWORD"),
             slack=_slack(),
             clock=clock,
             delivery_mode=delivery_mode,

@@ -11,9 +11,11 @@ Create both Secrets Manager secrets before deploying the stack. Secret values
 must be JSON objects whose keys are environment-variable names.
 
 - `WorkerSecretArn` supplies `DATABASE_URL`, `BUILDKITE_TOKEN`,
-  `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID`, and
-  `SLACK_BOT_TOKEN`, plus `KIMI_API_KEY`, the Kimi credential used by the
-  Full CI analyzer.
+  `CLICKHOUSE_URL`, `CLICKHOUSE_READ_USER`, `CLICKHOUSE_READ_PASSWORD` (Fast
+  CI's read-only ClickHouse Cloud access; use the port-443 HTTPS URL, since the
+  security group allows no egress on 8443), and `SLACK_BOT_TOKEN`, plus
+  `KIMI_API_KEY`, the Kimi credential used by the Full CI analyzer. The old
+  `DATABRICKS_*` keys are no longer read and can be removed.
 - `GitHubReadOnlySecretArn` supplies `GITHUB_TOKEN`. Use a fine-grained token
   limited to read-only metadata and contents for required repositories. The
   worker must have no repository write permission.

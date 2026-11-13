@@ -2581,26 +2581,26 @@ def _condition(row: Any) -> FailureCondition:
 def build_fast_ci_runtime(
     *,
     database_url: str,
-    databricks_host: str,
-    databricks_token: str,
-    databricks_warehouse_id: str,
+    clickhouse_url: str,
+    clickhouse_user: str,
+    clickhouse_password: str,
     slack: SlackPort,
     clock: Clock,
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
 ) -> AlertingRuntime:
     """Wire production Fast CI source and Postgres state into the runtime."""
     from alerting.fast_ci import (
-        DatabricksFastCISource,
-        DatabricksStatementClient,
+        ClickHouseQueryClient,
         FastCIScanHandler,
+        WarehouseFastCISource,
     )
 
     store = PostgresAlertStore.from_database_url(database_url)
-    source = DatabricksFastCISource(
-        DatabricksStatementClient(
-            host=databricks_host,
-            token=databricks_token,
-            warehouse_id=databricks_warehouse_id,
+    source = WarehouseFastCISource(
+        ClickHouseQueryClient(
+            url=clickhouse_url,
+            user=clickhouse_user,
+            password=clickhouse_password,
         )
     )
     handler = FastCIScanHandler(

@@ -1,16 +1,23 @@
 """Fast CI behavior through the scheduled-command runtime seam."""
 
+import io
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
+import pytest
+
 from alerting.commands import ScheduledCommand
 from alerting.fast_ci import (
-    DatabricksFastCISource,
+    ClickHouseQueryClient,
     FastCIScanHandler,
     FastCISource,
     FastFailureEvent,
     FastFailureState,
+    WarehouseFastCISource,
 )
 from alerting.memory import (
     FixedClock,
@@ -37,13 +44,17 @@ class FixtureFastCISource:
         return list(self.rows)
 
 
-class RecordingDatabricks:
+class RecordingWarehouse:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self.rows = rows
         self.queries: list[str] = []
+        self.params: list[Mapping[str, str] | None] = []
 
-    def query(self, sql: str) -> list[dict[str, Any]]:
+    def query(
+        self, sql: str, params: Mapping[str, str] | None = None
+    ) -> list[dict[str, Any]]:
         self.queries.append(sql)
+        self.params.append(params)
         return self.rows
 
 
@@ -360,44 +371,48 @@ def test_failed_transaction_cannot_advance_cursor_past_unrecorded_event() -> Non
     assert outbox.count() == 1
 
 
-def test_databricks_source_maps_fixture_to_fast_failure_event() -> None:
-    finished_at = "2026-08-27T18:59:30Z"
-    databricks = RecordingDatabricks(
-        [
-            {
-                "job_id": "job-1",
-                "job_name": "fast test",
-                "job_url": "https://buildkite.com/vllm/ci/builds/123#job-1",
-                "state": "timed_out",
-                "soft_failed": "true",
-                "duration_secs": "30",
-                "finished_at": finished_at,
-                "build_url": "https://buildkite.com/vllm/ci/builds/123",
-                "message": "failed",
-                "commit_sha": "abcdef",
-                "branch": "main",
-                "author": "tester",
-                "pr_number": "456",
-                "pipeline": "CI",
-            }
-        ]
-    )
-    source = DatabricksFastCISource(databricks)
+def clickhouse_row(**overrides: Any) -> dict[str, Any]:
+    """A result row shaped like ClickHouse JSONEachRow output."""
+    row: dict[str, Any] = {
+        "job_id": "job-1",
+        "job_name": "fast test",
+        "job_url": "https://buildkite.com/vllm/ci/builds/123#job-1",
+        "state": "timed_out",
+        "soft_failed": False,
+        "duration_secs": "30",
+        "finished_at": "2026-08-27T18:59:30.123456Z",
+        "build_url": "https://buildkite.com/vllm/ci/builds/123",
+        "message": "failed",
+        "commit_sha": "abcdef",
+        "branch": "main",
+        "author": "tester",
+        "pr_number": "456",
+        "pipeline": "CI",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_warehouse_source_maps_clickhouse_row_to_fast_failure_event() -> None:
+    warehouse = RecordingWarehouse([clickhouse_row()])
+    source = WarehouseFastCISource(warehouse)
 
     rows = source.fetch_failures(
         start_time=START - timedelta(minutes=30), end_time=START
     )
 
-    assert len(databricks.queries) == 1
+    assert len(warehouse.queries) == 1
     assert rows == [
         FastFailureEvent(
             job_id="job-1",
             job_name="fast test",
             job_url="https://buildkite.com/vllm/ci/builds/123#job-1",
             state=FastFailureState.TIMED_OUT,
-            soft_failed=True,
+            soft_failed=False,
             duration_seconds=30,
-            finished_at=datetime(2026, 8, 27, 18, 59, 30, tzinfo=timezone.utc),
+            finished_at=datetime(
+                2026, 8, 27, 18, 59, 30, 123456, tzinfo=timezone.utc
+            ),
             build_url="https://buildkite.com/vllm/ci/builds/123",
             message="failed",
             commit_sha="abcdef",
@@ -409,15 +424,134 @@ def test_databricks_source_maps_fixture_to_fast_failure_event() -> None:
     ]
 
 
-def test_databricks_query_scopes_to_main_branch_required_jobs() -> None:
-    databricks = RecordingDatabricks([])
-    source = DatabricksFastCISource(databricks)
+def test_warehouse_source_accepts_native_json_bool_int_and_null() -> None:
+    warehouse = RecordingWarehouse(
+        [clickhouse_row(soft_failed=True, duration_secs=7, pr_number=None)]
+    )
+
+    [row] = WarehouseFastCISource(warehouse).fetch_failures(
+        start_time=START - timedelta(minutes=30), end_time=START
+    )
+
+    assert row.soft_failed is True
+    assert row.duration_seconds == 7
+    assert row.pr_number is None
+
+
+def test_warehouse_query_scopes_to_main_branch_required_jobs() -> None:
+    warehouse = RecordingWarehouse([])
+    source = WarehouseFastCISource(warehouse)
 
     source.fetch_failures(start_time=START - timedelta(minutes=30), end_time=START)
 
-    assert len(databricks.queries) == 1
-    assert "b.branch = 'main'" in databricks.queries[0]
-    assert "j.soft_failed = false" in databricks.queries[0]
+    assert len(warehouse.queries) == 1
+    sql = warehouse.queries[0]
+    assert "branch = 'main'" in sql
+    assert "j.soft_failed = false" in sql
+    assert "buildkite.build_job AS j FINAL" in sql
+    assert "NOT j._fivetran_deleted" in sql
+    assert "j.build_id IN (SELECT id FROM" in sql
+    # Bounds are bound as typed parameters, never interpolated.
+    assert "{start_time:DateTime64(6, 'UTC')}" in sql
+    assert "2026-08-27" not in sql
+    assert warehouse.params == [
+        {
+            "start_time": "2026-08-27 18:30:00.000000",
+            "end_time": "2026-08-27 19:00:00.000000",
+        }
+    ]
+
+
+class FakeResponse:
+    def __init__(self, body: str) -> None:
+        self._body = body.encode()
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> "FakeResponse":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+
+def _capture_urlopen(
+    monkeypatch: pytest.MonkeyPatch, body: str
+) -> list[tuple[urllib.request.Request, float]]:
+    calls: list[tuple[urllib.request.Request, float]] = []
+
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> FakeResponse:
+        calls.append((request, timeout))
+        return FakeResponse(body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    return calls
+
+
+def test_clickhouse_client_posts_sql_with_settings_and_typed_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _capture_urlopen(
+        monkeypatch, '{"job_id":"a","soft_failed":false}\n{"job_id":"b","soft_failed":true}\n'
+    )
+    client = ClickHouseQueryClient(
+        url="https://ch.example:443/", user="reader", password="secret"
+    )
+
+    rows = client.query("SELECT 1", {"start_time": "2026-08-27 18:30:00.000000"})
+
+    assert rows == [
+        {"job_id": "a", "soft_failed": False},
+        {"job_id": "b", "soft_failed": True},
+    ]
+    [(request, timeout)] = calls
+    assert timeout == 110
+    assert request.get_method() == "POST"
+    assert request.data == b"SELECT 1"
+    assert request.get_header("X-clickhouse-user") == "reader"
+    assert request.get_header("X-clickhouse-key") == "secret"
+    url = urllib.parse.urlsplit(request.full_url)
+    assert f"{url.scheme}://{url.netloc}{url.path}" == "https://ch.example:443/"
+    query = dict(urllib.parse.parse_qsl(url.query))
+    assert query["default_format"] == "JSONEachRow"
+    assert query["date_time_output_format"] == "iso"
+    assert query["max_execution_time"] == "100"
+    assert query["param_start_time"] == "2026-08-27 18:30:00.000000"
+    assert "secret" not in request.full_url
+
+
+def test_clickhouse_client_raises_on_mid_stream_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _capture_urlopen(
+        monkeypatch,
+        '{"job_id":"a"}\nCode: 159. DB::Exception: Timeout exceeded. (TIMEOUT_EXCEEDED)\n',
+    )
+    client = ClickHouseQueryClient(url="https://ch.example", user="u", password="p")
+
+    with pytest.raises(RuntimeError, match="mid-stream: Code: 159"):
+        client.query("SELECT 1")
+
+
+def test_clickhouse_client_reports_http_errors_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def failing_urlopen(request: urllib.request.Request, timeout: float) -> FakeResponse:
+        raise urllib.error.HTTPError(
+            request.full_url,
+            516,
+            "Unauthorized",
+            hdrs=None,  # type: ignore[arg-type]
+            fp=io.BytesIO(b"Code: 516. DB::Exception: reader: Authentication failed"),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", failing_urlopen)
+    client = ClickHouseQueryClient(url="https://ch.example", user="reader", password="secret")
+
+    with pytest.raises(RuntimeError, match="HTTP 516: Code: 516") as raised:
+        client.query("SELECT 1")
+    assert "secret" not in str(raised.value)
 
 
 def test_leading_job_emoji_stays_outside_the_slack_link_label() -> None:
