@@ -243,7 +243,10 @@ Resources:
         its secret (Operations Handbook, Off-worker heartbeat).
       # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
       # reaches back past EvaluationPeriods for an older heartbeat that would
-      # hold the alarm at OK after the job went silent.
+      # hold the alarm at OK after the job went silent. The count also leaves
+      # one full bucket of margin: if FILL counts the in-progress bucket as a
+      # zero, the alarm still needs (N-1) silent periods, which outlasts one
+      # timed-out run plus one successful run at the durations we observe.
       Metrics:
         - Id: m1
           ReturnData: false
@@ -276,11 +279,14 @@ Resources:
       AlarmName:
         Fn::Sub: ${AWS::StackName}-heartbeat-fast-ci
       AlarmDescription: >-
-        No successful fast-ci run for 45 minutes. Check the worker's timers and
+        No successful fast-ci run for 50 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).
       # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
       # reaches back past EvaluationPeriods for an older heartbeat that would
-      # hold the alarm at OK after the job went silent.
+      # hold the alarm at OK after the job went silent. The count also leaves
+      # one full bucket of margin: if FILL counts the in-progress bucket as a
+      # zero, the alarm still needs (N-1) silent periods, which outlasts one
+      # timed-out run plus one successful run at the durations we observe.
       Metrics:
         - Id: m1
           ReturnData: false
@@ -297,8 +303,8 @@ Resources:
           Expression: FILL(m1, 0)
           Label: Heartbeats per 5 minutes
           ReturnData: true
-      EvaluationPeriods: 9
-      DatapointsToAlarm: 9
+      EvaluationPeriods: 10
+      DatapointsToAlarm: 10
       Threshold: 1
       ComparisonOperator: LessThanThreshold
       TreatMissingData: breaching
@@ -317,7 +323,10 @@ Resources:
         its secret (Operations Handbook, Off-worker heartbeat).
       # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
       # reaches back past EvaluationPeriods for an older heartbeat that would
-      # hold the alarm at OK after the job went silent.
+      # hold the alarm at OK after the job went silent. The count also leaves
+      # one full bucket of margin: if FILL counts the in-progress bucket as a
+      # zero, the alarm still needs (N-1) silent periods, which outlasts one
+      # timed-out run plus one successful run at the durations we observe.
       Metrics:
         - Id: m1
           ReturnData: false
@@ -350,11 +359,14 @@ Resources:
       AlarmName:
         Fn::Sub: ${AWS::StackName}-heartbeat-infra
       AlarmDescription: >-
-        No successful infra run for 30 minutes. Check the worker's timers and
+        No successful infra run for 35 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).
       # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
       # reaches back past EvaluationPeriods for an older heartbeat that would
-      # hold the alarm at OK after the job went silent.
+      # hold the alarm at OK after the job went silent. The count also leaves
+      # one full bucket of margin: if FILL counts the in-progress bucket as a
+      # zero, the alarm still needs (N-1) silent periods, which outlasts one
+      # timed-out run plus one successful run at the durations we observe.
       Metrics:
         - Id: m1
           ReturnData: false
@@ -371,8 +383,8 @@ Resources:
           Expression: FILL(m1, 0)
           Label: Heartbeats per 5 minutes
           ReturnData: true
-      EvaluationPeriods: 6
-      DatapointsToAlarm: 6
+      EvaluationPeriods: 7
+      DatapointsToAlarm: 7
       Threshold: 1
       ComparisonOperator: LessThanThreshold
       TreatMissingData: breaching
@@ -387,11 +399,14 @@ Resources:
       AlarmName:
         Fn::Sub: ${AWS::StackName}-heartbeat-h200-pauser
       AlarmDescription: >-
-        No successful h200-pauser run for 15 minutes. Check the worker's timers
+        No successful h200-pauser run for 20 minutes. Check the worker's timers
         and its secret (Operations Handbook, Off-worker heartbeat).
       # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
       # reaches back past EvaluationPeriods for an older heartbeat that would
-      # hold the alarm at OK after the job went silent.
+      # hold the alarm at OK after the job went silent. The count also leaves
+      # one full bucket of margin: if FILL counts the in-progress bucket as a
+      # zero, the alarm still needs (N-1) silent periods, which outlasts one
+      # timed-out run plus one successful run at the durations we observe.
       Metrics:
         - Id: m1
           ReturnData: false
@@ -408,8 +423,8 @@ Resources:
           Expression: FILL(m1, 0)
           Label: Heartbeats per 5 minutes
           ReturnData: true
-      EvaluationPeriods: 3
-      DatapointsToAlarm: 3
+      EvaluationPeriods: 4
+      DatapointsToAlarm: 4
       Threshold: 1
       ComparisonOperator: LessThanThreshold
       TreatMissingData: breaching
