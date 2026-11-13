@@ -5,6 +5,7 @@ import useSWR from "swr";
 import dynamic from "next/dynamic";
 import { SearchableSelect } from "@/components/searchable-select";
 import { usePerfSettings } from "@/app/perf/perf-settings";
+import { dedupePerfRows } from "@/lib/perf-data";
 
 const Plot = dynamic(() => import("@/components/plotly-chart"), {
   ssr: false,
@@ -395,12 +396,12 @@ export default function PerfPage() {
     fetcher
   );
 
+  // Fetch every row for the model (device/TP/concurrency are applied
+  // client-side), so the filter options below reflect only what this model
+  // actually ran — not a global list that includes other models' hardware.
   const params = new URLSearchParams();
   params.set("start", startDate);
   if (model) params.set("model", model);
-  if (device) params.set("device", device);
-  if (tp) params.set("tp", tp);
-  if (conc) params.set("conc", conc);
 
   const { data, isLoading } = useSWR<{ rows: PerfRow[] }>(
     model ? `/api/perf?${params.toString()}` : null,
@@ -408,7 +409,26 @@ export default function PerfPage() {
     { refreshInterval: 10 * 60 * 1000 }
   );
 
-  const rawRows = useMemo(() => data?.rows ?? [], [data]);
+  // Collapse duplicate/re-ingested rows to one point per config+build.
+  const rawRows = useMemo(() => dedupePerfRows(data?.rows ?? []), [data]);
+
+  // Model-scoped dropdown options.
+  const deviceOpts = useMemo(
+    () => [...new Set(rawRows.map((r) => r.device).filter(Boolean))].sort(),
+    [rawRows]
+  );
+  const tpOpts = useMemo(
+    () =>
+      [...new Set(rawRows.map((r) => r.tp).filter(Boolean))]
+        .sort((a, b) => +a - +b),
+    [rawRows]
+  );
+  const concOpts = useMemo(
+    () =>
+      [...new Set(rawRows.map((r) => r.conc).filter(Boolean))]
+        .sort((a, b) => +a - +b),
+    [rawRows]
+  );
 
   const chartRows: ChartRow[] = useMemo(() => {
     return rawRows
@@ -432,8 +452,14 @@ export default function PerfPage() {
         p99_itl: parseFloat(r.p99_itl),
         p99_e2el: parseFloat(r.p99_e2el),
       }))
-      .filter((r) => !isNaN(r.tput_per_gpu));
-  }, [rawRows]);
+      .filter(
+        (r) =>
+          !isNaN(r.tput_per_gpu) &&
+          (!device || r.device === device) &&
+          (!tp || r.tp === Number(tp)) &&
+          (!conc || r.conc === Number(conc))
+      );
+  }, [rawRows, device, tp, conc]);
 
   const colorMap = useMemo(() => {
     const keys = [
@@ -463,6 +489,7 @@ export default function PerfPage() {
             setModel(v);
             setDevice("");
             setTp("");
+            setConc("");
           }}
           options={filters?.models ?? []}
           counts={filters?.modelCounts}
@@ -472,21 +499,21 @@ export default function PerfPage() {
           label="Device"
           value={device}
           onChange={setDevice}
-          options={filters?.devices ?? []}
+          options={deviceOpts}
           allLabel="All Devices"
         />
         <SearchableSelect
           label="TP"
           value={tp}
           onChange={setTp}
-          options={filters?.tps ?? []}
+          options={tpOpts}
           allLabel="All TP"
         />
         <SearchableSelect
           label="Concurrency"
           value={conc}
           onChange={setConc}
-          options={filters?.concs ?? []}
+          options={concOpts}
           allLabel="All Concurrency"
         />
         {model && chartRows.length > 0 && (
