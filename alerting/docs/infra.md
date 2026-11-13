@@ -219,6 +219,101 @@ quarantining ──drained──▶ quarantined ──resolve──▶ resolve_r
 Posts never say how to resolve. Delivery ids add the scan time for the
 posts that can repeat in one episode (a failed return, a stuck actuator).
 
+### Control-plane heartbeat
+
+Each k8s actuator chains `quarantine-actuator-heartbeat.service` from a
+drop-in (`quarantine-actuator-k8s.service.d/heartbeat.conf`) on its
+`OnSuccess=`: after a completed poll the unit runs `emit-heartbeat` — the
+same bounded script the worker's heartbeat uses — putting one
+`VllmAlerting/Heartbeat` datapoint with `Job=quarantine-actuator-<cluster>`.
+A poll that never finishes (the desired set unreachable, missing env, a
+crashed kubectl) exits 1 and emits nothing; a poll that completes with
+per-node errors exits 3, which `SuccessExitStatus=3` still counts as
+success, so one broken node cannot silence the heartbeat and page with the
+wrong cause — the worker's notices carry a stage still awaiting
+confirmation, and the journal's "(with errors)" line carries the rest (a
+unit in `failed` state no longer means a node error). Not exit 2:
+Python and argparse exit 2 on their own failures, and a broken deploy must
+never heartbeat health. The worker stack's alarms
+(`<stack-name>-heartbeat-quarantine-actuator-h100` / `-b200`) count a
+missing period as zero (`FILL(m1, 0)`, missing = breaching; three 5-minute
+periods — 15 minutes of silence, 10 at worst if FILL counts the
+in-progress bucket as a zero) and notify the same SNS topic
+as the worker's own heartbeat alarms, so a dead actuator timer, a
+dead control plane, or dead heartbeat credentials page off-host. A partly decayed kubeconfig (can list nodes, cannot write) fails
+every node instead: the poll still completes, and the worker's notices carry
+any stage still awaiting confirmation. The heartbeat proves the poll loop
+is alive — in dry run too — not that the actuator changes anything. The
+control planes are not EC2, so there is no instance role:
+each one holds its own static IAM credentials in
+`/etc/gpu-reporter/heartbeat-aws.env` (root 0600, one IAM user per control
+plane so a key revokes per host), allowed only `cloudwatch:PutMetricData`
+and only in the `VllmAlerting` namespace — `PutMetricData` has no
+resource-level permissions, so the policy's `Resource` is `*` pinned by the
+`cloudwatch:namespace` condition. The worst a leaked key can do is write
+datapoints in that namespace (including fake heartbeats that hold the
+alarms at OK); it cannot read anything or touch another namespace.
+
+Deployment, per control plane (each step is a host change and needs the
+user's approval; no credential value is ever echoed, logged or typed into
+chat):
+
+1. Install the AWS CLI — the control planes ship without it. The official
+   bundled installer (`awscli.amazonaws.com/awscli-exe-linux-<arch>.zip`,
+   unzip, `sudo ./aws/install`) needs no package manager.
+2. The user creates one IAM user per control plane with an inline policy:
+   allow `cloudwatch:PutMetricData` on `*` with
+   `"Condition": {"StringEquals": {"cloudwatch:namespace": "VllmAlerting"}}`,
+   and creates one access key per user.
+3. On the control plane, as root, write the env file without ever printing
+   the secret (values typed at `read` prompts do not enter shell history):
+
+   ```bash
+   cluster=h100   # or b200
+   read -r -p 'Access key ID: ' akid
+   read -r -s -p 'Secret access key: ' secret; echo
+   read -r -p 'Worker stack region: ' region
+   ( umask 077; printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\nAWS_DEFAULT_REGION=%s\nHEARTBEAT_JOB=quarantine-actuator-%s\n' \
+     "$akid" "$secret" "$region" "$cluster" > /etc/gpu-reporter/heartbeat-aws.env )
+   chown root:root /etc/gpu-reporter/heartbeat-aws.env
+   chmod 600 /etc/gpu-reporter/heartbeat-aws.env   # also fixes a rotation over a looser file
+   unset akid secret region
+   ```
+
+4. Install the updated `scripts/gpu-reporter/quarantine-actuator-k8s.py` as
+   `/opt/gpu-reporter/quarantine-actuator-k8s.py` (0755) and check its sha256
+   against the repo's (`shasum -a 256`) — the exit-3 behaviour lives there.
+   Install `deploy/aws/bin/emit-heartbeat` as `/opt/gpu-reporter/emit-heartbeat`
+   (0755), `scripts/gpu-reporter/quarantine-actuator-heartbeat.service` into
+   `/etc/systemd/system/`, and the chain as a drop-in at
+   `/etc/systemd/system/quarantine-actuator-k8s.service.d/heartbeat.conf`
+   from `scripts/gpu-reporter/quarantine-actuator-k8s.service.d/heartbeat.conf` —
+   a drop-in, so the existing unit file (and its `--dry-run` state) is never
+   rewritten. Then `systemctl daemon-reload`.
+5. Prove the path once: `systemctl start quarantine-actuator-heartbeat.service`,
+   then read its journal. Then prove the chain, not just the unit:
+   `systemctl start quarantine-actuator-k8s.service`, wait a few seconds, and
+   check `journalctl -u quarantine-actuator-heartbeat.service` for a run you
+   did not start by hand. (`OnSuccess=` needs systemd 249 or newer — check
+   `systemctl --version`; an older systemd ignores the key with only a
+   warning, and this check is what catches it.) From off the host, confirm
+   the datapoint with
+   `aws cloudwatch get-metric-statistics --namespace VllmAlerting
+   --metric-name Heartbeat --dimensions Name=Job,Value=quarantine-actuator-<cluster>`.
+   From then on the actuator's `OnSuccess=` emits every minute.
+6. Update the stack last: the new alarms go straight to OK when heartbeats
+   already flow, instead of opening in ALARM.
+
+The delivery test is `aws cloudwatch set-alarm-state --state-value ALARM` on
+each alarm. The silence test silences the emit the way it really fails:
+`mv /etc/gpu-reporter/heartbeat-aws.env /etc/gpu-reporter/heartbeat-aws.env.off`
+on one control plane — the unit then fails on its missing EnvironmentFile
+and nothing is emitted. (`systemctl mask` won't do it: a plain mask refuses
+over a real unit file, and a `--runtime` mask is shadowed by it, since
+/etc/systemd/system outranks /run/systemd/system.) Wait out the window
+(allow 20 minutes: up to 15 of silence plus evaluation lag) for the ALARM
+mail, then move the file back and expect the OK mail.
+
 ## Tables
 
 Reads: `gpu_history_5m`, `host_history_5m` (latest-report times),
