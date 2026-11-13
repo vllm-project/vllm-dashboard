@@ -784,6 +784,22 @@ def test_an_inactive_nvlink_fails_the_gpu(reporter_k8s):
     assert error == "GPU 1 2 of 18 NVLinks inactive; GPU 2 1 of 18 NVLinks inactive"
 
 
+def test_a_sleeping_nvlink_is_not_a_fault(reporter_k8s):
+    # nvidia-smi docs: an inactive link shows as Inactive; a link the NVLink
+    # width control put to sleep shows as Sleep, which is intended.
+    links = nvlink_status(1)
+    links[1] = "\t Link 0: Sleep"
+    links[2] = "\t Link 1: Inactive"
+    ok, error = reporter_k8s.parse_fabric_output(fabric_output(
+        10, ["Completed, Success, Healthy"], nvlinks=links))
+    assert (ok, error) == (False, "GPU 0 1 of 18 NVLinks inactive")
+
+
+def test_a_completed_fabric_with_no_status_is_not_a_fault(reporter_k8s):
+    assert reporter_k8s.parse_fabric_output(fabric_output(
+        10, ["Completed, N/A, Healthy"])) == (True, None)
+
+
 def test_a_link_line_before_any_gpu_is_ignored(reporter_k8s):
     links = ["\t Link 0: <inactive>", *nvlink_status(1)]
     assert reporter_k8s.parse_fabric_output(fabric_output(

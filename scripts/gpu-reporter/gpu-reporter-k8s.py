@@ -374,8 +374,8 @@ def parse_fabric_output(text):
     A GPU whose fabric is registering or failed, reports unhealthy, or
     reports degraded bandwidth, route recovery, an unhealthy route or access
     timeout recovery (each critical in NVIDIA's health validation) fails the
-    host, and so does any inactive NVLink; N/A (no NVSwitch fabric, or no
-    health detail) does not.
+    host, and so does any inactive NVLink (a sleeping one does not); N/A
+    (no NVSwitch fabric, no status or no health detail) does not.
     Raises when the uptime, the dmesg or nvlink read, or every GPU row is
     missing: no reading.
     """
@@ -395,9 +395,10 @@ def parse_fabric_output(text):
             gpu = int(line.split()[1].rstrip(":"))
             links[gpu] = [0, 0]
         elif line.strip().startswith("Link ") and gpu is not None:
-            # "Link 3: 50 GB/s", or "Link 3: <inactive>"
+            # "Link 3: 50 GB/s", "<inactive>", or "Sleep" (put to sleep by
+            # the NVLink width control on purpose, so not a fault)
             links[gpu][0] += 1
-            links[gpu][1] += "GB/s" not in line
+            links[gpu][1] += "inactive" in line.lower()
         elif "NV_ERR_FABRIC_MANAGER_NOT_PRESENT" in line:
             # dmesg time: "[726703.163732] NVRM: ..."
             refused_at_s = float(line[1:line.index("]")])
@@ -409,7 +410,7 @@ def parse_fabric_output(text):
             recovery, unhealthy, timeout = (flag == "True" for flag in flags)
             if state not in ("Completed", "N/A"):
                 problem = f"fabric state {state}"
-            elif state == "Completed" and status != "Success":
+            elif state == "Completed" and status not in ("Success", "N/A"):
                 problem = f"fabric status {status}"
             elif health not in ("Healthy", "N/A"):
                 problem = f"fabric health {health}"
