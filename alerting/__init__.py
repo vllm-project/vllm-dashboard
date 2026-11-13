@@ -25,11 +25,12 @@ from alerting.analyzer import (
 )
 from alerting.commands import SCHEMA_VERSION, ScheduledCommand
 from alerting.fast_ci import (
-    DatabricksFastCISource,
-    DatabricksStatementClient,
+    ClickHouseQueryClient,
     FastCIScanHandler,
     FastFailureEvent,
     FastFailureState,
+    WarehouseFastCISource,
+    WarehouseQueryPort,
 )
 from alerting.full_ci import (
     BuildkiteFullCISource,
@@ -86,10 +87,9 @@ __all__ = [
     "BuildkiteFullCISource",
     "BuildkiteRestClient",
     "BuildkiteMainCISource",
+    "ClickHouseQueryClient",
     "ComparisonContext",
     "CompletedAnalysis",
-    "DatabricksFastCISource",
-    "DatabricksStatementClient",
     "DestinationMode",
     "DispatchResult",
     "AutomationExecution",
@@ -127,6 +127,8 @@ __all__ = [
     "SuspiciousPR",
     "UrllibHttpTransport",
     "UnknownCommandTypeError",
+    "WarehouseFastCISource",
+    "WarehouseQueryPort",
     "build_fast_ci_runtime",
     "build_full_ci_analysis_runtime",
     "build_full_ci_runtime",

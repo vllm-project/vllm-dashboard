@@ -52,7 +52,7 @@ Queue-wait alerting is owned by the dashboard context:
 - `runtime.py` — `AlertingRuntime`: `process_command` (claim → handler
   → complete, with lease-based mutual exclusion and retry-after-failure) and
   `dispatch_due_notifications` (lease due outbox rows, deliver, record state).
-- `fast_ci.py` — the Fast CI Databricks query adapter, scan handler,
+- `fast_ci.py` — the Fast CI ClickHouse query adapter, scan handler,
   preserved Slack renderer, and event records. A scan reads from the durable
   cursor with a 15-minute safety overlap and commits new job IDs, notification
   batches, cursor advancement, and execution completion atomically.
@@ -134,7 +134,7 @@ Queue-wait alerting is owned by the dashboard context:
   comparisons, and execution completion; `commit_main_ci_scan` atomically
   advances exact job state, opens/updates/resolves alert episodes, advances the
   cursor, and completes execution. Runtime factories wire the production
-  Databricks and Buildkite clients.
+  ClickHouse and Buildkite clients.
 - `slack.py` — configured incoming-webhook and bot-token delivery. It resolves
   logical webhook destinations without storing webhook secrets in Postgres,
   adds stable delivery metadata for duplicate diagnosis, classifies Slack

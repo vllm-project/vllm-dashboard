@@ -13,8 +13,9 @@ lifecycle: each is a one-way observation.
 ## Where the code lives
 
 - `alerting/fast_ci.py` — the slice: `FastFailureEvent` record, the
-  preserved Databricks SQL predicate, `DatabricksFastCISource`, the Slack
-  renderer, and `FastCIScanHandler`.
+  preserved SQL predicate, `WarehouseFastCISource` over the
+  `WarehouseQueryPort` protocol, `ClickHouseQueryClient` (stdlib HTTP client
+  for ClickHouse Cloud), the Slack renderer, and `FastCIScanHandler`.
 - `alerting/runtime.py` — claims and completes the `fast_ci_scan` scheduled
   command; `alerting/postgres.py` is the production store,
   `alerting/memory.py` the in-memory test double.
@@ -24,8 +25,11 @@ lifecycle: each is a one-way observation.
 
 ## Configuration
 
-- `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID` — the
-  source warehouse query (secrets).
+- `CLICKHOUSE_URL`, `CLICKHOUSE_READ_USER`, `CLICKHOUSE_READ_PASSWORD` — the
+  source warehouse query (secrets). `CLICKHOUSE_URL` is the ClickHouse Cloud
+  HTTPS endpoint, e.g. `https://<host>.clickhouse.cloud` (port 443). The
+  worker's security group only allows egress on 443, so do not use the
+  `:8443` form. The worker exits at startup if any of the three is missing.
 - `SLACK_BOT_TOKEN` — delivery; `SLACK_CI_ALERT_CHANNEL` overrides the shared
   alert channel (`C0ANHBE642Y`).
 - Control plane: the S3 `control/fast_ci.mode` object, applied by
@@ -54,8 +58,9 @@ notification got. Backed by `src/app/api/alerts/fast-ci/route.ts`.
 
 ## Tables
 
-Reads: Databricks `vllm_data_warehouse.buildkite.build_job` /
-`build` / `pipeline` (via the SQL Statements API);
+Reads: ClickHouse Cloud `buildkite.build_job` / `build` / `pipeline` (the
+Fivetran Buildkite sync, via the HTTP interface; ReplacingMergeTree, so read
+with `FINAL` and `NOT _fivetran_deleted`);
 `alerting_fast_ci_imported_deduplication_keys`.
 Writes: `alerting_fast_failure_events`, `alerting_fast_failure_notifications`,
 `alerting_fast_ci_scan_cursors`, `alerting_notification_outbox`,

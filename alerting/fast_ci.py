@@ -7,7 +7,6 @@ import html
 import os
 import json
 import re
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from alerting.commands import ScheduledCommand
 from alerting.ports import (
@@ -116,83 +115,91 @@ class FastCISource(Protocol):
     ) -> list[FastFailureEvent]: ...
 
 
-class DatabricksQueryPort(Protocol):
-    def query(self, sql: str) -> list[dict[str, Any]]: ...
+class WarehouseQueryPort(Protocol):
+    """Runs one read-only SQL statement against the CI data warehouse.
+
+    `params` binds the statement's typed `{name:Type}` placeholders; values
+    are never interpolated into the SQL text.
+    """
+
+    def query(
+        self, sql: str, params: Mapping[str, str] | None = None
+    ) -> list[dict[str, Any]]: ...
 
 
-class DatabricksStatementClient:
-    """Minimal Databricks SQL Statements API client for Fast CI scans."""
+CLICKHOUSE_MAX_EXECUTION_SECONDS = 100
+CLICKHOUSE_REQUEST_TIMEOUT_SECONDS = 110
 
-    def __init__(self, *, host: str, token: str, warehouse_id: str) -> None:
-        self._host = host.rstrip("/")
-        self._token = token
-        self._warehouse_id = warehouse_id
 
-    def _request_json(
-        self,
-        method: str,
-        url: str,
-        *,
-        payload: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        body = json.dumps(payload).encode() if payload is not None else None
+class ClickHouseQueryClient:
+    """Minimal ClickHouse HTTP-interface client for Fast CI scans.
+
+    Like the Databricks client it replaced, it makes one attempt per scan
+    (the scheduled command retries a failed scan) and gives the query
+    110 seconds overall; the server stops the query at 100.
+    """
+
+    def __init__(self, *, url: str, user: str, password: str) -> None:
+        self._url = url.rstrip("/") + "/"
+        self._user = user
+        self._password = password
+
+    def query(
+        self, sql: str, params: Mapping[str, str] | None = None
+    ) -> list[dict[str, Any]]:
+        settings = {
+            "default_format": "JSONEachRow",
+            "date_time_output_format": "iso",
+            "max_execution_time": str(CLICKHOUSE_MAX_EXECUTION_SECONDS),
+            # Buffer the result so a query error is reported as an HTTP
+            # error status instead of after a 200 has been sent.
+            "wait_end_of_query": "1",
+        }
+        settings.update(
+            {f"param_{name}": value for name, value in (params or {}).items()}
+        )
         request = urllib.request.Request(
-            url,
-            data=body,
-            method=method,
+            f"{self._url}?{urllib.parse.urlencode(settings)}",
+            data=sql.encode(),
+            method="POST",
             headers={
-                "Authorization": f"Bearer {self._token}",
-                "Content-Type": "application/json",
+                "X-ClickHouse-User": self._user,
+                "X-ClickHouse-Key": self._password,
+                "Content-Type": "text/plain; charset=utf-8",
                 "User-Agent": "vllm-fast-ci-failure-alert/1.0",
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                result: dict[str, Any] = json.load(response)
-                return result
+            with urllib.request.urlopen(
+                request, timeout=CLICKHOUSE_REQUEST_TIMEOUT_SECONDS
+            ) as response:
+                body = response.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             response_body = exc.read().decode("utf-8", errors="replace")
-            path = urllib.parse.urlsplit(url).path
             raise RuntimeError(
-                f"{method} {path} failed with HTTP {exc.code}: {response_body[:1000]}"
+                f"ClickHouse query failed with HTTP {exc.code}: {response_body[:1000]}"
             ) from exc
+        return _json_each_row(body)
 
-    def query(self, sql: str) -> list[dict[str, Any]]:
-        response = self._request_json(
-            "POST",
-            f"{self._host}/api/2.0/sql/statements",
-            payload={
-                "warehouse_id": self._warehouse_id,
-                "statement": sql,
-                "wait_timeout": "50s",
-                "disposition": "INLINE",
-                "format": "JSON_ARRAY",
-            },
-        )
-        statement_id = response.get("statement_id")
-        deadline = time.monotonic() + 110
-        while response.get("status", {}).get("state") in {"PENDING", "RUNNING"}:
-            if not statement_id or time.monotonic() >= deadline:
-                raise RuntimeError(
-                    "Databricks query did not complete within 110 seconds"
-                )
-            time.sleep(2)
-            response = self._request_json(
-                "GET", f"{self._host}/api/2.0/sql/statements/{statement_id}"
-            )
-        status = response.get("status", {})
-        if status.get("state") != "SUCCEEDED":
-            error = status.get("error", {})
-            detail = error.get("message", status.get("state", "unknown"))
-            raise RuntimeError(f"Databricks query failed: {detail}")
-        columns = [
-            column["name"]
-            for column in response.get("manifest", {})
-            .get("schema", {})
-            .get("columns", [])
-        ]
-        data_rows = response.get("result", {}).get("data_array", [])
-        return [dict(zip(columns, row, strict=False)) for row in data_rows]
+
+def _json_each_row(body: str) -> list[dict[str, Any]]:
+    """Parse a JSONEachRow body, failing on an exception written mid-stream.
+
+    A ClickHouse error raised after the 200 status was sent arrives as a
+    plain-text line inside the body rather than as an HTTP error.
+    """
+    rows: list[dict[str, Any]] = []
+    for line in body.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            row = None
+        if not isinstance(row, dict):
+            raise RuntimeError(f"ClickHouse query failed mid-stream: {line[:1000]}")
+        rows.append(row)
+    return rows
 
 
 class FastCIStore(Protocol):
@@ -214,54 +221,82 @@ class FastCIStore(Protocol):
 
 
 def _sql_timestamp(value: datetime) -> str:
+    """Render a scan bound as a `DateTime64(6, 'UTC')` query parameter."""
     if value.tzinfo is None:
         raise ValueError("scan bounds must be timezone-aware")
-    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f+00:00")
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
-def _alert_query(start_time: datetime, end_time: datetime) -> str:
+# Fivetran's Buildkite tables in ClickHouse are ReplacingMergeTree keyed by
+# id, so every read uses FINAL and drops soft-deleted rows. Builds are
+# narrowed first (CI pipeline, main branch, created by the end of the window)
+# and jobs are restricted to them before the join. The duration is truncated
+# whole seconds, matching Databricks' TIMESTAMPDIFF(SECOND, ...), and
+# finished_at is cast to microseconds so it parses with `fromisoformat`.
+_MAIN_CI_BUILDS = """
+  SELECT id, pipeline_id, web_url, message, commit, branch,
+    github_author_username, pr_number
+  FROM buildkite.build FINAL
+  WHERE NOT _fivetran_deleted
+    AND branch = 'main'
+    AND pipeline_id IN (SELECT id FROM buildkite.pipeline FINAL WHERE name = 'CI')
+    AND (created_at IS NULL OR created_at <= {end_time:DateTime64(6, 'UTC')})
+"""
+
+_DURATION_SECONDS = (
+    "intDiv(toUnixTimestamp64Micro(j.finished_at)"
+    " - toUnixTimestamp64Micro(j.started_at), 1000000)"
+)
+
+
+def _alert_query(start_time: datetime, end_time: datetime) -> tuple[str, dict[str, str]]:
     states = ", ".join(f"'{state.value}'" for state in FastFailureState)
-    return f"""
+    sql = f"""
       SELECT
         j.id AS job_id,
         j.name AS job_name,
         j.web_url AS job_url,
-        j.state,
-        j.soft_failed,
-        TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at) AS duration_secs,
-        j.finished_at,
+        j.state AS state,
+        j.soft_failed AS soft_failed,
+        {_DURATION_SECONDS} AS duration_secs,
+        toDateTime64(j.finished_at, 6, 'UTC') AS finished_at,
         b.web_url AS build_url,
-        b.message,
+        b.message AS message,
         b.commit AS commit_sha,
-        b.branch,
+        b.branch AS branch,
         b.github_author_username AS author,
-        b.pr_number,
+        b.pr_number AS pr_number,
         p.name AS pipeline
-      FROM vllm_data_warehouse.buildkite.build_job AS j
-      INNER JOIN vllm_data_warehouse.buildkite.build AS b ON j.build_id = b.id
-      INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p ON b.pipeline_id = p.id
-      WHERE j._fivetran_deleted = false
-        AND b._fivetran_deleted = false
+      FROM buildkite.build_job AS j FINAL
+      INNER JOIN ({_MAIN_CI_BUILDS}) AS b ON j.build_id = b.id
+      INNER JOIN (
+        SELECT id, name FROM buildkite.pipeline FINAL WHERE name = 'CI'
+      ) AS p ON b.pipeline_id = p.id
+      WHERE NOT j._fivetran_deleted
+        AND j.build_id IN (SELECT id FROM ({_MAIN_CI_BUILDS}))
         AND j.type = 'script'
         AND j.name IS NOT NULL
-        AND p.name = 'CI'
         AND b.branch = 'main'
         AND j.soft_failed = false
         AND j.state IN ({states})
         AND j.started_at IS NOT NULL
         AND j.finished_at IS NOT NULL
-        AND j.finished_at >= TIMESTAMP '{_sql_timestamp(start_time)}'
-        AND j.finished_at <= TIMESTAMP '{_sql_timestamp(end_time)}'
-        AND TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at)
-          BETWEEN 0 AND {MAX_DURATION_SECONDS}
+        AND j.finished_at >= {{start_time:DateTime64(6, 'UTC')}}
+        AND j.finished_at <= {{end_time:DateTime64(6, 'UTC')}}
+        AND {_DURATION_SECONDS} BETWEEN 0 AND {MAX_DURATION_SECONDS}
       ORDER BY j.finished_at ASC
     """
+    params = {
+        "start_time": _sql_timestamp(start_time),
+        "end_time": _sql_timestamp(end_time),
+    }
+    return sql, params
 
 
 def _parse_datetime(value: Any) -> datetime:
     parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     if parsed.tzinfo is None:
-        raise ValueError("Databricks finished_at must be timezone-aware")
+        raise ValueError("warehouse finished_at must be timezone-aware")
     return parsed
 
 
@@ -269,16 +304,17 @@ def _truthy(value: Any) -> bool:
     return str(value or "").lower() in {"1", "true"}
 
 
-class DatabricksFastCISource:
-    """Runs the preserved Fast CI SQL predicate and maps its result rows."""
+class WarehouseFastCISource:
+    """Runs the preserved Fast CI predicate against the warehouse and maps rows."""
 
-    def __init__(self, databricks: DatabricksQueryPort) -> None:
-        self._databricks = databricks
+    def __init__(self, warehouse: WarehouseQueryPort) -> None:
+        self._warehouse = warehouse
 
     def fetch_failures(
         self, *, start_time: datetime, end_time: datetime
     ) -> list[FastFailureEvent]:
-        rows = self._databricks.query(_alert_query(start_time, end_time))
+        sql, params = _alert_query(start_time, end_time)
+        rows = self._warehouse.query(sql, params)
         return [
             FastFailureEvent(
                 job_id=str(row["job_id"]),

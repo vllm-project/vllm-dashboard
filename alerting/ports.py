@@ -2,7 +2,7 @@
 
 Production adapters connect these to Postgres and Slack; tests use the
 in-memory adapters in `alerting.memory`. Source-system ports live alongside
-their consumers, beginning with the Fast CI Databricks port in `fast_ci`.
+their consumers, beginning with the Fast CI warehouse port in `fast_ci`.
 """
 
 from __future__ import annotations
