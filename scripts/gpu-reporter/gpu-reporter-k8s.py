@@ -353,7 +353,8 @@ def read_network_probes(pod):
 # GPU hang.
 FABRIC_SCRIPT = """
 read u _ < /proc/uptime; echo "uptime ${u%%.*}"
-dmesg | grep -F NV_ERR_FABRIC_MANAGER_NOT_PRESENT | tail -n 1
+k=$(dmesg) && echo "dmesg ok"
+printf '%s\n' "$k" | grep -F NV_ERR_FABRIC_MANAGER_NOT_PRESENT | tail -n 1
 nvidia-smi --query-gpu=index,fabric.state,fabric.status,fabric.health.summary \\
   --format=csv,noheader
 """
@@ -368,12 +369,16 @@ def parse_fabric_output(text):
 
     A GPU whose fabric is registering or failed, or reports unhealthy, fails
     the host; N/A (no NVSwitch fabric, or no health summary) does not.
-    Raises when the uptime or every GPU row is missing: no reading.
+    Raises when the uptime, the dmesg read or every GPU row is missing: no
+    reading.
     """
     uptime_s, refused_at_s, problems = None, None, {}
+    kernel_read = False
     for line in text.splitlines():
         if line.startswith("uptime "):
             uptime_s = int(line.split()[1])
+        elif line == "dmesg ok":
+            kernel_read = True
         elif "NV_ERR_FABRIC_MANAGER_NOT_PRESENT" in line:
             # dmesg time: "[726703.163732] NVRM: ..."
             refused_at_s = float(line[1:line.index("]")])
@@ -391,7 +396,7 @@ def parse_fabric_output(text):
             else:
                 problem = ""
             problems.setdefault(problem, []).append(int(index))
-    if uptime_s is None or not problems:
+    if uptime_s is None or not kernel_read or not problems:
         raise RuntimeError("no fabric reading")
     errors = []
     if refused_at_s is not None and uptime_s - refused_at_s <= FABRIC_ERROR_WINDOW:

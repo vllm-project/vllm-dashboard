@@ -501,7 +501,7 @@ DCGM_TWO_GPU = (DCGM_FIXTURE.replace("GPU-aaaa", "GPU-bbbb")
 
 # FABRIC_SCRIPT output captured 2026-11-13 from device-plugin pods.
 def fabric_output(uptime, rows, dmesg=None):
-    return "\n".join([f"uptime {uptime}", *([dmesg] if dmesg else []),
+    return "\n".join([f"uptime {uptime}", "dmesg ok", *([dmesg] if dmesg else []),
                       *(f"{i}, {row}" for i, row in enumerate(rows))])
 
 
@@ -747,11 +747,17 @@ def test_fabric_output_without_gpu_rows_is_no_reading(reporter_k8s):
         reporter_k8s.parse_fabric_output("uptime 368\n")
     with pytest.raises(RuntimeError, match="^no fabric reading$"):
         reporter_k8s.parse_fabric_output("0, Completed, Success, Healthy")
+    # dmesg failed (e.g. "Operation not permitted"): the kernel check this
+    # detector depends on didn't run, so healthy GPU rows are no reading.
+    with pytest.raises(RuntimeError, match="^no fabric reading$"):
+        reporter_k8s.parse_fabric_output(
+            "uptime 368\n0, Completed, Success, Healthy")
 
 
 def test_parse_fabric_output_skips_other_lines(reporter_k8s):
     text = "\n".join([
         "uptime 368",
+        "dmesg ok",
         "index, fabric.state, fabric.status, fabric.health.summary",
         "0, Completed",
         "0, Completed, Success, Healthy",
