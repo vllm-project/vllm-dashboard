@@ -221,7 +221,8 @@ posts that can repeat in one episode (a failed return, a stuck actuator).
 
 ### Control-plane heartbeat
 
-Each k8s actuator chains `quarantine-actuator-heartbeat.service` from its
+Each k8s actuator chains `quarantine-actuator-heartbeat.service` from a
+drop-in (`quarantine-actuator-k8s.service.d/heartbeat.conf`) on its
 `OnSuccess=`: after a completed poll the unit runs `emit-heartbeat` — the
 same bounded script the worker's heartbeat uses — putting one
 `VllmAlerting/Heartbeat` datapoint with `Job=quarantine-actuator-<cluster>`.
@@ -280,11 +281,16 @@ chat):
    unset akid secret region
    ```
 
-4. Install `deploy/aws/bin/emit-heartbeat` as `/opt/gpu-reporter/emit-heartbeat`
-   (0755), and both the updated `scripts/gpu-reporter/quarantine-actuator-k8s.service`
-   (it carries the `OnSuccess=` line) and the new
-   `scripts/gpu-reporter/quarantine-actuator-heartbeat.service` into
-   `/etc/systemd/system/`, then `systemctl daemon-reload`.
+4. Install the updated `scripts/gpu-reporter/quarantine-actuator-k8s.py` as
+   `/opt/gpu-reporter/quarantine-actuator-k8s.py` (0755) and check its sha256
+   against the repo's (`shasum -a 256`) — the exit-3 behaviour lives there.
+   Install `deploy/aws/bin/emit-heartbeat` as `/opt/gpu-reporter/emit-heartbeat`
+   (0755), `scripts/gpu-reporter/quarantine-actuator-heartbeat.service` into
+   `/etc/systemd/system/`, and the chain as a drop-in at
+   `/etc/systemd/system/quarantine-actuator-k8s.service.d/heartbeat.conf`
+   from `scripts/gpu-reporter/quarantine-actuator-k8s.service.d/heartbeat.conf` —
+   a drop-in, so the existing unit file (and its `--dry-run` state) is never
+   rewritten. Then `systemctl daemon-reload`.
 5. Prove the path once: `systemctl start quarantine-actuator-heartbeat.service`,
    then read its journal. Then prove the chain, not just the unit:
    `systemctl start quarantine-actuator-k8s.service`, wait a few seconds, and
@@ -297,10 +303,12 @@ chat):
    already flow, instead of opening in ALARM.
 
 The delivery test is `aws cloudwatch set-alarm-state --state-value ALARM` on
-each alarm; the silence test is `systemctl mask
+each alarm; the silence test is `systemctl mask --runtime
 quarantine-actuator-heartbeat.service` on one control plane (the actuator
-itself keeps running), waiting out the window (at least 15 minutes) for the
-ALARM mail, then `unmask` and expecting the OK mail.
+itself keeps running; `--runtime` because a real unit file sits in
+/etc/systemd/system, which plain `mask` refuses to override), waiting out
+the window (at least 15 minutes) for the
+ALARM mail, then `unmask --runtime` and expecting the OK mail.
 
 ## Tables
 

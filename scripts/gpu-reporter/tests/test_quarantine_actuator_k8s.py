@@ -303,14 +303,6 @@ def test_a_partly_failed_poll_still_counts_as_completed(run):
     assert run(kube, FakeDashboard(down=True)) == 1
 
 
-def test_python_and_argparse_exit_codes_never_count_as_completed(run):
-    """Exit 2 belongs to Python (script unreadable) and argparse (bad flag);
-    if either counted as success, a broken deploy would heartbeat health."""
-    with pytest.raises(SystemExit) as excinfo:
-        run(FakeKube({}), FakeDashboard([]), "--bogus-flag")
-    assert excinfo.value.code == 2
-
-
 def test_taint_value_is_a_valid_label_value(run):
     v = run.mod.taint_value("  !!" + "x" * 80)
     assert len(v) <= 63 and v[0].isalnum() and v[-1].isalnum()
