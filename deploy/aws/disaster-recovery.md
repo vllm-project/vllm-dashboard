@@ -96,7 +96,10 @@ systemctl list-timers 'alerting-*' --no-pager
 ```
 
 All timers (control, fast-ci, full-ci, retention, main-ci) should be active
-with future trigger times. Execution status is in Postgres:
+with future trigger times. `install.sh` never enables
+`alerting-h200-pauser.timer`; if the H200 quarantine path is in use, enable
+it by hand (`systemctl enable --now alerting-h200-pauser.timer`), or its
+heartbeat alarm stays in ALARM. Execution status is in Postgres:
 
 ```sql
 SELECT command_type, status, last_error, updated_at

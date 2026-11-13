@@ -685,6 +685,9 @@ def test_job_emits_heartbeat_only_after_it_succeeds(job: str) -> None:
     assert "Type=oneshot" in template_unit
     assert "ExecStart=/opt/alerting/bin/emit-heartbeat %i" in template_unit
     assert "TimeoutStartSec=30s" in template_unit
+    # The aws CLI needs a writable HOME and the sandbox has none (the failure
+    # notifier's first deploy died to exactly this); PrivateTmp provides /tmp.
+    assert "Environment=HOME=/tmp" in template_unit
     # A dead heartbeat is not the job failing; the off-worker alarm notices.
     assert "OnFailure=" not in template_unit
     # Its stderr goes to the journal, not to /dev/null like the job's.

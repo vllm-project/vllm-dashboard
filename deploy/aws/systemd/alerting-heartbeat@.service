@@ -6,6 +6,9 @@ Type=oneshot
 User=alerting
 Group=alerting
 ExecStart=/opt/alerting/bin/emit-heartbeat %i
+# The aws CLI needs a writable HOME and this sandbox has none (the failure
+# notifier's first deploy died to exactly this); PrivateTmp provides /tmp.
+Environment=HOME=/tmp
 # The only bound on the emit (the CLI retries run inside it).
 TimeoutStartSec=30s
 StandardOutput=null
