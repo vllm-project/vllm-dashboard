@@ -1,18 +1,15 @@
 #!/bin/bash
 # Put one CloudWatch heartbeat datapoint for a job that just succeeded.
-# Runs from ExecStartPost=, which systemd only reaches after ExecStart
-# exited 0. It uses the instance role and nothing from the worker secret, so
-# a worker that cannot load its secret stops emitting, and the off-worker
-# alarm (alerting-worker.yaml) notices.
+# Runs as its own oneshot unit from the job unit's OnSuccess=, so it fires
+# only after a successful run and never shares the job unit's start timeout.
+# It uses the instance role and nothing from the worker secret, so a worker
+# that cannot load its secret stops emitting, and the off-worker alarm
+# (alerting-worker.yaml) notices.
 set -euo pipefail
 
 job=${1:?usage: emit-heartbeat <job>}
 
-# ExecStartPost= counts against TimeoutStartSec, and the "-" prefix on it
-# ignores exit codes but not unit timeouts, so a stalled CloudWatch call must
-# be bounded tighter than the slack a finished run has left.
-# shortcut: a run that finishes within 10 s of its TimeoutStartSec can still
-# be failed by a slow emit; upgrade is emission outside the unit's timeout.
+# Bounded so a stalled CloudWatch call cannot wedge the heartbeat unit.
 export AWS_MAX_ATTEMPTS=1
 exec timeout 10 aws --cli-connect-timeout 5 --cli-read-timeout 4 cloudwatch put-metric-data \
   --namespace VllmAlerting \

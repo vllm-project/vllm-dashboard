@@ -210,13 +210,17 @@ Resources:
                 Ref: KimiMainCIReasoningEffort
 
   # Off-worker heartbeat: units put a VllmAlerting/Heartbeat datapoint after
-  # each successful run (bin/emit-heartbeat). Missing data breaches, so a dead
-  # timer, a dead instance, or a worker that cannot load its secret all alarm,
-  # and delivery goes SNS -> email without the worker, its database or secret.
+  # each successful run (bin/emit-heartbeat, chained from each unit's
+  # OnSuccess=). Gaps in the data count as zero, so a dead timer, a dead
+  # instance, or a worker that cannot load its secret all alarm, and delivery
+  # goes SNS -> email without the worker, its database or secret. Names carry
+  # the stack name so disaster recovery can build a replacement stack beside
+  # this one; the metric itself is per account and region (one worker each).
   HeartbeatTopic:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: vllm-alerting-heartbeat
+      TopicName:
+        Fn::Sub: ${AWS::StackName}-heartbeat
 
   HeartbeatSubscription:
     Type: AWS::SNS::Subscription
@@ -231,7 +235,8 @@ Resources:
   HeartbeatControlAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: vllm-alerting-heartbeat-control
+      AlarmName:
+        Fn::Sub: ${AWS::StackName}-heartbeat-control
       AlarmDescription: >-
         No successful control run for 15 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).
@@ -267,7 +272,8 @@ Resources:
   HeartbeatFastCiAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: vllm-alerting-heartbeat-fast-ci
+      AlarmName:
+        Fn::Sub: ${AWS::StackName}-heartbeat-fast-ci
       AlarmDescription: >-
         No successful fast-ci run for 30 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).
@@ -303,7 +309,8 @@ Resources:
   HeartbeatMainCiAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: vllm-alerting-heartbeat-main-ci
+      AlarmName:
+        Fn::Sub: ${AWS::StackName}-heartbeat-main-ci
       AlarmDescription: >-
         No successful main-ci run for 15 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).
@@ -339,7 +346,8 @@ Resources:
   HeartbeatInfraAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: vllm-alerting-heartbeat-infra
+      AlarmName:
+        Fn::Sub: ${AWS::StackName}-heartbeat-infra
       AlarmDescription: >-
         No successful infra run for 20 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).

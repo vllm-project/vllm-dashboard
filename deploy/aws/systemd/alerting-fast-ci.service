@@ -3,14 +3,13 @@ Description=Scan for Fast CI failures
 After=network-online.target
 Wants=network-online.target
 OnFailure=alerting-failure-notify@%n.service
-OnSuccess=alerting-failure-resolve@%n.service
+OnSuccess=alerting-failure-resolve@%n.service alerting-heartbeat@fast-ci.service
 
 [Service]
 Type=oneshot
 User=alerting
 Group=alerting
 ExecStart=/opt/alerting/bin/run-worker fast-ci
-ExecStartPost=-/opt/alerting/bin/emit-heartbeat fast-ci
 StandardOutput=null
 StandardError=null
 UMask=0077

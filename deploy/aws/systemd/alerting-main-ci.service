@@ -3,14 +3,13 @@ Description=Reconcile Main CI job alert lifecycles
 After=network-online.target
 Wants=network-online.target
 OnFailure=alerting-failure-notify@%n.service
-OnSuccess=alerting-failure-resolve@%n.service
+OnSuccess=alerting-failure-resolve@%n.service alerting-heartbeat@main-ci.service
 
 [Service]
 Type=oneshot
 User=alerting
 Group=alerting
 ExecStart=/opt/alerting/bin/run-worker main-ci
-ExecStartPost=-/opt/alerting/bin/emit-heartbeat main-ci
 StandardOutput=null
 StandardError=null
 UMask=0077

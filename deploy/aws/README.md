@@ -107,24 +107,37 @@ Buildkite agents of quarantined H200 hosts (see `alerting/docs/infra.md`).
 
 ## Off-worker heartbeat
 
-`control`, `fast-ci`, `main-ci` and `infra` each run
-`bin/emit-heartbeat` after a successful run (`ExecStartPost=`), which puts a
-`VllmAlerting/Heartbeat` datapoint (dimension `Job`) using the instance role
-only, never the worker secret. The stack's CloudWatch alarms count a missing
-period as zero (`FILL(m1, 0)`, so an old heartbeat cannot hold an alarm at OK) and notify the SNS topic `vllm-alerting-heartbeat`, so a
-dead timer, a dead instance, or a secret the worker cannot load all alarm
-without the worker, its database or its secret. Set `HeartbeatAlertEmail` and
-click SNS's confirmation link once; empty means no subscriber. A job whose
-timer is intentionally disabled (a path turned off in S3 control) will
-alarm: disable or delete its alarm first. `control` doesn't load the worker
-secret, so its alarm covers a dead instance or timers, not the secret.
+`control`, `fast-ci`, `main-ci` and `infra` each chain
+`alerting-heartbeat@<job>.service` from their `OnSuccess=`, which runs
+`bin/emit-heartbeat` as its own oneshot unit (so it never shares the job
+unit's start timeout) and puts a `VllmAlerting/Heartbeat` datapoint
+(dimension `Job`) using the instance role only, never the worker secret. The
+stack's CloudWatch alarms count a missing period as zero (`FILL(m1, 0)`, so
+an old heartbeat cannot hold an alarm at OK) and notify the stack's SNS
+topic (`<stack-name>-heartbeat`), so a dead timer, a dead instance, or a
+secret the worker cannot load all alarm without the worker, its database or
+its secret. Set `HeartbeatAlertEmail` and click SNS's confirmation link
+once; empty means no subscriber. A job whose timer is intentionally disabled
+(a path turned off in S3 control) will alarm: disable or delete its alarm
+first. `control` doesn't load the worker secret, so its alarm covers a dead
+instance or timers, not the secret. The metric has only the `Job` dimension:
+one worker per account and region, or a second emitter would hold the
+alarms at OK.
 
 Deploy the code before the stack change: until the stack grants
-`PutMetricData` the emit fails quietly, and the alarms then see data as soon
-as they exist instead of firing on missing data first. Test delivery with
-`aws cloudwatch set-alarm-state --state-value ALARM`. Don't test by stopping
-a timer: while a path is live, the control service re-enables its timers
-within a minute.
+`PutMetricData` the emit fails (journaled, not raised), so the code is
+already in place when the alarms are born. The alarms are created before any
+heartbeat can have succeeded, so at deploy each one fires ALARM on missing
+data and then resolves to OK as the first heartbeats arrive within about
+five minutes: that ALARM-then-OK pair doubles as the delivery test. Each
+alarm also mails on recovery, so a recreated alarm's first move from
+INSUFFICIENT_DATA to OK sends one "OK" email; that is the subscription
+working, not a recovered incident. To retest delivery later use
+`aws cloudwatch set-alarm-state --state-value ALARM`; the physical alarm
+names carry the stack name, so read them from the stack
+(`aws cloudformation describe-stack-resource --stack-name <stack> --logical-resource-id HeartbeatInfraAlarm`).
+Don't test by stopping a timer: while a path is live, the control service
+re-enables its timers within a minute.
 
 ## Shadow, cutover, and rollback
 
