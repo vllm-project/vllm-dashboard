@@ -125,7 +125,10 @@ back broken). `control` doesn't load the worker secret, so its alarm covers
 a dead instance or timers, not the secret. Windows (15/45/25/30 min for
 control/fast-ci/main-ci/infra) outlast one timed-out run plus one
 full-length success — a timeout already pages through `OnFailure`, and must
-not page twice. The metric has only the `Job` dimension:
+not page twice; on main-ci and infra a timeout is held for ten minutes
+before it pages at all (bin/hold-failure), so the heartbeat alarm matches
+that: one timeout pages nobody, a timeout that keeps happening pages through
+`OnFailure`. The metric has only the `Job` dimension:
 one worker per account and region, or a second emitter would hold the
 alarms at OK.
 
@@ -181,10 +184,11 @@ recovers with an OK email when the path resumes — expected, not a fault.
 ## Recovery check
 
 Stop all alert timers before a scheduled tick, wait through the tick, then
-start the timers again. Stopping the timers stops the heartbeats too, so
-each heartbeat alarm fires and recovers as the timers come back (the ALARM
-then OK emails are expected). `Persistent=true` and `OnBootSec` start
-reconciliation,
+start the timers again. The heartbeat alarms fire only if the timers stay
+stopped past their windows (15-45 min); unless a path is `disabled`, the
+control service re-enables its timers within a minute, so a one-tick pause
+sends nothing. Use `set-alarm-state` for a delivery test. `Persistent=true` and `OnBootSec`
+start reconciliation,
 while the Postgres cursors and processed-run history recover missed Fast, Full,
 or Main CI observations. Each path has a separate timer and service — Main CI
 has three: one for lifecycle reconciliation, one for AI analysis, and one

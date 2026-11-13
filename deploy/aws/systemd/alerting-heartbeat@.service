@@ -6,7 +6,7 @@ Type=oneshot
 User=alerting
 Group=alerting
 ExecStart=/opt/alerting/bin/emit-heartbeat %i
-# Bounds the emit; the script's own timeout is tighter.
+# The only bound on the emit (the CLI retries run inside it).
 TimeoutStartSec=30s
 StandardOutput=null
 # Not inherited from StandardOutput: a heartbeat that fails silently is worse
