@@ -3,7 +3,8 @@
 import { useState } from "react";
 import useSWR from "swr";
 import { MultiSelect } from "@/components/multi-select";
-import { BandBadge, GithubLink } from "@/components/triage/badges";
+import { BandBadge, GithubLink, KindIcon } from "@/components/triage/badges";
+import { bandStyle } from "@/lib/triage-style";
 import { sendJson, triageFetcher } from "@/lib/triage-format";
 import {
   maintainerFileCreateUrl,
@@ -306,13 +307,19 @@ function RulesDraft({ data }: { data: RulesResponse }) {
             </p>
             <ul className="space-y-2">
               {preview.matches.slice(0, 200).map((match) => (
-                <li key={match.itemKey} className={`rounded-md border border-zinc-200 p-2 text-xs dark:border-zinc-800 ${match.meetsMinScore ? "" : "opacity-60"}`}>
+                <li key={match.itemKey} className={`relative overflow-hidden rounded-md border border-zinc-200 p-2 pl-3 text-xs dark:border-zinc-800 ${match.meetsMinScore ? "" : "opacity-60"}`}>
+                  <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${bandStyle(match.band).fill}`} />
                   <div className="flex items-center gap-2">
                     <BandBadge band={match.band} score={match.score} />
-                    <span className="text-zinc-500">{match.kind}</span>
+                    <KindIcon kind={match.kind} />
+                    {!match.meetsMinScore && <span className="text-zinc-500">below your min score</span>}
                   </div>
-                  <p className="mt-1 font-medium"><GithubLink href={match.htmlUrl}>{match.title}</GithubLink></p>
-                  <p className="mt-0.5 text-zinc-500">{match.matched.join(", ")}</p>
+                  <p className="mt-1 line-clamp-2 font-medium"><GithubLink href={match.htmlUrl} title={match.title}>{match.title}</GithubLink></p>
+                  <p className="mt-1 flex flex-wrap gap-1">
+                    {match.matched.map((reason) => (
+                      <span key={reason} className="rounded bg-zinc-100 px-1.5 py-px font-mono text-[10px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">{reason}</span>
+                    ))}
+                  </p>
                 </li>
               ))}
             </ul>
