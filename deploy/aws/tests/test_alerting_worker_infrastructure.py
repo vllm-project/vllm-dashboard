@@ -746,3 +746,38 @@ def test_missing_heartbeat_alarms_through_sns_outside_the_worker(job: str) -> No
     assert periods.group(1) == str(expected)  # x 5 min: 15/50/25/35/20
     assert block.count("Ref: HeartbeatTopic") == 2  # alarm and recovery
     assert "Condition: HasHeartbeatEmail" in template  # target is a parameter
+
+
+ACTUATOR_HEARTBEAT_JOBS = ["quarantine-actuator-h100", "quarantine-actuator-b200"]
+
+
+@pytest.mark.parametrize("job", ACTUATOR_HEARTBEAT_JOBS)
+def test_actuator_heartbeat_alarms_reuse_the_worker_stack_topic(job: str) -> None:
+    """The k8s quarantine actuators run on the cluster control planes, not on
+    the worker, so only an off-host heartbeat notices a dead taint timer, a
+    dead control plane or dead credentials. Their alarms live in the worker
+    stack and notify the same SNS topic as the worker's own alarms."""
+    template = read("alerting-worker.yaml")
+    block = template.split(f"Fn::Sub: ${{AWS::StackName}}-heartbeat-{job}\n", 1)[1]
+    block = block.split("\n  Heartbeat", 1)[0].split("\nOutputs:", 1)[0]
+
+    # Same missing-data semantics as the worker jobs: FILL makes every period
+    # real, so an old heartbeat cannot hold the alarm at OK.
+    assert "Expression: FILL(m1, 0)" in block
+    assert block.count("ReturnData: true") == 1
+    assert block.count("ReturnData: false") == 1
+    assert "Period: 300" in block
+    periods = re.search(r"EvaluationPeriods: (\d+)", block)
+    assert periods and f"DatapointsToAlarm: {periods.group(1)}" in block
+    # 15 minutes. The actuator polls every minute and a failed poll (the
+    # desired endpoint unreachable or non-2xx) exits 1 and emits nothing, so
+    # the window must outlast one timed-out run (2 min) and a brief endpoint
+    # blip; nothing else pages for a control plane, so it stays short.
+    assert periods.group(1) == "3"
+    assert "TreatMissingData: breaching" in block
+    assert "ComparisonOperator: LessThanThreshold" in block
+    # Threshold 0 or an average stat would never fire on a silent actuator.
+    assert "Threshold: 1" in block
+    assert "Stat: Sum" in block
+    assert f"Value: {job}\n" in block
+    assert block.count("Ref: HeartbeatTopic") == 2  # alarm and recovery

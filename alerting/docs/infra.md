@@ -219,6 +219,69 @@ quarantining ──drained──▶ quarantined ──resolve──▶ resolve_r
 Posts never say how to resolve. Delivery ids add the scan time for the
 posts that can repeat in one episode (a failed return, a stuck actuator).
 
+### Control-plane heartbeat
+
+Each k8s actuator chains `quarantine-actuator-heartbeat.service` from its
+`OnSuccess=`: after a successful poll (a failed one exits 1 and emits
+nothing) the unit runs `emit-heartbeat` — the same bounded script the
+worker's heartbeat uses — putting one `VllmAlerting/Heartbeat` datapoint
+with `Job=quarantine-actuator-<cluster>`. The worker stack's alarms
+(`<stack-name>-heartbeat-quarantine-actuator-h100` / `-b200`) count a
+missing period as zero (`FILL(m1, 0)`, missing = breaching, 15-minute
+window) and notify the same SNS topic as the worker's own heartbeat alarms,
+so a dead actuator timer, a dead control plane, or dead credentials page
+off-host. The control planes are not EC2, so there is no instance role:
+each one holds its own static IAM credentials in
+`/etc/gpu-reporter/heartbeat-aws.env` (root 0600, one IAM user per control
+plane so a key revokes per host), allowed only `cloudwatch:PutMetricData`
+and only in the `VllmAlerting` namespace — `PutMetricData` has no
+resource-level permissions, so the policy's `Resource` is `*` pinned by the
+`cloudwatch:namespace` condition. The worst a leaked key can do is write
+datapoints in that namespace (including fake heartbeats that hold the
+alarms at OK); it cannot read anything or touch another namespace.
+
+Deployment, per control plane (each step is a host change and needs the
+user's approval; no credential value is ever echoed, logged or typed into
+chat):
+
+1. Install the AWS CLI — the control planes ship without it. The official
+   bundled installer (`awscli.amazonaws.com/awscli-exe-linux-<arch>.zip`,
+   unzip, `sudo ./aws/install`) needs no package manager.
+2. The user creates one IAM user per control plane with an inline policy:
+   allow `cloudwatch:PutMetricData` on `*` with
+   `"Condition": {"StringEquals": {"cloudwatch:namespace": "VllmAlerting"}}`,
+   and creates one access key per user.
+3. On the control plane, as root, write the env file without ever printing
+   the secret (values typed at `read` prompts do not enter shell history):
+
+   ```bash
+   cluster=h100   # or b200
+   read -r -p 'Access key ID: ' akid
+   read -r -s -p 'Secret access key: ' secret; echo
+   read -r -p 'Worker stack region: ' region
+   umask 077
+   printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\nAWS_DEFAULT_REGION=%s\nHEARTBEAT_JOB=quarantine-actuator-%s\n' \
+     "$akid" "$secret" "$region" "$cluster" > /etc/gpu-reporter/heartbeat-aws.env
+   unset akid secret region
+   ```
+
+4. Install `deploy/aws/bin/emit-heartbeat` as `/opt/gpu-reporter/emit-heartbeat`
+   (0755) and `scripts/gpu-reporter/quarantine-actuator-heartbeat.service`
+   into `/etc/systemd/system/`, then `systemctl daemon-reload`.
+5. Prove the path once: `systemctl start quarantine-actuator-heartbeat.service`,
+   then read its journal; from off the host, confirm the datapoint with
+   `aws cloudwatch get-metric-statistics --namespace VllmAlerting
+   --metric-name Heartbeat --dimensions Name=Job,Value=quarantine-actuator-<cluster>`.
+   From then on the actuator's `OnSuccess=` emits every minute.
+6. Update the stack last: the new alarms go straight to OK when heartbeats
+   already flow, instead of opening in ALARM.
+
+The delivery test is `aws cloudwatch set-alarm-state --state-value ALARM` on
+each alarm; the silence test is `systemctl mask
+quarantine-actuator-heartbeat.service` on one control plane (the actuator
+itself keeps running), waiting out the 15-minute window for the ALARM mail,
+then `unmask` and expecting the OK mail.
+
 ## Tables
 
 Reads: `gpu_history_5m`, `host_history_5m` (latest-report times),
