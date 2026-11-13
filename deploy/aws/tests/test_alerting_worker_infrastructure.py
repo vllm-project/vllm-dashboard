@@ -696,11 +696,10 @@ def test_heartbeat_emitter_needs_no_worker_secret() -> None:
     script = read("bin/emit-heartbeat")
 
     assert "cloudwatch put-metric-data" in script
-    # A stalled call is bounded by the unit's TimeoutStartSec and the
-    # script's own timeout: 10 s of wall clock, 5+4 s of CLI timeouts.
-    # Default retries stay on so one throttled call does not drop a
-    # datapoint from a job that emits only twice per window.
-    assert "timeout 10 aws" in script
+    # Bounded by the unit's TimeoutStartSec=30s; 5+4 s of CLI timeouts per
+    # attempt let the default retries finish inside it. One throttled call
+    # must not drop a datapoint from a job that emits only twice per window.
+    assert "timeout 10" not in script
     assert "--cli-connect-timeout 5" in script and "--cli-read-timeout 4" in script
     assert "AWS_MAX_ATTEMPTS" not in script
     assert "--namespace VllmAlerting" in script

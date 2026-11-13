@@ -85,6 +85,10 @@ bucket is retained but the new instance role cannot read it. Effects:
   initial checkpoint. No database edits needed. The first report may classify
   ongoing failures as new for one comparison.
 
+- **Heartbeat alarms** come back with the stack, but the SNS topic is new:
+  pass `HeartbeatAlertEmail` again and click the confirmation link again, or
+  the alarms have no subscriber.
+
 ## Verifying health after recovery
 
 ```bash
@@ -99,3 +103,6 @@ SELECT command_type, status, last_error, updated_at
 FROM alerting_automation_executions
 ORDER BY updated_at DESC LIMIT 10;
 ```
+
+The heartbeat alarms (`<stack-name>-heartbeat-*`) should read OK within a few
+minutes of the timers resuming.
