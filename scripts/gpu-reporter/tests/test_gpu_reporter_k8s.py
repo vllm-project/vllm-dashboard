@@ -502,11 +502,24 @@ DCGM_TWO_GPU = (DCGM_FIXTURE.replace("GPU-aaaa", "GPU-bbbb")
 # FABRIC_SCRIPT output captured 2026-11-13 from device-plugin pods. A row
 # given as state, status, summary gets the health detail a healthy B200
 # reports (bandwidth, route recovery, route unhealthy, access timeout).
-def fabric_output(uptime, rows, dmesg=None):
+def fabric_output(uptime, rows, dmesg=None, nvlinks=None):
     rows = [row if row.count(",") == 6 else row + ", N/A, N/A, N/A, False"
             for row in rows]
     return "\n".join([f"uptime {uptime}", "dmesg ok", *([dmesg] if dmesg else []),
+                      "nvlink ok", *(nvlinks or nvlink_status(len(rows))),
                       *(f"{i}, {row}" for i, row in enumerate(rows))])
+
+
+# `nvidia-smi nvlink -s` as a B200 prints it: 18 links per GPU, and an
+# inactive link shows <inactive> in place of its speed.
+def nvlink_status(gpus, inactive=()):
+    lines = []
+    for gpu in range(gpus):
+        lines.append(f"GPU {gpu}: NVIDIA B200 (UUID: GPU-{gpu:08x})")
+        for link in range(18):
+            speed = "<inactive>" if (gpu, link) in inactive else "50 GB/s"
+            lines.append(f"\t Link {link}: {speed}")
+    return lines
 
 
 FABRIC_HEALTHY = fabric_output(16567934, ["Completed, Success, Healthy"] * 8)
@@ -760,23 +773,48 @@ def test_fabric_health_detail_fails_the_gpu(reporter_k8s):
                      "GPU 4 fabric access timeout recovery")
 
 
+def test_an_inactive_nvlink_fails_the_gpu(reporter_k8s):
+    # NVIDIA's health validation allows 0 inactive NVLinks by default; one
+    # dead link breaks NCCL while single-GPU jobs pass.
+    healthy = ["Completed, Success, Healthy"] * 3
+    links = nvlink_status(3, inactive={(1, 4), (1, 9), (2, 0)})
+    ok, error = reporter_k8s.parse_fabric_output(
+        fabric_output(10, healthy, nvlinks=links))
+    assert ok is False
+    assert error == "GPU 1 2 of 18 NVLinks inactive; GPU 2 1 of 18 NVLinks inactive"
+
+
+def test_a_link_line_before_any_gpu_is_ignored(reporter_k8s):
+    links = ["\t Link 0: <inactive>", *nvlink_status(1)]
+    assert reporter_k8s.parse_fabric_output(fabric_output(
+        10, ["Completed, Success, Healthy"], nvlinks=links)) == (True, None)
+
+
+def test_fabric_output_without_the_nvlink_read_is_no_reading(reporter_k8s):
+    text = fabric_output(10, ["Completed, Success, Healthy"]).replace(
+        "nvlink ok\n", "")
+    with pytest.raises(RuntimeError, match="^no fabric reading$"):
+        reporter_k8s.parse_fabric_output(text)
+
+
 def test_fabric_output_without_gpu_rows_is_no_reading(reporter_k8s):
     with pytest.raises(RuntimeError, match="^no fabric reading$"):
         reporter_k8s.parse_fabric_output("uptime 368\n")
     with pytest.raises(RuntimeError, match="^no fabric reading$"):
         reporter_k8s.parse_fabric_output(
-            "dmesg ok\n0, Completed, Success, Healthy, N/A, N/A, N/A, False")
+            "dmesg ok\nnvlink ok\n0, Completed, Success, Healthy, N/A, N/A, N/A, False")
     # dmesg failed (e.g. "Operation not permitted"): the kernel check this
     # detector depends on didn't run, so healthy GPU rows are no reading.
     with pytest.raises(RuntimeError, match="^no fabric reading$"):
         reporter_k8s.parse_fabric_output(
-            "uptime 368\n0, Completed, Success, Healthy, N/A, N/A, N/A, False")
+            "uptime 368\nnvlink ok\n0, Completed, Success, Healthy, N/A, N/A, N/A, False")
 
 
 def test_parse_fabric_output_skips_other_lines(reporter_k8s):
     text = "\n".join([
         "uptime 368",
         "dmesg ok",
+        "nvlink ok",
         "index, fabric.state, fabric.status, fabric.health.summary, "
         "fabric.health.bandwidth, fabric.health.route_recovery_in_progress, "
         "fabric.health.route_unhealthy, fabric.health.access_timeout_recovery",

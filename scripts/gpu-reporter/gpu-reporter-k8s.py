@@ -355,6 +355,8 @@ FABRIC_SCRIPT = """
 read u _ < /proc/uptime; echo "uptime ${u%%.*}"
 k=$(dmesg) && echo "dmesg ok"
 printf '%s\n' "$k" | grep -F NV_ERR_FABRIC_MANAGER_NOT_PRESENT | tail -n 1
+n=$(nvidia-smi nvlink -s) && echo "nvlink ok"
+printf '%s\n' "$n"
 nvidia-smi --query-gpu=index,fabric.state,fabric.status,fabric.health.summary,\
 fabric.health.bandwidth,fabric.health.route_recovery_in_progress,\
 fabric.health.route_unhealthy,fabric.health.access_timeout_recovery \\
@@ -372,17 +374,30 @@ def parse_fabric_output(text):
     A GPU whose fabric is registering or failed, reports unhealthy, or
     reports degraded bandwidth, route recovery, an unhealthy route or access
     timeout recovery (each critical in NVIDIA's health validation) fails the
-    host; N/A (no NVSwitch fabric, or no health detail) does not.
-    Raises when the uptime, the dmesg read or every GPU row is missing: no
-    reading.
+    host, and so does any inactive NVLink; N/A (no NVSwitch fabric, or no
+    health detail) does not.
+    Raises when the uptime, the dmesg or nvlink read, or every GPU row is
+    missing: no reading.
     """
     uptime_s, refused_at_s, problems = None, None, {}
-    kernel_read = False
+    kernel_read = links_read = False
+    links = {}  # GPU index -> [links, inactive links]
+    gpu = None
     for line in text.splitlines():
         if line.startswith("uptime "):
             uptime_s = int(line.split()[1])
         elif line == "dmesg ok":
             kernel_read = True
+        elif line == "nvlink ok":
+            links_read = True
+        elif line.startswith("GPU "):
+            # nvlink -s: "GPU 0: NVIDIA B200 (UUID: ...)", then its links
+            gpu = int(line.split()[1].rstrip(":"))
+            links[gpu] = [0, 0]
+        elif line.strip().startswith("Link ") and gpu is not None:
+            # "Link 3: 50 GB/s", or "Link 3: <inactive>"
+            links[gpu][0] += 1
+            links[gpu][1] += "GB/s" not in line
         elif "NV_ERR_FABRIC_MANAGER_NOT_PRESENT" in line:
             # dmesg time: "[726703.163732] NVRM: ..."
             refused_at_s = float(line[1:line.index("]")])
@@ -409,13 +424,16 @@ def parse_fabric_output(text):
             else:
                 problem = ""
             problems.setdefault(problem, []).append(int(index))
-    if uptime_s is None or not kernel_read or not problems:
+    if uptime_s is None or not kernel_read or not links_read or not problems:
         raise RuntimeError("no fabric reading")
     errors = []
     if refused_at_s is not None and uptime_s - refused_at_s <= FABRIC_ERROR_WINDOW:
         minutes = round((uptime_s - refused_at_s) / 60)
         errors.append("the driver logged NV_ERR_FABRIC_MANAGER_NOT_PRESENT "
                       f"{minutes} min ago")
+    for index, (total, inactive) in links.items():
+        if inactive:
+            errors.append(f"GPU {index} {inactive} of {total} NVLinks inactive")
     for problem, gpus in problems.items():
         if not problem:
             continue

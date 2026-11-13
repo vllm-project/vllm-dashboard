@@ -117,7 +117,7 @@ from migration 0036), whatever domain it used.
   an unhealthy GPU fabric (Kubernetes pools; the reporter's `fabric_ok`:
   every GPU's fabric state is Completed with status Success, health not
   degraded and no degraded bandwidth, route recovery, unhealthy route or
-  access timeout recovery, and the kernel logged no `NV_ERR_FABRIC_MANAGER_NOT_PRESENT`
+  access timeout recovery, no inactive NVLink, and the kernel logged no `NV_ERR_FABRIC_MANAGER_NOT_PRESENT`
   in the last hour),
   and on H200 only root-owned checkout slots, a short GPU count, and Docker
   unable to start containers (the reporter's `docker_ok`: the `docker0`
