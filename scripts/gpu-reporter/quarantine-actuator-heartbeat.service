@@ -20,11 +20,9 @@ StandardOutput=null
 # than no heartbeat. Its stderr carries no secrets.
 StandardError=journal
 UMask=0077
-NoNewPrivileges=true
-PrivateTmp=true
+# DynamicUser=yes already implies NoNewPrivileges, PrivateTmp,
+# ProtectSystem=strict and RestrictSUIDSGID; keep the stricter ProtectHome.
 ProtectHome=true
-ProtectSystem=strict
-RestrictSUIDSGID=true
 LockPersonality=true
 # No failure chaining here: a dead heartbeat is not the actuator failing,
 # and the off-host CloudWatch alarm is the thing that notices it.
