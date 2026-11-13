@@ -789,12 +789,16 @@ READING_MAX_AGE = timedelta(seconds=60)
 HOST_FAULT_CHECKS = 2
 # GPU hardware Xids from NVIDIA's Xid catalog. First-sight ones trip on one
 # event; repeat ones on XID_REPEATS of the same Xid on one GPU in XID_WINDOW.
-FIRST_SIGHT_XIDS = frozenset({48, 54, 64, 79, 110, 140, 143, 157, 171, 172})
+# Catalog codes with no action (157 IGNORE; 171/172, detail rows of Xid 48)
+# are left out.
+# First sight: catalog RESET_GPU, RESTART_BM or CHECK_MECHANICALS.
+FIRST_SIGHT_XIDS = frozenset({48, 54, 64, 79, 110, 140, 143})
 # NVLink 5 errors, B200 only. The design wants only those whose decoded
 # message says fatal hardware, but the device-plugin feed carries no decoded
 # severity, so every one counts.
 B200_FIRST_SIGHT_XIDS = frozenset(range(144, 151))
-REPEAT_XIDS = frozenset({46, 62, 74, 95, 109, 119, 120, 136, 158})
+# Repeat: catalog RESET_GPU, where one event can be a job's own fault.
+REPEAT_XIDS = frozenset({46, 62, 74, 95, 109, 119, 120, 136, 155, 156, 158})
 TRIGGER_XIDS = FIRST_SIGHT_XIDS | B200_FIRST_SIGHT_XIDS | REPEAT_XIDS
 XID_WINDOW = timedelta(hours=24)
 XID_REPEATS = 3

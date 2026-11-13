@@ -173,10 +173,18 @@ def test_hardware_xids_trip_on_first_sight_and_app_xids_never() -> None:
     assert len(scans.run(xid_events=[xid(79, scans.now - timedelta(hours=24))])) == 1
 
 
-@pytest.mark.parametrize("code", [48, 54, 64, 79, 110, 140, 143, 157, 171, 172])
+@pytest.mark.parametrize("code", [48, 54, 64, 79, 110, 140, 143])
 def test_every_first_sight_xid_trips_on_one_event(code: int) -> None:
     scans = Scans()
     assert rules(scans.run(xid_events=[xid(code, START)])) == [("gpu-node-7", "xid")]
+
+
+# NVIDIA's catalog: 157 is IGNORE; 171/172 carry no action (detail of Xid 48).
+@pytest.mark.parametrize("code", [157, 171, 172])
+def test_xids_nvidia_marks_no_action_never_trip(code: int) -> None:
+    scans = Scans()
+    at = [START - timedelta(hours=h) for h in (20, 10, 1)]
+    assert scans.run(xid_events=[xid(code, t) for t in at]) == []
 
 
 @pytest.mark.parametrize("code", range(144, 151))
@@ -192,7 +200,9 @@ def test_xids_past_the_nvlink_range_never_trip_on_first_sight() -> None:
     assert scans.run(xid_events=[xid(151, START, name="k8s-node-1", bus="")]) == []
 
 
-@pytest.mark.parametrize("code", [46, 62, 74, 95, 109, 119, 120, 136, 158])
+@pytest.mark.parametrize(
+    "code", [46, 62, 74, 95, 109, 119, 120, 136, 155, 156, 158]
+)
 def test_every_reset_class_xid_trips_on_its_third_event_only(code: int) -> None:
     scans = Scans()
     at = [START - timedelta(hours=h) for h in (20, 10, 1)]
