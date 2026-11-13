@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server";
-import { queryDatabricks } from "@/lib/databricks";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
-import {
-  perfDataStartCondition,
-  resolvePerfDataStartDate,
-} from "@/lib/perf-data";
+import { resolvePerfDataStartDate } from "@/lib/perf-data";
+import { perfEvalStore, resolvePerfEvalSource } from "@/lib/perf-eval-store";
 
 const TTL = 300_000;
 const CDN_CACHE = { maxAge: 600, staleWhileRevalidate: 86_400 };
@@ -19,56 +16,16 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const startDate = resolvePerfDataStartDate(searchParams.get("start"));
     const end = searchParams.get("end");
+    const source = resolvePerfEvalSource(searchParams);
 
-    const cacheKey = `perf:filters:${startDate}:${end}`;
+    const cacheKey = `perf:filters:${source}:${startDate}:${end}`;
     const cached = getCached(cacheKey);
     if (cached) return cachedJson(cached, CDN_CACHE);
 
-    const conditions = [
-      "message:model IS NOT NULL",
-      perfDataStartCondition(startDate),
-    ];
-    if (end && isIsoDate(end)) {
-      conditions.push(`message:date::STRING <= '${end.slice(0, 10)}'`);
-    }
-
-    const where = conditions.join(" AND ");
-
-    // Per-model datapoint counts, so the UI can sort models by how much data
-    // they have (and show the count). Other dims come from a DISTINCT scan.
-    const [modelRows, dimRows, imageDateRows] = await Promise.all([
-      queryDatabricks<{ model: string; n: number }>(`
-        SELECT message:model::STRING AS model, COUNT(*) AS n
-        FROM vllm_data_warehouse.default.vllm_perf_data_ingest
-        WHERE ${where}
-        GROUP BY message:model::STRING
-      `),
-      queryDatabricks<{
-        device: string;
-        tp: string;
-        conc: string;
-        precision: string;
-        image: string;
-      }>(`
-        SELECT DISTINCT
-          message:device::STRING AS device,
-          message:tp::STRING AS tp,
-          message:conc::STRING AS conc,
-          message:precision::STRING AS precision,
-          message:image::STRING AS image
-        FROM vllm_data_warehouse.default.vllm_perf_data_ingest
-        WHERE ${where}
-      `),
-      // Last run date per image, so the UI can order images newest first.
-      queryDatabricks<{ image: string; last_date: string }>(`
-        SELECT
-          message:image::STRING AS image,
-          MAX(message:date::STRING) AS last_date
-        FROM vllm_data_warehouse.default.vllm_perf_data_ingest
-        WHERE ${where}
-        GROUP BY message:image::STRING
-      `),
-    ]);
+    const { modelRows, dimRows, imageDateRows } = await perfEvalStore(source).perfFilterRows({
+      startDate,
+      end: end && isIsoDate(end) ? end.slice(0, 10) : null,
+    });
 
     const modelCounts: Record<string, number> = {};
     for (const r of modelRows) {
@@ -78,11 +35,13 @@ export async function GET(request: Request) {
     const models = Object.keys(modelCounts).sort(
       (a, b) => modelCounts[b] - modelCounts[a] || a.localeCompare(b)
     );
-    const devices = [...new Set(dimRows.map((r) => r.device).filter(Boolean))].sort();
-    const tps = [...new Set(dimRows.map((r) => r.tp).filter(Boolean))].sort((a, b) => +a - +b);
-    const concs = [...new Set(dimRows.map((r) => r.conc).filter(Boolean))].sort((a, b) => +a - +b);
-    const precisions = [...new Set(dimRows.map((r) => r.precision).filter(Boolean))].sort();
-    const images = [...new Set(dimRows.map((r) => r.image).filter(Boolean))].sort();
+    const present = (values: (string | null)[]) =>
+      [...new Set(values.filter((v): v is string => Boolean(v)))];
+    const devices = present(dimRows.map((r) => r.device)).sort();
+    const tps = present(dimRows.map((r) => r.tp)).sort((a, b) => +a - +b);
+    const concs = present(dimRows.map((r) => r.conc)).sort((a, b) => +a - +b);
+    const precisions = present(dimRows.map((r) => r.precision)).sort();
+    const images = present(dimRows.map((r) => r.image)).sort();
     const imageDates: Record<string, string> = {};
     for (const r of imageDateRows) {
       if (r.image && r.last_date) imageDates[r.image] = r.last_date;
