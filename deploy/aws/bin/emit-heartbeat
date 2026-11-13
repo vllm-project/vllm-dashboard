@@ -9,10 +9,10 @@ set -euo pipefail
 
 job=${1:?usage: emit-heartbeat <job>}
 
-# Bounded by the unit's TimeoutStartSec=30s. Default retries stay on: with
-# 5+4 s of CLI timeouts per attempt, three attempts fit in that bound, and
-# one throttled call must not drop a datapoint from a job that emits only
-# twice per window.
+# Bounded by the unit's TimeoutStartSec=30s. Default retries stay on: a
+# killed slow attempt drops one datapoint, which every window's margin
+# absorbs, and one throttled call must not drop a datapoint from a job that
+# emits only twice per window.
 exec aws --cli-connect-timeout 5 --cli-read-timeout 4 cloudwatch put-metric-data \
   --namespace VllmAlerting \
   --metric-name Heartbeat \
