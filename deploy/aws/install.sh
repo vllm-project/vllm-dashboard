@@ -28,6 +28,7 @@ install -m 0755 "$source_root"/deploy/aws/bin/run-worker /opt/alerting/bin/run-w
 install -m 0755 "$source_root"/deploy/aws/bin/notify-failure /opt/alerting/bin/notify-failure
 install -m 0755 "$source_root"/deploy/aws/bin/hold-failure /opt/alerting/bin/hold-failure
 install -m 0755 "$source_root"/deploy/aws/bin/run-retention /opt/alerting/bin/run-retention
+install -m 0755 "$source_root"/deploy/aws/bin/run-timings-snapshot /opt/alerting/bin/run-timings-snapshot
 install -m 0755 "$source_root"/deploy/aws/bin/run-h200-pauser /opt/alerting/bin/run-h200-pauser
 install -m 0755 "$source_root"/scripts/gpu-reporter/quarantine-pauser-h200.py /opt/alerting/bin/quarantine-pauser-h200.py
 install -m 0644 "$source_root"/deploy/aws/systemd/*.service /etc/systemd/system/
@@ -49,3 +50,4 @@ systemctl daemon-reload
 systemctl start alerting-control.service
 systemctl enable --now alerting-control.timer
 systemctl enable --now alerting-retention.timer
+systemctl enable --now alerting-timings-snapshot.timer
