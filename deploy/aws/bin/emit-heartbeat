@@ -7,13 +7,14 @@
 set -euo pipefail
 
 job=${1:?usage: emit-heartbeat <job>}
-# The aws CLI wants a writable HOME; units have none (PrivateTmp gives /tmp).
-export HOME=/tmp
 
-# Bounded hard: ExecStartPost= counts against TimeoutStartSec, so a stalled
-# CloudWatch call must not turn a successful run into a failed unit.
+# ExecStartPost= counts against TimeoutStartSec, and the "-" prefix on it
+# ignores exit codes but not unit timeouts, so a stalled CloudWatch call must
+# be bounded tighter than the slack a finished run has left.
+# shortcut: a run that finishes within 10 s of its TimeoutStartSec can still
+# be failed by a slow emit; upgrade is emission outside the unit's timeout.
 export AWS_MAX_ATTEMPTS=1
-exec timeout 20 aws --cli-connect-timeout 5 --cli-read-timeout 10 cloudwatch put-metric-data \
+exec timeout 10 aws --cli-connect-timeout 5 --cli-read-timeout 4 cloudwatch put-metric-data \
   --namespace VllmAlerting \
   --metric-name Heartbeat \
   --dimensions "Job=${job}" \
