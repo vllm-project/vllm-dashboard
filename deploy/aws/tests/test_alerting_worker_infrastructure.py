@@ -684,6 +684,7 @@ def test_job_emits_heartbeat_only_after_it_succeeds(job: str) -> None:
     template_unit = read("systemd/alerting-heartbeat@.service")
     assert "Type=oneshot" in template_unit
     assert "ExecStart=/opt/alerting/bin/emit-heartbeat %i" in template_unit
+    assert "TimeoutStartSec=30s" in template_unit
     # A dead heartbeat is not the job failing; the off-worker alarm notices.
     assert "OnFailure=" not in template_unit
     # Its stderr goes to the journal, not to /dev/null like the job's.
@@ -695,11 +696,13 @@ def test_heartbeat_emitter_needs_no_worker_secret() -> None:
     script = read("bin/emit-heartbeat")
 
     assert "cloudwatch put-metric-data" in script
-    # A stalled call must not outlive the unit's start timeout: 10 s of wall
-    # clock, one attempt, 5+4 s of CLI timeouts.
+    # A stalled call is bounded by the unit's TimeoutStartSec and the
+    # script's own timeout: 10 s of wall clock, 5+4 s of CLI timeouts.
+    # Default retries stay on so one throttled call does not drop a
+    # datapoint from a job that emits only twice per window.
     assert "timeout 10 aws" in script
     assert "--cli-connect-timeout 5" in script and "--cli-read-timeout 4" in script
-    assert "AWS_MAX_ATTEMPTS=1" in script
+    assert "AWS_MAX_ATTEMPTS" not in script
     assert "--namespace VllmAlerting" in script
     for needle in ("load-secrets", "worker.env", "TOKEN", "DATABASE_URL"):
         assert needle not in script
@@ -732,7 +735,10 @@ def test_missing_heartbeat_alarms_through_sns_outside_the_worker(job: str) -> No
     assert "Threshold: 1" in block
     assert "Stat: Sum" in block
     assert f"Value: {job}\n" in block
-    expected = {"control": 3, "fast-ci": 6, "main-ci": 3, "infra": 4}[job]
-    assert periods.group(1) == str(expected)  # x 5 min: 15/30/15/20
+    # The window outlasts one timed-out run plus one full-length success
+    # (which already paged through OnFailure), so a single timeout does not
+    # page twice: cadence + TimeoutStartSec + cadence + 10 min.
+    expected = {"control": 3, "fast-ci": 9, "main-ci": 5, "infra": 6}[job]
+    assert periods.group(1) == str(expected)  # x 5 min: 15/45/25/30
     assert block.count("Ref: HeartbeatTopic") == 2  # alarm and recovery
     assert "Condition: HasHeartbeatEmail" in template  # target is a parameter

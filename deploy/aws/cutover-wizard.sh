@@ -221,6 +221,10 @@ else
   warn "Rollback first disables selected new timer and stops its active service."
   confirm "Set $ALERT_PATH to disabled in S3?" || exit 1
   set_control disabled
+  if [[ "$ALERT_PATH" == "fast_ci" ]]; then
+    step "If the heartbeat alarms are deployed, silence fast-ci's while it stays disabled:"
+    step "  aws cloudwatch disable-alarm-actions --alarm-names <stack-name>-heartbeat-fast-ci"
+  fi
 fi
 step "Wait at least 75 seconds for alerting-control.timer to apply this state."
 pause "Press Enter after the control interval has elapsed."
@@ -271,6 +275,10 @@ if [[ "$ACTION" == "cutover" ]]; then
   confirm "Set new $ALERT_PATH path live?" || exit 1
   set_control live
   step "Wait at least 75 seconds for selected new timer to enable."
+  if [[ "$ALERT_PATH" == "fast_ci" ]]; then
+    step "Re-enable the heartbeat alarm if rollback silenced it:"
+    step "  aws cloudwatch enable-alarm-actions --alarm-names <stack-name>-heartbeat-fast-ci"
+  fi
 else
   say "New $ALERT_PATH remains disabled. Postgres and S3 baselines were not rewound."
 fi
