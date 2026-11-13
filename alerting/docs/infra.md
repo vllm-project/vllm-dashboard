@@ -222,14 +222,20 @@ posts that can repeat in one episode (a failed return, a stuck actuator).
 ### Control-plane heartbeat
 
 Each k8s actuator chains `quarantine-actuator-heartbeat.service` from its
-`OnSuccess=`: after a successful poll (a failed one exits 1 and emits
-nothing) the unit runs `emit-heartbeat` — the same bounded script the
-worker's heartbeat uses — putting one `VllmAlerting/Heartbeat` datapoint
-with `Job=quarantine-actuator-<cluster>`. The worker stack's alarms
+`OnSuccess=`: after a completed poll the unit runs `emit-heartbeat` — the
+same bounded script the worker's heartbeat uses — putting one
+`VllmAlerting/Heartbeat` datapoint with `Job=quarantine-actuator-<cluster>`.
+A poll that never finishes (the desired set unreachable, missing env, a
+crashed kubectl) exits 1 and emits nothing; a poll that completes with
+per-node errors exits 2, which `SuccessExitStatus=2` still counts as
+success, so one broken node cannot silence the heartbeat and page with the
+wrong cause — the worker's per-stage stuck notices already carry that. The
+worker stack's alarms
 (`<stack-name>-heartbeat-quarantine-actuator-h100` / `-b200`) count a
-missing period as zero (`FILL(m1, 0)`, missing = breaching, 15-minute
-window) and notify the same SNS topic as the worker's own heartbeat alarms,
-so a dead actuator timer, a dead control plane, or dead credentials page
+missing period as zero (`FILL(m1, 0)`, missing = breaching; three 5-minute
+periods, so at least 15 minutes of silence) and notify the same SNS topic
+as the worker's own heartbeat alarms, so a dead actuator timer, a dead
+control plane, or dead credentials page
 off-host. The control planes are not EC2, so there is no instance role:
 each one holds its own static IAM credentials in
 `/etc/gpu-reporter/heartbeat-aws.env` (root 0600, one IAM user per control
@@ -266,10 +272,15 @@ chat):
    ```
 
 4. Install `deploy/aws/bin/emit-heartbeat` as `/opt/gpu-reporter/emit-heartbeat`
-   (0755) and `scripts/gpu-reporter/quarantine-actuator-heartbeat.service`
-   into `/etc/systemd/system/`, then `systemctl daemon-reload`.
+   (0755), and both the updated `scripts/gpu-reporter/quarantine-actuator-k8s.service`
+   (it carries the `OnSuccess=` line) and the new
+   `scripts/gpu-reporter/quarantine-actuator-heartbeat.service` into
+   `/etc/systemd/system/`, then `systemctl daemon-reload`.
 5. Prove the path once: `systemctl start quarantine-actuator-heartbeat.service`,
-   then read its journal; from off the host, confirm the datapoint with
+   then read its journal. Then prove the chain, not just the unit:
+   `systemctl start quarantine-actuator-k8s.service`, wait a few seconds, and
+   check `journalctl -u quarantine-actuator-heartbeat.service` for a run you
+   did not start by hand. From off the host, confirm the datapoint with
    `aws cloudwatch get-metric-statistics --namespace VllmAlerting
    --metric-name Heartbeat --dimensions Name=Job,Value=quarantine-actuator-<cluster>`.
    From then on the actuator's `OnSuccess=` emits every minute.
@@ -279,8 +290,8 @@ chat):
 The delivery test is `aws cloudwatch set-alarm-state --state-value ALARM` on
 each alarm; the silence test is `systemctl mask
 quarantine-actuator-heartbeat.service` on one control plane (the actuator
-itself keeps running), waiting out the 15-minute window for the ALARM mail,
-then `unmask` and expecting the OK mail.
+itself keeps running), waiting out the window (at least 15 minutes) for the
+ALARM mail, then `unmask` and expecting the OK mail.
 
 ## Tables
 

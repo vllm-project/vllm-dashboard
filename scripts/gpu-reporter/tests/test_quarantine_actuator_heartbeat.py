@@ -24,6 +24,11 @@ def test_actuator_emits_heartbeat_only_after_a_successful_run() -> None:
 
     assert "ExecStartPost=" not in service
     assert "OnSuccess=quarantine-actuator-heartbeat.service" in service
+    # A completed poll with per-node errors exits 2, still a success, so one
+    # broken node cannot silence the heartbeat and page with the wrong cause
+    # (the worker's per-stage stuck notices carry the node problem). Only a
+    # poll that never finished — the desired set unreachable — exits 1.
+    assert "SuccessExitStatus=2" in service
 
     unit = read("quarantine-actuator-heartbeat.service")
     assert "Type=oneshot" in unit

@@ -288,6 +288,21 @@ def test_endpoint_down_changes_nothing_and_fails(run):
     assert kube.writes == []
 
 
+def test_a_partly_failed_poll_still_counts_as_completed(run):
+    """Exit 2 — a completed poll with per-node errors — is a success to the
+    unit (SuccessExitStatus=2), so the off-host heartbeat still fires and the
+    worker's per-stage stuck notices carry the node problem. Only a poll
+    that never finished exits 1, silencing the heartbeat."""
+    kube = FakeKube({"n1": node()})
+    kube.fail = {"patch"}
+    dash = FakeDashboard([want("n1", "quarantining")])
+    assert run(kube, dash) == 2
+    kube.fail = set()
+    assert run(kube, dash) == 0
+    # The desired set unreachable is not a completed poll.
+    assert run(kube, FakeDashboard(down=True)) == 1
+
+
 def test_taint_value_is_a_valid_label_value(run):
     v = run.mod.taint_value("  !!" + "x" * 80)
     assert len(v) <= 63 and v[0].isalnum() and v[-1].isalnum()
@@ -337,7 +352,7 @@ def test_failed_cordon_patch_leaves_nothing_half_done(run):
     kube = FakeKube({"n1": node()})
     kube.fail = {"patch"}
     dash = FakeDashboard([want("n1", "quarantining")])
-    assert run(kube, dash) == 1
+    assert run(kube, dash) == 2
     assert kube.nodes["n1"] == node()
     kube.fail = set()
     assert run(kube, dash) == 0
@@ -351,7 +366,7 @@ def test_taint_failure_after_cordon_still_resolves_cleanly(run):
     kube = FakeKube({"n1": node()})
     kube.fail = {"taint"}
     dash = FakeDashboard([want("n1", "quarantining")])
-    assert run(kube, dash) == 1
+    assert run(kube, dash) == 2
     kube.fail = set()
     assert run(kube, dash) == 0
     assert any(t["key"] == KEY for t in kube.nodes["n1"]["taints"])
@@ -376,7 +391,7 @@ def test_cordon_by_a_person_mid_run_is_never_marked_ours(run):
         return real(*args, input=input)
 
     dash = FakeDashboard([want("n1", "quarantining")])
-    assert run(racing, dash) == 1
+    assert run(racing, dash) == 2
     assert kube.nodes["n1"]["annotations"] == {}
     assert run(kube, dash) == 0
     assert kube.nodes["n1"]["annotations"] == {}
@@ -530,7 +545,7 @@ def test_a_failed_check_keeps_its_pod_until_the_dashboard_has_it(run):
             raise urllib.error.URLError("connection refused")
         return real(method, path, body)
 
-    assert run(kube, post_fails) == 1
+    assert run(kube, post_fails) == 2
     assert kube.writes == [] and CHECK in kube.checks
     # The next run reports the same failure from the pod, then deletes it.
     assert run(kube, dash) == 0
@@ -619,7 +634,7 @@ def test_a_check_pod_lookup_error_changes_nothing(run):
         return kube(*args, input=input)
 
     dash = FakeDashboard([want("n1", "resolving")])
-    assert run(flaky, dash) == 1
+    assert run(flaky, dash) == 2
     assert kube.writes == [] and dash.posts == []
 
 
