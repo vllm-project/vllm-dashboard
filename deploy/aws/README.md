@@ -120,7 +120,10 @@ its secret. Set `HeartbeatAlertEmail` and click SNS's confirmation link
 once; empty means no subscriber. A job whose timer is intentionally disabled
 (a path turned off in S3 control) will alarm: disable or delete its alarm
 first. `control` doesn't load the worker secret, so its alarm covers a dead
-instance or timers, not the secret. The metric has only the `Job` dimension:
+instance or timers, not the secret. Windows (15/45/25/30 min for
+control/fast-ci/main-ci/infra) outlast one timed-out run plus one
+full-length success — a timeout already pages through `OnFailure`, and must
+not page twice. The metric has only the `Job` dimension:
 one worker per account and region, or a second emitter would hold the
 alarms at OK.
 
@@ -169,12 +172,18 @@ Cutover is path-specific. Fast CI fences only
 `vllm-fast-ci-failure-alert.timer`; Full CI requires disabling only its task in
 the shared legacy scheduler. Rollback disables the selected new timer through
 S3, archives any undelivered live rows as shadow output, restores only the
-selected old producer, and never rewinds Postgres or S3 state.
+selected old producer, and never rewinds Postgres or S3 state. A path left
+`disabled` stops emitting heartbeats, so its heartbeat alarm fires and stays
+ALARM until its actions are disabled; the wizard prints the
+`disable-alarm-actions` step.
 
 ## Recovery check
 
 Stop all alert timers before a scheduled tick, wait through the tick, then
-start the timers again. `Persistent=true` and `OnBootSec` start reconciliation,
+start the timers again. Stopping the timers stops the heartbeats too, so
+each heartbeat alarm fires and recovers as the timers come back (the ALARM
+then OK emails are expected; `disable-alarm-actions` first if they are not
+wanted). `Persistent=true` and `OnBootSec` start reconciliation,
 while the Postgres cursors and processed-run history recover missed Fast, Full,
 or Main CI observations. Each path has a separate timer and service — Main CI
 has three: one for lifecycle reconciliation, one for AI analysis, and one

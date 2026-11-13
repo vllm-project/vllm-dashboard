@@ -275,7 +275,7 @@ Resources:
       AlarmName:
         Fn::Sub: ${AWS::StackName}-heartbeat-fast-ci
       AlarmDescription: >-
-        No successful fast-ci run for 30 minutes. Check the worker's timers and
+        No successful fast-ci run for 45 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).
       # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
       # reaches back past EvaluationPeriods for an older heartbeat that would
@@ -296,8 +296,8 @@ Resources:
           Expression: FILL(m1, 0)
           Label: Heartbeats per 5 minutes
           ReturnData: true
-      EvaluationPeriods: 6
-      DatapointsToAlarm: 6
+      EvaluationPeriods: 9
+      DatapointsToAlarm: 9
       Threshold: 1
       ComparisonOperator: LessThanThreshold
       TreatMissingData: breaching
@@ -312,7 +312,7 @@ Resources:
       AlarmName:
         Fn::Sub: ${AWS::StackName}-heartbeat-main-ci
       AlarmDescription: >-
-        No successful main-ci run for 15 minutes. Check the worker's timers and
+        No successful main-ci run for 25 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).
       # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
       # reaches back past EvaluationPeriods for an older heartbeat that would
@@ -333,8 +333,8 @@ Resources:
           Expression: FILL(m1, 0)
           Label: Heartbeats per 5 minutes
           ReturnData: true
-      EvaluationPeriods: 3
-      DatapointsToAlarm: 3
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 5
       Threshold: 1
       ComparisonOperator: LessThanThreshold
       TreatMissingData: breaching
@@ -349,7 +349,7 @@ Resources:
       AlarmName:
         Fn::Sub: ${AWS::StackName}-heartbeat-infra
       AlarmDescription: >-
-        No successful infra run for 20 minutes. Check the worker's timers and
+        No successful infra run for 30 minutes. Check the worker's timers and
         its secret (Operations Handbook, Off-worker heartbeat).
       # FILL(m1, 0) makes every period a real datapoint, so CloudWatch never
       # reaches back past EvaluationPeriods for an older heartbeat that would
@@ -370,8 +370,8 @@ Resources:
           Expression: FILL(m1, 0)
           Label: Heartbeats per 5 minutes
           ReturnData: true
-      EvaluationPeriods: 4
-      DatapointsToAlarm: 4
+      EvaluationPeriods: 6
+      DatapointsToAlarm: 6
       Threshold: 1
       ComparisonOperator: LessThanThreshold
       TreatMissingData: breaching
