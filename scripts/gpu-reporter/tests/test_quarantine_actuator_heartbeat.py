@@ -16,22 +16,27 @@ def read(relative_path: str) -> str:
 
 
 def test_actuator_emits_heartbeat_only_after_a_successful_run() -> None:
-    """The heartbeat is its own oneshot unit on the actuator's OnSuccess=:
-    it runs only after a successful poll (a failed poll exits 1 and emits
-    nothing), and outside the actuator's TimeoutSec, so a slow CloudWatch
-    call can never fail a poll."""
+    """The heartbeat is its own oneshot unit chained from a drop-in on the
+    actuator's OnSuccess=: it runs only after a successful run, and outside
+    the actuator's TimeoutSec, so a slow CloudWatch call can never fail a
+    poll. The chain lives in a drop-in, never in the unit file itself:
+    reinstalling the unit (whose ExecStart pins --dry-run) must touch
+    neither the chain nor a live actuator's command line."""
     service = read("quarantine-actuator-k8s.service")
+    dropin = read("quarantine-actuator-k8s.service.d/heartbeat.conf")
 
     assert "ExecStartPost=" not in service
-    assert "OnSuccess=quarantine-actuator-heartbeat.service" in service
+    assert "OnSuccess=" not in service
+    assert "SuccessExitStatus" not in service
+    assert "OnSuccess=quarantine-actuator-heartbeat.service" in dropin
     # A completed poll with per-node errors exits 3, still a success, so one
     # broken node cannot silence the heartbeat and page with the wrong cause
     # (the worker's notices carry a stage still awaiting confirmation). Only
     # a poll that never finished — the desired set unreachable — exits 1. Not
     # exit 2: Python itself exits 2 when the script can't be read and
     # argparse exits 2 on a bad flag, and those must never count as success.
-    assert "SuccessExitStatus=3" in service
-    assert "SuccessExitStatus=2" not in service
+    assert "SuccessExitStatus=3" in dropin
+    assert "SuccessExitStatus=2" not in dropin
 
     unit = read("quarantine-actuator-heartbeat.service")
     assert "Type=oneshot" in unit
