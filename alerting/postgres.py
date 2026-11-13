@@ -90,6 +90,7 @@ from alerting.selector_health import (
 )
 
 if TYPE_CHECKING:
+    from alerting.daily_summary import ScrapeBuckets
     from alerting.migration import ImportedFastCIJob
 
 
@@ -1497,24 +1498,39 @@ class PostgresAlertStore:
             ).fetchall()
         return {str(row[0]).lower(): int(row[1]) for row in rows}
 
-    def scrape_buckets(self, since: datetime) -> dict[str, int]:
+    def scrape_buckets(self, since: datetime) -> ScrapeBuckets:
+        from alerting.daily_summary import ScrapeBuckets
+
         with self._connection_factory() as connection:
-            # gpu_history_5m, not gpu_snapshots: one row per host per bucket
-            # is two days of 288 rows per host instead of raw samples. A host
-            # counts once it has a bucket before the window, so one whose
-            # scrape was down for the window's start is still measured.
+            # gpu_history_5m, not gpu_snapshots: one row per host per bucket.
+            # One two-day scan per host: its buckets in the window, and
+            # whether it has a bucket in the day before the window (eligible
+            # = expected from the window's start if it reports in the window).
             rows = connection.execute(
                 """
                 SELECT hostname,
-                       count(DISTINCT time_bucket) FILTER (WHERE time_bucket >= %s)
+                       array_agg(DISTINCT time_bucket) FILTER (WHERE time_bucket >= %s),
+                       bool_or(time_bucket < %s)
                 FROM gpu_history_5m
                 WHERE time_bucket >= %s
                 GROUP BY hostname
-                HAVING min(time_bucket) < %s
                 """,
-                (since, since - timedelta(days=1), since),
+                (since, since, since - timedelta(days=1)),
             ).fetchall()
-        return {str(row[0]).lower(): int(row[1]) for row in rows}
+        by_host: dict[str, set[datetime]] = {}
+        eligible: set[str] = set()
+        # Grouped by hostname as stored: the same host under different
+        # casings merges its buckets, and is eligible if any casing is.
+        for hostname, buckets, is_eligible in rows:
+            host = str(hostname).lower()
+            if buckets:
+                by_host.setdefault(host, set()).update(buckets)
+            if is_eligible:
+                eligible.add(host)
+        return ScrapeBuckets(
+            by_host={host: frozenset(buckets) for host, buckets in by_host.items()},
+            eligible=frozenset(eligible),
+        )
 
     def last_agent_queues(
         self, hostnames: Iterable[str], *, since: datetime | None = None

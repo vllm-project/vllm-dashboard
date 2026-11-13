@@ -13,6 +13,7 @@ used on its own, because a host that came up short would learn the short count.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,8 @@ from alerting.infra import (
     InfraAlertType,
     InfraSnapshotPort,
     InfraStore,
+    K8S_NODE_QUEUES,
+    PILOT_QUEUES,
     _code,
     _escape,
     pilot_pools,
@@ -49,10 +52,41 @@ BUCKETS_PER_DAY = int(WINDOW / timedelta(minutes=5))
 # A host that is reporting but missed at least this share of the day's
 # buckets has a flapping scrape.
 SCRAPE_FAILING_PERCENT = 10
+# A bucket counts against a host only when its reporting was provably up
+# then. Kubernetes nodes are reported by one control-plane scraper per
+# cluster, so a bucket counts when at least half of the cluster's expected
+# nodes have it — a majority missing is the scraper down. Bare-metal h200
+# hosts report independently, so a bucket counts when any expected host in
+# the fleet has it — none reporting anywhere is the ingestion pipeline down.
+CLUSTER_COVERAGE_MAJORITY = 2
+# A shared-scraper cluster with fewer expected nodes than this has no
+# majority to prove a scraper outage, so its misses are charged directly.
+MIN_NODES_FOR_MAJORITY = 2
+# Clusters whose nodes are reported by one shared control-plane scraper
+# (Kubernetes); bare-metal hosts report independently.
+SHARED_SCRAPER_CLUSTERS = frozenset(
+    PILOT_QUEUES[queue] for queue in K8S_NODE_QUEUES.values()
+)
 # Pools in the order the Mode line lists them.
 CLUSTERS = ("h200", "h100", "b200")
 # Quarantine stages in which the host is out of service.
 OUT_STAGES = frozenset({"quarantining", "quarantined", "resolve_requested", "resolving"})
+
+
+@dataclass(frozen=True)
+class ScrapeBuckets:
+    """The day's five-minute GPU-row buckets.
+
+    by_host maps each host that reported in the window to its buckets.
+    eligible hosts had a bucket in the day before the window: with buckets
+    today they are expected from the day's first slot through their last
+    bucket; with none they are not measured at all (a removed or long-dead
+    host is the unreporting alert's and the roster's business, not a flap).
+    Anyone else reporting is new and measured from its first bucket on.
+    """
+
+    by_host: Mapping[str, frozenset[datetime]]
+    eligible: frozenset[str]
 
 
 class DailySummarySource(Protocol):
@@ -67,8 +101,8 @@ class DailySummarySource(Protocol):
         """Lowercased host -> expected GPU count, from the exception list."""
         ...
 
-    def scrape_buckets(self, since: datetime) -> dict[str, int]:
-        """Five-minute buckets with a GPU row since `since`, for each host
+    def scrape_buckets(self, since: datetime) -> ScrapeBuckets:
+        """Five-minute buckets with a GPU row since `since`, and the hosts
         that had one in the day before the window."""
         ...
 
@@ -103,7 +137,7 @@ class SummaryInputs:
     baselines: Mapping[str, int]
     exceptions: Mapping[str, int]
     episodes: list[InfraAlertEpisode]
-    scrape_buckets: Mapping[str, int]
+    scrape_buckets: ScrapeBuckets
     allocatable: Mapping[str, tuple[int, int]]
     cordoned: Mapping[str, datetime]
 
@@ -129,6 +163,14 @@ def _out_at(episode: InfraAlertEpisode) -> datetime:
 
 def _reason(episode: InfraAlertEpisode) -> str:
     return _escape(episode.details.get("reason"))
+
+
+def _day_slots(now: datetime) -> list[datetime]:
+    """The day's 288 wall-clock five-minute buckets (UTC-aligned, as the
+    rollups are), ending at the last one complete before `now`."""
+    end = now.astimezone(timezone.utc).replace(second=0, microsecond=0)
+    end = end.replace(minute=end.minute - end.minute % 5)
+    return [end - timedelta(minutes=5) * n for n in range(BUCKETS_PER_DAY, 0, -1)]
 
 
 def render_summary(inputs: SummaryInputs) -> str:
@@ -190,9 +232,53 @@ def render_summary(inputs: SummaryInputs) -> str:
             changes.append(f"• 📈 {_code(host)} GPUs recovered")
 
     silent = {e.subject_key for e in of(InfraAlertType.UNREPORTING) if e.resolved_at is None}
-    for host, buckets in sorted(inputs.scrape_buckets.items()):
-        failing = 100 * (1 - buckets / BUCKETS_PER_DAY)
-        if host in inputs.pools and host not in silent and failing >= SCRAPE_FAILING_PERCENT:
+    slots = _day_slots(now)
+    reported = inputs.scrape_buckets.by_host
+    eligible = inputs.scrape_buckets.eligible
+    # A host's expected span runs to its last bucket of the day: trailing
+    # silence is the unreporting alert's job, not a flap. The span starts at
+    # the day's first slot for a host eligible from the day before, so a gap
+    # before it returned counts; a genuinely new host starts at its first
+    # bucket. Eligible but silent all day means removed or long dead: no
+    # expected slots. Hosts with an open unreporting episode are skipped
+    # entirely — neither warned nor counted toward their cluster's coverage.
+    expected_slots: dict[str, set[datetime]] = {}
+    for host in inputs.pools:
+        if host in silent:
+            continue
+        buckets = reported.get(host)
+        if not buckets:
+            continue
+        first = slots[0] if host in eligible else min(buckets)
+        last = max(buckets)
+        expected_slots[host] = {slot for slot in slots if first <= slot <= last}
+    fleet_reported = set().union(*(reported[host] for host in expected_slots))
+    # Only shared-scraper clusters need per-cluster coverage tallies.
+    wanted_by_cluster: dict[str, Counter[datetime]] = {}
+    actual_by_cluster: dict[str, Counter[datetime]] = {}
+    for host, host_slots in expected_slots.items():
+        cluster = inputs.pools[host][0]
+        if cluster not in SHARED_SCRAPER_CLUSTERS:
+            continue
+        wanted_by_cluster.setdefault(cluster, Counter()).update(host_slots)
+        actual_by_cluster.setdefault(cluster, Counter()).update(reported[host])
+    # A bucket counts against a host only when reporting was provably up then
+    # (see CLUSTER_COVERAGE_MAJORITY). Independent reporters use fleet_reported.
+    covered: dict[str, set[datetime]] = {}
+    for cluster, wanted in wanted_by_cluster.items():
+        actual = actual_by_cluster[cluster]
+        covered[cluster] = {
+            slot
+            for slot in slots
+            if wanted[slot] < MIN_NODES_FOR_MAJORITY
+            or actual[slot] * CLUSTER_COVERAGE_MAJORITY >= wanted[slot]
+        }
+    for host in sorted(expected_slots):
+        cluster = inputs.pools[host][0]
+        host_covered = covered[cluster] if cluster in SHARED_SCRAPER_CLUSTERS else fleet_reported
+        missed = (expected_slots[host] & host_covered) - reported[host]
+        failing = 100 * len(missed) / BUCKETS_PER_DAY
+        if failing >= SCRAPE_FAILING_PERCENT:
             changes.append(f"• ⚠️ {_code(host)} scrape failing {round(failing)}% (24 h)")
 
     out = [e for e in quarantines if e.resolved_at is None and e.details.get("stage") in OUT_STAGES]
@@ -308,13 +394,17 @@ class DailySummaryHandler:
         since = now - WINDOW
         counts = self._snapshots.gpu_counts()
         episodes = self._source.episodes_since(since)
-        buckets = self._source.scrape_buckets(since)
+        # The grid's aligned first slot, so the window the store fetches is
+        # exactly the day render_summary expects, with a full day before it
+        # for eligibility.
+        buckets = self._source.scrape_buckets(_day_slots(now)[0])
         allocatable = self._source.allocatable_gpus()
         # A pool that went dark has no fresh rows; its hosts are still in the
         # day's rollups and episodes, so a dead pool is not "not started".
         roster = (
             {obs.hostname for obs in counts}
-            | buckets.keys()
+            | buckets.by_host.keys()
+            | buckets.eligible
             | allocatable.keys()
             | {e.subject_key.removeprefix("gpu-count:") for e in episodes}
         )

@@ -237,9 +237,24 @@ delivery mode. It posts once, through the outbox, to
 `SLACK_CI_INFRA_ALERT_CHANNEL`, or to `ALERTING_FAILURE_SLACK_DESTINATION`
 (the DM) when that is unset. The post lists changes in the last 24 hours
 (quarantines, would-have, held, returned, GPU count drops and recoveries,
-scrapes that missed at least 10% of their five-minute buckets), then what
+scrape warnings), then what
 stands (quarantined, held, degraded, not reporting) and a `/gpu` link. A quiet
-day is one line. A host is degraded when its GPU count is below its
+day is one line. A scrape warning means the buckets a host missed inside its
+expected span are at least 10% of the day's 288 five-minute buckets. A host's
+expected span ends at its
+last bucket of the day — trailing silence is the unreporting alert's job —
+and starts at the day's first slot for a host with a bucket in the day
+before the window (so a gap before it returned counts) or at its first
+bucket for a host first seen today. An eligible host with no buckets today
+is not measured: a removed or long-dead host cannot warn. A bucket counts
+against a host only when the cluster's reporting was provably up then:
+Kubernetes nodes are reported by one control-plane scraper per cluster, so
+a bucket counts when at least half of the expected nodes have it (a
+majority missing is the scraper down; a single-node pool has no majority
+and is charged directly), while each bare-metal H200 host reports for
+itself, so a bucket counts when any expected host in the fleet has it
+(none reporting anywhere is the alerting pipeline down). A host is degraded when its
+GPU count is below its
 exception-list value, or below the larger of 8 and the most GPUs the
 `gpu_count` baseline has seen; a Kubernetes node whose allocatable GPUs are
 below its capacity is listed too. The Mode line shows `live` or `dry run`
