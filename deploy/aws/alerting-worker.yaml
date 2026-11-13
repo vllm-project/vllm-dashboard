@@ -214,8 +214,9 @@ Resources:
   # OnSuccess=). Gaps in the data count as zero, so a dead timer, a dead
   # instance, or a worker that cannot load its secret all alarm, and delivery
   # goes SNS -> email without the worker, its database or secret. Names carry
-  # the stack name so disaster recovery can build a replacement stack beside
-  # this one; the metric itself is per account and region (one worker each).
+  # the stack name so a replacement stack never clashes on names; the metric
+  # itself is per account and region (one worker each), so while an old and a
+  # replacement worker are both up, each holds the other stack's alarms at OK.
   HeartbeatTopic:
     Type: AWS::SNS::Topic
     Properties:

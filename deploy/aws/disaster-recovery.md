@@ -104,5 +104,8 @@ FROM alerting_automation_executions
 ORDER BY updated_at DESC LIMIT 10;
 ```
 
-The heartbeat alarms (`<stack-name>-heartbeat-*`) should read OK within a few
-minutes of the timers resuming.
+The heartbeat alarms (`<stack-name>-heartbeat-*`) should read OK within about
+25 minutes of the timers resuming (fast-ci is the slowest: 15-minute cadence
+plus up to 10 minutes of run time). If the old stack's worker is still up
+while the new one boots, its heartbeats hold the new stack's alarms at OK:
+stop the old worker's timers before trusting them.
