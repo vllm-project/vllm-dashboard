@@ -90,8 +90,8 @@ test("AMD CI retry filtering uses the pipeline slug in telemetry and display nam
   const warehouse = buildWarehouseRetryQuery(filters);
   assert.match(otel.statement, /j.pipeline_slug = \$1/);
   assert.deepEqual(otel.parameters, ["amd-ci"]);
-  assert.match(warehouse.statement, /p.name = :pipeline/);
-  assert.deepEqual(warehouse.parameters, [{ name: "pipeline", value: "AMD CI", type: "STRING" }]);
+  assert.match(warehouse.statement, /name = \{pipeline:String\}/);
+  assert.deepEqual(warehouse.parameters, { pipeline: "AMD CI" });
 });
 
 test("retry ranking independently ranks AMD mirrors, native AMD jobs, and NVIDIA jobs", () => {
@@ -114,12 +114,12 @@ test("backend retry filters bind hostile values and respect all-pipeline/all-bra
   assert.ok(!otel.statement.includes(hostile));
   assert.ok(!warehouse.statement.includes(hostile));
   assert.ok(otel.parameters.includes(hostile));
-  assert.equal(warehouse.parameters.find((p) => p.name === "branch")?.value, hostile);
+  assert.equal(warehouse.parameters.branch, hostile);
   assert.match(otel.statement, /j.start_time >= \$\d+::timestamptz/);
-  assert.match(warehouse.statement, /j.started_at >= CAST\(:startTime AS TIMESTAMP\)/);
+  assert.match(warehouse.statement, /j.started_at >= parseDateTime64BestEffort\(\{startTime:String\}/);
   const all = parseRetryFilters(new URLSearchParams({ pipeline: "", branch: "" }));
   assert.deepEqual(buildOtelRetryQuery(all).parameters, []);
-  assert.deepEqual(buildWarehouseRetryQuery(all).parameters, []);
+  assert.deepEqual(buildWarehouseRetryQuery(all).parameters, {});
 });
 
 test("retry run queries bind exact names and share ranking scope, including all and AMD pipelines", () => {
@@ -131,9 +131,9 @@ test("retry run queries bind exact names and share ranking scope, including all 
     assert.equal(otel.statement.includes(hostile), false);
     assert.equal(warehouse.statement.includes(hostile), false);
     assert.deepEqual(otel.parameters, [...buildOtelRetryQuery(filters).parameters, hostile]);
-    assert.deepEqual(warehouse.parameters, [...buildWarehouseRetryQuery(filters).parameters, { name: "jobName", value: hostile, type: "STRING" }]);
+    assert.deepEqual(warehouse.parameters, { ...buildWarehouseRetryQuery(filters).parameters, jobName: hostile });
     assert.match(otel.statement, /j.job_label = \$\d+/);
-    assert.match(warehouse.statement, /j.name = :jobName/);
+    assert.match(warehouse.statement, /j.name = \{jobName:String\}/);
     assert.match(otel.statement, /ORDER BY a.started_at ASC, a.job_id ASC/);
     assert.match(warehouse.statement, /ORDER BY started_at ASC, job_id ASC/);
   }
@@ -208,25 +208,15 @@ test("actual retry SQL counts retry attempts once across outcomes, shards, and d
       UPDATE warehouse.build_job SET finished_at = started_at + INTERVAL '1 minute';
     `);
     const filters = parseRetryFilters(new URLSearchParams({ startDate: "2026-09-23T10:00Z", endDate: "2026-09-23T11:00Z" }));
+    // The ClickHouse warehouse query can't run on this Postgres fixture; it is
+    // checked against live ClickHouse data instead (see the migration PR).
     const otel = buildOtelRetryQuery(filters);
-    const warehouse = buildWarehouseRetryQuery(filters);
-    const warehouseStatement = warehouse.statement.replaceAll("vllm_data_warehouse.buildkite.", "warehouse.")
-      .replace(/:(pipeline|branch|startTime|endTime)\b/g, (_, name) => `$${warehouse.parameters.findIndex((p) => p.name === name) + 1}`);
-    const results = await Promise.all([
-      db.query<RetryStatsRow>(otel.statement, otel.parameters),
-      db.query<RetryStatsRow>(warehouseStatement, warehouse.parameters.map((p) => p.value)),
-    ]);
+    const results = [await db.query<RetryStatsRow>(otel.statement, otel.parameters)];
     for (const { rows } of results) {
       const totals = rows.map((row) => [row.name, Number(row.total_runs), Number(row.retries)]).sort();
       assert.deepEqual(totals, [["Basic Correctness", 3, 2], ["Legacy", 1, 1], ["Parallel job", 2, 0]]);
     }
-    const warehouseRuns = (query: ReturnType<typeof buildWarehouseRetryRunsQuery>) => ({
-      statement: query.statement.replaceAll("vllm_data_warehouse.buildkite.", "warehouse.")
-        .replace(/:(pipeline|branch|startTime|endTime|jobName)\b/g, (_, name) => `$${query.parameters.findIndex((p) => p.name === name) + 1}`)
-        .replace("TIMESTAMPDIFF(SECOND, started_at, finished_at)", "EXTRACT(EPOCH FROM (finished_at - started_at))"),
-      parameters: query.parameters.map((p) => p.value),
-    });
-    for (const query of [buildOtelRetryRunsQuery(filters, "Basic Correctness"), warehouseRuns(buildWarehouseRetryRunsQuery(filters, "Basic Correctness"))]) {
+    for (const query of [buildOtelRetryRunsQuery(filters, "Basic Correctness")]) {
       const runs = (await db.query<RetryJobRun>(query.statement, query.parameters)).rows;
       assert.deepEqual(runs.map((run) => [run.job_id, run.state, Number(run.is_retry), Number(run.duration_secs)]), [
         ["failed-original", "failed", 0, 60], ["successful-retry", "passed", 1, 60], ["second-retry", "canceled", 1, 60],
@@ -258,13 +248,7 @@ test("actual retry SQL counts retry attempts once across outcomes, shards, and d
     for (const pipeline of ["CI", "AMD CI", ""]) {
       const selected = { ...filters, pipeline };
       const telemetryQuery = buildOtelRetryQuery(selected);
-      const warehouseQuery = buildWarehouseRetryQuery(selected);
-      const warehouseSql = warehouseQuery.statement.replaceAll("vllm_data_warehouse.buildkite.", "warehouse.")
-        .replace(/:(pipeline|branch|startTime|endTime)\b/g, (_, name) => `$${warehouseQuery.parameters.findIndex((p) => p.name === name) + 1}`);
-      const selectedResults = await Promise.all([
-        db.query<RetryStatsRow>(telemetryQuery.statement, telemetryQuery.parameters),
-        db.query<RetryStatsRow>(warehouseSql, warehouseQuery.parameters.map((p) => p.value)),
-      ]);
+      const selectedResults = [await db.query<RetryStatsRow>(telemetryQuery.statement, telemetryQuery.parameters)];
       for (const { rows } of selectedResults) {
         const byName = new Map(rows.map((row) => [row.name, [Number(row.total_runs), Number(row.retries)]]));
         for (const mirror of amdFixtures.slice(0, 2)) {
@@ -274,7 +258,7 @@ test("actual retry SQL counts retry attempts once across outcomes, shards, and d
         assert.deepEqual(byName.get("Basic Correctness"), pipeline === "AMD CI" ? undefined : [3, 2]);
       }
       for (const name of ["Basic Correctness", "mi325_1: Basic Correctness Test", ":amd: (MI300) Kernels"]) {
-        const drilldowns = [buildOtelRetryRunsQuery(selected, name), warehouseRuns(buildWarehouseRetryRunsQuery(selected, name))];
+        const drilldowns = [buildOtelRetryRunsQuery(selected, name)];
         for (const [index, query] of drilldowns.entries()) {
           const runs = (await db.query<RetryJobRun>(query.statement, query.parameters)).rows;
           const ranking = selectedResults[index].rows.find((row) => row.name === name);
@@ -329,7 +313,7 @@ test("actual retry SQL counts retry attempts once across outcomes, shards, and d
     assert.equal(nullable?.total_runs, 1, "duplicate forward links must not multiply attempts");
     const hostile = buildOtelRetryQuery(parseRetryFilters(new URLSearchParams({ branch: "main' OR 1=1 --" })));
     assert.deepEqual((await db.query(hostile.statement, hostile.parameters)).rows, []);
-    for (const query of [buildOtelRetryRunsQuery(filters, "Basic Correctness' OR 1=1 --"), warehouseRuns(buildWarehouseRetryRunsQuery(filters, "Basic Correctness' OR 1=1 --"))]) {
+    for (const query of [buildOtelRetryRunsQuery(filters, "Basic Correctness' OR 1=1 --")]) {
       assert.deepEqual((await db.query(query.statement, query.parameters)).rows, []);
     }
     for (const row of (await db.query<RetryStatsRow>(otel.statement, otel.parameters)).rows) {

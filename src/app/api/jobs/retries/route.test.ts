@@ -4,10 +4,10 @@ import { NextRequest } from "next/server";
 import { GET } from "./route";
 
 function warehouse(t: TestContext) {
-  const keys = ["DATABRICKS_HOST", "DATABRICKS_TOKEN", "DATABRICKS_WAREHOUSE_ID"] as const;
+  const keys = ["CLICKHOUSE_URL", "CLICKHOUSE_READ_USER", "CLICKHOUSE_READ_PASSWORD"] as const;
   const saved = keys.map((key) => process.env[key]);
   Object.assign(process.env, {
-    DATABRICKS_HOST: "https://warehouse.example", DATABRICKS_TOKEN: "test-token", DATABRICKS_WAREHOUSE_ID: "test-warehouse",
+    CLICKHOUSE_URL: "https://warehouse.example", CLICKHOUSE_READ_USER: "test-user", CLICKHOUSE_READ_PASSWORD: "test-password",
   });
   t.after(() => keys.forEach((key, index) => {
     if (saved[index] === undefined) delete process.env[key];
@@ -15,12 +15,19 @@ function warehouse(t: TestContext) {
   }));
 }
 
+/** A ClickHouse JSONStringsEachRow response body. */
+function rowsResponse(rows: Record<string, string>[]) {
+  return new Response(rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
+}
+
+/** The bound `param_<name>` values of a ClickHouse request, in order. */
+function boundParams(input: Parameters<typeof fetch>[0]) {
+  return [...new URL(String(input)).searchParams].filter(([name]) => name.startsWith("param_"))
+    .map(([name, value]) => [name.slice("param_".length), value]);
+}
+
 function statsResponse() {
-  return Response.json({
-    status: { state: "SUCCEEDED" },
-    manifest: { schema: { columns: ["name", "retries", "total_runs", "has_soft_fail"].map((name) => ({ name })) } },
-    result: { data_array: [["Basic Correctness", "2", "5", "0"]] },
-  });
+  return rowsResponse([{ name: "Basic Correctness", retries: "2", total_runs: "5", has_soft_fail: "0" }]);
 }
 
 test("retry ranking returns individual job rows without fetching test-area mappings from GitHub", async (t) => {
@@ -31,13 +38,9 @@ test("retry ranking returns individual job rows without fetching test-area mappi
     const url = String(input);
     requestedUrls.push(url);
     assert.ok(url.startsWith("https://warehouse.example"), `Unexpected request: ${url}`);
-    return Response.json({
-      status: { state: "SUCCEEDED" },
-      manifest: { schema: { columns: ["name", "retries", "total_runs", "has_soft_fail"].map(name => ({ name })) } },
-      result: { data_array: [[name, "2", "5", "0"]] },
-    });
+    return rowsResponse([{ name, retries: "2", total_runs: "5", has_soft_fail: "0" }]);
   });
-  const response = await GET(new NextRequest("http://localhost/api/jobs/retries?source=databricks&branch=first-job-request"));
+  const response = await GET(new NextRequest("http://localhost/api/jobs/retries?source=clickhouse&branch=first-job-request"));
   assert.equal(response.status, 200);
   assert.deepEqual((await response.json()).retryRanking, [{ name, retries: 2, total_runs: 5, has_soft_fail: false, is_optional: false, is_soft_fail: false }]);
   assert.equal(requestedUrls.length, 1);
@@ -54,13 +57,13 @@ test("retry requests share one query and stable window cache, with source and jo
     return statsResponse();
   });
   t.mock.method(console, "error", () => {});
-  const url = "http://localhost/api/jobs/retries?source=databricks&branch=retry-concurrent&window=14d";
+  const url = "http://localhost/api/jobs/retries?source=clickhouse&branch=retry-concurrent&window=14d";
   const responses = await Promise.all(Array.from({ length: 5 }, () => GET(new NextRequest(url))));
   assert.equal(queries, 1);
   for (const response of responses) {
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), {
-      source: "databricks",
+      source: "clickhouse",
       retryRanking: [{ name: "Basic Correctness", retries: 2, total_runs: 5, has_soft_fail: false, is_optional: false, is_soft_fail: false }],
     });
   }
@@ -76,20 +79,21 @@ test("retry requests share one query and stable window cache, with source and jo
 
 test("retry route rejects invalid bounds before querying and binds explicit all filters", async (t) => {
   warehouse(t);
-  let parameters: Array<{ name: string; value: string }> = [];
+  let parameters: string[][] = [];
   let statement = "";
-  t.mock.method(globalThis, "fetch", async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-    ({ parameters, statement } = JSON.parse(String(init?.body)));
+  t.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    parameters = boundParams(input);
+    statement = String(init?.body);
     return statsResponse();
   });
   for (const suffix of ["startDate=2026-02-30", "window=100d", "startDate=2026-09-24&endDate=2026-09-22"]) {
-    const response = await GET(new NextRequest(`http://localhost/api/jobs/retries?source=databricks&${suffix}`));
+    const response = await GET(new NextRequest(`http://localhost/api/jobs/retries?source=clickhouse&${suffix}`));
     assert.equal(response.status, 400);
   }
   assert.equal(statement, "");
-  const all = await GET(new NextRequest("http://localhost/api/jobs/retries?source=databricks&pipeline=&branch=&startDate=2026-09-23T10:00Z&endDate=2026-09-23T11:00Z"));
+  const all = await GET(new NextRequest("http://localhost/api/jobs/retries?source=clickhouse&pipeline=&branch=&startDate=2026-09-23T10:00Z&endDate=2026-09-23T11:00Z"));
   assert.equal(all.status, 200);
-  assert.deepEqual(parameters.map((p) => [p.name, p.value]), [
+  assert.deepEqual(parameters, [
     ["startTime", "2026-09-23T10:00:00.000Z"], ["endTime", "2026-09-23T11:00:00.000Z"],
   ]);
 });
@@ -98,8 +102,8 @@ test("retry backend errors are not cached and a following request can recover", 
   warehouse(t);
   t.mock.method(console, "error", () => {});
   let calls = 0;
-  t.mock.method(globalThis, "fetch", async () => ++calls === 1 ? Response.json({}, { status: 503 }) : statsResponse());
-  const url = "http://localhost/api/jobs/retries?source=databricks&branch=retry-error";
+  t.mock.method(globalThis, "fetch", async () => ++calls === 1 ? new Response("unavailable", { status: 503 }) : statsResponse());
+  const url = "http://localhost/api/jobs/retries?source=clickhouse&branch=retry-error";
   const error = await GET(new NextRequest(url));
   assert.equal(error.status, 500);
   assert.match(error.headers.get("Server-Timing") ?? "", /cache;desc="ERROR"/);

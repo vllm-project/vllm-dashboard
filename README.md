@@ -98,7 +98,10 @@ page (Builds) loads, see the [Builds latency guide](./docs/builds-performance.md
 
 | Variable | Purpose |
 | --- | --- |
-| `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID` | Databricks SQL Warehouse access |
+| `CLICKHOUSE_URL`, `CLICKHOUSE_READ_USER`, `CLICKHOUSE_READ_PASSWORD` | ClickHouse Cloud: Fivetran Buildkite tables for builds, jobs, queue, cost, retries and sharding; OTel spans |
+| `CLICKHOUSE_WRITE_USER`, `CLICKHOUSE_WRITE_PASSWORD` | Optional. Also write ingested OTel spans to `ci.otel_spans` |
+| `TIMINGS_SOURCE` | Optional. `clickhouse` serves `/api/timings/latest` from ClickHouse instead of Postgres |
+| `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID` | Databricks SQL Warehouse access, now only for the perf and eval pages |
 | `DATABASE_URL` | Postgres connection string for queue and GPU samples |
 | `GITHUB_TOKEN` or `GH_TOKEN` | GitHub token used to resolve PR and commit authors for builds and raise rate limits for test-area discovery and the Platform Scope page |
 | `BUILDKITE_API_TOKEN` | Buildkite personal API token; needs `read_suites` for Test Engine, GraphQL API access and `write_builds` for queue promotion, and notification-service scopes only when running the OTel setup script |

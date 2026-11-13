@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryDatabricks } from "@/lib/databricks";
+import { queryClickHouse } from "@/lib/clickhouse";
 import { getCached, setCache } from "@/lib/api-cache";
 import { cachedJson } from "@/lib/api-response";
 import { resolveCiDataSource } from "@/lib/ci-data-source";
 import { queryJobRunsFromOtel } from "@/lib/otel-ci";
 import { SHARD_SUFFIX_SQL, SHARD_TOTAL_SQL } from "@/lib/job-shards";
-import { escapeSqlString } from "@/lib/sql-literal";
 
 const TTL = 60_000;
 const CDN_CACHE = { maxAge: 60, staleWhileRevalidate: 3_600 };
@@ -40,68 +39,80 @@ export async function GET(request: NextRequest) {
       return cachedJson(result, CDN_CACHE);
     }
 
-    const name = escapeSqlString(jobName);
-    const conditions = [
-      "j._fivetran_deleted = false",
-      "j.type = 'script'",
-      // The job itself, or a runtime shard of the step (see job-shards.ts).
-      // LIKE only narrows the scan: a wildcard in the name over-matches, and
-      // the exact comparison decides.
-      `(j.name = '${name}' OR (j.name LIKE '${name} _hard %'
-        AND regexp_replace(j.name, '${SHARD_SUFFIX_SQL}', '') = '${name}'))`,
-      "b._fivetran_deleted = false",
-    ];
+    const params: Record<string, string> = { jobName };
+    const buildConditions = ["NOT _fivetran_deleted"];
     if (pipeline) {
-      conditions.push(`p.name = '${escapeSqlString(pipeline)}'`);
+      params.pipeline = pipeline;
+      buildConditions.push(`pipeline_id IN (
+          SELECT id FROM buildkite.pipeline FINAL
+          WHERE NOT _fivetran_deleted AND name = {pipeline:String})`);
     }
     if (branch) {
-      conditions.push(`b.branch = '${escapeSqlString(branch)}'`);
+      params.branch = branch;
+      buildConditions.push("branch = {branch:String}");
     }
     if (startDate) {
-      conditions.push(`b.created_at >= '${escapeSqlString(startDate)}'`);
+      params.startDate = startDate;
+      buildConditions.push("created_at >= parseDateTime64BestEffort({startDate:String}, 3, 'UTC')");
     }
     if (endDate) {
-      conditions.push(`b.created_at < DATE_ADD('${escapeSqlString(endDate)}', 1)`);
+      params.endDate = endDate;
+      buildConditions.push(
+        "created_at < toStartOfDay(parseDateTime64BestEffort({endDate:String}, 3, 'UTC')) + INTERVAL 1 DAY",
+      );
     }
 
     // One run per build and attempt: a sharded step's shards are one run
     // that links to its first failing shard, else to shard 1, and lasts as
-    // long as its slowest shard.
-    const runs = await queryDatabricks(`
-      WITH jobs AS (
+    // long as its slowest shard. argMin over a tuple keeps the picked job's
+    // NULL web_url instead of skipping to another job's.
+    const runs = await queryClickHouse(`
+      WITH builds AS (
+        SELECT id, commit, created_at
+        FROM buildkite.build FINAL
+        WHERE ${buildConditions.join("\n          AND ")}
+      ),
+      jobs AS (
         SELECT
-          j.id,
-          j.web_url,
-          j.state,
-          j.started_at,
-          j.finished_at,
-          b.id AS build_id,
-          b.commit,
-          b.created_at,
-          CAST(NULLIF(regexp_extract(j.name, '${SHARD_TOTAL_SQL}', 1), '') AS INT) AS shard_total,
-          CONCAT(CASE WHEN j.state = 'passed' THEN '1' ELSE '0' END, j.name) AS pick,
-          ROW_NUMBER() OVER (PARTITION BY b.id, j.name ORDER BY j.started_at, j.id) AS attempt
-        FROM vllm_data_warehouse.buildkite.build_job AS j
-        INNER JOIN vllm_data_warehouse.buildkite.build AS b ON j.build_id = b.id
-        INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p ON b.pipeline_id = p.id
-        WHERE ${conditions.join(" AND ")}
+          j.id AS job,
+          j.web_url AS job_web_url,
+          j.state AS job_state,
+          j.started_at AS job_started_at,
+          j.finished_at AS job_finished_at,
+          intDiv(toUnixTimestamp64Milli(j.finished_at) - toUnixTimestamp64Milli(j.started_at), 1000) AS secs,
+          j.build_id AS build_id,
+          b.commit AS build_commit,
+          b.created_at AS build_created,
+          toInt32OrNull(extract(j.name, '${SHARD_TOTAL_SQL}')) AS shard_total,
+          concat(if(j.state = 'passed', '1', '0'), j.name) AS pick,
+          row_number() OVER (PARTITION BY j.build_id, j.name ORDER BY j.started_at ASC NULLS FIRST, j.id) AS attempt
+        FROM buildkite.build_job AS j FINAL
+        INNER JOIN builds AS b ON j.build_id = b.id
+        WHERE j.build_id IN (SELECT id FROM builds)
+          AND NOT j._fivetran_deleted
+          AND j.type = 'script'
+          -- The job itself, or a runtime shard of the step (see job-shards.ts).
+          -- LIKE only narrows the scan: a wildcard in the name over-matches,
+          -- and the exact comparison decides.
+          AND (j.name = {jobName:String} OR (j.name LIKE concat({jobName:String}, ' _hard %')
+            AND replaceRegexpOne(j.name, '${SHARD_SUFFIX_SQL}', '') = {jobName:String}))
           AND j.state IN ('passed', 'failed', 'failing', 'broken', 'timed_out')
       )
       SELECT
-        MIN_BY(id, pick) AS job_id,
-        MIN_BY(web_url, pick) AS web_url,
-        MIN_BY(state, pick) AS state,
-        MIN(started_at) AS started_at,
-        MAX(finished_at) AS finished_at,
-        MAX(TIMESTAMPDIFF(SECOND, started_at, finished_at)) AS duration_secs,
-        COUNT(*) AS jobs,
-        MAX(shard_total) AS shards,
-        MAX(commit) AS commit_sha,
-        MAX(created_at) AS build_created_at
+        argMin((job, job_web_url, job_state), pick).1 AS job_id,
+        argMin((job, job_web_url, job_state), pick).2 AS web_url,
+        argMin((job, job_web_url, job_state), pick).3 AS state,
+        min(job_started_at) AS started_at,
+        max(job_finished_at) AS finished_at,
+        max(secs) AS duration_secs,
+        count() AS jobs,
+        max(shard_total) AS shards,
+        max(build_commit) AS commit_sha,
+        max(build_created) AS build_created_at
       FROM jobs
       GROUP BY build_id, attempt
-      ORDER BY build_created_at ASC, started_at ASC
-    `);
+      ORDER BY build_created_at ASC NULLS FIRST, started_at ASC NULLS FIRST
+    `, params);
 
     const result = { runs };
     setCache(cacheKey, result, TTL);

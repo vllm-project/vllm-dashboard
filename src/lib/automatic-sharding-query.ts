@@ -1,4 +1,4 @@
-import { queryDatabricks } from "@/lib/databricks";
+import { queryClickHouse } from "@/lib/clickhouse";
 import { SHARD_SUFFIX_SQL, SHARD_TOTAL_SQL } from "@/lib/job-shards";
 
 /** How one CI step ran on main recently, rolled up per build. */
@@ -21,23 +21,33 @@ export interface ObservedStep {
  * `days` days, with a step's runtime shards rolled into it (see job-shards.ts).
  */
 export async function queryObservedSteps(days: number): Promise<ObservedStep[]> {
-  const rows = await queryDatabricks<Record<string, string | null>>(`
-    WITH runs AS (
+  // Builds are filtered first: build_job is sorted by build_id, so the IN
+  // list prunes it before FINAL deduplicates the Fivetran versions. argMax
+  // over a tuple keeps the latest build's NULL (unsharded) instead of skipping
+  // to an older sharded build; quantileExactLow returns a value that occurred,
+  // as Databricks' PERCENTILE_APPROX did.
+  const rows = await queryClickHouse<Record<string, string | null>>(`
+    WITH builds AS (
+      SELECT id, created_at
+      FROM buildkite.build FINAL
+      WHERE NOT _fivetran_deleted
+        AND pipeline_id IN (
+          SELECT id FROM buildkite.pipeline FINAL WHERE NOT _fivetran_deleted AND name = 'CI')
+        AND branch = 'main'
+        AND created_at >= toStartOfDay(now('UTC')) - INTERVAL {days:UInt32} DAY
+    ),
+    runs AS (
       SELECT
-        j.build_id,
-        b.created_at,
-        regexp_replace(j.name, '${SHARD_SUFFIX_SQL}', '') AS step,
-        j.name RLIKE '${SHARD_SUFFIX_SQL}' AS sharded,
-        CAST(NULLIF(regexp_extract(j.name, '${SHARD_TOTAL_SQL}', 1), '') AS INT) AS shard_total,
-        TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at) AS secs
-      FROM vllm_data_warehouse.buildkite.build_job AS j
-      INNER JOIN vllm_data_warehouse.buildkite.build AS b ON j.build_id = b.id
-      INNER JOIN vllm_data_warehouse.buildkite.pipeline AS p ON b.pipeline_id = p.id
-      WHERE p.name = 'CI'
-        AND b.branch = 'main'
-        AND b.created_at >= DATE_SUB(CURRENT_DATE(), ${Math.trunc(days)})
-        AND b._fivetran_deleted = false
-        AND j._fivetran_deleted = false
+        j.build_id AS build_id,
+        b.created_at AS created_at,
+        replaceRegexpOne(j.name, '${SHARD_SUFFIX_SQL}', '') AS step,
+        match(j.name, '${SHARD_SUFFIX_SQL}') AS sharded,
+        toInt32OrNull(extract(j.name, '${SHARD_TOTAL_SQL}')) AS shard_total,
+        intDiv(toUnixTimestamp64Milli(j.finished_at) - toUnixTimestamp64Milli(j.started_at), 1000) AS secs
+      FROM buildkite.build_job AS j FINAL
+      INNER JOIN builds AS b ON j.build_id = b.id
+      WHERE j.build_id IN (SELECT id FROM builds)
+        AND NOT j._fivetran_deleted
         AND j.type = 'script'
         AND j.name IS NOT NULL
         AND j.started_at IS NOT NULL
@@ -46,24 +56,24 @@ export async function queryObservedSteps(days: number): Promise<ObservedStep[]> 
       SELECT
         step,
         build_id,
-        MAX(created_at) AS created_at,
-        BOOL_OR(sharded) AS sharded,
-        MAX(shard_total) AS shards,
-        MAX(secs) AS wall_secs
+        max(created_at) AS build_created_at,
+        max(sharded) AS build_sharded,
+        max(shard_total) AS shards,
+        max(secs) AS wall_secs
       FROM runs
       GROUP BY step, build_id
     )
     SELECT
       step,
-      SUM(CASE WHEN sharded THEN 1 ELSE 0 END) AS sharded_builds,
-      SUM(CASE WHEN sharded THEN 0 ELSE 1 END) AS unsharded_builds,
-      MAX_BY(shards, created_at) AS latest_shards,
-      MAX(shards) AS max_shards,
-      MAX(created_at) AS last_seen,
-      PERCENTILE_APPROX(wall_secs, 0.5) AS p50_wall_secs
+      countIf(build_sharded) AS sharded_builds,
+      countIf(NOT build_sharded) AS unsharded_builds,
+      argMax(tuple(shards), build_created_at).1 AS latest_shards,
+      max(shards) AS max_shards,
+      max(build_created_at) AS last_seen,
+      quantileExactLow(0.5)(wall_secs) AS p50_wall_secs
     FROM per_build
     GROUP BY step
-  `);
+  `, { days: Math.trunc(days) });
   const num = (value: string | null) => (value == null ? null : Number(value));
   return rows.map((row) => ({
     step: row.step ?? "",

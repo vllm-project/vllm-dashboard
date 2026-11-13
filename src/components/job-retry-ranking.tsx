@@ -17,7 +17,7 @@ export interface RetryJob {
 
 interface RetryResponse {
   retryRanking: RetryJob[];
-  source: "otel" | "databricks";
+  source: "otel" | "clickhouse";
   error?: string;
 }
 
