@@ -26,8 +26,8 @@ def test_actuator_emits_heartbeat_only_after_a_successful_run() -> None:
     assert "OnSuccess=quarantine-actuator-heartbeat.service" in service
     # A completed poll with per-node errors exits 3, still a success, so one
     # broken node cannot silence the heartbeat and page with the wrong cause
-    # (the worker's per-stage stuck notices carry the node problem). Only a
-    # poll that never finished — the desired set unreachable — exits 1. Not
+    # (the worker's notices carry a stage still awaiting confirmation). Only
+    # a poll that never finished — the desired set unreachable — exits 1. Not
     # exit 2: Python itself exits 2 when the script can't be read and
     # argparse exits 2 on a bad flag, and those must never count as success.
     assert "SuccessExitStatus=3" in service

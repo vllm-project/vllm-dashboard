@@ -450,9 +450,11 @@ Resources:
         Fn::Sub: ${AWS::StackName}-heartbeat-quarantine-actuator-h100
       AlarmDescription: >-
         No completed h100 quarantine actuator poll for at least 15 minutes.
-        Check the control plane's timer and its heartbeat credentials
-        (Operations Handbook, Off-worker heartbeat; recipe in
-        alerting/docs/infra.md, Control-plane heartbeat).
+        Read the actuator journal on the control plane first: the desired
+        endpoint or reporter secret (both clusters alarm together: the
+        dashboard), the actuator kubeconfig, a dead timer or host, or the
+        heartbeat credentials (Operations Handbook, Off-worker heartbeat;
+        recipe in alerting/docs/infra.md, Control-plane heartbeat).
       Metrics:
         - Id: m1
           ReturnData: false
@@ -486,9 +488,11 @@ Resources:
         Fn::Sub: ${AWS::StackName}-heartbeat-quarantine-actuator-b200
       AlarmDescription: >-
         No completed b200 quarantine actuator poll for at least 15 minutes.
-        Check the control plane's timer and its heartbeat credentials
-        (Operations Handbook, Off-worker heartbeat; recipe in
-        alerting/docs/infra.md, Control-plane heartbeat).
+        Read the actuator journal on the control plane first: the desired
+        endpoint or reporter secret (both clusters alarm together: the
+        dashboard), the actuator kubeconfig, a dead timer or host, or the
+        heartbeat credentials (Operations Handbook, Off-worker heartbeat;
+        recipe in alerting/docs/infra.md, Control-plane heartbeat).
       Metrics:
         - Id: m1
           ReturnData: false

@@ -290,8 +290,8 @@ def test_endpoint_down_changes_nothing_and_fails(run):
 
 def test_a_partly_failed_poll_still_counts_as_completed(run):
     """Exit 3 — a completed poll with per-node errors — is a success to the
-    unit (SuccessExitStatus=3), so the off-host heartbeat still fires and the
-    worker's per-stage stuck notices carry the node problem. Only a poll
+    unit (SuccessExitStatus=3), so the off-host heartbeat still fires; the
+    worker's notices carry a stage still awaiting confirmation. Only a poll
     that never finished exits 1, silencing the heartbeat."""
     kube = FakeKube({"n1": node()})
     kube.fail = {"patch"}
