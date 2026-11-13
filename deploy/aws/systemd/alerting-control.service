@@ -3,14 +3,13 @@ Description=Apply S3 controls for vLLM alerting paths
 After=network-online.target
 Wants=network-online.target
 OnFailure=alerting-failure-notify@%n.service
-OnSuccess=alerting-failure-resolve@%n.service
+OnSuccess=alerting-failure-resolve@%n.service alerting-heartbeat@control.service
 
 [Service]
 Type=oneshot
 User=root
 EnvironmentFile=/etc/alerting/worker.env
 ExecStart=/opt/alerting/venv/bin/python -m alerting.control --bucket ${ALERTING_CHECKPOINT_BUCKET}
-ExecStartPost=-/opt/alerting/bin/emit-heartbeat control
 StandardOutput=null
 StandardError=null
 UMask=0077

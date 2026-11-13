@@ -383,7 +383,11 @@ def test_every_scheduled_unit_reports_its_failures_to_slack() -> None:
     units = sorted(
         path
         for path in (AWS_DIR / "systemd").glob("alerting-*.service")
-        if "failure-notify" not in path.name and "failure-resolve" not in path.name
+        # The heartbeat unit is deliberately unchained: a dead heartbeat is
+        # not the job failing, and the off-worker alarm is what notices it.
+        if "failure-notify" not in path.name
+        and "failure-resolve" not in path.name
+        and "heartbeat" not in path.name
     )
     assert units, "no scheduled units found"
     for path in units:
@@ -669,12 +673,21 @@ HEARTBEAT_JOBS = ["control", "fast-ci", "main-ci", "infra"]
 
 @pytest.mark.parametrize("job", HEARTBEAT_JOBS)
 def test_job_emits_heartbeat_only_after_it_succeeds(job: str) -> None:
-    """ExecStartPost= runs only after ExecStart= exits 0; the leading "-"
-    keeps a CloudWatch hiccup from raising a worker failure."""
+    """The heartbeat is its own oneshot unit on the job unit's OnSuccess=:
+    it runs only after a successful run, and outside the job unit's
+    TimeoutStartSec, so a slow CloudWatch call can never fail a run."""
     unit = read(f"systemd/alerting-{job}.service")
 
-    assert f"ExecStartPost=-/opt/alerting/bin/emit-heartbeat {job}\n" in unit
-    assert unit.index("ExecStart=") < unit.index("ExecStartPost=")
+    assert "ExecStartPost=" not in unit
+    assert f"OnSuccess=alerting-failure-resolve@%n.service alerting-heartbeat@{job}.service" in unit
+
+    template_unit = read("systemd/alerting-heartbeat@.service")
+    assert "Type=oneshot" in template_unit
+    assert "ExecStart=/opt/alerting/bin/emit-heartbeat %i" in template_unit
+    # A dead heartbeat is not the job failing; the off-worker alarm notices.
+    assert "OnFailure=" not in template_unit
+    # Its stderr goes to the journal, not to /dev/null like the job's.
+    assert "StandardError=journal" in template_unit
     assert "emit-heartbeat /opt/alerting/bin/emit-heartbeat" in read("install.sh")
 
 
@@ -696,8 +709,13 @@ def test_heartbeat_emitter_needs_no_worker_secret() -> None:
 @pytest.mark.parametrize("job", HEARTBEAT_JOBS)
 def test_missing_heartbeat_alarms_through_sns_outside_the_worker(job: str) -> None:
     template = read("alerting-worker.yaml")
-    block = template.split(f"AlarmName: vllm-alerting-heartbeat-{job}\n", 1)[1]
+    block = template.split(f"Fn::Sub: ${{AWS::StackName}}-heartbeat-{job}\n", 1)[1]
     block = block.split("\n  Heartbeat", 1)[0]
+
+    # Names carry the stack name so disaster recovery can build a replacement
+    # stack beside this one; no fixed physical names.
+    assert "TopicName: vllm-alerting-heartbeat" not in template
+    assert "TopicName:\n        Fn::Sub: ${AWS::StackName}-heartbeat" in template
 
     # FILL(m1, 0), not raw missing data: with missing recent periods
     # CloudWatch reaches back for older real datapoints, which would hold the
