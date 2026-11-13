@@ -769,10 +769,12 @@ def test_actuator_heartbeat_alarms_reuse_the_worker_stack_topic(job: str) -> Non
     assert "Period: 300" in block
     periods = re.search(r"EvaluationPeriods: (\d+)", block)
     assert periods and f"DatapointsToAlarm: {periods.group(1)}" in block
-    # 15 minutes. The actuator polls every minute and a failed poll (the
-    # desired endpoint unreachable or non-2xx) exits 1 and emits nothing, so
-    # the window must outlast one timed-out run (2 min) and a brief endpoint
-    # blip; nothing else pages for a control plane, so it stays short.
+    # 15 minutes nominal (10 at worst if FILL counts the in-progress
+    # bucket as a zero, like the worker alarms). The actuator polls every
+    # minute and a failed poll (the desired endpoint unreachable or non-2xx)
+    # exits 1 and emits nothing, so the window must outlast one timed-out
+    # run (2 min) and a brief endpoint blip; nothing else pages for a
+    # control plane, so it stays short.
     assert periods.group(1) == "3"
     assert "TreatMissingData: breaching" in block
     assert "ComparisonOperator: LessThanThreshold" in block

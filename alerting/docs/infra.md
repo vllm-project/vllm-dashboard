@@ -237,7 +237,8 @@ Python and argparse exit 2 on their own failures, and a broken deploy must
 never heartbeat health. The worker stack's alarms
 (`<stack-name>-heartbeat-quarantine-actuator-h100` / `-b200`) count a
 missing period as zero (`FILL(m1, 0)`, missing = breaching; three 5-minute
-periods, so at least 15 minutes of silence) and notify the same SNS topic
+periods — 15 minutes of silence, 10 at worst if FILL counts the
+in-progress bucket as a zero) and notify the same SNS topic
 as the worker's own heartbeat alarms, so a dead actuator timer, a
 dead control plane, or dead heartbeat credentials page off-host. A partly decayed kubeconfig (can list nodes, cannot write) fails
 every node instead: the poll still completes, and the worker's notices carry
@@ -306,7 +307,8 @@ each alarm; the silence test is `systemctl mask --runtime
 quarantine-actuator-heartbeat.service` on one control plane (the actuator
 itself keeps running; `--runtime` because a real unit file sits in
 /etc/systemd/system, which plain `mask` refuses to override), waiting out the
-window (at least 15 minutes) for the ALARM mail, then `unmask --runtime`
+window (allow 20 minutes: up to 15 of silence plus evaluation lag) for the
+ALARM mail, then `unmask --runtime`
 and expecting the OK mail.
 
 ## Tables
