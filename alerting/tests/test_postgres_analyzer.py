@@ -289,6 +289,11 @@ class FakeBuildPort:
 
 
 class WellBehavedRunner:
+    def shorten_report(
+        self, report: str, *, raw_limit: int, normalized_len: int
+    ) -> str:
+        return report
+
     def run(self, working_dir: Path) -> None:
         logs = working_dir / ".logs"
         summary = json.loads((logs / "nightly_summary.json").read_text())

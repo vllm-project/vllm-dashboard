@@ -303,6 +303,8 @@ class KimiCodeRunner:
         )
         self._clock = clock or time.monotonic
         self._max_request_attempts = max(1, max_request_attempts)
+        self._request_timeout_seconds = request_timeout_seconds
+        self._deadline: float | None = None
         self._sleep = sleep or time.sleep
 
     def run(
@@ -319,16 +321,49 @@ class KimiCodeRunner:
         their own bundled instructions and per-task prompt.
         """
         workdir = working_dir.resolve()
-        deadline = self._clock() + self._timeout_seconds
+        self._deadline = self._clock() + self._timeout_seconds
         self._loop(
             workdir,
             instructions
             if instructions is not None
             else load_instructions(DEFAULT_INSTRUCTIONS_ASSET),
             prompt if prompt is not None else KIMI_ANALYZER_PROMPT,
-            deadline,
+            self._deadline,
             allow_task=True,
         )
+
+    def shorten_report(
+        self, report: str, *, raw_limit: int, normalized_len: int
+    ) -> str:
+        """Return one condensed report using a single tool-less completion."""
+        now = self._clock()
+        analysis_deadline = (
+            self._deadline
+            if self._deadline is not None
+            else now + self._timeout_seconds
+        )
+        deadline = min(analysis_deadline, now + self._request_timeout_seconds)
+        messages = [
+            {
+                "role": "system",
+                "content": "You condense CI reports for Slack. Return only the rewritten report text.",
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"The report below has {len(report)} raw characters and "
+                    f"{normalized_len} characters after Slack normalization. "
+                    f"Rewrite it to at most {raw_limit} raw characters. Preserve "
+                    "the Build and Stats lines, canonical section headings, every "
+                    "failure entry and its links. Condense investigation prose and "
+                    "omit Notes first. Return only the rewritten report text."
+                    f"\n\n{report}"
+                ),
+            },
+        ]
+        message = self._complete(messages, [], deadline)
+        content = message.get("content")
+        return content if isinstance(content, str) else ""
 
     def _loop(
         self,
@@ -375,13 +410,14 @@ class KimiCodeRunner:
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
-            "tools": tools,
-            "tool_choice": "auto",
             "max_tokens": MAX_OUTPUT_TOKENS,
             # Log triage is mechanical; low thinking effort keeps the many
             # sequential investigation calls fast enough for the time budget.
             "reasoning_effort": self._reasoning_effort,
         }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
         response = self._request(payload, deadline)
         try:
             message = cast(list[dict[str, Any]], response["choices"])[0]["message"]
