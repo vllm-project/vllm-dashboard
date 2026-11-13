@@ -35,7 +35,9 @@ class FakeKube:
                              "annotations": dict(s.get("annotations", {}))},
                 "spec": {"unschedulable": s["unschedulable"],
                          "taints": list(s["taints"])},
-                "status": {"capacity": {"nvidia.com/gpu": "8"},
+                "status": {"capacity": {
+                               "nvidia.com/gpu": s.get("capacity", "8")}
+                           if s.get("capacity", "8") is not None else {},
                            "allocatable": {
                                "nvidia.com/gpu": s.get("allocatable", "8")}
                            if s.get("allocatable", "8") is not None else {}}}
@@ -554,6 +556,23 @@ def test_a_gpu_the_device_plugin_dropped_fails_the_check(run, capsys):
     dash = FakeDashboard([want("n1", "resolving")])
     assert run(kube, dash) == 0
     assert dash.posts[0][1]["observed"] == {"note": "only 0 of 8 GPUs are usable"}
+
+
+def test_a_node_with_no_gpu_resource_fails_the_check_closed(run, capsys):
+    # Capacity and allocatable both lack nvidia.com/gpu: the device plugin
+    # never advertised. There is nothing to check, so fail closed with a
+    # reported verify_failed instead of crashing on the missing resource.
+    kube = FakeKube({"n1": dict(node(True, True),
+                                capacity=None, allocatable=None)})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert kube.created == [] and kube.writes == []
+    assert kube.nodes["n1"]["unschedulable"] is True  # the node stays out
+    assert dash.posts == [("n1", {"alertId": 7, "state": "verify_failed",
+                                  "observed": {"note":
+                                               "the node advertises no GPUs"}})]
+    assert ("  n1: return check failed: the node advertises no GPUs\n"
+            in capsys.readouterr().out)
 
 
 def test_a_check_that_passes_after_its_timeout_still_fails(run):

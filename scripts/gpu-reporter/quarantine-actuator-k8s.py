@@ -340,8 +340,9 @@ class Actuator:
             status = node["status"]
             usable = status.get("allocatable", {}).get(GPU_RESOURCE, "0")
             total = status.get("capacity", {}).get(GPU_RESOURCE, "0")
-            if usable != total:
-                note = f"only {usable} of {total} GPUs are usable"
+            if total == "0" or usable != total:
+                note = ("the node advertises no GPUs" if total == "0"
+                        else f"only {usable} of {total} GPUs are usable")
                 print(f"  {name}: return check failed: {note}")
                 self.post(name, want["alertId"], "verify_failed", {"note": note})
                 return False
