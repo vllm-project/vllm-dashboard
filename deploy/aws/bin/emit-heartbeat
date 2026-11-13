@@ -2,9 +2,10 @@
 # Put one CloudWatch heartbeat datapoint for a job that just succeeded.
 # Runs as its own oneshot unit from the job unit's OnSuccess=, so it fires
 # only after a successful run and never shares the job unit's start timeout.
-# It uses the instance role and nothing from the worker secret, so a worker
-# that cannot load its secret stops emitting, and the off-worker alarm
-# (alerting-worker.yaml) notices.
+# It uses whatever credentials the AWS CLI's normal lookup finds — the
+# instance role on the worker, the env file on the control planes — and
+# never the worker secret, so a worker that cannot load its secret stops
+# emitting, and the off-worker alarm (alerting-worker.yaml) notices.
 set -euo pipefail
 
 job=${1:?usage: emit-heartbeat <job>}

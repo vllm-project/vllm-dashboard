@@ -435,21 +435,23 @@ Resources:
 
   # The k8s quarantine actuators run on the cluster control planes, not on
   # this worker: each control plane emits Job=quarantine-actuator-<cluster>
-  # after a successful poll (scripts/gpu-reporter/quarantine-actuator-heartbeat.service)
-  # with per-host static credentials scoped to PutMetricData in this
-  # namespace. The window is 15 minutes: a failed poll emits nothing, so it
-  # outlasts one timed-out run (2 min) and a brief endpoint blip, while a
-  # dead timer, a dead control plane or dead credentials still page fast —
-  # nothing else on a control plane can.
+  # after a completed poll (scripts/gpu-reporter/quarantine-actuator-heartbeat.service;
+  # a poll that finishes with per-node errors exits 2 and still emits, only a
+  # poll that never finished emits nothing) with per-host static credentials
+  # scoped to PutMetricData in this namespace. The window is at least 15
+  # minutes of silence: it outlasts one timed-out run (2 min) and a brief
+  # endpoint blip, while a dead timer, a dead control plane or dead
+  # credentials still page fast — nothing else on a control plane can.
   HeartbeatQuarantineActuatorH100Alarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName:
         Fn::Sub: ${AWS::StackName}-heartbeat-quarantine-actuator-h100
       AlarmDescription: >-
-        No successful h100 quarantine actuator run for 15 minutes. Check the
-        control plane's timer and its heartbeat credentials (Operations
-        Handbook, Off-worker heartbeat).
+        No completed h100 quarantine actuator poll for at least 15 minutes.
+        Check the control plane's timer and its heartbeat credentials
+        (Operations Handbook, Off-worker heartbeat; recipe in
+        alerting/docs/infra.md, Control-plane heartbeat).
       Metrics:
         - Id: m1
           ReturnData: false
@@ -482,9 +484,10 @@ Resources:
       AlarmName:
         Fn::Sub: ${AWS::StackName}-heartbeat-quarantine-actuator-b200
       AlarmDescription: >-
-        No successful b200 quarantine actuator run for 15 minutes. Check the
-        control plane's timer and its heartbeat credentials (Operations
-        Handbook, Off-worker heartbeat).
+        No completed b200 quarantine actuator poll for at least 15 minutes.
+        Check the control plane's timer and its heartbeat credentials
+        (Operations Handbook, Off-worker heartbeat; recipe in
+        alerting/docs/infra.md, Control-plane heartbeat).
       Metrics:
         - Id: m1
           ReturnData: false
