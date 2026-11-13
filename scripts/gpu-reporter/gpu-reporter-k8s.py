@@ -15,7 +15,8 @@ server proxy:
 
 Driver fault signals come from each node's NVIDIA device-plugin pod:
 `kubectl exec nvidia-smi` (recovery action, row-remap failure, uncorrectable
-ECC) and the pod log since the last read (Xid events). Each reading fails
+ECC) and the host's kernel journal since the last read (Xid events, through
+`chroot /host journalctl` in the same pod). Each reading fails
 independently to null; null means "missing reading", never a passing value.
 
 The same nvidia-smi exec is the GPU-hang check: nvidia-smi erroring or the
@@ -57,7 +58,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 REPORT_URL = os.environ.get("GPU_REPORT_URL", "")
 REPORT_SECRET = os.environ.get("GPU_REPORT_SECRET", "")
@@ -67,20 +68,25 @@ DCGM_PORT = os.environ.get("DCGM_EXPORTER_PORT", "9400")
 PLUGIN_LABEL = os.environ.get("DEVICE_PLUGIN_LABEL",
                               "app=nvidia-device-plugin-daemonset")
 PLUGIN_CONTAINER = "nvidia-device-plugin"
-# Readings are keyed by uuid: it joins them to DCGM's UUID label and maps the
-# plugin log's "Device=GPU-<uuid>" lines (the only ones naming a GPU) to a bus id.
+# Readings are keyed by uuid: it joins them to DCGM's UUID label.
 SMI_FIELDS = ("uuid,pci.bus_id,gpu_recovery_action,remapped_rows.failure,"
               "ecc.errors.uncorrected.volatile.total")
 # Same cap as gpu-reporter.py (ingest rejects a report with more than 500);
 # the rest go out on the next run.
 MAX_XIDS_PER_REPORT = 200
-# Per-node "read the plugin log since" timestamps live in the disk state
-# file under this key (no node can be named like this).
-XID_STATE_KEY = "_xid_since"
+# Per-node kernel-journal cursors live in the disk state file under this key
+# (no node can be named like this). A new key: the old "_xid_since" values
+# were plugin-log times, not cursors.
+XID_STATE_KEY = "_journal_cursor"
+# Same as gpu-reporter.py: the oldest entries read after the cursor per run,
+# and the longest Xid message sent.
+JOURNAL_READ_LIMIT = 10000
+MAX_XID_MESSAGE = 512
+XID_RE = re.compile(r"NVRM: Xid \(PCI:([0-9A-Fa-f:.]+)\): (\d+)(?:,\s*(.*))?$")
 
 KUBECTL_TIMEOUT = 10  # per-call seconds; one slow node must not kill the run
-# kubectl logs from the device-plugin pod takes well under a second; a short
-# bound keeps a hung node from eating the 30 s cadence.
+# The journal read takes well under a second; a short bound keeps a hung
+# node from eating the 30 s cadence.
 DRIVER_READ_TIMEOUT = 5
 GPU_RESOURCE = "nvidia.com/gpu"
 # nvidia-smi erroring or the exec not returning within this is a GPU hang.
@@ -452,89 +458,63 @@ def read_fabric(pod):
     ))
 
 
-def start_pod_reads(pod, since=None):
-    """Start one node's execs and, once it has a cursor, its log read;
-    process_node waits on the futures."""
-    reads = {"smi": POD_READS.submit(read_smi, pod),
-             "network": POD_READS.submit(read_network_probes, pod),
-             "fabric": POD_READS.submit(read_fabric, pod)}
-    if since is not None:
-        reads["log"] = POD_READS.submit(read_plugin_log, pod, since)
-    return reads
+def start_pod_reads(pod, cursor=None):
+    """Start one node's execs and its journal read; process_node waits on
+    the futures."""
+    return {"smi": POD_READS.submit(read_smi, pod),
+            "network": POD_READS.submit(read_network_probes, pod),
+            "fabric": POD_READS.submit(read_fabric, pod),
+            "journal": POD_READS.submit(read_journal, pod, cursor)}
 
 
-# `kubectl logs --timestamps` line:
-#   "<rfc3339nano> I0918 11:25:00.4 1 health.go:143] <msg>"
-LOG_LINE_RE = re.compile(r"^(\S+)\s+[IWEF]\d{4} \S+\s+\d+ \S+\] (.*)$")
-XID_EVENT_RE = re.compile(r"^(?:Processing|Skipping) event .*EventData:(\d+)")
-XID_CRITICAL_RE = re.compile(r"^XidCriticalError: Xid=(\d+) on Device=(\S+?);")
-RFC3339_RE = re.compile(
-    r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)$")
+# Xids come from the host's kernel journal, not the device plugin's log: in
+# a 171-Xid burst on 2026-10-27 the plugin's log carried 53 lines and lost
+# every Xid 74 (NVLink fatal) and 154 (recovery action changed).
+def parse_journal_xids(journal_json):
+    """`journalctl -o json` output -> (xids, cursor of the last entry read).
 
-
-def parse_log_time(s):
-    """RFC3339 (any offset, ns fraction) -> aware UTC datetime, or None."""
-    m = RFC3339_RE.match(s)
-    if not m:
-        return None
-    dt = datetime.strptime(m.group(1) + m.group(3).replace("Z", "+0000"),
-                           "%Y-%m-%dT%H:%M:%S%z")
-    dt += timedelta(microseconds=int((m.group(2) or "0").ljust(6, "0")[:6]))
-    return dt.astimezone(timezone.utc)
-
-
-def parse_plugin_log(text, since, uuid_to_bus=None):
-    """Device-plugin log -> (xids, time of the last line consumed or None).
-
-    Every Processing/Skipping event at or after `since` (aware datetime)
-    becomes an xid entry, at most MAX_XIDS_PER_REPORT. The log names a GPU
-    only on the XidCriticalError line that follows a Processing event, so
-    bus_id is that GPU's bus id when known and "" otherwise (Skipping events
-    carry only an in-process device handle).
-
-    Every stamped line read moves the returned time, so a quiet log isn't
-    re-read from the last Xid every run. Past the cap it stops at the last
-    Xid sent, so the rest go out next run.
+    Every NVRM Xid line becomes {bus_id, xid, at, message}, at most
+    MAX_XIDS_PER_REPORT; past the cap it stops at the last Xid sent, so the
+    rest go out next run. The cursor is None when no entry was read.
     """
-    uuid_to_bus = uuid_to_bus or {}
-    xids, last = [], None
-    for line in text.splitlines():
-        at = parse_log_time(line.split(" ", 1)[0])
-        if not at or at < since:
+    xids, cursor = [], None
+    for line in journal_json.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
             continue
-        m = LOG_LINE_RE.match(line)
-        msg = m.group(2) if m else ""
-        ev = XID_EVENT_RE.match(msg)
-        if ev and len(xids) == MAX_XIDS_PER_REPORT:
-            break
-        last = at
-        if ev:
-            xids.append({"bus_id": "", "xid": int(ev.group(1)),
-                         "at": at.isoformat(timespec="microseconds"),
-                         "message": msg})
-            continue
-        crit = XID_CRITICAL_RE.match(msg)
-        if crit and xids and xids[-1]["xid"] == int(crit.group(1)):
-            xids[-1]["bus_id"] = uuid_to_bus.get(crit.group(2), "")
-    return xids, last
+        message = entry.get("MESSAGE")
+        match = XID_RE.search(message) if isinstance(message, str) else None
+        if match:
+            if len(xids) == MAX_XIDS_PER_REPORT:
+                break
+            at = datetime.fromtimestamp(
+                int(entry["__REALTIME_TIMESTAMP"]) / 1e6, tz=timezone.utc)
+            xids.append({
+                "bus_id": match.group(1),
+                "xid": int(match.group(2)),
+                "at": at.isoformat(timespec="microseconds"),
+                "message": (match.group(3) or "")[:MAX_XID_MESSAGE],
+            })
+        cursor = entry.get("__CURSOR", cursor)
+    return xids, cursor
 
 
-def read_plugin_log(pod, since):
-    """The device-plugin log since `since` (ISO), with timestamps."""
-    return kubectl("logs", "-n", DCGM_NS, pod, "-c", PLUGIN_CONTAINER,
-                   "--timestamps", "--since-time", since,
-                   timeout=DRIVER_READ_TIMEOUT)
+def read_journal(pod, cursor):
+    """The host's kernel journal after `cursor`; without one, only its last
+    entry, so the first run places the cursor and never replays history.
 
-
-def xids_since(text, since, uuid_to_bus):
-    """Log read from `since` (ISO) -> (xids, next since)."""
-    # The API server truncates --since-time to whole seconds, so lines
-    # already sent come back; parse_plugin_log drops those before `since`.
-    xids, last = parse_plugin_log(text, parse_log_time(since), uuid_to_bus)
-    if last is None:
-        return xids, since
-    return xids, (last + timedelta(microseconds=1)).isoformat(
-        timespec="microseconds")
+    _TRANSPORT=kernel rather than -k: -k implies -b, which would skip Xids
+    logged between the last read and a reboot.
+    """
+    window = (("-n", "1") if cursor is None
+              else (f"--after-cursor={cursor}", "-n", f"+{JOURNAL_READ_LIMIT}"))
+    return kubectl(
+        "exec", "-n", DCGM_NS, pod, "-c", PLUGIN_CONTAINER, "--",
+        "chroot", "/host", "journalctl", "_TRANSPORT=kernel", "--no-pager",
+        "-o", "json", "--output-fields=MESSAGE,__REALTIME_TIMESTAMP", *window,
+        timeout=DRIVER_READ_TIMEOUT,
+    )
 
 
 def parse_labels(label_str):
@@ -859,9 +839,9 @@ def process_node(node, pod_ip, disk_state, now, plugin_pod=None, reads=None):
         print(f"  WARNING: node {name} has no device-plugin pod; driver "
               f"readings missing", file=sys.stderr)
     else:
-        since_map = disk_state.setdefault(XID_STATE_KEY, {})
-        since = since_map.get(name)
-        reads = reads or start_pod_reads(plugin_pod, since)
+        cursors = disk_state.setdefault(XID_STATE_KEY, {})
+        cursor = cursors.get(name)
+        reads = reads or start_pod_reads(plugin_pod, cursor)
         try:
             smi, payload["gpu_query_hung"], payload["gpu_query_error"] = \
                 reads["smi"].result()
@@ -879,19 +859,14 @@ def process_node(node, pod_ip, disk_state, now, plugin_pod=None, reads=None):
         except Exception as e:
             print(f"  WARNING: fabric exec on {name} failed: {e}",
                   file=sys.stderr)
-        if since is None:
-            # First run: start from now, nothing to read yet.
-            since_map[name] = datetime.fromtimestamp(
-                now, timezone.utc).isoformat(timespec="microseconds")
-            payload["xids"] = []
-        else:
-            try:
-                payload["xids"], since_map[name] = xids_since(
-                    reads["log"].result(), since,
-                    {u: g["bus_id"] for u, g in smi.items() if g["bus_id"]})
-            except Exception as e:
-                print(f"  WARNING: device-plugin log read on {name} failed: "
-                      f"{e}", file=sys.stderr)
+        try:
+            xids, read_to = parse_journal_xids(reads["journal"].result())
+            # The first read only places the cursor at the journal's end.
+            payload["xids"] = xids if cursor is not None else []
+            cursors[name] = read_to or cursor
+        except Exception as e:
+            print(f"  WARNING: kernel journal read on {name} failed: {e}",
+                  file=sys.stderr)
     for gpu in payload["gpus"]:
         reading = smi.get(gpu.pop("uuid"), {})
         gpu["recovery_action"] = reading.get("recovery_action")
@@ -986,15 +961,15 @@ def main():
 
     # Every node's execs and log read start now, on POD_READS' bounded
     # workers, so slow nodes overlap instead of adding up in the loop.
-    since_map = disk_state.get(XID_STATE_KEY, {})
-    reads = {name: start_pod_reads(pod, since_map.get(name))
+    cursors = disk_state.get(XID_STATE_KEY, {})
+    reads = {name: start_pod_reads(pod, cursors.get(name))
              for name, pod in plugin_pods.items() if name in gpu_node_names}
 
     reported = 0
     for node in gpu_nodes:
         name = node["metadata"]["name"]
         print(f"Processing {name}...")
-        prev_since = disk_state.get(XID_STATE_KEY, {}).get(name)
+        prev_cursor = disk_state.get(XID_STATE_KEY, {}).get(name)
         try:
             payload = process_node(node, pods_by_node.get(name),
                                    disk_state, now, plugin_pods.get(name),
@@ -1016,12 +991,12 @@ def main():
             reported += 1
         except Exception as e:
             print(f"ERROR: POST for {name} failed: {e}", file=sys.stderr)
-            # Don't advance the log cursor past Xids the server never got.
-            since_map = disk_state.setdefault(XID_STATE_KEY, {})
-            if prev_since is None:
-                since_map.pop(name, None)
+            # Don't advance the journal cursor past Xids the server never got.
+            cursors = disk_state.setdefault(XID_STATE_KEY, {})
+            if prev_cursor is None:
+                cursors.pop(name, None)
             else:
-                since_map[name] = prev_since
+                cursors[name] = prev_cursor
 
     save_disk_state(state_path, disk_state)
     print(f"Done: {reported}/{len(gpu_nodes)} nodes reported")
