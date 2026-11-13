@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import { SearchableSelect } from "@/components/searchable-select";
 import { StatCard } from "@/components/stat-card";
 import { commitFromImage } from "@/lib/commit-from-image";
+import { compareToRollingBaseline } from "@/lib/eval-data";
 
 const Plot = dynamic(() => import("@/components/plotly-chart"), {
   ssr: false,
@@ -44,6 +45,7 @@ interface EvalRow {
   buildkite_commit: string | null;
   vllm_commit: string | null;
   workload: string | null;
+  duplicateCount: number;
 }
 
 interface FiltersResponse {
@@ -595,6 +597,14 @@ function LeaderboardTable({
                 </span>
                 <span className="mt-2 flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
                   <span>{formatTime(row.run_date)}</span>
+                  {row.duplicateCount > 1 && (
+                    <span
+                      className="text-zinc-400"
+                      title={`${row.duplicateCount} identical runs merged`}
+                    >
+                      ×{row.duplicateCount}
+                    </span>
+                  )}
                   <span aria-hidden="true">·</span>
                   <span className="font-mono text-blue-600 dark:text-blue-400">
                     {shortCommit(row)}
@@ -648,6 +658,14 @@ function LeaderboardTable({
                 >
                   <td className="px-4 py-2 text-zinc-500 whitespace-nowrap">
                     {formatTime(r.run_date)}
+                    {r.duplicateCount > 1 && (
+                      <span
+                        className="ml-1 text-zinc-400"
+                        title={`${r.duplicateCount} identical runs merged`}
+                      >
+                        ×{r.duplicateCount}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-2 font-mono text-xs text-zinc-500">
                     {r.buildkite_build_url ? (
@@ -734,20 +752,27 @@ function LatestStatCards({
       task: string;
       model: string;
       latest: EvalRow;
-      prev: EvalRow | null;
+      priors: { value: number; stderr: number }[];
       pm: { metric: string; filter: string } | null;
     }[] = [];
     for (const [key, runs] of byKey) {
       const sorted = [...runs].sort((a, b) => b.run_epoch - a.run_epoch);
       const latest = sorted[0];
-      const prev = sorted[1] ?? null;
+      const pm = primaryMetric(runs);
+      const priors = pm
+        ? sorted
+            .slice(1)
+            .map((r) => pickMetric(r, pm.metric, pm.filter))
+            .filter((mm): mm is EvalMetric => mm !== null)
+            .map((mm) => ({ value: mm.value, stderr: mm.stderr }))
+        : [];
       out.push({
         key,
         task: latest.task,
         model: latest.model,
         latest,
-        prev,
-        pm: primaryMetric(runs),
+        priors,
+        pm,
       });
     }
     return out.sort((a, b) => a.task.localeCompare(b.task));
@@ -760,27 +785,21 @@ function LatestStatCards({
       {cards.map((c) => {
         if (!c.pm) return null;
         const m = pickMetric(c.latest, c.pm.metric, c.pm.filter);
-        const prevM = c.prev ? pickMetric(c.prev, c.pm.metric, c.pm.filter) : null;
         if (!m) return null;
         let color: "default" | "green" | "red" | "yellow" = "default";
         const commit = shortCommit(c.latest);
         let detail = `n=${c.latest.n_samples}, ${c.latest.n_shot}-shot, ${commit}`;
-        if (prevM) {
-          const delta = m.value - prevM.value;
-          const sigma = Math.sqrt(m.stderr ** 2 + prevM.stderr ** 2);
-          const zish = sigma > 0 ? Math.abs(delta) / sigma : 0;
-          const dir = delta >= 0 ? "↑" : "↓";
-          const sign = delta >= 0 ? "+" : "";
-          detail = `${dir} ${sign}${(delta * 100).toFixed(2)}pp vs prev (${zish.toFixed(1)}σ)`;
-          if (m.higher_is_better) {
-            if (delta < 0 && zish > 2) color = "red";
-            else if (delta > 0 && zish > 2) color = "green";
-            else color = "yellow";
-          } else {
-            if (delta > 0 && zish > 2) color = "red";
-            else if (delta < 0 && zish > 2) color = "green";
-            else color = "yellow";
-          }
+        const cmp = compareToRollingBaseline(
+          { value: m.value, stderr: m.stderr },
+          c.priors
+        );
+        if (cmp) {
+          const dir = cmp.delta >= 0 ? "↑" : "↓";
+          const sign = cmp.delta >= 0 ? "+" : "";
+          detail = `${dir} ${sign}${(cmp.delta * 100).toFixed(2)}pp vs baseline (${cmp.sigma.toFixed(1)}σ)`;
+          const improved = m.higher_is_better ? cmp.delta > 0 : cmp.delta < 0;
+          if (cmp.flagged) color = improved ? "green" : "red";
+          else color = "yellow";
         }
         return (
           <StatCard
@@ -796,12 +815,17 @@ function LatestStatCards({
   );
 }
 
-function EvaluationOverview({ rows }: { rows: EvalRow[] }) {
+function EvaluationOverview({
+  rows,
+  taskCount,
+}: {
+  rows: EvalRow[];
+  taskCount?: number;
+}) {
   const overview = useMemo(() => {
     const sorted = [...rows].sort((a, b) => b.run_epoch - a.run_epoch);
     const latest = sorted[0] ?? null;
     const models = new Set(rows.map((row) => row.model).filter(Boolean));
-    const tasks = new Set(rows.map((row) => row.task).filter(Boolean));
     const groups = new Map<string, EvalRow[]>();
     for (const row of rows) {
       const key = `${row.model}|${row.task}`;
@@ -822,25 +846,27 @@ function EvaluationOverview({ rows }: { rows: EvalRow[] }) {
         (a, b) => b.run_epoch - a.run_epoch,
       );
       const current = group[0];
-      const previous = group[1];
       const metric = primaryMetric(group);
-      if (!current || !previous || !metric) continue;
+      if (!current || !metric) continue;
       const currentMetric = pickMetric(current, metric.metric, metric.filter);
-      const previousMetric = pickMetric(previous, metric.metric, metric.filter);
-      if (!currentMetric || !previousMetric) continue;
-      const delta = currentMetric.value - previousMetric.value;
-      const sigma = Math.sqrt(
-        currentMetric.stderr ** 2 + previousMetric.stderr ** 2,
+      if (!currentMetric) continue;
+      const priors = group
+        .slice(1)
+        .map((r) => pickMetric(r, metric.metric, metric.filter))
+        .filter((mm): mm is EvalMetric => mm !== null)
+        .map((mm) => ({ value: mm.value, stderr: mm.stderr }));
+      const cmp = compareToRollingBaseline(
+        { value: currentMetric.value, stderr: currentMetric.stderr },
+        priors,
       );
-      const significance = sigma > 0 ? Math.abs(delta) / sigma : 0;
-      if (significance < 2) continue;
-      const beneficialDelta = currentMetric.higher_is_better ? delta : -delta;
+      if (!cmp || !cmp.flagged) continue;
+      const beneficialDelta = currentMetric.higher_is_better ? cmp.delta : -cmp.delta;
       changes.push({
         key,
         model: current.model,
         task: current.task,
-        delta,
-        significance,
+        delta: cmp.delta,
+        significance: cmp.sigma,
         regression: beneficialDelta < 0,
       });
     }
@@ -849,7 +875,6 @@ function EvaluationOverview({ rows }: { rows: EvalRow[] }) {
     return {
       latest,
       modelCount: models.size,
-      taskCount: tasks.size,
       regressions: changes.filter((change) => change.regression).length,
       improvements: changes.filter((change) => !change.regression).length,
       changes: changes.slice(0, 5),
@@ -881,7 +906,7 @@ function EvaluationOverview({ rows }: { rows: EvalRow[] }) {
         />
         <StatCard
           label="Tasks"
-          value={overview.taskCount}
+          value={taskCount ?? new Set(rows.map((row) => row.task).filter(Boolean)).size}
           detail="Across current filters"
         />
         <StatCard
@@ -899,12 +924,12 @@ function EvaluationOverview({ rows }: { rows: EvalRow[] }) {
       <div className="rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800/80 dark:bg-zinc-950">
         <div className="border-b border-zinc-200 px-4 py-3 sm:px-5 dark:border-zinc-800">
           <h3 className="text-[13px] font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-            Strongest changes vs previous run
+            Strongest changes vs rolling baseline
           </h3>
         </div>
         {overview.changes.length === 0 ? (
           <p className="px-4 py-5 text-sm text-zinc-500 sm:px-5 dark:text-zinc-400">
-            No changes exceeded the 2σ watch threshold.
+            No changes exceeded the baseline watch threshold.
           </p>
         ) : (
           <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
@@ -953,7 +978,7 @@ export default function EvalPage() {
   if (task) params.set("task", task);
   if (image) params.set("image", image);
 
-  const { data, isLoading } = useSWR<{ rows: EvalRow[] }>(
+  const { data, isLoading } = useSWR<{ rows: EvalRow[]; taskCount?: number }>(
     `/api/eval?${params.toString()}`,
     fetcher,
     { refreshInterval: 10 * 60 * 1000, keepPreviousData: true }
@@ -1015,7 +1040,7 @@ export default function EvalPage() {
 
       {!showInitialLoading && rows.length > 0 && (
         <>
-          {!model && <EvaluationOverview rows={rows} />}
+          {!model && <EvaluationOverview rows={rows} taskCount={data?.taskCount} />}
           {model && (
             <>
               <LatestStatCards rows={rows} />
