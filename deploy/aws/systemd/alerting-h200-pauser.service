@@ -3,7 +3,7 @@ Description=Pause the Buildkite agents of quarantined H200 hosts
 After=network-online.target
 Wants=network-online.target
 OnFailure=alerting-failure-notify@%n.service
-OnSuccess=alerting-failure-resolve@%n.service
+OnSuccess=alerting-failure-resolve@%n.service alerting-heartbeat@h200-pauser.service
 
 [Service]
 Type=oneshot

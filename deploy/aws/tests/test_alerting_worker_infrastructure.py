@@ -39,7 +39,10 @@ def test_instance_role_is_scoped_to_checkpoint_bucket_and_named_secrets() -> Non
     assert "- secretsmanager:GetSecretValue" in template
     assert "Ref: WorkerSecretArn" in template
     assert "Ref: GitHubReadOnlySecretArn" in template
-    assert "Resource: '*'" not in template
+    # PutMetricData has no resource-level permissions; the one wildcard is
+    # pinned to the heartbeat namespace by a condition.
+    assert template.count("Resource: '*'") == 1
+    assert "cloudwatch:PutMetricData" in template.split("Resource: '*'")[0].rsplit("- Effect", 1)[1]
 
 
 def test_instance_role_is_ssm_managed_for_in_place_ops() -> None:
@@ -292,7 +295,7 @@ def test_main_ci_kimi_effort_is_an_independent_deploy_knob() -> None:
     assert "Default: high" in main_ci_parameter.split("Resources:", 1)[0]
 
 
-def test_s3_control_reconciles_each_path_without_cloudwatch_or_sqs() -> None:
+def test_s3_control_reconciles_each_path_without_sqs() -> None:
     service = read("systemd/alerting-control.service")
     timer = read("systemd/alerting-control.timer")
     template = read("alerting-worker.yaml")
@@ -300,7 +303,6 @@ def test_s3_control_reconciles_each_path_without_cloudwatch_or_sqs() -> None:
     assert "alerting.control" in service
     assert "ALERTING_CHECKPOINT_BUCKET" in service
     assert "OnUnitActiveSec=1min" in timer
-    assert "AWS::CloudWatch" not in template
     assert "AWS::SQS" not in template
 
 
@@ -381,7 +383,11 @@ def test_every_scheduled_unit_reports_its_failures_to_slack() -> None:
     units = sorted(
         path
         for path in (AWS_DIR / "systemd").glob("alerting-*.service")
-        if "failure-notify" not in path.name and "failure-resolve" not in path.name
+        # The heartbeat unit is deliberately unchained: a dead heartbeat is
+        # not the job failing, and the off-worker alarm is what notices it.
+        if "failure-notify" not in path.name
+        and "failure-resolve" not in path.name
+        and "heartbeat" not in path.name
     )
     assert units, "no scheduled units found"
     for path in units:
@@ -660,3 +666,83 @@ def test_triage_consumers_run_the_triage_module_under_their_own_control() -> Non
         assert "User=alerting" in service
         assert "StandardOutput=null" in service
         assert f"Unit=alerting-triage-{consumer}.service" in timer
+
+
+HEARTBEAT_JOBS = ["control", "fast-ci", "main-ci", "infra", "h200-pauser"]
+
+
+@pytest.mark.parametrize("job", HEARTBEAT_JOBS)
+def test_job_emits_heartbeat_only_after_it_succeeds(job: str) -> None:
+    """The heartbeat is its own oneshot unit on the job unit's OnSuccess=:
+    it runs only after a successful run, and outside the job unit's
+    TimeoutStartSec, so a slow CloudWatch call can never fail a run."""
+    unit = read(f"systemd/alerting-{job}.service")
+
+    assert "ExecStartPost=" not in unit
+    assert f"OnSuccess=alerting-failure-resolve@%n.service alerting-heartbeat@{job}.service" in unit
+
+    template_unit = read("systemd/alerting-heartbeat@.service")
+    assert "Type=oneshot" in template_unit
+    assert "ExecStart=/opt/alerting/bin/emit-heartbeat %i" in template_unit
+    assert "TimeoutStartSec=30s" in template_unit
+    # The aws CLI needs a writable HOME and the sandbox has none (the failure
+    # notifier's first deploy died to exactly this); PrivateTmp provides /tmp.
+    assert "Environment=HOME=/tmp" in template_unit
+    # A dead heartbeat is not the job failing; the off-worker alarm notices.
+    assert "OnFailure=" not in template_unit
+    # Its stderr goes to the journal, not to /dev/null like the job's.
+    assert "StandardError=journal" in template_unit
+    assert "emit-heartbeat /opt/alerting/bin/emit-heartbeat" in read("install.sh")
+
+
+def test_heartbeat_emitter_needs_no_worker_secret() -> None:
+    script = read("bin/emit-heartbeat")
+
+    assert "cloudwatch put-metric-data" in script
+    # Bounded by the unit's TimeoutStartSec=30s; 5+4 s of CLI timeouts per
+    # attempt let the default retries finish inside it. One throttled call
+    # must not drop a datapoint from a job that emits only twice per window.
+    assert "timeout 10" not in script
+    assert "--cli-connect-timeout 5" in script and "--cli-read-timeout 4" in script
+    assert "AWS_MAX_ATTEMPTS" not in script
+    assert "--namespace VllmAlerting" in script
+    for needle in ("load-secrets", "worker.env", "TOKEN", "DATABASE_URL"):
+        assert needle not in script
+    assert "cloudwatch:namespace: VllmAlerting" in read("alerting-worker.yaml")
+
+
+@pytest.mark.parametrize("job", HEARTBEAT_JOBS)
+def test_missing_heartbeat_alarms_through_sns_outside_the_worker(job: str) -> None:
+    template = read("alerting-worker.yaml")
+    block = template.split(f"Fn::Sub: ${{AWS::StackName}}-heartbeat-{job}\n", 1)[1]
+    block = block.split("\n  Heartbeat", 1)[0]
+
+    # Names carry the stack name so disaster recovery can build a replacement
+    # stack beside this one; no fixed physical names.
+    assert "TopicName: vllm-alerting-heartbeat" not in template
+    assert "TopicName:\n        Fn::Sub: ${AWS::StackName}-heartbeat" in template
+
+    # FILL(m1, 0), not raw missing data: with missing recent periods
+    # CloudWatch reaches back for older real datapoints, which would hold the
+    # alarm at OK past its window.
+    assert "Expression: FILL(m1, 0)" in block
+    assert block.count("ReturnData: true") == 1
+    assert block.count("ReturnData: false") == 1
+    assert "Period: 300" in block
+    periods = re.search(r"EvaluationPeriods: (\d+)", block)
+    assert periods and f"DatapointsToAlarm: {periods.group(1)}" in block
+    assert "TreatMissingData: breaching" in block
+    assert "ComparisonOperator: LessThanThreshold" in block
+    # Threshold 0 or an average stat would never fire on a silent job.
+    assert "Threshold: 1" in block
+    assert "Stat: Sum" in block
+    assert f"Value: {job}\n" in block
+    # The window outlasts one timed-out run plus one successful run at the
+    # durations we observe (max 3 min over 7 days of executions), with one
+    # full bucket of margin in case FILL counts the in-progress bucket as a
+    # zero — so one timed-out run (which already paged through OnFailure)
+    # never trips the alarm: cadence + TimeoutStartSec + cadence + success.
+    expected = {"control": 3, "fast-ci": 10, "main-ci": 5, "infra": 7, "h200-pauser": 4}[job]
+    assert periods.group(1) == str(expected)  # x 5 min: 15/50/25/35/20
+    assert block.count("Ref: HeartbeatTopic") == 2  # alarm and recovery
+    assert "Condition: HasHeartbeatEmail" in template  # target is a parameter

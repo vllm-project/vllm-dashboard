@@ -105,6 +105,52 @@ Buildkite agents of quarantined H200 hosts (see `alerting/docs/infra.md`).
    posts, never a token. A failed run DMs the worker-failure destination.
 4. To go live, drop `--dry-run` from the unit (and from the host check's).
 
+## Off-worker heartbeat
+
+`control`, `fast-ci`, `main-ci`, `infra` and `h200-pauser` each chain
+`alerting-heartbeat@<job>.service` from their `OnSuccess=`, which runs
+`bin/emit-heartbeat` as its own oneshot unit (so it never shares the job
+unit's start timeout) and puts a `VllmAlerting/Heartbeat` datapoint
+(dimension `Job`) using the instance role only, never the worker secret. The
+stack's CloudWatch alarms count a missing period as zero (`FILL(m1, 0)`, so
+an old heartbeat cannot hold an alarm at OK) and notify the stack's SNS
+topic (`<stack-name>-heartbeat`), so a dead timer, a dead instance, or a
+secret the worker cannot load all alarm without the worker, its database or
+its secret. Set `HeartbeatAlertEmail` and click SNS's confirmation link
+once; empty means no subscriber. A job whose timer is intentionally stopped
+or disabled (a path turned off in S3 control; the pauser's timer is enabled
+by hand, not by S3 control) will alarm once — one ALARM email, and an OK
+email when the job resumes; that is the alarm working, so don't mute its
+actions (a muted alarm left in ALARM notifies nobody when the job comes
+back broken). `control` doesn't load the worker secret, so its alarm covers
+a dead instance or timers, not the secret. Windows (15/50/25/35/20 min for
+control/fast-ci/main-ci/infra/h200-pauser) outlast one timed-out run plus
+one successful run at the durations we observe, with one full bucket of
+margin in case FILL counts the in-progress bucket as a zero. A unit timeout
+pages once through `OnFailure`; the heartbeat alarm must not add a second
+page for the same run. (App-level timeout errors on main-ci, infra and
+h200-pauser are also held ten minutes by bin/hold-failure before they page.)
+The metric has only the `Job` dimension:
+one worker per account and region, or a second emitter would hold the
+alarms at OK.
+
+Deploy the code before the stack change: until the stack grants
+`PutMetricData` the emit fails (journaled, and the `alerting-heartbeat@*`
+units sit failed, so `systemctl is-system-running` reads degraded — expected
+and brief), and the code is already in place when the alarms are born.
+Whether each alarm fires ALARM on missing data at deploy or goes straight to
+OK depends on whether a heartbeat lands before its first evaluation; either
+is fine, and each alarm also mails on recovery, so an "OK" email from a new
+alarm is the subscription working, not a recovered incident. A dead worker
+pages all five alarms (15/20/25/35/50 min in, plus evaluation lag) and mails
+OK again on recovery.
+The delivery test is `aws cloudwatch set-alarm-state --state-value ALARM`;
+the physical alarm names carry the stack name, so read them from the stack
+(`aws cloudformation describe-stack-resource --stack-name <stack> --logical-resource-id HeartbeatInfraAlarm`).
+Don't test by stopping a timer: unless a path is `disabled`, the control
+service re-enables the path timers within a minute (not h200-pauser, whose
+timer is enabled by hand).
+
 ## Shadow, cutover, and rollback
 
 All three paths start in shadow mode. Durable controls live at
@@ -135,12 +181,19 @@ Cutover is path-specific. Fast CI fences only
 `vllm-fast-ci-failure-alert.timer`; Full CI requires disabling only its task in
 the shared legacy scheduler. Rollback disables the selected new timer through
 S3, archives any undelivered live rows as shadow output, restores only the
-selected old producer, and never rewinds Postgres or S3 state.
+selected old producer, and never rewinds Postgres or S3 state. A path left
+`disabled` stops emitting heartbeats, so its heartbeat alarm fires once and
+recovers with an OK email when the path resumes — expected, not a fault.
 
 ## Recovery check
 
 Stop all alert timers before a scheduled tick, wait through the tick, then
-start the timers again. `Persistent=true` and `OnBootSec` start reconciliation,
+start the timers again. The heartbeat alarms fire only if the timers stay
+stopped past their windows (15-50 min); unless a path is `disabled`, the
+control service re-enables the path timers within a minute (not h200-pauser,
+whose timer is enabled by hand), so a one-tick pause sends nothing. Use
+`set-alarm-state` for a delivery test. `Persistent=true` and `OnBootSec`
+start reconciliation,
 while the Postgres cursors and processed-run history recover missed Fast, Full,
 or Main CI observations. Each path has a separate timer and service — Main CI
 has three: one for lifecycle reconciliation, one for AI analysis, and one

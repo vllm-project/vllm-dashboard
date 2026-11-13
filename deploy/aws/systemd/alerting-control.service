@@ -3,7 +3,7 @@ Description=Apply S3 controls for vLLM alerting paths
 After=network-online.target
 Wants=network-online.target
 OnFailure=alerting-failure-notify@%n.service
-OnSuccess=alerting-failure-resolve@%n.service
+OnSuccess=alerting-failure-resolve@%n.service alerting-heartbeat@control.service
 
 [Service]
 Type=oneshot
