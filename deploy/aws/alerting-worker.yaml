@@ -99,6 +99,17 @@ Resources:
                     - ${BucketArn}/*
                     - BucketArn:
                         Fn::GetAtt: [CheckpointBucket, Arn]
+        # The shard timings snapshot CI builds read (alerting/timings_snapshot.py).
+        # The bucket is public-read on this prefix and created outside the stack.
+        - PolicyName: AlertingWorkerTimingsSnapshotAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: arn:aws:s3:::vllm-ci-timings/ci/timings/*
         - PolicyName: AlertingWorkerSecretAccess
           PolicyDocument:
             Version: '2012-10-17'
