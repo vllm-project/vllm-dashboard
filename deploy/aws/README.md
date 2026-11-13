@@ -118,9 +118,11 @@ topic (`<stack-name>-heartbeat`), so a dead timer, a dead instance, or a
 secret the worker cannot load all alarm without the worker, its database or
 its secret. Set `HeartbeatAlertEmail` and click SNS's confirmation link
 once; empty means no subscriber. A job whose timer is intentionally disabled
-(a path turned off in S3 control) will alarm: disable or delete its alarm
-first. `control` doesn't load the worker secret, so its alarm covers a dead
-instance or timers, not the secret. Windows (15/45/25/30 min for
+(a path turned off in S3 control) will alarm once — one ALARM email, and an
+OK email when the path resumes; that is the alarm working, so don't mute its
+actions (a muted alarm left in ALARM notifies nobody when the path comes
+back broken). `control` doesn't load the worker secret, so its alarm covers
+a dead instance or timers, not the secret. Windows (15/45/25/30 min for
 control/fast-ci/main-ci/infra) outlast one timed-out run plus one
 full-length success — a timeout already pages through `OnFailure`, and must
 not page twice. The metric has only the `Job` dimension:
@@ -128,19 +130,19 @@ one worker per account and region, or a second emitter would hold the
 alarms at OK.
 
 Deploy the code before the stack change: until the stack grants
-`PutMetricData` the emit fails (journaled, not raised), so the code is
-already in place when the alarms are born. The alarms are created before any
-heartbeat can have succeeded, so at deploy each one fires ALARM on missing
-data and then resolves to OK as the first heartbeats arrive within about
-five minutes: that ALARM-then-OK pair doubles as the delivery test. Each
-alarm also mails on recovery, so a recreated alarm's first move from
-INSUFFICIENT_DATA to OK sends one "OK" email; that is the subscription
-working, not a recovered incident. To retest delivery later use
-`aws cloudwatch set-alarm-state --state-value ALARM`; the physical alarm
-names carry the stack name, so read them from the stack
+`PutMetricData` the emit fails (journaled, and the `alerting-heartbeat@*`
+units sit failed, so `systemctl is-system-running` reads degraded — expected
+and brief), and the code is already in place when the alarms are born.
+Whether each alarm fires ALARM on missing data at deploy or goes straight to
+OK depends on whether a heartbeat lands before its first evaluation; either
+is fine, and each alarm also mails on recovery, so an "OK" email from a new
+alarm is the subscription working, not a recovered incident. A dead worker
+pages all four alarms (15/25/30/45 min in) and mails OK again on recovery.
+The delivery test is `aws cloudwatch set-alarm-state --state-value ALARM`;
+the physical alarm names carry the stack name, so read them from the stack
 (`aws cloudformation describe-stack-resource --stack-name <stack> --logical-resource-id HeartbeatInfraAlarm`).
-Don't test by stopping a timer: while a path is live, the control service
-re-enables its timers within a minute.
+Don't test by stopping a timer: unless a path is `disabled`, the control
+service re-enables its timers within a minute.
 
 ## Shadow, cutover, and rollback
 
@@ -173,17 +175,16 @@ Cutover is path-specific. Fast CI fences only
 the shared legacy scheduler. Rollback disables the selected new timer through
 S3, archives any undelivered live rows as shadow output, restores only the
 selected old producer, and never rewinds Postgres or S3 state. A path left
-`disabled` stops emitting heartbeats, so its heartbeat alarm fires and stays
-ALARM until its actions are disabled; the wizard prints the
-`disable-alarm-actions` step.
+`disabled` stops emitting heartbeats, so its heartbeat alarm fires once and
+recovers with an OK email when the path resumes — expected, not a fault.
 
 ## Recovery check
 
 Stop all alert timers before a scheduled tick, wait through the tick, then
 start the timers again. Stopping the timers stops the heartbeats too, so
 each heartbeat alarm fires and recovers as the timers come back (the ALARM
-then OK emails are expected; `disable-alarm-actions` first if they are not
-wanted). `Persistent=true` and `OnBootSec` start reconciliation,
+then OK emails are expected). `Persistent=true` and `OnBootSec` start
+reconciliation,
 while the Postgres cursors and processed-run history recover missed Fast, Full,
 or Main CI observations. Each path has a separate timer and service — Main CI
 has three: one for lifecycle reconciliation, one for AI analysis, and one
