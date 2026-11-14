@@ -22,6 +22,7 @@ from alerting.infra import (
     normalize_hostname,
     pilot_pools,
     GpuCountObservation,
+    HostReport,
     InfraAlertEpisode,
     InfraSubjectState,
 )
@@ -1183,6 +1184,24 @@ def test_postgres_reads_map_rows_and_bound_the_window() -> None:
     # Cordoned since the first history bucket after the last schedulable one.
     assert "FROM host_history_5m" in sql
     assert "(u.node_conditions->>'unschedulable')::boolean IS FALSE" in sql
+
+
+def test_postgres_latest_reports_never_aggregates_the_per_sample_column() -> None:
+    recorder = Recorder([("H200-CI-1", NOW), ("h200-ci-2", YESTERDAY)])
+    reports = PostgresAlertStore(lambda: recorder).latest_reports()
+    assert reports == [
+        HostReport(hostname="H200-CI-1", reported_at=NOW),
+        HostReport(hostname="h200-ci-2", reported_at=YESTERDAY),
+    ]
+    # Aggregating the per-sample receipt column heap-fetches every rollup
+    # row in the window; the per-host newest row may still be read by key.
+    sql, _ = recorder.calls[0]
+    assert "max(latest_reported_at)" not in sql
+    # The shape that avoids it: aggregate only the index-covered bucket,
+    # join the newest bucket back by primary key, bound on both sides.
+    assert "max(time_bucket)" in sql
+    assert "USING (time_bucket, hostname)" in sql
+    assert "h.time_bucket >= now() - interval '14 days'" in sql
 
 
 def test_the_runtime_wires_one_handler_over_one_store(monkeypatch: Any) -> None:
