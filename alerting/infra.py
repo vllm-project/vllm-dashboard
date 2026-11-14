@@ -169,10 +169,6 @@ class HostFaultObservation:
     # exists and the daemon answers), and why not.
     docker_ok: bool | None = None
     docker_error: str | None = None
-    # Kubernetes only: whether every GPU's NVLink fabric is registered and
-    # healthy and the driver still reaches Fabric Manager, and why not.
-    fabric_ok: bool | None = None
-    fabric_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1141,23 +1137,6 @@ def plan_trigger_rules(
                     reading_at=at.isoformat(),
                 )
 
-        # Without Fabric Manager every NVLS job (NCCL, DeepEP, FlashInfer
-        # allreduce) fails while single-GPU jobs pass, so job failures alone
-        # never trip it (seen 2026-11-13).
-        if reading is not None and check(
-            host,
-            "fabric",
-            (not reading.fabric_ok) if reading.fabric_ok is not None else None,
-            reading.reported_at,
-        ):
-            decide(
-                host,
-                "fabric",
-                f"the GPU fabric is unhealthy ({reading.fabric_error}) {checks}",
-                error=reading.fabric_error,
-                reading_at=reading.reported_at.isoformat(),
-            )
-
         if cluster != "h200":
             continue
         # Bare metal only: Kubernetes nodes have no checkout slots, and a
@@ -1806,12 +1785,6 @@ def plan_infra_scan(
             seen = (
                 [host_reading.reported_at]
                 if host_reading and host_reading.docker_ok is not None
-                else []
-            )
-        elif rule == "fabric":
-            seen = (
-                [host_reading.reported_at]
-                if host_reading and host_reading.fabric_ok is not None
                 else []
             )
         elif rule == "gpu_count":
