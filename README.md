@@ -99,8 +99,8 @@ page (Builds) loads, see the [Builds latency guide](./docs/builds-performance.md
 | Variable | Purpose |
 | --- | --- |
 | `CLICKHOUSE_URL`, `CLICKHOUSE_READ_USER`, `CLICKHOUSE_READ_PASSWORD` | ClickHouse Cloud: Fivetran Buildkite tables for builds, jobs, queue, cost, retries and sharding; OTel spans |
-| `CLICKHOUSE_WRITE_USER`, `CLICKHOUSE_WRITE_PASSWORD` | Optional. Also write ingested OTel spans to `ci.otel_spans` |
-| `TIMINGS_SOURCE` | Optional. `clickhouse` serves `/api/timings/latest` from ClickHouse instead of Postgres |
+| `CLICKHOUSE_WRITE_USER`, `CLICKHOUSE_WRITE_PASSWORD` | Required for OTLP ingestion. Spans are stored in ClickHouse `ci.otel_spans`, which every span reader (timings, build trace, GPU, `?source=otel` views) queries |
+| `OTEL_POSTGRES_WRITE` | Optional rollback path. `true` also mirrors ingested spans into Postgres `otel_spans`; nothing reads that table any more |
 | `PERF_EVAL_SOURCE` | Optional. `clickhouse` reads the perf, eval and compare pages from `ci.perf_data_ingest` / `ci.eval_data_ingest`; default `databricks`. A `?source=clickhouse\|databricks` query param overrides it per request |
 | `DATABRICKS_HOST`, `DATABRICKS_TOKEN`, `DATABRICKS_WAREHOUSE_ID` | Databricks SQL Warehouse access, now only for the perf and eval pages (while `PERF_EVAL_SOURCE` is `databricks`) |
 | `DATABASE_URL` | Postgres connection string for queue and GPU samples |

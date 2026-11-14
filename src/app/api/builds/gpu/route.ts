@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb } from "@/lib/db";
+import { queryClickHouse } from "@/lib/clickhouse";
+import { attrText, DEDUPE_SPANS } from "@/lib/otel-clickhouse";
 import { compactGpuSummary, parseGpuEvents } from "@/lib/job-gpu";
 
 export const runtime = "nodejs";
@@ -20,25 +21,33 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Invalid GPU trace interval or job identity" }, { status: 400 });
   }
   try {
-    const db = getDb();
-    const rows = await db<{ sample: unknown }[]>`
-      SELECT event.value AS sample FROM otel_spans
-      CROSS JOIN LATERAL jsonb_array_elements(span_events) WITH ORDINALITY AS event(value, position)
-      WHERE organization_slug = ${organization}
-        AND pipeline_slug = ${pipeline}
-        AND build_number = ${buildNumber}::bigint
-        AND job_id = ${jobId}
-        AND span_name = 'ci.gpu.samples'
-        AND start_time < ${new Date(end)}
-        AND end_time >= ${new Date(start)}
-        AND event.value->>'name' = 'ci.gpu.sample'
-        AND CASE WHEN event.value->>'timeUnixNano' ~ '^[0-9]{1,20}$'
-          THEN (event.value->>'timeUnixNano')::numeric >= ${start}::numeric * 1000000
-            AND (event.value->>'timeUnixNano')::numeric < ${end}::numeric * 1000000
-          ELSE false END
-      ORDER BY start_time, span_id, event.position
-      LIMIT ${MAX_SAMPLES + 1}
-    `;
+    // Each ci.gpu.samples span carries its readings as ci.gpu.sample events
+    // (span_events, a JSON array). Unnest them in span then event order.
+    const events = await queryClickHouse<{ sample: string }>(`
+      SELECT ev AS sample
+      FROM (
+        SELECT trace_id, span_id, start_time, span_events
+        FROM ci.otel_spans
+        WHERE span_name = 'ci.gpu.samples'
+          AND job_id = {jobId:String}
+          AND organization_slug = {organization:String}
+          AND pipeline_slug = {pipeline:String}
+          AND build_number = {buildNumber:Int64}
+          AND start_time < fromUnixTimestamp64Milli({end:Int64}, 'UTC')
+          AND end_time >= fromUnixTimestamp64Milli({start:Int64}, 'UTC')
+        ${DEDUPE_SPANS}
+      )
+      ARRAY JOIN
+        JSONExtractArrayRaw(span_events) AS ev,
+        arrayEnumerate(JSONExtractArrayRaw(span_events)) AS position
+      WHERE JSONExtractString(ev, 'name') = 'ci.gpu.sample'
+        AND match(ifNull(${attrText("timeUnixNano", "ev")}, ''), '^[0-9]{1,20}$')
+        AND toUInt64OrZero(${attrText("timeUnixNano", "ev")}) >= {start:UInt64} * 1000000
+        AND toUInt64OrZero(${attrText("timeUnixNano", "ev")}) < {end:UInt64} * 1000000
+      ORDER BY start_time, span_id, position
+      LIMIT {limit:UInt32}
+    `, { organization, pipeline, buildNumber, jobId, start, end, limit: MAX_SAMPLES + 1 });
+    const rows = events.map((row) => ({ sample: JSON.parse(row.sample) as unknown }));
     const samples = parseGpuEvents(rows.slice(0, MAX_SAMPLES).map((row) => row.sample), start, end);
     return NextResponse.json({
       ...(params.get("summary") === "1" ? {

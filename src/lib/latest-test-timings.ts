@@ -1,4 +1,3 @@
-import { getDb } from "@/lib/db";
 import {
   clickHouseMainEverTimed,
   clickHousePassingBuilds,
@@ -232,8 +231,7 @@ export function withTestsOverMs(
 // The treatment lookup is optional: past this, the response is main's alone.
 const TREATMENT_TIMEOUT_MS = 3_000;
 
-type Sql = ReturnType<typeof getDb>;
-type PassingBuild = {
+export type PassingBuild = {
   build_number: string; commit: string | null; finished_at: Date; job_ids: string[];
   job_ms: number[];
 };
@@ -247,54 +245,11 @@ export function withTreatmentFiles(main: FileTiming[], treatment: FileTiming[]):
   return [...main, ...added].sort((a, b) => a.command.localeCompare(b.command));
 }
 
-// CI runs of main or the treatment branch only: PR and other branches never
-// feed the baseline. The pipeline and branch literals must match the partial
-// index predicates in migrations 0029 and 0035, so they are not parameters.
-// `days` null reads the step's whole history on that index. A
-// retried failure keeps its failed job span, so that build is skipped: the
-// baseline only comes from builds where the step passed outright. A passing
-// build whose test spans were lost in ingestion is skipped too, so the
-// previous build is used instead. The test-span check sits outside the sorted
-// subquery so it runs newest first and stops once enough builds match. A queue
-// keeps only builds whose job ran on it, so a device change doesn't mix two
-// queues' runs.
-function passingBuilds(
-  sql: Sql, treatment: boolean, stepKey: string, days: number | null, queue: string | null,
-) {
-  const branch = treatment ? sql`'khluu/otel'` : sql`'main'`;
-  const since = days === null ? sql`` : sql`
-        AND start_time >= NOW() - make_interval(days => ${days})`;
-  return sql<PassingBuild[]>`
-    SELECT * FROM (
-      SELECT
-        build_number,
-        MAX(span_attributes->>'buildkite.build.commit') AS commit,
-        MAX(end_time) AS finished_at,
-        ARRAY_AGG(job_id ORDER BY job_id) AS job_ids,
-        ARRAY_AGG(duration_ms ORDER BY job_id) AS job_ms
-      FROM otel_spans
-      WHERE span_name = 'buildkite.job'
-        AND job_type = 'script'
-        AND pipeline_slug = 'ci'
-        AND span_attributes->>'buildkite.build.branch' = ${branch}
-        AND step_key = ${stepKey}${queue === null ? sql`` : sql` AND agent_queue = ${queue}`}${since}
-      GROUP BY build_number
-      HAVING BOOL_AND(job_state = 'finished' AND job_passed = 'true')
-      ORDER BY build_number DESC
-    ) AS passing
-    WHERE EXISTS (
-      SELECT 1 FROM otel_spans AS t
-      WHERE t.job_id = ANY(passing.job_ids)
-        AND t.span_attributes->>'ci.span.kind' = 'test'
-    )
-    ORDER BY build_number DESC
-    LIMIT ${TIMING_BUILDS}
-  `;
-}
-
-// Where the spans are read from. Postgres is the default; TIMINGS_SOURCE=
-// clickhouse reads the same spans from ClickHouse's ci.otel_spans.
-interface TimingStore {
+// Where the spans are read from: ClickHouse's ci.otel_spans. CI runs of
+// main or the treatment branch only feed the baseline; see
+// latest-test-timings-clickhouse.ts for the build-selection rules. Tests pass
+// an in-memory store.
+export interface TimingStore {
   passingBuilds(treatment: boolean, stepKey: string, days: number | null, queue: string | null): Promise<PassingBuild[]>;
   spans(jobIds: string[]): Promise<{ rows: TestSpanRow[]; commands: CommandSpanRow[] }>;
   mainEverTimed(stepKey: string): Promise<boolean>;
@@ -302,20 +257,7 @@ interface TimingStore {
   withTreatmentTimeout<T>(fn: (store: TimingStore) => Promise<T>): Promise<T>;
 }
 
-function postgresStore(sql: Sql): TimingStore {
-  return {
-    passingBuilds: (treatment, stepKey, days, queue) => passingBuilds(sql, treatment, stepKey, days, queue),
-    spans: (jobIds) => postgresSpans(sql, jobIds),
-    mainEverTimed: (stepKey) => mainEverTimed(sql, stepKey),
-    withTreatmentTimeout: (fn) => sql.begin(async (transaction) => {
-      const tx = transaction as unknown as Sql;
-      await tx`SELECT set_config('statement_timeout', ${String(TREATMENT_TIMEOUT_MS)}, true)`;
-      return fn(postgresStore(tx));
-    }) as Promise<Awaited<ReturnType<typeof fn>>>,
-  };
-}
-
-function clickHouseStore(timeoutMs?: number): TimingStore {
+export function clickHouseStore(timeoutMs?: number): TimingStore {
   const options = { timeoutMs };
   return {
     passingBuilds: (treatment, stepKey, days, queue) =>
@@ -324,36 +266,6 @@ function clickHouseStore(timeoutMs?: number): TimingStore {
     mainEverTimed: (stepKey) => clickHouseMainEverTimed(stepKey, options),
     withTreatmentTimeout: (fn) => fn(clickHouseStore(TREATMENT_TIMEOUT_MS)),
   };
-}
-
-function timingStore(): TimingStore {
-  return process.env.TIMINGS_SOURCE === "clickhouse" ? clickHouseStore() : postgresStore(getDb());
-}
-
-async function postgresSpans(sql: Sql, jobIds: string[]) {
-  const rows = await sql<TestSpanRow[]>`
-    SELECT
-      t.job_id,
-      t.duration_ms,
-      NULLIF(t.span_attributes->>'test.nodeid', '') AS nodeid,
-      NULLIF(t.span_attributes->>'test.outcome', '') AS outcome,
-      c.span_id AS command_span_id,
-      NULLIF(c.span_attributes->>'ci.command.label', '') AS command_label
-    FROM otel_spans AS t
-    LEFT JOIN otel_spans AS c
-      ON c.trace_id = t.trace_id
-      AND c.span_id = t.parent_span_id
-      AND c.span_attributes->>'ci.span.kind' = 'command'
-    WHERE t.job_id = ANY(${jobIds})
-      AND t.span_attributes->>'ci.span.kind' = 'test'
-  `;
-  const commands = await sql<CommandSpanRow[]>`
-    SELECT job_id, duration_ms, NULLIF(span_attributes->>'ci.command.label', '') AS label
-    FROM otel_spans
-    WHERE job_id = ANY(${jobIds})
-      AND span_attributes->>'ci.span.kind' = 'command'
-  `;
-  return { rows, commands };
 }
 
 async function timingsOfBuilds(store: TimingStore, builds: PassingBuild[]) {
@@ -393,29 +305,6 @@ async function timingsOfBuilds(store: TimingStore, builds: PassingBuild[]) {
 type BuildTimings = Pick<
   Awaited<ReturnType<typeof timingsOfBuilds>>, "used" | "setupPerBuild" | "skippedBuilds"
 >;
-
-// Whether main has ever recorded a test span for the step: any build, passed or
-// not, on any queue, with no time window. Only a step main has never timed
-// gets treatment timings alone; one main timed before and hasn't passed lately
-// keeps today's answer (none). Repeats migration 0029's index predicate.
-async function mainEverTimed(sql: Sql, stepKey: string): Promise<boolean> {
-  const [row] = await sql<{ timed: boolean }[]>`
-    SELECT EXISTS (
-      SELECT 1 FROM otel_spans AS j
-      WHERE j.span_name = 'buildkite.job'
-        AND j.job_type = 'script'
-        AND j.pipeline_slug = 'ci'
-        AND j.span_attributes->>'buildkite.build.branch' = 'main'
-        AND j.step_key = ${stepKey}
-        AND EXISTS (
-          SELECT 1 FROM otel_spans AS t
-          WHERE t.job_id = j.job_id
-            AND t.span_attributes->>'ci.span.kind' = 'test'
-        )
-    ) AS timed
-  `;
-  return row.timed;
-}
 
 /**
  * The treatment branch's builds and files; null when it has none or the
@@ -467,8 +356,8 @@ function timingsResponse(
 export async function queryLatestTestTimings(
   stepKey: string,
   { days = 14, queue = null }: { days?: number; queue?: string | null } = {},
+  store: TimingStore = clickHouseStore(),
 ): Promise<LatestTestTimings | null> {
-  const store = timingStore();
   let builds = await store.passingBuilds(false, stepKey, days, queue);
   if (builds.length === 0) {
     // A step main has never timed (a script step just turned into pytest)

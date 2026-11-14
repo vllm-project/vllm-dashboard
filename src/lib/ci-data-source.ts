@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 export type CiDataSource = "otel" | "clickhouse";
 
 /**
- * Decide whether a CI dashboard route reads from the `otel_spans` table
+ * Decide whether a CI dashboard route reads OTel spans (ClickHouse `ci.otel_spans`)
  * (near-real-time) or the Fivetran Buildkite tables in ClickHouse (default).
  *
  * Precedence: explicit `?source=` query param wins, then the `CI_DATA_SOURCE`

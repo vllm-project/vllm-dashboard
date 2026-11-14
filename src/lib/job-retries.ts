@@ -1,5 +1,5 @@
-import { getDb } from "@/lib/db";
 import { queryClickHouse } from "@/lib/clickhouse";
+import { attrText } from "@/lib/otel-clickhouse";
 import { SHARD_SUFFIX_SQL } from "@/lib/job-shards";
 
 export interface RetryJobRow {
@@ -102,133 +102,150 @@ export function rankRetryJobs(rows: RetryStatsRow[]): RetryJobRow[] {
   })).sort((a, b) => b.retries - a.retries || a.name.localeCompare(b.name));
 }
 
-/** Ranking and drilldown share selection, deduplication, and retry classification. */
+/**
+ * Ranking and drilldown share selection, deduplication, and retry
+ * classification. These read ClickHouse `ci.otel_spans`, the spans the
+ * Postgres `otel_spans` table held, and keep its semantics: one attempt per
+ * job UUID (the newest received span), with the same retry rules.
+ */
 function buildOtelRetryAttempts(filters: RetryFilters, jobName?: string) {
-  const parameters: string[] = [];
-  const bind = (value: string) => `$${parameters.push(value)}`;
+  const parameters: Record<string, string> = {};
+  const bind = (name: string, value: string) => {
+    parameters[name] = value;
+    return `{${name}:String}`;
+  };
   const conditions = [
     "j.span_name = 'buildkite.job'",
     "j.job_type = 'script'",
     "j.job_id IS NOT NULL",
     "j.job_label IS NOT NULL",
   ];
+  let pipeline = "";
   if (filters.pipeline) {
     const slug = filters.pipeline.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-    conditions.push(`j.pipeline_slug = ${bind(slug)}`);
+    pipeline = bind("pipeline", slug);
+    conditions.push(`j.pipeline_slug = ${pipeline}`);
   }
+  // The newest build span of each build, for attributes a job span lacks.
+  const latestBuild = (columns: string) => `(
+        SELECT organization_slug, pipeline_slug, build_number, ${columns}
+        FROM ci.otel_spans
+        WHERE span_name = 'buildkite.build'${pipeline ? ` AND pipeline_slug = ${pipeline}` : ""}
+        GROUP BY organization_slug, pipeline_slug, build_number
+      )`;
+  // organization_slug is nullable: match NULL to NULL, as IS NOT DISTINCT FROM.
+  const sameBuild = (build: string, job: string) => `${build}.pipeline_slug = ${job}.pipeline_slug
+        AND ${build}.build_number = ${job}.build_number
+        AND isNotDistinctFrom(${build}.organization_slug, ${job}.organization_slug)`;
+  let branchJoin = "";
   if (filters.branch) {
     // Buildkite exports branch on job spans too. Older records may need their
-    // build span; a scalar lookup avoids multiplying jobs by duplicate spans.
-    conditions.push(`COALESCE(j.span_attributes->>'buildkite.build.branch', (
-      SELECT b.span_attributes->>'buildkite.build.branch'
-      FROM otel_spans b
-      WHERE b.span_name = 'buildkite.build'
-        AND b.pipeline_slug = j.pipeline_slug AND b.build_number = j.build_number
-        AND b.organization_slug IS NOT DISTINCT FROM j.organization_slug
-      ORDER BY b.received_at DESC LIMIT 1
-    )) = ${bind(filters.branch)}`);
+    // build span; one row per build avoids multiplying jobs by duplicates.
+    branchJoin = `
+      LEFT JOIN ${latestBuild(`argMax(tuple(${attrText("buildkite.build.branch")}), received_at).1 AS branch`)} AS bb
+        ON ${sameBuild("bb", "j")}`;
+    // build_branch is the materialized attribute ('' when absent).
+    conditions.push(`coalesce(nullIf(j.build_branch, ''), bb.branch) = ${bind("branch", filters.branch)}`);
   }
-  if (filters.startTime) conditions.push(`j.start_time >= ${bind(filters.startTime)}::timestamptz`);
-  if (filters.endTime) conditions.push(`j.start_time < ${bind(filters.endTime)}::timestamptz`);
+  if (filters.startTime) {
+    conditions.push(`j.start_time >= parseDateTime64BestEffort(${bind("startTime", filters.startTime)}, 6, 'UTC')`);
+  }
+  if (filters.endTime) {
+    conditions.push(`j.start_time < parseDateTime64BestEffort(${bind("endTime", filters.endTime)}, 6, 'UTC')`);
+  }
   if (jobName !== undefined) {
     // The job, or a runtime shard of the step (see job-shards.ts).
-    const name = bind(jobName);
-    conditions.push(`(j.job_label = ${name} OR (j.job_label LIKE ${name} || ' _hard %'
-      AND regexp_replace(j.job_label, '${SHARD_SUFFIX_SQL}', '') = ${name}))`);
+    const name = bind("jobName", jobName);
+    conditions.push(`(j.job_label = ${name} OR (j.job_label LIKE concat(${name}, ' _hard %')
+      AND replaceRegexpOne(j.job_label, '${SHARD_SUFFIX_SQL}', '') = ${name}))`);
   }
+  const retriesCount = "a.retries_count";
   return {
     parameters,
+    latestBuild,
+    sameBuild,
     statement: `
       WITH selected_attempts AS (
-        SELECT DISTINCT ON (j.job_id)
-          j.job_id, regexp_replace(j.job_label, '${SHARD_SUFFIX_SQL}', '') AS name, j.organization_slug, j.pipeline_slug, j.build_number,
-          j.span_attributes->>'buildkite.job.retries_count' AS retries_count,
-          NULLIF(j.span_attributes->>'buildkite.job.retry_source.job_id', '') AS retry_source,
+        SELECT
+          j.job_id AS job_id, replaceRegexpOne(j.job_label, '${SHARD_SUFFIX_SQL}', '') AS name,
+          j.organization_slug AS organization_slug, j.pipeline_slug AS pipeline_slug,
+          j.build_number AS build_number,
+          ${attrText("buildkite.job.retries_count", "j.span_attributes")} AS retries_count,
+          ${attrText("buildkite.job.retry_source.job_id", "j.span_attributes")} AS retry_source,
           j.job_soft_failed = 'true' AS has_soft_fail
-          ${jobName === undefined ? "" : `, j.span_attributes,
+          ${jobName === undefined ? "" : `, j.span_attributes AS span_attributes,
           j.start_time AS started_at, j.end_time AS finished_at,
-          ROUND(j.duration_ms / 1000.0)::int AS duration_secs,
+          toInt32(round(j.duration_ms / 1000)) AS duration_secs,
           CASE WHEN j.job_state = 'finished' AND j.job_passed = 'true' THEN 'passed'
             WHEN j.job_state = 'finished' THEN 'failed'
-            ELSE COALESCE(j.job_state, 'unknown') END AS state`}
-        FROM otel_spans j
+            ELSE coalesce(j.job_state, 'unknown') END AS state`}
+        FROM ci.otel_spans AS j${branchJoin}
         WHERE ${conditions.join("\n          AND ")}
-        ORDER BY j.job_id, j.received_at DESC
-      ), legacy_builds AS (
-        SELECT DISTINCT organization_slug, pipeline_slug, build_number
-        FROM selected_attempts
-        WHERE NOT COALESCE(retries_count ~ '^[0-9]+$', false)
-          AND retry_source IS NULL
-      ), legacy_retry_targets AS MATERIALIZED (
-        -- Older spans expose only a link to the next attempt. Read those
-        -- links once per selected build, including predecessors before the
-        -- time window, rather than rescanning a build for every job/shard.
-        -- Split nullable organization IDs so each branch can use the full
-        -- (organization_slug, pipeline_slug, build_number) index prefix.
-        SELECT previous.span_attributes->>'buildkite.job.retried_in_job_id' AS job_id
-        FROM legacy_builds legacy
-        INNER JOIN otel_spans previous
-          ON previous.organization_slug = legacy.organization_slug
-          AND previous.pipeline_slug = legacy.pipeline_slug
-          AND previous.build_number = legacy.build_number
-        WHERE previous.span_name = 'buildkite.job' AND previous.job_type = 'script'
-          AND NULLIF(previous.span_attributes->>'buildkite.job.retried_in_job_id', '') IS NOT NULL
-        UNION
-        SELECT previous.span_attributes->>'buildkite.job.retried_in_job_id' AS job_id
-        FROM legacy_builds legacy
-        INNER JOIN otel_spans previous
-          ON previous.organization_slug IS NULL
-          AND previous.pipeline_slug = legacy.pipeline_slug
-          AND previous.build_number = legacy.build_number
-        WHERE legacy.organization_slug IS NULL
-          AND previous.span_name = 'buildkite.job' AND previous.job_type = 'script'
-          AND NULLIF(previous.span_attributes->>'buildkite.job.retried_in_job_id', '') IS NOT NULL
+        ORDER BY j.received_at DESC
+        LIMIT 1 BY j.job_id
+      ), legacy_retry_targets AS (
+        -- Older spans expose only a link to the next attempt. Read those links
+        -- straight from job spans: job ids are globally unique, so no build
+        -- join is needed. Predecessors may start before the window; retries
+        -- of one build happen within hours, so a two-day margin covers them.
+        SELECT DISTINCT ${attrText("buildkite.job.retried_in_job_id", "previous.span_attributes")} AS target_job_id
+        FROM ci.otel_spans AS previous
+        WHERE previous.span_name = 'buildkite.job' AND previous.job_type = 'script'${pipeline ? `
+          AND previous.pipeline_slug = ${pipeline}` : ""}${filters.startTime ? `
+          AND previous.start_time >= parseDateTime64BestEffort({startTime:String}, 6, 'UTC') - INTERVAL 2 DAY` : ""}${filters.endTime ? `
+          AND previous.start_time < parseDateTime64BestEffort({endTime:String}, 6, 'UTC')` : ""}
+          AND ${attrText("buildkite.job.retried_in_job_id", "previous.span_attributes")} IS NOT NULL
       ), attempts AS (
         SELECT a.*, (
-          COALESCE(a.retries_count ~ '^0*[1-9][0-9]*$', false)
+          coalesce(match(${retriesCount}, '^0*[1-9][0-9]*$'), 0)
           OR a.retry_source IS NOT NULL
-          OR (NOT COALESCE(a.retries_count ~ '^[0-9]+$', false) AND legacy.job_id IS NOT NULL)
+          OR (NOT coalesce(match(${retriesCount}, '^[0-9]+$'), 0) AND legacy.target_job_id IS NOT NULL)
         ) AS is_retry
-        FROM selected_attempts a
-        LEFT JOIN legacy_retry_targets legacy ON legacy.job_id = a.job_id
+        FROM selected_attempts AS a
+        LEFT JOIN legacy_retry_targets AS legacy ON legacy.target_job_id = a.job_id
       )`,
   };
 }
 
+// Plain CTEs: ClickHouse inlines each reference. Materialized CTEs would scan
+// the selected job spans once, but enable_materialized_cte is experimental in
+// ClickHouse 26.x, and this path only serves ?source=otel.
+const SETTINGS = "join_use_nulls = 1";
+
 /** Parameterized SQL is exported so the actual queries can be exercised locally. */
 export function buildOtelRetryQuery(filters: RetryFilters) {
-  const query = buildOtelRetryAttempts(filters);
-  return { ...query, statement: `${query.statement}
-      SELECT name, COUNT(*)::int AS total_runs,
-        COUNT(*) FILTER (WHERE is_retry)::int AS retries,
-        COALESCE(BOOL_OR(has_soft_fail), false) AS has_soft_fail
+  const { parameters, statement } = buildOtelRetryAttempts(filters);
+  return { parameters, statement: `${statement}
+      SELECT name, count() AS total_runs,
+        countIf(is_retry) AS retries,
+        coalesce(max(has_soft_fail), 0) AS has_soft_fail
       FROM attempts
       GROUP BY name
+      SETTINGS ${SETTINGS}
     `,
   };
 }
 
 export function buildOtelRetryRunsQuery(filters: RetryFilters, jobName: string) {
-  const query = buildOtelRetryAttempts(filters, jobName);
-  return { ...query, statement: `${query.statement}
-      SELECT a.job_id,
-        COALESCE(NULLIF(a.span_attributes->>'buildkite.job.web_url', ''),
-          CASE WHEN a.organization_slug IS NOT NULL AND a.pipeline_slug IS NOT NULL AND a.build_number IS NOT NULL
-            THEN 'https://buildkite.com/' || a.organization_slug || '/' || a.pipeline_slug || '/builds/' || a.build_number || '#' || a.job_id
-            ELSE NULL END) AS web_url,
-        a.state, a.started_at, a.finished_at, a.duration_secs,
-        COALESCE(NULLIF(a.span_attributes->>'buildkite.build.commit', ''), build.commit_sha) AS commit_sha,
-        build.build_created_at, a.build_number, a.is_retry
-      FROM attempts a
-      LEFT JOIN LATERAL (
-        SELECT b.span_attributes->>'buildkite.build.commit' AS commit_sha, b.start_time AS build_created_at
-        FROM otel_spans b
-        WHERE b.span_name = 'buildkite.build'
-          AND b.pipeline_slug = a.pipeline_slug AND b.build_number = a.build_number
-          AND b.organization_slug IS NOT DISTINCT FROM a.organization_slug
-        ORDER BY b.received_at DESC LIMIT 1
-      ) build ON true
-      ORDER BY a.started_at ASC, a.job_id ASC
+  const { parameters, statement, latestBuild, sameBuild } = buildOtelRetryAttempts(filters, jobName);
+  const latest = (expr: string) => `argMax(tuple(${expr}), received_at).1`;
+  return { parameters, statement: `${statement}
+      SELECT a.job_id AS job_id,
+        coalesce(${attrText("buildkite.job.web_url", "a.span_attributes")},
+          if(a.organization_slug IS NOT NULL AND a.pipeline_slug IS NOT NULL AND a.build_number IS NOT NULL,
+            concat('https://buildkite.com/', a.organization_slug, '/', a.pipeline_slug, '/builds/',
+              toString(a.build_number), '#', a.job_id),
+            NULL)) AS web_url,
+        a.state AS state, a.started_at AS started_at, a.finished_at AS finished_at,
+        a.duration_secs AS duration_secs,
+        coalesce(${attrText("buildkite.build.commit", "a.span_attributes")}, build.commit_sha) AS commit_sha,
+        build.build_created_at AS build_created_at, a.build_number AS build_number, a.is_retry AS is_retry
+      FROM attempts AS a
+      LEFT JOIN ${latestBuild(`${latest(attrText("buildkite.build.commit"))} AS commit_sha,
+          ${latest("start_time")} AS build_created_at`)} AS build
+        ON ${sameBuild("build", "a")}
+      ORDER BY started_at ASC, job_id ASC
+      SETTINGS ${SETTINGS}
     ` };
 }
 
@@ -323,7 +340,7 @@ export function buildWarehouseRetryRunsQuery(filters: RetryFilters, jobName: str
 
 export async function queryRetriesFromOtel(filters: RetryFilters): Promise<RetryStatsRow[]> {
   const { statement, parameters } = buildOtelRetryQuery(filters);
-  return getDb().unsafe<RetryStatsRow[]>(statement, parameters);
+  return queryClickHouse<RetryStatsRow>(statement, parameters);
 }
 
 export async function queryRetriesFromWarehouse(filters: RetryFilters): Promise<RetryStatsRow[]> {
@@ -333,7 +350,12 @@ export async function queryRetriesFromWarehouse(filters: RetryFilters): Promise<
 
 export async function queryRetryRunsFromOtel(filters: RetryFilters, jobName: string): Promise<RetryJobRun[]> {
   const { statement, parameters } = buildOtelRetryRunsQuery(filters, jobName);
-  return getDb().unsafe<RetryJobRun[]>(statement, parameters);
+  const rows = await queryClickHouse<Omit<RetryJobRun, "is_retry"> & { is_retry: number | string }>(statement, parameters);
+  return rows.map((row) => ({
+    ...row,
+    duration_secs: row.duration_secs === null ? null : Number(row.duration_secs),
+    is_retry: row.is_retry === 1 || row.is_retry === "1" || row.is_retry === "true",
+  }));
 }
 
 export async function queryRetryRunsFromWarehouse(filters: RetryFilters, jobName: string): Promise<RetryJobRun[]> {
