@@ -1191,7 +1191,13 @@ class PostgresAlertStore:
         is the bucket start — up to five minutes earlier than the true
         last sample. Detection granularity is already the five-minute
         scan cadence, and the bias is toward alerting slightly early on
-        a host that has actually gone silent.
+        a host that has actually gone silent. The host side keeps its
+        exact per-sample timestamp, but finds it by aggregating only the
+        index-covered bucket column and joining the newest bucket back
+        by primary key: aggregating the per-sample column itself forced
+        a heap fetch of every rollup row in the window and
+        intermittently blew the statement timeout when the database's
+        disk was under load.
         """
         with self._connection_factory() as connection:
             rows = connection.execute(
@@ -1203,10 +1209,19 @@ class PostgresAlertStore:
                     GROUP BY hostname
                 ),
                 host AS (
-                    SELECT hostname, max(latest_reported_at) AS reported_at
-                    FROM host_history_5m
-                    WHERE time_bucket >= now() - interval '14 days'
-                    GROUP BY hostname
+                    -- Newest bucket per host, index-only, then the exact
+                    -- per-sample timestamp from that one row by primary
+                    -- key (see the docstring). The window bound on the join
+                    -- keeps even a mis-estimated plan inside the window.
+                    SELECT h.hostname, h.latest_reported_at AS reported_at
+                    FROM (
+                        SELECT hostname, max(time_bucket) AS time_bucket
+                        FROM host_history_5m
+                        WHERE time_bucket >= now() - interval '14 days'
+                        GROUP BY hostname
+                    ) newest
+                    JOIN host_history_5m h USING (time_bucket, hostname)
+                    WHERE h.time_bucket >= now() - interval '14 days'
                 )
                 SELECT COALESCE(gpu.hostname, host.hostname),
                        GREATEST(gpu.reported_at, host.reported_at)
