@@ -58,26 +58,32 @@ function floatAttribute(
 export async function storeOtlpSpans(spans: NormalizedOtlpSpan[]) {
   if (spans.length === 0) return { accepted: 0 };
 
-  const db = getDb();
   const plainRows = spans.map(spanRow);
-  const rows = plainRows.map((row) => ({
-    ...row,
-    resource_attributes: db.json(jsonValue(row.resource_attributes)),
-    span_attributes: db.json(jsonValue(row.span_attributes)),
-    span_events: db.json(jsonValue(row.span_events)),
-    span_links: db.json(jsonValue(row.span_links)),
-  }));
+  if (!writeConfig()) {
+    throw new Error("ClickHouse write configuration is missing; spans have nowhere to go");
+  }
 
-  // ClickHouse is written alongside Postgres while reads move over. Postgres
-  // stays authoritative: a ClickHouse failure is logged, not returned, and the
-  // gap is refilled from Postgres. Both writes are idempotent on retry.
-  const clickhouseWrite = writeConfig()
-    ? insertClickHouse("ci.otel_spans", plainRows.map(clickHouseRow), { asyncInsert: true })
-      .catch((error) => console.error("ClickHouse span write failed:", error))
+  // ClickHouse is the span store. Its failure fails the request so the OTLP
+  // exporter retries (503); the insert is idempotent on retry because
+  // ci.otel_spans keeps one row per (trace_id, span_id).
+  const clickhouseWrite = insertClickHouse(
+    "ci.otel_spans", plainRows.map(clickHouseRow), { asyncInsert: true },
+  );
+
+  // Optional Postgres mirror, off by default, kept only as a rollback path
+  // while the move off Postgres settles. Its failures never fail ingestion.
+  const postgresWrite = postgresMirrorEnabled()
+    ? storeInPostgres(getDb(), plainRows).catch((error) => {
+      console.error("Postgres span mirror write failed:", error);
+    })
     : Promise.resolve();
 
-  await Promise.all([clickhouseWrite, storeInPostgres(db, rows)]);
+  await Promise.all([clickhouseWrite, postgresWrite]);
   return { accepted: spans.length };
+}
+
+function postgresMirrorEnabled(): boolean {
+  return process.env.OTEL_POSTGRES_WRITE === "true";
 }
 
 type SpanRow = ReturnType<typeof spanRow>;
@@ -155,10 +161,14 @@ function spanRow(span: NormalizedOtlpSpan) {
 
 type Db = ReturnType<typeof getDb>;
 
-async function storeInPostgres(
-  db: Db,
-  rows: (Omit<SpanRow, "resource_attributes" | "span_attributes" | "span_events" | "span_links"> & Record<string, unknown>)[],
-) {
+async function storeInPostgres(db: Db, plainRows: SpanRow[]) {
+  const rows = plainRows.map((row) => ({
+    ...row,
+    resource_attributes: db.json(jsonValue(row.resource_attributes)),
+    span_attributes: db.json(jsonValue(row.span_attributes)),
+    span_events: db.json(jsonValue(row.span_events)),
+    span_links: db.json(jsonValue(row.span_links)),
+  }));
   await db.begin(async (transaction) => {
     const tx = transaction as unknown as typeof db;
     for (let offset = 0; offset < rows.length; offset += INSERT_BATCH_SIZE) {

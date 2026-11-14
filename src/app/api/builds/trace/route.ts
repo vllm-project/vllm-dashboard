@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb } from "@/lib/db";
+import { gpuSampledJobIds, testCountsByParent, traceRows, type TraceRow } from "@/lib/build-trace-clickhouse";
 import { criticalPathIds } from "@/lib/build-critical-path";
 
 export const runtime = "nodejs";
@@ -10,34 +10,6 @@ const COMPLETION_CLOCK_SKEW_MS = 30_000;
 const SLUG = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/;
 const JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-type TraceRow = {
-  trace_id: string;
-  span_id: string;
-  parent_span_id: string | null;
-  span_name: string;
-  start_time: Date;
-  end_time: Date;
-  duration_ms: number;
-  status_code: number;
-  step_key: string | null;
-  job_id: string | null;
-  job_label: string | null;
-  job_state: string | null;
-  agent_queue: string | null;
-  step_label: string | null;
-  group_label: string | null;
-  step_outcome: string | null;
-  job_passed: string | null;
-  job_url: string | null;
-  step_url: string | null;
-  wait_ms: number | null;
-  ci_kind: string | null;
-  command_index: number | null;
-  command_label: string | null;
-  test_nodeid: string | null;
-  test_outcome: string | null;
-  received_at: Date;
-};
 
 type LaneKind = "job" | "step" | "command" | "test";
 
@@ -60,11 +32,6 @@ type Lane = {
   url: string | null;
   critical: boolean;
   childCount: number;
-};
-
-type DetailCountRow = {
-  parent_span_id: string;
-  child_count: number;
 };
 
 function laneStatus(row: TraceRow): Lane["status"] {
@@ -162,69 +129,12 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const db = getDb();
     const page = Number(pageValue);
     const pageSize = jobId === null ? MAX_BUILD_SPANS : JOB_DETAIL_PAGE_SIZE;
     const requestedJobId = jobId ?? null;
     const offset = page * pageSize;
-    const fetchedRows = await db<TraceRow[]>`
-      SELECT
-        trace_id,
-        span_id,
-        parent_span_id,
-        span_name,
-        start_time,
-        end_time,
-        duration_ms,
-        status_code,
-        step_key,
-        job_id,
-        job_label,
-        job_state,
-        agent_queue,
-        NULLIF(span_attributes->>'buildkite.step.label', '') AS step_label,
-        NULLIF(span_attributes->>'buildkite.step.group.label', '') AS group_label,
-        NULLIF(span_attributes->>'buildkite.step.outcome', '') AS step_outcome,
-        NULLIF(span_attributes->>'buildkite.job.passed', '') AS job_passed,
-        NULLIF(span_attributes->>'buildkite.job.web_url', '') AS job_url,
-        NULLIF(span_attributes->>'buildkite.step.web_url', '') AS step_url,
-        CASE
-          WHEN span_attributes->>'buildkite.job.wait_time_ms' ~ '^\d+(\.\d+)?$'
-          THEN (span_attributes->>'buildkite.job.wait_time_ms')::double precision
-          ELSE 0
-        END AS wait_ms,
-        NULLIF(span_attributes->>'ci.span.kind', '') AS ci_kind,
-        CASE
-          WHEN span_attributes->>'ci.command.index' ~ '^\d+$'
-          THEN (span_attributes->>'ci.command.index')::integer
-          ELSE NULL
-        END AS command_index,
-        NULLIF(span_attributes->>'ci.command.label', '') AS command_label,
-        NULLIF(span_attributes->>'test.nodeid', '') AS test_nodeid,
-        NULLIF(span_attributes->>'test.outcome', '') AS test_outcome,
-        received_at
-      FROM otel_spans
-      WHERE organization_slug = ${organization}
-        AND pipeline_slug = ${pipeline}
-        AND build_number = ${buildNumber}::bigint
-        AND (
-          (
-            ${requestedJobId}::text IS NULL
-            AND (
-              span_name IN ('buildkite.build', 'buildkite.job', 'buildkite.step')
-              OR span_attributes->>'ci.span.kind' = 'command'
-            )
-          )
-          OR (
-            ${requestedJobId}::text IS NOT NULL
-            AND job_id = ${requestedJobId}
-            AND span_name <> 'ci.gpu.samples'
-          )
-        )
-      ORDER BY start_time ASC, duration_ms DESC, span_id ASC
-      LIMIT ${pageSize + 1}
-      OFFSET ${offset}
-    `;
+    const build = { organization, pipeline, buildNumber };
+    const fetchedRows = await traceRows(build, requestedJobId, pageSize + 1, offset);
     const hasMore = fetchedRows.length > pageSize;
     const rows = hasMore ? fetchedRows.slice(0, pageSize) : fetchedRows;
 
@@ -242,19 +152,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const detailCounts = await db<DetailCountRow[]>`
-      SELECT
-        parent_span_id,
-        COUNT(*)::integer AS child_count
-      FROM otel_spans
-      WHERE organization_slug = ${organization}
-        AND pipeline_slug = ${pipeline}
-        AND build_number = ${buildNumber}::bigint
-        AND span_attributes->>'ci.span.kind' = 'test'
-        AND parent_span_id IS NOT NULL
-        AND (${requestedJobId}::text IS NULL OR job_id = ${requestedJobId})
-      GROUP BY parent_span_id
-    `;
+    const detailCounts = await testCountsByParent(build, requestedJobId);
     const childCountByParent = new Map(
       detailCounts.map((row) => [row.parent_span_id, Number(row.child_count)]),
     );
@@ -338,15 +236,7 @@ export async function GET(request: NextRequest) {
           : 0,
       };
     });
-    const gpuJobs = await db<{ job_id: string }[]>`
-      SELECT DISTINCT job_id FROM otel_spans
-      WHERE organization_slug = ${organization}
-        AND pipeline_slug = ${pipeline}
-        AND build_number = ${buildNumber}::bigint
-        AND span_name = 'ci.gpu.samples'
-        AND (${requestedJobId}::text IS NULL OR job_id = ${requestedJobId})
-    `;
-    const gpuJobIds = new Set(gpuJobs.map((row) => row.job_id));
+    const gpuJobIds = new Set(await gpuSampledJobIds(build, requestedJobId));
     const lanes = [...jobLanes, ...detailLanes].map((lane) => ({
       ...lane,
       gpuAvailable: lane.jobId !== null && gpuJobIds.has(lane.jobId),

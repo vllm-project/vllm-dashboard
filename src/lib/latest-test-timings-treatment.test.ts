@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import test from "node:test";
-import type { TestSpanRow } from "./latest-test-timings";
-
-const require = createRequire(import.meta.url);
+import { queryLatestTestTimings, type TestSpanRow, type TimingStore } from "./latest-test-timings";
 
 type Build = { build_number: string; commit: string; finished_at: Date; job_ids: string[]; job_ms: number[] };
 type Command = { job_id: string; duration_ms: number; label: string };
@@ -43,63 +40,44 @@ function builds(...list: [number, Job[]][]): Branch {
   return branch;
 }
 
-type Statement = { text: string; values: unknown[] };
-let current: (strings: TemplateStringsArray, ...values: unknown[]) => unknown = () => {
-  throw new Error("no fake installed");
-};
-
-// queryLatestTestTimings against a fake sql tag that answers each statement
-// from `main` or `treatment` by the branch literal and job ids in it.
-async function query(t: test.TestContext, main: Branch, treatment: Branch | "fails") {
-  await import("@/lib/db");
-  const dbModule = require.cache[require.resolve("@/lib/db")];
-  assert.ok(dbModule);
-  const originalExports = dbModule.exports;
-  const statements: Statement[] = [];
-  const tag = (strings: TemplateStringsArray, ...values: unknown[]): unknown => {
-    const frag: Statement = { text: "", values: [] };
-    strings.forEach((s, i) => {
-      frag.text += s;
-      if (i >= values.length) return;
-      const v = values[i] as Statement;
-      if (v && typeof v === "object" && "text" in v) {
-        frag.text += v.text;
-        frag.values.push(...v.values);
-      } else {
-        frag.text += "?";
-        frag.values.push(v);
-      }
-    });
-    if (!frag.text.includes("SELECT")) return frag; // a nested fragment
-    statements.push(frag);
-    if (frag.text.includes("set_config")) return Promise.resolve([]);
-    const source = frag.text.includes("'khluu/otel'") ? treatment : main;
-    if (source === "fails") return Promise.reject(new Error("canceling statement due to statement timeout"));
-    if (frag.text.includes("AS timed")) {
-      if (source.timedBefore === "fails") return Promise.reject(new Error("canceling statement due to statement timeout"));
-      return Promise.resolve([{ timed: source.timedBefore ?? source.builds.length > 0 }]);
-    }
-    if (frag.text.includes("buildkite.job")) {
-      return Promise.resolve(frag.text.includes("make_interval") ? source.builds : (source.older ?? []));
-    }
-    const jobIds = frag.values.find(Array.isArray) as string[];
-    const all = [main, treatment].filter((b): b is Branch => b !== "fails");
-    if (frag.text.includes("LEFT JOIN")) {
-      return Promise.resolve(all.flatMap((b) => b.rows).filter((r) => jobIds.includes(r.job_id)));
-    }
-    return Promise.resolve(all.flatMap((b) => b.commands).filter((c) => jobIds.includes(c.job_id)));
+// queryLatestTestTimings against an in-memory store answering from `main` or
+// `treatment`. Each read is logged as "<op>[:<branch>][:<days|all>]", with a
+// ":t" suffix when it runs under the treatment timeout.
+function fakeStore(main: Branch, treatment: Branch | "fails", calls: string[], timed = false): TimingStore {
+  const suffix = timed ? ":t" : "";
+  const fail = () => new Error("Timeout exceeded: elapsed 3 seconds");
+  return {
+    async passingBuilds(isTreatment, stepKey, days) {
+      assert.equal(stepKey, "step-a");
+      calls.push(`builds:${isTreatment ? "treatment" : "main"}:${days ?? "all"}${suffix}`);
+      const source = isTreatment ? treatment : main;
+      if (source === "fails") throw fail();
+      return days === null ? (source.older ?? []) : source.builds;
+    },
+    async spans(jobIds) {
+      calls.push(`spans${suffix}`);
+      const all = [main, treatment].filter((b): b is Branch => b !== "fails");
+      return {
+        rows: all.flatMap((b) => b.rows).filter((r) => jobIds.includes(r.job_id)),
+        commands: all.flatMap((b) => b.commands).filter((c) => jobIds.includes(c.job_id)),
+      };
+    },
+    async mainEverTimed(stepKey) {
+      calls.push(`timed:${stepKey}${suffix}`);
+      if (main.timedBefore === "fails") throw fail();
+      return main.timedBefore ?? main.builds.length > 0;
+    },
+    async withTreatmentTimeout(fn) {
+      calls.push("timeout");
+      return fn(fakeStore(main, treatment, calls, true));
+    },
   };
-  current = tag;
-  // latest-test-timings caches the db module's exports on first load, so
-  // install one stable getDb and point it at this call's fake.
-  const forward = (strings: TemplateStringsArray, ...values: unknown[]) => current(strings, ...values);
-  const stable = Object.assign(forward, {
-    begin: async (body: (tx: typeof forward) => Promise<unknown>) => body(forward),
-  });
-  dbModule.exports = { getDb: () => stable };
-  t.after(() => { dbModule.exports = originalExports; });
-  const { queryLatestTestTimings } = await import("./latest-test-timings");
-  return { result: await queryLatestTestTimings("step-a"), statements };
+}
+
+async function query(_t: test.TestContext, main: Branch, treatment: Branch | "fails") {
+  const calls: string[] = [];
+  const result = await queryLatestTestTimings("step-a", {}, fakeStore(main, treatment, calls));
+  return { result, calls };
 }
 
 const main = builds([100, [{ id: "main-job", tests: [
@@ -108,7 +86,7 @@ const main = builds([100, [{ id: "main-job", tests: [
 ] }]]);
 
 test("main's timings alone when the treatment branch has no builds", async (t) => {
-  const { result, statements } = await query(t, main, none);
+  const { result, calls } = await query(t, main, none);
   assert.ok(result);
   assert.deepEqual(result.files.map((f) => [f.command, f.file, f.observedMs]), [
     ["pytest old", "tests/test_a.py", 60_000],
@@ -118,19 +96,9 @@ test("main's timings alone when the treatment branch has no builds", async (t) =
   assert.deepEqual(result.skippedBuilds, []);
   assert.deepEqual(result.jobIds, ["main-job"]);
   assert.equal(result.measurement, "p80_over_builds_of_summed_pytest_runtest_spans");
-  // Main's three statements, then the treatment lookup under its own timeout,
+  // Main's builds and spans, then the treatment lookup under its own timeout,
   // which stops at the build query when that branch has no builds.
-  assert.equal(statements.length, 5);
-  assert.match(statements[0].text, /buildkite\.build\.branch' = 'main'/);
-  assert.match(statements[3].text, /set_config\('statement_timeout', \?, true\)/);
-  assert.deepEqual(statements[3].values, ["3000"]);
-  assert.match(statements[4].text, /buildkite\.build\.branch' = 'khluu\/otel'/);
-  // The treatment branch counts only builds where every job of the step
-  // passed with test spans, the same rule as main.
-  for (const select of [statements[0].text, statements[4].text]) {
-    assert.match(select, /HAVING BOOL_AND\(job_state = 'finished' AND job_passed = 'true'\)/);
-    assert.match(select, /t\.span_attributes->>'ci\.span\.kind' = 'test'/);
-  }
+  assert.deepEqual(calls, ["builds:main:14", "spans", "timeout", "builds:treatment:14:t"]);
 });
 
 test("adds treatment files only for commands main hasn't timed", async (t) => {
@@ -174,7 +142,7 @@ test("a step main has no build for gets the treatment branch's timings alone", a
     [201, [{ id: "t-new", tests: [["pytest new", "tests/test_a.py::one", 61_000]], setupMs: 3_000 }]],
     [200, [{ id: "t-old", tests: [["pytest new", "tests/test_a.py::one", 59_000]], setupMs: 5_000 }]],
   );
-  const { result, statements } = await query(t, none, treatment);
+  const { result, calls } = await query(t, none, treatment);
   assert.ok(result);
   assert.deepEqual(result.files.map((f) => [f.command, f.file, f.builds]), [
     ["pytest new", "tests/test_a.py", 2],
@@ -187,28 +155,16 @@ test("a step main has no build for gets the treatment branch's timings alone", a
   assert.equal(result.setupMs, 4_000);
   // Main's build query finds nothing; the check that main never timed the
   // step and the treatment lookup run under the treatment timeout.
-  assert.equal(statements.length, 6);
-  assert.match(statements[0].text, /buildkite\.build\.branch' = 'main'/);
-  assert.match(statements[1].text, /set_config\('statement_timeout', \?, true\)/);
-  const timed = statements[2].text;
-  assert.match(timed, /AS timed/);
-  // Any main job of the step with a test span, ever: no window, no queue,
-  // passed or not, under migration 0029's index predicate.
-  assert.match(timed, /span_name = 'buildkite\.job'\s+AND j\.job_type = 'script'\s+AND j\.pipeline_slug = 'ci'\s+AND j\.span_attributes->>'buildkite\.build\.branch' = 'main'\s+AND j\.step_key = \?/);
-  assert.match(timed, /t\.job_id = j\.job_id\s+AND t\.span_attributes->>'ci\.span\.kind' = 'test'/);
-  assert.doesNotMatch(timed, /make_interval|agent_queue|job_passed/);
-  assert.deepEqual(statements[2].values, ["step-a"]);
-  assert.match(statements[3].text, /buildkite\.build\.branch' = 'khluu\/otel'/);
+  assert.deepEqual(calls, ["builds:main:14", "timeout", "timed:step-a:t", "builds:treatment:14:t", "spans:t"]);
 });
 
 test("a step main timed before, but not lately, gets no treatment fallback", async (t) => {
   const treatment = builds([200, [{ id: "treatment-job", tests: [["pytest new", "tests/test_a.py::one", 1]] }]]);
-  const { result, statements } = await query(t, { ...none, timedBefore: true }, treatment);
+  const { result, calls } = await query(t, { ...none, timedBefore: true }, treatment);
   assert.equal(result, null);
   // The treatment branch is never read; main's unwindowed lookup finds no
   // passing build either.
-  assert.equal(statements.length, 4);
-  assert.doesNotMatch(statements.map((s) => s.text).join("\n"), /'khluu\/otel'/);
+  assert.deepEqual(calls, ["builds:main:14", "timeout", "timed:step-a:t", "builds:main:all"]);
 });
 
 test("a step main passed only before the window gets its newest older builds", async (t) => {
@@ -218,7 +174,7 @@ test("a step main passed only before the window gets its newest older builds", a
     [97156, [{ id: "old-new", tests: [["pytest q", "tests/test_q.py::one", 60_000]], setupMs: 2_000 }]],
     [97100, [{ id: "old-old", tests: [["pytest q", "tests/test_q.py::one", 40_000]], setupMs: 4_000 }]],
   );
-  const { result, statements } = await query(t, { ...past, builds: [], timedBefore: true, older: past.builds }, none);
+  const { result, calls } = await query(t, { ...past, builds: [], timedBefore: true, older: past.builds }, none);
   assert.ok(result);
   assert.equal(result.buildNumber, 97156);
   assert.deepEqual(result.buildNumbers, [97156, 97100]);
@@ -226,12 +182,11 @@ test("a step main passed only before the window gets its newest older builds", a
   assert.deepEqual(result.files.map((f) => [f.command, f.file, f.builds]), [["pytest q", "tests/test_q.py", 2]]);
   assert.equal(result.setupMs, 3_000);
   assert.equal("treatmentBuildNumbers" in result, false);
-  const older = statements[3].text;
-  // The same passing-build rule on main, on the step's index, without the window.
-  assert.match(older, /buildkite\.build\.branch' = 'main'/);
-  assert.match(older, /HAVING BOOL_AND\(job_state = 'finished' AND job_passed = 'true'\)/);
-  assert.match(older, /AND step_key = \?\n\s+GROUP BY build_number/);
-  assert.match(statements[0].text, /AND step_key = \?\n\s+AND start_time >= NOW\(\) - make_interval/);
+  // The same passing-build rule on main, without the window.
+  assert.deepEqual(calls, [
+    "builds:main:14", "timeout", "timed:step-a:t", "builds:main:all", "spans",
+    "timeout", "builds:treatment:14:t",
+  ]);
 });
 
 test("a failed check of main's history is no timings, not a fallback", async (t) => {
@@ -242,11 +197,11 @@ test("a failed check of main's history is no timings, not a fallback", async (t)
 });
 
 test("no main build and no treatment build is no timings", async (t) => {
-  const { result, statements } = await query(t, none, none);
+  const { result, calls } = await query(t, none, none);
   assert.equal(result, null);
   // Main in the window, the treatment lookup (timeout, check, builds), then
   // main without the window.
-  assert.equal(statements.length, 5);
+  assert.deepEqual(calls, ["builds:main:14", "timeout", "timed:step-a:t", "builds:treatment:14:t", "builds:main:all"]);
 });
 
 test("no main build and a failed treatment lookup is no timings, not an error", async (t) => {

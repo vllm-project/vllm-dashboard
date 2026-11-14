@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   rankRetryJobs,
+  queryRetryRunsFromOtel,
+  queryRetriesFromOtel,
   buildOtelRetryQuery,
   buildOtelRetryRunsQuery,
   buildWarehouseRetryQuery,
@@ -9,7 +11,6 @@ import {
   parseRetryFilters,
   RetryFilterError,
   type RetryStatsRow,
-  type RetryJobRun,
 } from "./job-retries";
 
 test("retry date filters preserve exact hour boundaries and inclusive calendar ends", () => {
@@ -88,8 +89,8 @@ test("AMD CI retry filtering uses the pipeline slug in telemetry and display nam
   const filters = parseRetryFilters(new URLSearchParams({ pipeline: "AMD CI", branch: "" }));
   const otel = buildOtelRetryQuery(filters);
   const warehouse = buildWarehouseRetryQuery(filters);
-  assert.match(otel.statement, /j.pipeline_slug = \$1/);
-  assert.deepEqual(otel.parameters, ["amd-ci"]);
+  assert.match(otel.statement, /j.pipeline_slug = \{pipeline:String\}/);
+  assert.deepEqual(otel.parameters, { pipeline: "amd-ci" });
   assert.match(warehouse.statement, /name = \{pipeline:String\}/);
   assert.deepEqual(warehouse.parameters, { pipeline: "AMD CI" });
 });
@@ -113,12 +114,12 @@ test("backend retry filters bind hostile values and respect all-pipeline/all-bra
   const warehouse = buildWarehouseRetryQuery(filters);
   assert.ok(!otel.statement.includes(hostile));
   assert.ok(!warehouse.statement.includes(hostile));
-  assert.ok(otel.parameters.includes(hostile));
+  assert.equal(otel.parameters.branch, hostile);
   assert.equal(warehouse.parameters.branch, hostile);
-  assert.match(otel.statement, /j.start_time >= \$\d+::timestamptz/);
+  assert.match(otel.statement, /j.start_time >= parseDateTime64BestEffort\(\{startTime:String\}/);
   assert.match(warehouse.statement, /j.started_at >= parseDateTime64BestEffort\(\{startTime:String\}/);
   const all = parseRetryFilters(new URLSearchParams({ pipeline: "", branch: "" }));
-  assert.deepEqual(buildOtelRetryQuery(all).parameters, []);
+  assert.deepEqual(buildOtelRetryQuery(all).parameters, {});
   assert.deepEqual(buildWarehouseRetryQuery(all).parameters, {});
 });
 
@@ -130,208 +131,56 @@ test("retry run queries bind exact names and share ranking scope, including all 
     const warehouse = buildWarehouseRetryRunsQuery(filters, hostile);
     assert.equal(otel.statement.includes(hostile), false);
     assert.equal(warehouse.statement.includes(hostile), false);
-    assert.deepEqual(otel.parameters, [...buildOtelRetryQuery(filters).parameters, hostile]);
+    assert.deepEqual(otel.parameters, { ...buildOtelRetryQuery(filters).parameters, jobName: hostile });
     assert.deepEqual(warehouse.parameters, { ...buildWarehouseRetryQuery(filters).parameters, jobName: hostile });
-    assert.match(otel.statement, /j.job_label = \$\d+/);
+    assert.match(otel.statement, /j.job_label = \{jobName:String\}/);
     assert.match(warehouse.statement, /j.name = \{jobName:String\}/);
-    assert.match(otel.statement, /ORDER BY a.started_at ASC, a.job_id ASC/);
+    assert.match(otel.statement, /ORDER BY started_at ASC, job_id ASC/);
     assert.match(warehouse.statement, /ORDER BY started_at ASC, job_id ASC/);
   }
 });
 
-// Optional local SQL integration: point RETRY_TEST_PGLITE_MODULE to an installed
-// @electric-sql/pglite module. This executes both aggregate queries in Postgres
-// without requiring production credentials or adding a runtime dependency.
-const pgliteModule = process.env.RETRY_TEST_PGLITE_MODULE;
-interface FixtureDb {
-  exec(statement: string): Promise<unknown>;
-  query<T>(statement: string, parameters?: unknown[]): Promise<{ rows: T[] }>;
-  close(): Promise<void>;
-}
-
-test("actual retry SQL counts retry attempts once across outcomes, shards, and date boundaries", {
-  skip: pgliteModule ? false : "Set RETRY_TEST_PGLITE_MODULE to run local Postgres fixtures",
-}, async () => {
-  const { PGlite } = await import(pgliteModule!) as { PGlite: new () => FixtureDb };
-  const db = new PGlite();
-  try {
-    await db.exec(`
-      CREATE TABLE otel_spans (
-        job_id text, job_label text, span_name text DEFAULT 'buildkite.job',
-        job_type text DEFAULT 'script', organization_slug text DEFAULT 'vllm',
-        pipeline_slug text DEFAULT 'ci', build_number int DEFAULT 1,
-        start_time timestamptz, end_time timestamptz, duration_ms double precision DEFAULT 60000,
-        job_state text, job_passed text, received_at timestamptz DEFAULT now(),
-        job_soft_failed text DEFAULT 'false', span_attributes jsonb DEFAULT '{}'
-      );
-      CREATE SCHEMA warehouse;
-      CREATE TABLE warehouse.pipeline (id text, name text);
-      INSERT INTO warehouse.pipeline VALUES ('ci', 'CI');
-      CREATE TABLE warehouse.build (id text, pipeline_id text, branch text, _fivetran_deleted boolean,
-        number int DEFAULT 1, commit text DEFAULT 'fixture-sha', created_at timestamptz DEFAULT '2026-09-22T00:00Z');
-      INSERT INTO warehouse.build (id, pipeline_id, branch, _fivetran_deleted) VALUES ('1', 'ci', 'main', false);
-      CREATE TABLE warehouse.build_job (
-        id text, build_id text DEFAULT '1', name text, type text DEFAULT 'script',
-        state text, started_at timestamptz, finished_at timestamptz, web_url text,
-        retries_count int, retry_source_job_id text,
-        soft_failed text DEFAULT 'false', _fivetran_deleted boolean DEFAULT false
-      );
-    `);
-    const fixtures = [
-      { id: "failed-original", name: "Basic Correctness", ordinal: 0, state: "failed", time: "10:00:00" },
-      { id: "successful-retry", name: "Basic Correctness", ordinal: 1, state: "passed", time: "10:10:00" },
-      { id: "second-retry", name: "Basic Correctness", ordinal: 2, state: "canceled", time: "10:20:00" },
-      { id: "second-retry", name: "Basic Correctness", ordinal: 2, state: "canceled", time: "10:20:00" },
-      { id: "shard-a", name: "Parallel job", ordinal: 0, state: "failed", time: "10:30:00" },
-      { id: "shard-b", name: "Parallel job", ordinal: 0, state: "passed", time: "10:30:00" },
-      { id: "outside-before", name: "Basic Correctness", ordinal: 1, state: "failed", time: "09:59:59" },
-      { id: "outside-end", name: "Basic Correctness", ordinal: 1, state: "passed", time: "11:00:00" },
-      { id: "source-only", name: "Legacy", ordinal: null, source: "previous", state: "passed", time: "10:40:00" },
-    ];
-    for (const row of fixtures) {
-      const attributes = {
-        "buildkite.build.branch": "main",
-        "buildkite.job.state": row.state,
-        "buildkite.job.retries_count": row.ordinal,
-        "buildkite.job.retry_source.job_id": row.source,
-      };
-      await db.query(`INSERT INTO otel_spans (job_id, job_label, start_time, span_attributes)
-        VALUES ($1, $2, $3, $4)`, [row.id, row.name, `2026-09-23T${row.time}Z`, JSON.stringify(attributes)]);
-      await db.query(`INSERT INTO warehouse.build_job (id, name, state, started_at, retries_count, retry_source_job_id)
-        VALUES ($1, $2, $3, $4, $5, $6)`, [row.id, row.name, row.state, `2026-09-23T${row.time}Z`, row.ordinal, row.source ?? null]);
-    }
-    await db.exec(`
-      UPDATE otel_spans SET end_time = start_time + INTERVAL '1 minute',
-        job_state = CASE WHEN span_attributes->>'buildkite.job.state' IN ('passed', 'failed') THEN 'finished'
-          ELSE span_attributes->>'buildkite.job.state' END,
-        job_passed = CASE WHEN span_attributes->>'buildkite.job.state' = 'passed' THEN 'true' ELSE 'false' END;
-      UPDATE warehouse.build_job SET finished_at = started_at + INTERVAL '1 minute';
-    `);
-    const filters = parseRetryFilters(new URLSearchParams({ startDate: "2026-09-23T10:00Z", endDate: "2026-09-23T11:00Z" }));
-    // The ClickHouse warehouse query can't run on this Postgres fixture; it is
-    // checked against live ClickHouse data instead (see the migration PR).
-    const otel = buildOtelRetryQuery(filters);
-    const results = [await db.query<RetryStatsRow>(otel.statement, otel.parameters)];
-    for (const { rows } of results) {
-      const totals = rows.map((row) => [row.name, Number(row.total_runs), Number(row.retries)]).sort();
-      assert.deepEqual(totals, [["Basic Correctness", 3, 2], ["Legacy", 1, 1], ["Parallel job", 2, 0]]);
-    }
-    for (const query of [buildOtelRetryRunsQuery(filters, "Basic Correctness")]) {
-      const runs = (await db.query<RetryJobRun>(query.statement, query.parameters)).rows;
-      assert.deepEqual(runs.map((run) => [run.job_id, run.state, Number(run.is_retry), Number(run.duration_secs)]), [
-        ["failed-original", "failed", 0, 60], ["successful-retry", "passed", 1, 60], ["second-retry", "canceled", 1, 60],
-      ]);
-      assert.equal(runs.length, 3, "duplicate UUIDs and out-of-window starts must not appear");
-    }
-
-    // CI contains AMD mirror jobs, while native AMD jobs also run in AMD CI.
-    // Both sources must preserve mirrors and honor the selected pipeline.
-    await db.exec(`
-      INSERT INTO warehouse.pipeline VALUES ('amd-ci', 'AMD CI');
-      INSERT INTO warehouse.build (id, pipeline_id, branch, _fivetran_deleted) VALUES ('amd-1', 'amd-ci', 'main', false);
-    `);
-    const amdFixtures = [
-      { id: "explicit-mirror", name: ":amd: (MI300) Kernels", pipeline: "ci", build: "1", ordinal: 1 },
-      { id: "legacy-mirror", name: "AMD: Kernels", pipeline: "ci", build: "1", ordinal: 1 },
-      { id: "native-original", name: "mi325_1: Basic Correctness Test", pipeline: "amd-ci", build: "amd-1", ordinal: 0 },
-      { id: "native-retry", name: "mi325_1: Basic Correctness Test", pipeline: "amd-ci", build: "amd-1", ordinal: 1 },
-    ];
-    for (const row of amdFixtures) {
-      await db.query(`INSERT INTO otel_spans (job_id, job_label, pipeline_slug, start_time, span_attributes)
-        VALUES ($1, $2, $3, '2026-09-23T10:30Z', $4)`, [
-        row.id, row.name, row.pipeline,
-        JSON.stringify({ "buildkite.build.branch": "main", "buildkite.job.retries_count": row.ordinal }),
-      ]);
-      await db.query(`INSERT INTO warehouse.build_job (id, build_id, name, started_at, retries_count)
-        VALUES ($1, $2, $3, '2026-09-23T10:30Z', $4)`, [row.id, row.build, row.name, row.ordinal]);
-    }
-    for (const pipeline of ["CI", "AMD CI", ""]) {
-      const selected = { ...filters, pipeline };
-      const telemetryQuery = buildOtelRetryQuery(selected);
-      const selectedResults = [await db.query<RetryStatsRow>(telemetryQuery.statement, telemetryQuery.parameters)];
-      for (const { rows } of selectedResults) {
-        const byName = new Map(rows.map((row) => [row.name, [Number(row.total_runs), Number(row.retries)]]));
-        for (const mirror of amdFixtures.slice(0, 2)) {
-          assert.deepEqual(byName.get(mirror.name), pipeline === "AMD CI" ? undefined : [1, 1]);
-        }
-        assert.deepEqual(byName.get("mi325_1: Basic Correctness Test"), pipeline === "CI" ? undefined : [2, 1]);
-        assert.deepEqual(byName.get("Basic Correctness"), pipeline === "AMD CI" ? undefined : [3, 2]);
-      }
-      for (const name of ["Basic Correctness", "mi325_1: Basic Correctness Test", ":amd: (MI300) Kernels"]) {
-        const drilldowns = [buildOtelRetryRunsQuery(selected, name)];
-        for (const [index, query] of drilldowns.entries()) {
-          const runs = (await db.query<RetryJobRun>(query.statement, query.parameters)).rows;
-          const ranking = selectedResults[index].rows.find((row) => row.name === name);
-          assert.equal(runs.length, Number(ranking?.total_runs ?? 0), `${pipeline || "all"} ${name} run totals`);
-          assert.equal(runs.reduce((sum, row) => sum + Number(row.is_retry), 0), Number(ranking?.retries ?? 0), `${pipeline || "all"} ${name} retry totals`);
-        }
-      }
-    }
-
-    // A predecessor outside the window can identify a retry inside it. Its
-    // forward link must not be counted as an extra attempt itself.
-    await db.query(`INSERT INTO otel_spans (job_id, job_label, start_time, span_attributes) VALUES
-      ('old', 'Renamed legacy predecessor', '2026-09-22T23:00Z', $1),
-      ('new', 'Legacy link', '2026-09-23T10:50Z', $2)`, [
-      JSON.stringify({ "buildkite.job.retried_in_job_id": "new", "buildkite.build.branch": "main" }),
-      JSON.stringify({ "buildkite.build.branch": "main" }),
-    ]);
-    const legacy = (await db.query<RetryStatsRow>(otel.statement, otel.parameters)).rows.find((row) => row.name === "Legacy link");
-    assert.equal(legacy?.retries, 1);
-    assert.equal(legacy?.total_runs, 1);
-    const legacyQuery = buildOtelRetryRunsQuery(filters, "Legacy link");
-    const legacyRuns = (await db.query<RetryJobRun>(legacyQuery.statement, legacyQuery.parameters)).rows;
-    assert.deepEqual(legacyRuns.map((run) => [run.job_id, run.is_retry]), [["new", true]],
-      "predecessors can have another label and start before the selected window");
-    assert.equal(legacyRuns[0].web_url, "https://buildkite.com/vllm/ci/builds/1#new");
-
-    // Malformed telemetry cannot crash the aggregate or turn an ordinary
-    // failed job into a retry. Branch fallback cannot duplicate an attempt.
-    await db.query(`INSERT INTO otel_spans (job_id, job_label, start_time, span_attributes) VALUES
-      ('malformed', 'Malformed metadata', '2026-09-23T10:15Z', $1),
-      ('fallback', 'Branch fallback', '2026-09-23T10:15Z', $2)`, [
-      JSON.stringify({ "buildkite.job.retries_count": "not-a-number", "buildkite.build.branch": "main" }),
-      JSON.stringify({ "buildkite.job.retries_count": 1 }),
-    ]);
-    await db.query(`INSERT INTO otel_spans (span_name, start_time, span_attributes) VALUES
-      ('buildkite.build', '2026-09-22T00:00Z', $1), ('buildkite.build', '2026-09-22T00:00Z', $1)`, [
-      JSON.stringify({ "buildkite.build.branch": "main", "buildkite.build.commit": "fixture-sha" }),
-    ]);
-    const edgeRows = (await db.query<RetryStatsRow>(otel.statement, otel.parameters)).rows;
-    assert.equal(edgeRows.find((row) => row.name === "Malformed metadata")?.retries, 0);
-    assert.equal(edgeRows.find((row) => row.name === "Branch fallback")?.retries, 1);
-    assert.equal(edgeRows.find((row) => row.name === "Branch fallback")?.total_runs, 1);
-    await db.query(`INSERT INTO otel_spans (job_id, job_label, organization_slug, start_time, span_attributes) VALUES
-      ('null-old', 'Null organization', NULL, '2026-09-22T23:00Z', $1),
-      ('null-old', 'Null organization', NULL, '2026-09-22T23:00Z', $1),
-      ('null-new', 'Null organization', NULL, '2026-09-23T10:50Z', $2)`, [
-      JSON.stringify({ "buildkite.job.retried_in_job_id": "null-new", "buildkite.build.branch": "main" }),
-      JSON.stringify({ "buildkite.build.branch": "main" }),
-    ]);
-    const nullable = (await db.query<RetryStatsRow>(otel.statement, otel.parameters)).rows.find((row) => row.name === "Null organization");
-    assert.equal(nullable?.retries, 1);
-    assert.equal(nullable?.total_runs, 1, "duplicate forward links must not multiply attempts");
-    const hostile = buildOtelRetryQuery(parseRetryFilters(new URLSearchParams({ branch: "main' OR 1=1 --" })));
-    assert.deepEqual((await db.query(hostile.statement, hostile.parameters)).rows, []);
-    for (const query of [buildOtelRetryRunsQuery(filters, "Basic Correctness' OR 1=1 --")]) {
-      assert.deepEqual((await db.query(query.statement, query.parameters)).rows, []);
-    }
-    for (const row of (await db.query<RetryStatsRow>(otel.statement, otel.parameters)).rows) {
-      const query = buildOtelRetryRunsQuery(filters, row.name);
-      const runs = (await db.query<RetryJobRun>(query.statement, query.parameters)).rows;
-      assert.equal(runs.length, Number(row.total_runs), `${row.name} reconciles run count`);
-      assert.equal(runs.filter((run) => run.is_retry).length, Number(row.retries), `${row.name} reconciles retry count`);
-    }
-    await db.query(`UPDATE otel_spans SET span_attributes = span_attributes || $1::jsonb WHERE job_id = 'successful-retry'`, [
-      JSON.stringify({ "buildkite.build.commit": "job-span-sha", "buildkite.job.web_url": "https://buildkite.com/vllm/ci/builds/1#successful-retry" }),
-    ]);
-    const metadataQuery = buildOtelRetryRunsQuery(filters, "Basic Correctness");
-    const metadataRuns = (await db.query<RetryJobRun>(metadataQuery.statement, metadataQuery.parameters)).rows;
-    assert.equal(metadataRuns.length, 3, "duplicate build spans must not multiply detail rows");
-    assert.deepEqual(metadataRuns.map((run) => run.commit_sha), ["fixture-sha", "job-span-sha", "fixture-sha"]);
-    assert.ok(metadataRuns.every((run) => new Date(run.build_created_at!).toISOString() === "2026-09-22T00:00:00.000Z"));
-    assert.equal(metadataRuns[1].web_url, "https://buildkite.com/vllm/ci/builds/1#successful-retry");
-  } finally {
-    await db.close();
+test("telemetry retry SQL reads ClickHouse spans, one attempt per job UUID", () => {
+  const filters = parseRetryFilters(new URLSearchParams({ startDate: "2026-09-23T10:00Z", endDate: "2026-09-23T11:00Z" }));
+  for (const { statement } of [buildOtelRetryQuery(filters), buildOtelRetryRunsQuery(filters, "Basic Correctness")]) {
+    assert.match(statement, /FROM ci\.otel_spans AS j/);
+    assert.match(statement, /LIMIT 1 BY j\.job_id/);
+    assert.match(statement, /SETTINGS join_use_nulls = 1\n/);
+    assert.doesNotMatch(statement, /enable_materialized_cte|MATERIALIZED/);
+    assert.doesNotMatch(statement, /\bFINAL\b|DISTINCT ON|LATERAL|::/);
   }
+  // Branch falls back to the newest build span of the same build.
+  const branch = buildOtelRetryQuery(parseRetryFilters(new URLSearchParams({ branch: "main" })));
+  assert.match(branch.statement, /argMax\(tuple\(/);
+  assert.match(branch.statement, /isNotDistinctFrom\(bb\.organization_slug, j\.organization_slug\)/);
+});
+
+test("telemetry retry queries bind parameters and parse ClickHouse strings", async (t) => {
+  const original = globalThis.fetch;
+  process.env.CLICKHOUSE_URL = "https://ch.example";
+  process.env.CLICKHOUSE_READ_USER = "reader";
+  process.env.CLICKHOUSE_READ_PASSWORD = "secret";
+  const urls: URL[] = [];
+  globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+    urls.push(new URL(String(input)));
+    const rows = String(init?.body).includes("is_retry AS is_retry")
+      ? [{ job_id: "j1", web_url: "ᴺᵁᴸᴸ", state: "passed", started_at: "2026-09-23T10:00:00.000000Z",
+        finished_at: "2026-09-23T10:01:00Z", duration_secs: "60", commit_sha: "abc",
+        build_created_at: "2026-09-23T09:59:00Z", build_number: "7", is_retry: "1" }]
+      : [{ name: "Job", total_runs: "3", retries: "1", has_soft_fail: "0" }];
+    return new Response(rows.map((row) => JSON.stringify(row)).join("\n"), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const filters = parseRetryFilters(new URLSearchParams({ branch: "main", startDate: "2026-09-23" }));
+  assert.deepEqual(rankRetryJobs(await queryRetriesFromOtel(filters)), [
+    { name: "Job", retries: 1, total_runs: 3, has_soft_fail: false },
+  ]);
+  assert.equal(urls[0].searchParams.get("param_branch"), "main");
+  assert.equal(urls[0].searchParams.get("param_pipeline"), "ci");
+  assert.deepEqual(await queryRetryRunsFromOtel(filters, "Job"), [{
+    job_id: "j1", web_url: null, state: "passed", started_at: "2026-09-23T10:00:00.000Z",
+    finished_at: "2026-09-23T10:01:00.000Z", duration_secs: 60, commit_sha: "abc",
+    build_created_at: "2026-09-23T09:59:00.000Z", build_number: "7", is_retry: true,
+  }]);
+  assert.equal(urls[1].searchParams.get("param_jobName"), "Job");
 });
