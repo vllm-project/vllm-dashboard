@@ -438,27 +438,3 @@ def test_recent_gpu_hosts_reads_the_rollup_over_the_whole_window() -> None:
             (START - timedelta(days=7),),
         )
     ]
-
-
-def test_host_faults_read_the_fabric_health_columns() -> None:
-    error = "GPU 0-7 fabric state In Progress"
-
-    class HostConnection(FakePostgresConnection):
-        def execute(self, sql: str, params: tuple[Any, ...] = ()) -> Result:
-            return Result(
-                rows=[
-                    ("k8s-node-1", False, None, None, START, None, None, False, error),
-                    ("k8s-node-2", False, None, None, START, None, None, True, None),
-                    ("gpu-node-7", False, None, None, START, True, None, None, None),
-                ]
-            )
-
-    store = PostgresAlertStore(lambda: HostConnection())
-    readings = store.host_faults()
-
-    assert [(r.fabric_ok, r.fabric_error) for r in readings] == [
-        (False, error),
-        (True, None),
-        # Not read is None, never a pass.
-        (None, None),
-    ]

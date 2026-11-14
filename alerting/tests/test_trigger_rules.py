@@ -105,8 +105,6 @@ def host(scans: Scans, name: str = "gpu-node-7", **fields: Any) -> HostFaultObse
         reported_at=fields.get("reported_at", scans.reading_at()),
         docker_ok=fields.get("docker_ok", True),
         docker_error=fields.get("docker_error"),
-        fabric_ok=fields.get("fabric_ok", True),
-        fabric_error=fields.get("fabric_error"),
     )
 
 
@@ -616,40 +614,6 @@ def test_broken_docker_trips_on_bare_metal_only() -> None:
     assert not decisions[0].hardware
 
 
-def test_a_broken_gpu_fabric_trips_on_every_pool() -> None:
-    scans = Scans()
-    error = "the driver logged NV_ERR_FABRIC_MANAGER_NOT_PRESENT 3 min ago"
-    broken: dict[str, Any] = {"fabric_ok": False, "fabric_error": error}
-    for _ in range(2):
-        decisions = scans.run(
-            host_faults=[host(scans, **broken), host(scans, "k8s-node-1", **broken)]
-        )
-    assert rules(decisions) == [("gpu-node-7", "fabric"), ("k8s-node-1", "fabric")]
-    assert decisions[1].reason == (
-        f"the GPU fabric is unhealthy ({error}) on 2 consecutive checks"
-    )
-    assert decisions[1].evidence["error"] == error
-    assert not decisions[1].hardware
-
-
-def test_a_fabric_reading_that_wasnt_taken_neither_trips_nor_resets() -> None:
-    scans = Scans()
-    broken: dict[str, Any] = {
-        "fabric_ok": False,
-        "fabric_error": "GPU 0-7 fabric state In Progress",
-    }
-    assert scans.run(host_faults=[host(scans, "k8s-node-1", **broken)]) == []
-    assert scans.run(host_faults=[host(scans, "k8s-node-1", fabric_ok=None)]) == []
-    assert rules(scans.run(host_faults=[host(scans, "k8s-node-1", **broken)])) == [
-        ("k8s-node-1", "fabric")
-    ]
-    # A passing reading starts the streak over.
-    scans = Scans()
-    assert scans.run(host_faults=[host(scans, "k8s-node-1", **broken)]) == []
-    assert scans.run(host_faults=[host(scans, "k8s-node-1")]) == []
-    assert scans.run(host_faults=[host(scans, "k8s-node-1", **broken)]) == []
-
-
 def test_a_docker_reading_that_wasnt_taken_neither_trips_nor_resets() -> None:
     scans = Scans()
     broken = {"docker_ok": False, "docker_error": "docker info timed out"}
@@ -780,8 +744,6 @@ def test_streaks_persist_under_stable_per_rule_subject_keys() -> None:
         root_owned_slots=["agent-1"],
         docker_ok=False,
         docker_error="the docker0 bridge is missing",
-        fabric_ok=False,
-        fabric_error="GPU 0-7 fabric state In Progress",
     )
     scans.run(
         host_faults=failing,
@@ -795,7 +757,6 @@ def test_streaks_persist_under_stable_per_rule_subject_keys() -> None:
         "rule:dead_memory:gpu-node-7",
         "rule:disk:gpu-node-7",
         "rule:docker:gpu-node-7",
-        "rule:fabric:gpu-node-7",
         "rule:gpu_count:gpu-node-7",
         "rule:gpu_hang:gpu-node-7",
         "rule:network:gpu-node-7",

@@ -8,8 +8,6 @@ shapes on the node error paths.
 import time
 from datetime import datetime, timezone
 
-import pytest
-
 HOST_KEYS = {
     "cpu_util", "cpu_count", "ram_used_bytes",
     "ram_total_bytes", "ram_available_bytes", "disks",
@@ -22,8 +20,7 @@ PAYLOAD_KEYS = {
     "hostname", "gpus", "host", "reporter_status", "last_error",
     "node_conditions", "xids", "allocatable_gpus", "capacity_gpus",
     "mig_slices", "root_owned_slots",
-    "gpu_query_hung", "gpu_query_error", "network_probes", "fabric_ok",
-    "fabric_error",
+    "gpu_query_hung", "gpu_query_error", "network_probes",
 }
 
 CADVISOR_FIXTURE = "\n".join([
@@ -487,7 +484,7 @@ def test_driver_fields_from_node_status(reporter_k8s):
         "xids": None, "allocatable_gpus": 5, "capacity_gpus": 8,
         "mig_slices": None, "root_owned_slots": None,
         "gpu_query_hung": None, "gpu_query_error": None,
-        "network_probes": None, "fabric_ok": None, "fabric_error": None,
+        "network_probes": None,
     }
     # No allocatable entry is a missing reading, not 0.
     assert reporter_k8s.driver_fields(
@@ -499,41 +496,6 @@ DCGM_TWO_GPU = (DCGM_FIXTURE.replace("GPU-aaaa", "GPU-bbbb")
                 + DCGM_FIXTURE.replace('gpu="0"', 'gpu="1"'))
 
 
-# FABRIC_SCRIPT output captured 2026-11-13 from device-plugin pods. A row
-# given as state, status, summary gets the health detail a healthy B200
-# reports (bandwidth, route recovery, route unhealthy, access timeout).
-def fabric_output(uptime, rows, dmesg=None, nvlinks=None):
-    rows = [row if row.count(",") == 6 else row + ", N/A, N/A, N/A, False"
-            for row in rows]
-    return "\n".join([f"uptime {uptime}", "dmesg ok", *([dmesg] if dmesg else []),
-                      "nvlink ok", *(nvlinks or nvlink_status(len(rows))),
-                      *(f"{i}, {row}" for i, row in enumerate(rows))])
-
-
-# `nvidia-smi nvlink -s` as a B200 prints it: 18 links per GPU, and an
-# inactive link shows <inactive> in place of its speed.
-def nvlink_status(gpus, inactive=()):
-    lines = []
-    for gpu in range(gpus):
-        lines.append(f"GPU {gpu}: NVIDIA B200 (UUID: GPU-{gpu:08x})")
-        for link in range(18):
-            speed = "<inactive>" if (gpu, link) in inactive else "50 GB/s"
-            lines.append(f"\t Link {link}: {speed}")
-    return lines
-
-
-FABRIC_HEALTHY = fabric_output(16567934, ["Completed, Success, Healthy"] * 8)
-FABRIC_NO_HEALTH_SUMMARY = fabric_output(5497498, ["Completed, Success, N/A"] * 8)
-# A node six minutes after its reboot, Fabric Manager not done yet.
-FABRIC_REGISTERING = fabric_output(368, ["In Progress, N/A, N/A"] * 8)
-# The last kernel line of the 2026-11-13 incident (dmesg time), while
-# every GPU still reported a healthy fabric.
-FM_NOT_PRESENT = (
-    "[726703.163732] NVRM: nvCheckOkFailedNoLog: Check failed: Fabric "
-    "Manager is not loaded [NV_ERR_FABRIC_MANAGER_NOT_PRESENT] (0x0000007A) "
-    "returned from status @ mem_multicast_fabric.c:3039")
-
-
 # PROBE_SCRIPT output captured from an H100 device-plugin pod.
 PROBE_OUTPUT = "\n".join([
     "github 0 660  ",
@@ -543,13 +505,8 @@ PROBE_OUTPUT = "\n".join([
 
 
 def _patch_driver_reads(reporter_k8s, monkeypatch, smi=SMI_FIXTURE,
-                        log=PLUGIN_LOG_FIXTURE, probes=PROBE_OUTPUT,
-                        fabric=FABRIC_REGISTERING):
+                        log=PLUGIN_LOG_FIXTURE, probes=PROBE_OUTPUT):
     def fake_kubectl(*args, timeout=10):
-        if args[0] == "exec" and "fabric" in args[-1]:
-            if fabric is None:
-                raise RuntimeError("kubectl exec failed: Forbidden")
-            return fabric
         if args[0] == "exec" and "sh" in args:
             if probes is None:
                 raise RuntimeError("kubectl exec failed: Forbidden")
@@ -592,8 +549,6 @@ def test_process_node_merges_driver_readings(reporter_k8s, monkeypatch):
     assert payload["gpu_query_hung"] is False
     assert payload["gpu_query_error"] is None
     assert [p["ok"] for p in payload["network_probes"]] == [True] * 3
-    assert payload["fabric_ok"] is False
-    assert payload["fabric_error"] == "GPU 0-7 fabric state In Progress"
     assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] > \
         "2026-09-23"
 
@@ -611,9 +566,9 @@ def test_process_node_first_run_starts_cursor_at_now(reporter_k8s,
 
 
 def test_process_node_failed_reads_are_null_not_degraded(reporter_k8s,
-                                                         monkeypatch, capsys):
+                                                         monkeypatch):
     _patch_driver_reads(reporter_k8s, monkeypatch, smi=None, log=None,
-                        probes=None, fabric=None)
+                        probes=None)
     state = {reporter_k8s.XID_STATE_KEY: {
         "inf-4x8h100-1": "2026-01-01T00:00:00+00:00"}}
     payload = reporter_k8s.process_node(
@@ -624,10 +579,6 @@ def test_process_node_failed_reads_are_null_not_degraded(reporter_k8s,
     # An exec kubectl refused is no reading, not a hang or a dead network.
     assert payload["gpu_query_hung"] is None
     assert payload["network_probes"] is None
-    assert payload["fabric_ok"] is None
-    assert payload["fabric_error"] is None
-    assert ("  WARNING: fabric exec on inf-4x8h100-1 failed: kubectl exec "
-            "failed: Forbidden\n") in capsys.readouterr().err
     for g in payload["gpus"]:
         assert g["recovery_action"] is None
         assert g["remapped_rows_failure"] is None
@@ -730,152 +681,6 @@ def test_probe_output_without_every_target_is_no_reading(reporter_k8s):
             reporter_k8s.NETWORK_PROBES))
 
 
-def test_parse_fabric_output(reporter_k8s):
-    parse = reporter_k8s.parse_fabric_output
-    assert parse(FABRIC_HEALTHY) == (True, None)
-    # Some GPUs report no health summary; N/A is not a fault.
-    assert parse(FABRIC_NO_HEALTH_SUMMARY) == (True, None)
-    ok, error = parse(FABRIC_REGISTERING)
-    assert ok is False
-    assert error == "GPU 0-7 fabric state In Progress"
-    # A healthy-looking fabric with the driver refusing multicast is a fault
-    # for an hour after the last refusal (the longest gap between refusals
-    # in the 2026-11-13 incident was 54 min).
-    healthy = ["Completed, Success, Healthy"] * 8
-    ok, error = parse(fabric_output(726703 + 3600, healthy, FM_NOT_PRESENT))
-    assert ok is False
-    assert error == ("the driver logged NV_ERR_FABRIC_MANAGER_NOT_PRESENT "
-                     "60 min ago")
-    assert parse(fabric_output(726703 + 3601, healthy, FM_NOT_PRESENT)) == (
-        True, None)
-
-
-def test_parse_fabric_output_names_each_bad_gpu(reporter_k8s):
-    rows = ["Completed, Success, Healthy", "Completed, Failure, Healthy",
-            "Completed, Success, Unhealthy", "Completed, Failure, Healthy"]
-    ok, error = reporter_k8s.parse_fabric_output(fabric_output(10, rows))
-    assert ok is False
-    assert error == ("GPU 1,3 fabric status Failure; GPU 2 fabric health "
-                     "Unhealthy")
-
-
-def test_fabric_health_detail_fails_the_gpu(reporter_k8s):
-    # NVIDIA's health validation treats each of these as critical.
-    rows = ["Completed, Success, Healthy, Full, N/A, N/A, False",
-            "Completed, Success, Healthy, Degraded, N/A, N/A, False",
-            "Completed, Success, Healthy, N/A, True, N/A, False",
-            "Completed, Success, Healthy, N/A, N/A, True, False",
-            "Completed, Success, Healthy, N/A, N/A, N/A, True"]
-    ok, error = reporter_k8s.parse_fabric_output(fabric_output(10, rows))
-    assert ok is False
-    assert error == ("GPU 1 fabric bandwidth Degraded; GPU 2 fabric route "
-                     "recovery in progress; GPU 3 fabric route unhealthy; "
-                     "GPU 4 fabric access timeout recovery")
-
-
-def test_an_inactive_nvlink_fails_the_gpu(reporter_k8s):
-    # NVIDIA's health validation allows 0 inactive NVLinks by default; one
-    # dead link breaks NCCL while single-GPU jobs pass.
-    healthy = ["Completed, Success, Healthy"] * 3
-    links = nvlink_status(3, inactive={(1, 4), (1, 9), (2, 0)})
-    ok, error = reporter_k8s.parse_fabric_output(
-        fabric_output(10, healthy, nvlinks=links))
-    assert ok is False
-    assert error == "GPU 1 2 of 18 NVLinks inactive; GPU 2 1 of 18 NVLinks inactive"
-
-
-def test_a_sleeping_nvlink_is_not_a_fault(reporter_k8s):
-    # nvidia-smi docs: an inactive link shows as Inactive; a link the NVLink
-    # width control put to sleep shows as Sleep, which is intended.
-    links = nvlink_status(1)
-    links[1] = "\t Link 0: Sleep"
-    links[2] = "\t Link 1: Inactive"
-    ok, error = reporter_k8s.parse_fabric_output(fabric_output(
-        10, ["Completed, Success, Healthy"], nvlinks=links))
-    assert (ok, error) == (False, "GPU 0 1 of 18 NVLinks inactive")
-
-
-def test_a_completed_fabric_with_no_status_is_not_a_fault(reporter_k8s):
-    assert reporter_k8s.parse_fabric_output(fabric_output(
-        10, ["Completed, N/A, Healthy"])) == (True, None)
-
-
-def test_a_link_line_before_any_gpu_is_ignored(reporter_k8s):
-    links = ["\t Link 0: <inactive>", *nvlink_status(1)]
-    assert reporter_k8s.parse_fabric_output(fabric_output(
-        10, ["Completed, Success, Healthy"], nvlinks=links)) == (True, None)
-
-
-def test_fabric_output_without_the_nvlink_read_is_no_reading(reporter_k8s):
-    text = fabric_output(10, ["Completed, Success, Healthy"]).replace(
-        "nvlink ok\n", "")
-    with pytest.raises(RuntimeError, match="^no fabric reading$"):
-        reporter_k8s.parse_fabric_output(text)
-
-
-def test_fabric_output_without_gpu_rows_is_no_reading(reporter_k8s):
-    with pytest.raises(RuntimeError, match="^no fabric reading$"):
-        reporter_k8s.parse_fabric_output("uptime 368\n")
-    with pytest.raises(RuntimeError, match="^no fabric reading$"):
-        reporter_k8s.parse_fabric_output(
-            "dmesg ok\nnvlink ok\n0, Completed, Success, Healthy, N/A, N/A, N/A, False")
-    # dmesg failed (e.g. "Operation not permitted"): the kernel check this
-    # detector depends on didn't run, so healthy GPU rows are no reading.
-    with pytest.raises(RuntimeError, match="^no fabric reading$"):
-        reporter_k8s.parse_fabric_output(
-            "uptime 368\nnvlink ok\n0, Completed, Success, Healthy, N/A, N/A, N/A, False")
-
-
-def test_parse_fabric_output_skips_other_lines(reporter_k8s):
-    text = "\n".join([
-        "uptime 368",
-        "dmesg ok",
-        "nvlink ok",
-        "index, fabric.state, fabric.status, fabric.health.summary, "
-        "fabric.health.bandwidth, fabric.health.route_recovery_in_progress, "
-        "fabric.health.route_unhealthy, fabric.health.access_timeout_recovery",
-        "0, Completed",
-        "0, Completed, Success, Healthy, N/A, N/A, N/A, False",
-        # A GPU outside any NVSwitch fabric.
-        "1, N/A, N/A, N/A, N/A, N/A, N/A, N/A",
-    ])
-    assert reporter_k8s.parse_fabric_output(text) == (True, None)
-
-
-def test_fabric_refusal_counts_for_exactly_an_hour(reporter_k8s):
-    line = "[ 1000.000000] NVRM: " + FM_NOT_PRESENT.split("NVRM: ", 1)[1]
-    healthy = ["Completed, Success, Healthy"]
-    assert reporter_k8s.parse_fabric_output(
-        fabric_output(4600, healthy, line))[0] is False
-    assert reporter_k8s.parse_fabric_output(
-        fabric_output(4601, healthy, line)) == (True, None)
-
-
-def test_fabric_error_names_gpu_runs_of_three_or_more(reporter_k8s):
-    bad, good = "In Progress, N/A, N/A", "Completed, Success, Healthy"
-    assert reporter_k8s.parse_fabric_output(
-        fabric_output(10, [good, bad, bad, good]))[1] == (
-        "GPU 1,2 fabric state In Progress")
-    assert reporter_k8s.parse_fabric_output(
-        fabric_output(10, [bad, bad, bad, good]))[1] == (
-        "GPU 0-2 fabric state In Progress")
-
-
-def test_read_fabric_runs_the_script_in_the_plugin_container(reporter_k8s,
-                                                              monkeypatch):
-    calls = []
-
-    def fake_kubectl(*args, timeout=10):
-        calls.append(args)
-        return FABRIC_HEALTHY
-
-    monkeypatch.setattr(reporter_k8s, "kubectl", fake_kubectl)
-    assert reporter_k8s.read_fabric("pod-1") == (True, None)
-    assert calls == [("exec", "-n", "gpu-operator", "pod-1", "-c",
-                      "nvidia-device-plugin", "--", "sh", "-c",
-                      reporter_k8s.FABRIC_SCRIPT)]
-
-
 def test_main_starts_every_nodes_execs_before_the_node_loop(
         reporter_k8s, monkeypatch, tmp_path):
     started = []
@@ -913,7 +718,7 @@ def test_log_fetch_starts_with_the_other_pod_reads(reporter_k8s,
 
     monkeypatch.setattr(reporter_k8s, "kubectl", fake_kubectl)
     reads = reporter_k8s.start_pod_reads("pod-1", "2026-10-01T00:00:00+00:00")
-    assert set(reads) == {"smi", "network", "fabric", "log"}
+    assert set(reads) == {"smi", "network", "log"}
     for future in reads.values():
         try:
             future.result()
