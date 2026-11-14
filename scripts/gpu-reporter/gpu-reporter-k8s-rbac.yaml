@@ -31,11 +31,11 @@ type: kubernetes.io/service-account-token
 ---
 # Pods in this namespace only:
 #   pods      - list DCGM exporter / device-plugin pods (pod -> node mapping)
-#   pods/exec - `kubectl exec ... nvidia-smi` in the device-plugin pod
-#               (recovery action, row remap, ECC). kubectl >= 1.30 opens exec
+#   pods/exec - `kubectl exec` in the device-plugin pod: nvidia-smi
+#               (recovery action, row remap, ECC, fabric), probes, and the
+#               host's kernel journal (Xids). kubectl >= 1.30 opens exec
 #               over a websocket, a GET (needs get); the SPDY fallback and the
 #               AuthorizePodWebsocketUpgradeCreatePermission gate need create.
-#   pods/log  - Xid events from the device-plugin log (`kubectl logs`)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -48,9 +48,6 @@ rules:
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["get", "create"]
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get"]
 ---
 # Read node inventories and kubelet endpoints:
 #   nodes         - enumerate nodes (expected-host set, exporter-pod mapping)
