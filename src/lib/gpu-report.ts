@@ -95,6 +95,10 @@ export interface NormalizedGpuReport {
   // H200: whether Docker can start a container, and why not.
   docker_ok: boolean | null;
   docker_error: string | null;
+  // Kubernetes: whether every GPU's NVLink fabric is registered and healthy
+  // and the driver still reaches Fabric Manager, and why not.
+  fabric_ok: boolean | null;
+  fabric_error: string | null;
   network_probes: NormalizedNetworkProbe[] | null;
 }
 
@@ -471,6 +475,8 @@ export function parseGpuReportPayload(value: unknown): NormalizedGpuReport {
       "network_probes",
       "docker_ok",
       "docker_error",
+      "fabric_ok",
+      "fabric_error",
     ],
     "payload",
   );
@@ -552,6 +558,8 @@ export function parseGpuReportPayload(value: unknown): NormalizedGpuReport {
     network_probes: networkProbes,
     docker_ok: optionalBoolean(report.docker_ok, "docker_ok"),
     docker_error: optionalString(report.docker_error, "docker_error", MAX_ERROR_LENGTH),
+    fabric_ok: optionalBoolean(report.fabric_ok, "fabric_ok"),
+    fabric_error: optionalString(report.fabric_error, "fabric_error", MAX_ERROR_LENGTH),
   };
 }
 
