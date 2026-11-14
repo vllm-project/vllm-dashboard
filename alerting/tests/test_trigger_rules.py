@@ -173,14 +173,14 @@ def test_hardware_xids_trip_on_first_sight_and_app_xids_never() -> None:
     assert len(scans.run(xid_events=[xid(79, scans.now - timedelta(hours=24))])) == 1
 
 
-@pytest.mark.parametrize("code", [48, 54, 64, 79, 110, 140, 143])
+@pytest.mark.parametrize("code", [48, 54, 64, 79, 110, 140, 143, 157])
 def test_every_first_sight_xid_trips_on_one_event(code: int) -> None:
     scans = Scans()
     assert rules(scans.run(xid_events=[xid(code, START)])) == [("gpu-node-7", "xid")]
 
 
-# NVIDIA's catalog: 157 is IGNORE; 171/172 carry no action (detail of Xid 48).
-@pytest.mark.parametrize("code", [157, 171, 172])
+# NVIDIA's catalog: 171/172 carry no action (detail rows of Xid 48).
+@pytest.mark.parametrize("code", [171, 172])
 def test_xids_nvidia_marks_no_action_never_trip(code: int) -> None:
     scans = Scans()
     at = [START - timedelta(hours=h) for h in (20, 10, 1)]

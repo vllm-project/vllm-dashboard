@@ -410,7 +410,7 @@ def test_xid_query_reads_only_the_trigger_rule_xids() -> None:
     # First sight, B200 NVLink first sight, and repeat Xids (design §4.2).
     assert xids == [
         46, 48, 54, 62, 64, 74, 79, 95, 109, 110, 119, 120, 136, 140, 143,
-        144, 145, 146, 147, 148, 149, 150, 155, 156, 158,
+        144, 145, 146, 147, 148, 149, 150, 155, 156, 157, 158,
     ]
 
 
