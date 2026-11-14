@@ -108,7 +108,8 @@ from migration 0036), whatever domain it used.
 **Triggers** (`plan_trigger_rules`), over the pilot pools (`pilot_pools`):
 
 - GPU hardware, on first sight: a driver recovery action other than `None`,
-  a row-remap failure, or a first-sight hardware Xid. Reset-class Xids trip
+  a row-remap failure, or a first-sight hardware Xid (the Xid sets in
+  `infra.py` follow NVIDIA's Xid catalog actions). Reset-class Xids trip
   on 3 of one Xid on one GPU in 24 h, or on 1 within 24 h of the host's
   last resolve (`xid_probation`).
 - Host faults, on 2 consecutive scans that each read a fresh (≤ 60 s),
