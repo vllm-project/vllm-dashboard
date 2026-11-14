@@ -5,8 +5,9 @@ maps, the disk-scrape cadence state, and the ingestion-contract payload
 shapes on the node error paths.
 """
 
+import json
 import time
-from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -347,23 +348,17 @@ def test_main_reports_nodes_first_and_warns_on_skew(reporter_k8s, monkeypatch,
     assert "stale-1" in err  # exporter pod on a non-GPU node is loud
 
 
-# --- driver signals (exec nvidia-smi + device-plugin log) -------------------
+# --- driver signals (exec nvidia-smi + kernel journal) ----------------------
 
-# Device-plugin log lines in the real `kubectl logs --timestamps` format: an
-# Xid 79 / 145 pair (with its UUID-bearing XidCriticalError
-# lines), and H100 Skipping lines (no GPU identity).
-PLUGIN_LOG_FIXTURE = "\n".join([
-    "2026-01-05T04:25:00.405995263-07:00 I0105 11:25:00.402432       1 health.go:143] Processing event {Device:{Handle:0x725d24c3fc38} EventType:8 EventData:79 GpuInstanceId:4294967295 ComputeInstanceId:4294967295}",
-    "2026-01-05T04:25:00.406803332-07:00 I0105 11:25:00.405750       1 health.go:169] XidCriticalError: Xid=79 on Device=GPU-11111111-2222-3333-4444-555555555555; marking device as unhealthy.",
-    "2026-01-05T04:25:00.406810680-07:00 I0105 11:25:00.406688       1 health.go:143] Processing event {Device:{Handle:0x725d24b032b8} EventType:8 EventData:145 GpuInstanceId:4294967295 ComputeInstanceId:4294967295}",
-    "2026-01-05T04:25:00.406812197-07:00 I0105 11:25:00.406705       1 health.go:169] XidCriticalError: Xid=145 on Device=GPU-66666666-7777-8888-9999-000000000000; marking device as unhealthy.",
-    "2026-09-23T02:35:57.360474753Z I0923 02:35:57.360303       1 health.go:139] Skipping event {Device:{Handle:0x768f4a22e158} EventType:8 EventData:43 GpuInstanceId:4294967295 ComputeInstanceId:4294967295}",
-    "I0928 23:13:29.028243       1 health.go:139] unstamped line is ignored",
-    "2026-09-28T23:13:29.028442214Z I0928 23:13:29.028243       1 server.go:1 some other message",
-])
-UUID_TO_BUS = {
-    "GPU-11111111-2222-3333-4444-555555555555": "00000000:C3:00.0",
-}
+# The kernel journal of a real burst (2026-10-27, an H100 node, 18:48:32 UTC),
+# as `journalctl _TRANSPORT=kernel -o json --output-fields=MESSAGE,
+# __REALTIME_TIMESTAMP` prints it, trimmed to 15 of its 171 Xid lines and two
+# NVSwitch SXid lines. The device-plugin feed this replaces lost every Xid 74
+# and 154 of that burst.
+JOURNAL_BURST = (Path(__file__).parent / "journal-xid-burst.jsonl").read_text()
+BURST_CURSORS = [json.loads(line)["__CURSOR"]
+                 for line in JOURNAL_BURST.splitlines()]
+BURST_XIDS = [79] + [154] * 8 + [45] * 3 + [74] * 3
 
 # nvidia-smi --query-gpu=SMI_FIELDS --format=csv,noheader. The shape and the
 # [N/A] spelling follow nvidia-smi docs; row 1 is a MIG-style host where
@@ -374,7 +369,6 @@ SMI_FIXTURE = "\n".join([
     "GPU-cccc, 00000000:52:00.0, [N/A], [N/A], [N/A]",
     "garbage line",
 ])
-EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 def test_parse_smi_gpus(reporter_k8s):
@@ -401,81 +395,63 @@ def test_parse_smi_accepts_numeric_failure_flag(reporter_k8s):
     assert gpus["GPU-b"]["remapped_rows_failure"] is False
 
 
-def test_parse_plugin_log_xids(reporter_k8s):
-    xids, last = reporter_k8s.parse_plugin_log(PLUGIN_LOG_FIXTURE, EPOCH,
-                                               UUID_TO_BUS)
-    assert [x["xid"] for x in xids] == [79, 145, 43]
-    assert set(xids[0]) == {"bus_id", "xid", "at", "message"}
-    # UUID on the following XidCriticalError line resolves to a bus id.
-    assert xids[0]["bus_id"] == "00000000:C3:00.0"
-    # Unknown UUID and Skipping events carry no identity.
-    assert xids[1]["bus_id"] == ""
-    assert xids[2]["bus_id"] == ""
-    # Times are normalised to UTC (-07:00 offset -> +7h).
-    assert xids[0]["at"] == "2026-01-05T11:25:00.405995+00:00"
-    assert xids[2]["at"] == "2026-09-23T02:35:57.360474+00:00"
-    assert xids[0]["message"].startswith("Processing event")
-    # The cursor moves past every stamped line read, not just Xids.
-    assert last.isoformat().startswith("2026-09-28T23:13:29.028442")
+def test_parse_journal_xids_keeps_every_xid_of_a_burst(reporter_k8s):
+    xids, cursor = reporter_k8s.parse_journal_xids(JOURNAL_BURST)
+    assert [x["xid"] for x in xids] == BURST_XIDS
+    assert xids[0] == {
+        "bus_id": "0000:f1:00", "xid": 79,
+        "at": "2026-10-27T18:48:32.441307+00:00",
+        "message": "GPU has fallen off the bus.",
+    }
+    assert xids[-1]["bus_id"] == "0000:f5:00"
+    assert xids[-1]["message"].startswith("pid=")
+    # The cursor moves past every entry read, the SXid lines included.
+    assert cursor == BURST_CURSORS[-1]
 
 
-def test_parse_plugin_log_empty(reporter_k8s):
-    assert reporter_k8s.parse_plugin_log("", EPOCH) == ([], None)
+def test_journal_xid_messages_are_capped_or_empty(reporter_k8s):
+    def entry(message):
+        return json.dumps({"__CURSOR": "s=1", "__REALTIME_TIMESTAMP": "0",
+                           "MESSAGE": message})
+    long_line = entry("NVRM: Xid (PCI:0000:f5:00): 74, " + "x" * 600)
+    bare_line = entry("NVRM: Xid (PCI:0000:f5:00): 79")
+    xids, _ = reporter_k8s.parse_journal_xids(long_line + "\n" + bare_line)
+    assert xids[0]["message"] == "x" * 512
+    assert xids[1]["message"] == ""
 
 
-def test_parse_plugin_log_caps_events(reporter_k8s, monkeypatch):
-    monkeypatch.setattr(reporter_k8s, "MAX_XIDS_PER_REPORT", 1)
-    xids, last = reporter_k8s.parse_plugin_log(PLUGIN_LOG_FIXTURE, EPOCH,
-                                               UUID_TO_BUS)
-    # The capped event still gets its XidCriticalError bus id, and the
-    # cursor stops after that line, before the next Xid, so the rest go out
-    # next run.
-    assert [(x["xid"], x["bus_id"]) for x in xids] == [(79, "00000000:C3:00.0")]
-    assert last.isoformat().startswith("2026-01-05T11:25:00.406803")
+def test_parse_journal_xids_without_entries(reporter_k8s):
+    assert reporter_k8s.parse_journal_xids("") == ([], None)
+    assert reporter_k8s.parse_journal_xids("not json\n") == ([], None)
 
 
-def test_xids_since_advances_cursor_past_last_line(reporter_k8s,
-                                                   monkeypatch):
-    seen = {}
+def test_capped_journal_read_stops_at_the_last_sent_xid(reporter_k8s,
+                                                        monkeypatch):
+    monkeypatch.setattr(reporter_k8s, "MAX_XIDS_PER_REPORT", 2)
+    xids, cursor = reporter_k8s.parse_journal_xids(JOURNAL_BURST)
+    assert [x["xid"] for x in xids] == [79, 154]
+    # The next read starts after the second Xid, so the rest go out then.
+    assert cursor == BURST_CURSORS[1]
+
+
+def test_read_journal_runs_the_host_journalctl(reporter_k8s, monkeypatch):
+    calls = []
 
     def fake_kubectl(*args, timeout=10):
-        seen["args"] = args
-        return PLUGIN_LOG_FIXTURE
+        calls.append((args, timeout))
+        return ""
 
     monkeypatch.setattr(reporter_k8s, "kubectl", fake_kubectl)
-    since = "2026-01-01T00:00:00+00:00"
-    text = reporter_k8s.read_plugin_log("pod-1", since)
-    assert "--since-time" in seen["args"] and since in seen["args"]
-    xids, nxt = reporter_k8s.xids_since(text, since, UUID_TO_BUS)
-    assert len(xids) == 3
-    assert nxt == "2026-09-28T23:13:29.028443+00:00"
-    # The API server truncates --since-time to the second, so the last
-    # lines come back on the next read; they must not be sent again.
-    assert reporter_k8s.xids_since(PLUGIN_LOG_FIXTURE, nxt, {}) == ([], nxt)
-
-
-def test_quiet_log_still_moves_the_cursor(reporter_k8s):
-    # No Xids at all: the next read must start after these lines, not
-    # re-download everything since the last Xid.
-    quiet = "\n".join(
-        f"2026-10-01T00:00:{s:02d}.000000Z I1001 00:00:{s:02d}.0 1 "
-        f"server.go:1] heartbeat" for s in range(5))
-    xids, nxt = reporter_k8s.xids_since(
-        quiet, "2026-10-01T00:00:00+00:00", {})
-    assert xids == []
-    assert nxt == "2026-10-01T00:00:04.000001+00:00"
-
-
-def test_capped_log_cursor_stops_at_the_last_sent_xid(reporter_k8s,
-                                                      monkeypatch):
-    monkeypatch.setattr(reporter_k8s, "MAX_XIDS_PER_REPORT", 1)
-    xids, nxt = reporter_k8s.xids_since(
-        PLUGIN_LOG_FIXTURE, "2026-01-01T00:00:00+00:00", UUID_TO_BUS)
-    assert [x["xid"] for x in xids] == [79]
-    assert nxt == "2026-01-05T11:25:00.406804+00:00"
-    # Next run picks up the unsent Xid 145.
-    rest, _ = reporter_k8s.xids_since(PLUGIN_LOG_FIXTURE, nxt, UUID_TO_BUS)
-    assert [x["xid"] for x in rest] == [145]
+    reporter_k8s.read_journal("pod-1", None)
+    reporter_k8s.read_journal("pod-1", "s=abc")
+    base = ("exec", "-n", "gpu-operator", "pod-1", "-c",
+            "nvidia-device-plugin", "--", "chroot", "/host", "journalctl",
+            "_TRANSPORT=kernel", "--no-pager", "-o", "json",
+            "--output-fields=MESSAGE,__REALTIME_TIMESTAMP")
+    # First run: only where the kernel journal ends, never its history.
+    assert calls[0] == (base + ("-n", "1"), reporter_k8s.DRIVER_READ_TIMEOUT)
+    assert calls[1] == (base + ("--after-cursor=s=abc", "-n", "+10000"),
+                        reporter_k8s.DRIVER_READ_TIMEOUT)
 
 
 def test_driver_fields_from_node_status(reporter_k8s):
@@ -543,9 +519,13 @@ PROBE_OUTPUT = "\n".join([
 
 
 def _patch_driver_reads(reporter_k8s, monkeypatch, smi=SMI_FIXTURE,
-                        log=PLUGIN_LOG_FIXTURE, probes=PROBE_OUTPUT,
+                        journal=JOURNAL_BURST, probes=PROBE_OUTPUT,
                         fabric=FABRIC_REGISTERING):
     def fake_kubectl(*args, timeout=10):
+        if args[0] == "exec" and "journalctl" in args:
+            if journal is None:
+                raise RuntimeError("kubectl exec failed: Forbidden")
+            return journal
         if args[0] == "exec" and "fabric" in args[-1]:
             if fabric is None:
                 raise RuntimeError("kubectl exec failed: Forbidden")
@@ -560,10 +540,6 @@ def _patch_driver_reads(reporter_k8s, monkeypatch, smi=SMI_FIXTURE,
             if smi is None:
                 raise RuntimeError("kubectl exec failed: Forbidden")
             return smi
-        if args[0] == "logs":
-            if log is None:
-                raise RuntimeError("kubectl logs failed: Forbidden")
-            return log
         return CADVISOR_FIXTURE
 
     monkeypatch.setattr(reporter_k8s, "kubectl", fake_kubectl)
@@ -575,8 +551,7 @@ def _patch_driver_reads(reporter_k8s, monkeypatch, smi=SMI_FIXTURE,
 
 def test_process_node_merges_driver_readings(reporter_k8s, monkeypatch):
     _patch_driver_reads(reporter_k8s, monkeypatch)
-    state = {reporter_k8s.XID_STATE_KEY: {
-        "inf-4x8h100-1": "2026-01-01T00:00:00+00:00"}}
+    state = {reporter_k8s.XID_STATE_KEY: {"inf-4x8h100-1": "s=old"}}
     payload = reporter_k8s.process_node(
         make_node("inf-4x8h100-1"), "192.168.3.81", state, time.time(),
         "plugin-pod")
@@ -588,34 +563,45 @@ def test_process_node_merges_driver_readings(reporter_k8s, monkeypatch):
     assert g1["recovery_action"] == "None"
     assert g1["remapped_rows_failure"] is False
     assert g1["ecc_uncorrected"] == 0
-    assert [x["xid"] for x in payload["xids"]] == [79, 145, 43]
+    assert [x["xid"] for x in payload["xids"]] == BURST_XIDS
     assert payload["gpu_query_hung"] is False
     assert payload["gpu_query_error"] is None
     assert [p["ok"] for p in payload["network_probes"]] == [True] * 3
     assert payload["fabric_ok"] is False
     assert payload["fabric_error"] == "GPU 0-7 fabric state In Progress"
-    assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] > \
-        "2026-09-23"
+    assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] == \
+        BURST_CURSORS[-1]
 
 
-def test_process_node_first_run_starts_cursor_at_now(reporter_k8s,
-                                                     monkeypatch):
-    _patch_driver_reads(reporter_k8s, monkeypatch, log=None)
+def test_process_node_first_run_starts_the_cursor_at_the_journal_end(
+        reporter_k8s, monkeypatch):
+    # The first read is `-n 1`: its one entry only places the cursor.
+    last = JOURNAL_BURST.splitlines()[-1]
+    _patch_driver_reads(reporter_k8s, monkeypatch, journal=last)
     state = {}
     payload = reporter_k8s.process_node(
-        make_node("inf-4x8h100-1"), "192.168.3.81", state, 1788387174.0,
+        make_node("inf-4x8h100-1"), "192.168.3.81", state, time.time(),
         "plugin-pod")
     assert payload["xids"] == []
-    assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"].startswith(
-        "2026-09-02T")
+    assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] == \
+        BURST_CURSORS[-1]
+
+
+def test_a_quiet_journal_keeps_the_cursor(reporter_k8s, monkeypatch):
+    _patch_driver_reads(reporter_k8s, monkeypatch, journal="")
+    state = {reporter_k8s.XID_STATE_KEY: {"inf-4x8h100-1": "s=old"}}
+    payload = reporter_k8s.process_node(
+        make_node("inf-4x8h100-1"), "192.168.3.81", state, time.time(),
+        "plugin-pod")
+    assert payload["xids"] == []
+    assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] == "s=old"
 
 
 def test_process_node_failed_reads_are_null_not_degraded(reporter_k8s,
                                                          monkeypatch, capsys):
-    _patch_driver_reads(reporter_k8s, monkeypatch, smi=None, log=None,
+    _patch_driver_reads(reporter_k8s, monkeypatch, smi=None, journal=None,
                         probes=None, fabric=None)
-    state = {reporter_k8s.XID_STATE_KEY: {
-        "inf-4x8h100-1": "2026-01-01T00:00:00+00:00"}}
+    state = {reporter_k8s.XID_STATE_KEY: {"inf-4x8h100-1": "s=old"}}
     payload = reporter_k8s.process_node(
         make_node("inf-4x8h100-1"), "192.168.3.81", state, time.time(),
         "plugin-pod")
@@ -626,15 +612,17 @@ def test_process_node_failed_reads_are_null_not_degraded(reporter_k8s,
     assert payload["network_probes"] is None
     assert payload["fabric_ok"] is None
     assert payload["fabric_error"] is None
+    err = capsys.readouterr().err
     assert ("  WARNING: fabric exec on inf-4x8h100-1 failed: kubectl exec "
-            "failed: Forbidden\n") in capsys.readouterr().err
+            "failed: Forbidden\n") in err
+    assert ("  WARNING: kernel journal read on inf-4x8h100-1 failed: kubectl "
+            "exec failed: Forbidden\n") in err
     for g in payload["gpus"]:
         assert g["recovery_action"] is None
         assert g["remapped_rows_failure"] is None
         assert g["ecc_uncorrected"] is None
-    # A failed log read leaves the cursor so the next run covers the gap.
-    assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] == \
-        "2026-01-01T00:00:00+00:00"
+    # A failed journal read leaves the cursor so the next run covers the gap.
+    assert state[reporter_k8s.XID_STATE_KEY]["inf-4x8h100-1"] == "s=old"
 
 
 def test_process_node_without_plugin_pod_reports_null(reporter_k8s,
@@ -650,8 +638,9 @@ def test_main_keeps_log_cursor_when_post_fails(reporter_k8s, monkeypatch,
                                                tmp_path):
     _patch_driver_reads(reporter_k8s, monkeypatch)
     state_file = tmp_path / "state.json"
-    since = "2026-01-01T00:00:00+00:00"
-    state_file.write_text('{"_xid_since": {"inf-4x8h100-1": "%s"}}' % since)
+    since = "s=old"
+    state_file.write_text(json.dumps(
+        {reporter_k8s.XID_STATE_KEY: {"inf-4x8h100-1": since}}))
     monkeypatch.setattr(reporter_k8s, "REPORT_URL", "http://dummy")
     monkeypatch.setattr(reporter_k8s, "DISK_STATE_FILE", str(state_file))
     monkeypatch.setattr(reporter_k8s, "get_nodes",
@@ -903,25 +892,26 @@ def test_main_starts_every_nodes_execs_before_the_node_loop(
     assert seen["inf-4x8h100-1"] == ["pod-1", "pod-2"]
 
 
-def test_log_fetch_starts_with_the_other_pod_reads(reporter_k8s,
-                                                   monkeypatch):
+def test_journal_read_starts_with_the_other_pod_reads(reporter_k8s,
+                                                      monkeypatch):
     calls = []
 
     def fake_kubectl(*args, timeout=10):
-        calls.append(args[0])
+        calls.append(args)
         return ""
 
     monkeypatch.setattr(reporter_k8s, "kubectl", fake_kubectl)
-    reads = reporter_k8s.start_pod_reads("pod-1", "2026-10-01T00:00:00+00:00")
-    assert set(reads) == {"smi", "network", "fabric", "log"}
-    for future in reads.values():
-        try:
-            future.result()
-        except Exception:
-            pass
-    assert "logs" in calls
-    # First run: no cursor yet, so nothing to fetch.
-    assert "log" not in reporter_k8s.start_pod_reads("pod-1", None)
+    # Also on the first run: that read places the cursor.
+    for cursor in (None, "s=abc"):
+        calls.clear()
+        reads = reporter_k8s.start_pod_reads("pod-1", cursor)
+        assert set(reads) == {"smi", "network", "fabric", "journal"}
+        for future in reads.values():
+            try:
+                future.result()
+            except Exception:
+                pass
+        assert any("journalctl" in args for args in calls)
 
 
 def test_parse_dcgm_metrics_missing_utilization_is_null(reporter_k8s):
