@@ -143,6 +143,7 @@ test("metrics route preserves snapshot readings and describes history buckets", 
         latest,
         snapshots: [],
         queues: [queue],
+        lastPolledAt: "2026-10-01T12:00:00.000Z",
       });
       assert.equal(latestQueries, 1);
       assert.equal(historyQueries, 0);

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
+import { QueueStaleNotice } from "@/components/queue-stale-notice";
 import { SearchableSelect } from "@/components/searchable-select";
 import {
   QueueActivityHeatmap,
@@ -40,6 +41,8 @@ interface MetricsResponse {
   query: { hours: number; queue: string | null; bucketMinutes?: number };
   latest: LatestMetric[];
   snapshots: (QueueMetric & { time_bucket: string })[];
+  /** When the newest queue snapshot was polled; null if there is none. */
+  lastPolledAt?: string | null;
   receivedAt: number;
 }
 
@@ -347,6 +350,7 @@ export default function QueueTraffic() {
           </button>
         </div>
       </header>
+      {current.data && <QueueStaleNotice lastPolledAt={current.data.lastPolledAt} />}
       <div className={`${panel} flex flex-wrap items-end gap-4 p-4`}>
         <div>
           <span className="mb-1 block text-xs font-medium text-zinc-500">
