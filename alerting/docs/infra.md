@@ -115,6 +115,11 @@ from migration 0036), whatever domain it used.
 - Host faults, on 2 consecutive scans that each read a fresh (≤ 60 s),
   unused reading: GPU hang, all network probes failing while most of the
   pool passes, disk and dead-process GPU memory at the alert thresholds,
+  an unhealthy GPU fabric (Kubernetes pools; the reporter's `fabric_ok`:
+  every GPU's fabric state is Completed with status Success, health not
+  degraded and no degraded bandwidth, route recovery, unhealthy route or
+  access timeout recovery, no inactive NVLink, and the kernel logged no `NV_ERR_FABRIC_MANAGER_NOT_PRESENT`
+  in the last hour),
   and on H200 only root-owned checkout slots, a short GPU count, and Docker
   unable to start containers (the reporter's `docker_ok`: the `docker0`
   bridge is present and `docker info` answers within 10 s).

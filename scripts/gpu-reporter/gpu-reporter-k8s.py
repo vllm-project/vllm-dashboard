@@ -21,8 +21,9 @@ independently to null; null means "missing reading", never a passing value.
 The same nvidia-smi exec is the GPU-hang check: nvidia-smi erroring or the
 exec not returning within GPU_HANG_TIMEOUT is gpu_query_hung=true, an
 explicit failing value. A second exec probes NETWORK_PROBES with the plugin
-image's busybox wget. Both execs start for every node at once, before the
-per-node loop, so a hung node costs the run one timeout, not one per node.
+image's busybox wget. A third reads GPU fabric health (FABRIC_SCRIPT). The
+execs start for every node at once, before the per-node loop, so a hung node
+costs the run one timeout, not one per node.
 
 Disk scraping runs on a 5-minute cadence, not every 30s tick, because
 cAdvisor payloads are 1.4-2.1 MB per node; between scrapes the cached
@@ -96,8 +97,8 @@ NETWORK_PROBES = (
     ("registry", "https://public.ecr.aws/v2/"),
     ("pypi", "https://pypi.org/simple/"),
 )
-# Two execs per node, all nodes at once (see process_node).
-POD_READS = concurrent.futures.ThreadPoolExecutor(max_workers=32)
+# Three execs and a log read per node, all nodes at once (see process_node).
+POD_READS = concurrent.futures.ThreadPoolExecutor(max_workers=64)
 
 DISK_SCRAPE_INTERVAL = int(os.environ.get("GPU_REPORT_DISK_INTERVAL", "300"))
 DISK_STATE_FILE = os.environ.get(
@@ -344,11 +345,119 @@ def read_network_probes(pod):
     ))
 
 
+# GPU fabric health: each GPU's NVLink fabric registration and health, plus
+# the kernel's last refusal of a multicast request because the driver lost
+# Fabric Manager. In the 2026-11-13 incident the refusals were the only
+# sign: NVLS jobs failed for 5 h while every GPU reported a healthy fabric.
+# A separate exec, so a driver without the fabric fields can't read as a
+# GPU hang.
+FABRIC_SCRIPT = """
+read u _ < /proc/uptime; echo "uptime ${u%%.*}"
+k=$(dmesg) && echo "dmesg ok"
+printf '%s\n' "$k" | grep -F NV_ERR_FABRIC_MANAGER_NOT_PRESENT | tail -n 1
+n=$(nvidia-smi nvlink -s) && echo "nvlink ok"
+printf '%s\n' "$n"
+nvidia-smi --query-gpu=index,fabric.state,fabric.status,fabric.health.summary,\
+fabric.health.bandwidth,fabric.health.route_recovery_in_progress,\
+fabric.health.route_unhealthy,fabric.health.access_timeout_recovery \\
+  --format=csv,noheader
+"""
+# Refusals come only when a job asks for multicast; the longest gap between
+# them in the 2026-11-13 incident was 54 min, so one keeps the host failing
+# this long.
+FABRIC_ERROR_WINDOW = 3600
+
+
+def parse_fabric_output(text):
+    """FABRIC_SCRIPT output -> (fabric_ok, fabric_error).
+
+    A GPU whose fabric is registering or failed, reports unhealthy, or
+    reports degraded bandwidth, route recovery, an unhealthy route or access
+    timeout recovery (each critical in NVIDIA's health validation) fails the
+    host, and so does any inactive NVLink (a sleeping one does not); N/A
+    (no NVSwitch fabric, no status or no health detail) does not.
+    Raises when the uptime, the dmesg or nvlink read, or every GPU row is
+    missing: no reading.
+    """
+    uptime_s, refused_at_s, problems = None, None, {}
+    kernel_read = links_read = False
+    links = {}  # GPU index -> [links, inactive links]
+    gpu = None
+    for line in text.splitlines():
+        if line.startswith("uptime "):
+            uptime_s = int(line.split()[1])
+        elif line == "dmesg ok":
+            kernel_read = True
+        elif line == "nvlink ok":
+            links_read = True
+        elif line.startswith("GPU "):
+            # nvlink -s: "GPU 0: NVIDIA B200 (UUID: ...)", then its links
+            gpu = int(line.split()[1].rstrip(":"))
+            links[gpu] = [0, 0]
+        elif line.strip().startswith("Link ") and gpu is not None:
+            # "Link 3: 50 GB/s", "<inactive>", or "Sleep" (put to sleep by
+            # the NVLink width control on purpose, so not a fault)
+            links[gpu][0] += 1
+            links[gpu][1] += "inactive" in line.lower()
+        elif "NV_ERR_FABRIC_MANAGER_NOT_PRESENT" in line:
+            # dmesg time: "[726703.163732] NVRM: ..."
+            refused_at_s = float(line[1:line.index("]")])
+        else:
+            cols = [col.strip() for col in line.split(",")]
+            if len(cols) != 8 or not cols[0].isdigit():
+                continue
+            index, state, status, health, bandwidth, *flags = cols
+            recovery, unhealthy, timeout = (flag == "True" for flag in flags)
+            if state not in ("Completed", "N/A"):
+                problem = f"fabric state {state}"
+            elif state == "Completed" and status not in ("Success", "N/A"):
+                problem = f"fabric status {status}"
+            elif health not in ("Healthy", "N/A"):
+                problem = f"fabric health {health}"
+            elif bandwidth not in ("Full", "N/A"):
+                problem = f"fabric bandwidth {bandwidth}"
+            elif recovery:
+                problem = "fabric route recovery in progress"
+            elif unhealthy:
+                problem = "fabric route unhealthy"
+            elif timeout:
+                problem = "fabric access timeout recovery"
+            else:
+                problem = ""
+            problems.setdefault(problem, []).append(int(index))
+    if uptime_s is None or not kernel_read or not links_read or not problems:
+        raise RuntimeError("no fabric reading")
+    errors = []
+    if refused_at_s is not None and uptime_s - refused_at_s <= FABRIC_ERROR_WINDOW:
+        minutes = round((uptime_s - refused_at_s) / 60)
+        errors.append("the driver logged NV_ERR_FABRIC_MANAGER_NOT_PRESENT "
+                      f"{minutes} min ago")
+    for index, (total, inactive) in links.items():
+        if inactive:
+            errors.append(f"GPU {index} {inactive} of {total} NVLinks inactive")
+    for problem, gpus in problems.items():
+        if not problem:
+            continue
+        contiguous = gpus == list(range(gpus[0], gpus[-1] + 1))
+        names = (f"{gpus[0]}-{gpus[-1]}" if contiguous and len(gpus) > 2
+                 else ",".join(str(gpu) for gpu in gpus))
+        errors.append(f"GPU {names} {problem}")
+    return not errors, "; ".join(errors) or None
+
+
+def read_fabric(pod):
+    return parse_fabric_output(kubectl(
+        "exec", "-n", DCGM_NS, pod, "-c", PLUGIN_CONTAINER, "--",
+        "sh", "-c", FABRIC_SCRIPT,
+    ))
+
+
 def start_pod_reads(pod, since=None):
     """Start one node's execs and, once it has a cursor, its log read;
     process_node waits on the futures."""
     reads = {"smi": POD_READS.submit(read_smi, pod),
-             "network": POD_READS.submit(read_network_probes, pod)}
+             "network": POD_READS.submit(read_network_probes, pod),
+             "fabric": POD_READS.submit(read_fabric, pod)}
     if since is not None:
         reads["log"] = POD_READS.submit(read_plugin_log, pod, since)
     return reads
@@ -700,6 +809,8 @@ def driver_fields(node):
         "gpu_query_hung": None,
         "gpu_query_error": None,
         "network_probes": None,
+        "fabric_ok": None,
+        "fabric_error": None,
     }
 
 
@@ -761,6 +872,12 @@ def process_node(node, pod_ip, disk_state, now, plugin_pod=None, reads=None):
             payload["network_probes"] = reads["network"].result()
         except Exception as e:
             print(f"  WARNING: network probe exec on {name} failed: {e}",
+                  file=sys.stderr)
+        try:
+            payload["fabric_ok"], payload["fabric_error"] = \
+                reads["fabric"].result()
+        except Exception as e:
+            print(f"  WARNING: fabric exec on {name} failed: {e}",
                   file=sys.stderr)
         if since is None:
             # First run: start from now, nothing to read yet.
