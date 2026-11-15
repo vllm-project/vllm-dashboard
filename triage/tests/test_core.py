@@ -356,3 +356,15 @@ def test_a_commenter_is_routed_even_without_a_rule_match() -> None:
     owners = choose_owners(ctx, [Maintainer(github_login="gau-nernst", rules={"areas": ["moe"]})],
                            load={}, excluded=set(), today=date(2026, 11, 12))
     assert [(o.maintainer.github_login, o.involvement) for o in owners] == [("gau-nernst", ("commented",))]
+
+
+def test_claude_gets_an_allowlisted_environment_only() -> None:
+    from triage.extract import claude_env
+
+    env = claude_env({
+        "PATH": "/bin", "HOME": "/home/u", "CLAUDE_CONFIG_DIR": "/c", "CLAUDE_CODE_OAUTH_TOKEN": "t",
+        "DATABASE_URL": "postgres://secret", "AWS_SECRET_ACCESS_KEY": "s", "ANTHROPIC_API_KEY": "k",
+        "CLAUDE_CODE_MESSAGING_TOKEN": "parent-session", "GITHUB_TOKEN": "g",
+    })
+    assert env == {"PATH": "/bin", "HOME": "/home/u", "CLAUDE_CONFIG_DIR": "/c",
+                   "CLAUDE_CODE_OAUTH_TOKEN": "t", "DISABLE_AUTOUPDATER": "1"}

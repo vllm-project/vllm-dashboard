@@ -5,6 +5,7 @@ import { POST as actions } from "./actions/route";
 import { PUT as putRules } from "./rules/route";
 import { POST as previewRules } from "./rules/preview/route";
 import { GET as login } from "./auth/login/route";
+import { GET as callback } from "./auth/callback/route";
 import { signSession } from "@/lib/triage-auth";
 
 const SECRET = "s".repeat(40);
@@ -105,6 +106,35 @@ test("sign-in is 503 until the OAuth app is configured", async () => {
     assert.equal(location.host, "github.com");
     assert.equal(location.searchParams.get("redirect_uri"), "https://ci.vllm.ai/api/triage/auth/callback");
     assert.match(response.headers.get("set-cookie") ?? "", /triage_oauth=.*HttpOnly/i);
+  });
+});
+
+test("sign-in started on another hostname restarts on the canonical origin", async () => {
+  const configured = { ...ENABLED, GITHUB_OAUTH_CLIENT_ID: "cid", GITHUB_OAUTH_CLIENT_SECRET: "cs" };
+  await withEnv(configured, async () => {
+    const response = await login(new Request("https://vllm-ci-dashboard.vercel.app/api/triage/auth/login?next=/triage/me"));
+    assert.equal(response.status, 302);
+    const location = new URL(response.headers.get("location")!);
+    assert.equal(location.origin, "https://ci.vllm.ai");
+    assert.equal(location.pathname, "/api/triage/auth/login");
+    assert.equal(location.searchParams.get("next"), "/triage/me");
+    // No OAuth state is issued on the wrong host.
+    assert.equal(response.headers.get("set-cookie"), null);
+    // A spoofed Host header cannot steer where the redirect goes.
+    const spoofed = await login(new Request("https://evil.example/api/triage/auth/login", { headers: { host: "evil.example" } }));
+    assert.equal(new URL(spoofed.headers.get("location")!).origin, "https://ci.vllm.ai");
+  });
+  await withEnv({ ...configured, TRIAGE_CANONICAL_ORIGIN: "https://staging.example.org" }, async () => {
+    const response = await login(new Request("https://staging.example.org/api/triage/auth/login"));
+    const location = new URL(response.headers.get("location")!);
+    assert.equal(location.searchParams.get("redirect_uri"), "https://staging.example.org/api/triage/auth/callback");
+  });
+});
+
+test("the OAuth callback only completes on the canonical origin", async () => {
+  await withEnv({ ...ENABLED, GITHUB_OAUTH_CLIENT_ID: "cid", GITHUB_OAUTH_CLIENT_SECRET: "cs" }, async () => {
+    const response = await callback(new Request("https://vllm-ci-dashboard.vercel.app/api/triage/auth/callback?code=x&state=y"));
+    assert.equal(response.status, 400);
   });
 });
 

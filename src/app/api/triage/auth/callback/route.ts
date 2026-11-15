@@ -13,6 +13,7 @@ import {
 } from "@/lib/triage-auth";
 import {
   callbackUrl,
+  isCanonicalRequest,
   exchangeCode,
   fetchLogin,
   isTriageMaintainer,
@@ -36,6 +37,7 @@ export async function GET(request: Request) {
   const secret = sessionSecret();
   if (!config || !secret) return triageError("GitHub sign-in is not configured on this dashboard.", 503);
 
+  if (!isCanonicalRequest(request.url)) return triageError("Sign-in only completes on the canonical dashboard origin.", 400);
   const params = new URL(request.url).searchParams;
   const stored = decodeOAuthStateCookie(readCookie(request.headers.get("cookie"), OAUTH_STATE_COOKIE));
   if (!stored || !statesMatch(stored.state, params.get("state"))) {
@@ -45,7 +47,7 @@ export async function GET(request: Request) {
   if (!code) return redirectWithError(request, "denied");
 
   try {
-    const token = await exchangeCode(code, callbackUrl(request.url), config);
+    const token = await exchangeCode(code, callbackUrl(), config);
     if (!token) return redirectWithError(request, "exchange");
     const login = await fetchLogin(token);
     if (!login) return redirectWithError(request, "exchange");

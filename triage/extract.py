@@ -24,6 +24,23 @@ from triage.facets import FACETS_SCHEMA, PROMPT_VERSION, FacetsError, normalize_
 
 SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "assets" / "extractor-system.md"
 DEFAULT_MODEL = "sonnet"
+# The only environment Claude Code gets: enough to find its login and run.
+# Everything else (DATABASE_URL, cloud credentials, a parent Claude Code
+# session's CLAUDE_CODE_* control variables, ANTHROPIC_API_KEY) stays out of
+# the process that reads untrusted text.
+_ENV_ALLOWLIST = (
+    "PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ", "TMPDIR",
+    "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN",
+)
+
+
+def claude_env(source: dict[str, str] | None = None) -> dict[str, str]:
+    source = dict(os.environ if source is None else source)
+    env = {k: v for k, v in source.items() if k in _ENV_ALLOWLIST}
+    env["DISABLE_AUTOUPDATER"] = "1"
+    return env
+
+
 _USAGE_LIMIT_MARKERS = ("usage limit", "rate limit", "rate_limit", "quota", "limit reached", "429")
 
 
@@ -101,7 +118,8 @@ class ClaudeCodeBackend:
     Authentication is whatever the local Claude Code login provides (a
     Pro/Max plan login or a `CLAUDE_CODE_OAUTH_TOKEN` from
     `claude setup-token`). ANTHROPIC_API_KEY is removed from the child
-    environment so usage always lands on the plan, never on an API bill.
+    environment (see claude_env: an allowlist) so usage always lands on the
+    plan, and no database or cloud credentials reach the process.
     """
 
     def __init__(
@@ -116,7 +134,7 @@ class ClaudeCodeBackend:
         self._timeout = timeout_seconds
 
     def complete(self, *, system: str, prompt: str, schema: dict[str, Any]) -> LLMResult:
-        env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+        env = claude_env()
         command = [
             self._binary, "-p",
             "--model", self.model,
