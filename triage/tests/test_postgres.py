@@ -405,3 +405,19 @@ def test_relevance_end_to_end(store: PostgresTriageStore, database_url: str) -> 
     with psycopg.connect(database_url) as c:
         rows = c.execute("SELECT maintainer, role, reason->'matched', reason->>'why' FROM triage_assignments").fetchall()
     assert rows == [("gau-nernst", "primary", ["relevance:high (like #61343)"], "his PR")]
+
+
+def test_a_burst_of_drops_is_flagged_in_the_team_digest(store: PostgresTriageStore, database_url: str) -> None:
+    for n in range(3):
+        ingest(store, issue(900 + n, f"item {n}"))
+    with psycopg.connect(database_url, autocommit=True) as c:
+        for n in range(3):
+            c.execute("INSERT INTO triage_actions (item_key, actor, action, source, created_at) "
+                      "VALUES (%s, 'mallory', %s, 'dashboard', %s)",
+                      (f"vllm-project/vllm#{900 + n}", "drop" if n else "slop", NOW - timedelta(hours=1)))
+    assert store.suppression_since(NOW - timedelta(days=1), threshold=3) == [("mallory", 2, 1)]
+    assert store.suppression_since(NOW - timedelta(days=1), threshold=4) == []
+    DigestHandler(store=store, clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW,
+                  team_channel="C1", suppression_threshold=3)(ScheduledCommand("triage_digest", NOW))
+    [(_, mode, _, payload)] = outbox(database_url)
+    assert mode == "shadow" and "mallory: 2 dropped, 1 slop" in json.dumps(payload)

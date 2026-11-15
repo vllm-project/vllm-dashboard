@@ -105,6 +105,8 @@ test("sign-in is 503 until the OAuth app is configured", async () => {
     const location = new URL(response.headers.get("location")!);
     assert.equal(location.host, "github.com");
     assert.equal(location.searchParams.get("redirect_uri"), "https://ci.vllm.ai/api/triage/auth/callback");
+    assert.equal(location.searchParams.get("code_challenge_method"), "S256");
+    assert.match(location.searchParams.get("code_challenge") ?? "", /^[A-Za-z0-9_-]{43}$/);
     assert.match(response.headers.get("set-cookie") ?? "", /triage_oauth=.*HttpOnly/i);
   });
 });

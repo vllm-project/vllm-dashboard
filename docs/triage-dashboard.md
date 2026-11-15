@@ -111,6 +111,7 @@ rules:
 | `TRIAGE_SESSION_SECRET` | yes | At least 32 random characters; signs session cookies. Rotating it signs everyone out. Generate with `openssl rand -base64 48`. |
 | `TRIAGE_MAINTAINER_TEAM` | one of these two | `org/team-slug`, e.g. `vllm-project/committers`. |
 | `TRIAGE_ALLOWED_LOGINS` | one of these two | Comma-separated GitHub logins allowed regardless of team. |
+| `TRIAGE_SUPPRESSION_ALERT` | no | Drop+slop actions per person per 24h that raise the warning (default 10). Also read by the worker. |
 | `TRIAGE_CANONICAL_ORIGIN` | no | The only origin sign-in runs on (default `https://ci.vllm.ai`). The OAuth callback is `<origin>/api/triage/auth/callback`; it is never derived from the request. |
 | `TRIAGE_DEV_LOGIN` | local only | Signs every request in as this login. Ignored when `NODE_ENV=production`. |
 
@@ -144,7 +145,9 @@ DATABASE_URL=postgres://... npm run dev
   alias), "Sign in" first redirects there; the callback refuses other
   hostnames. The redirect target is configuration, not the `Host` header.
 - **Short sessions.** A session is a signed `{login, exp}` cookie valid for
-  12 hours (`HttpOnly`, `Secure`, `SameSite=Lax`). Team membership is checked
+  12 hours (`HttpOnly`, `Secure`, `SameSite=Lax`), named
+  `__Host-triage_session` in production so no other `*.vllm.ai` host can set
+  or overwrite it. Team membership is checked
   only at sign-in because the GitHub token is not kept, so the session length
   is how long a removed maintainer keeps access. Rotating
   `TRIAGE_SESSION_SECRET` signs everyone out immediately.
@@ -153,6 +156,13 @@ DATABASE_URL=postgres://... npm run dev
   environment only. Preview deployments build code from pull requests; a
   preview that can read the session secret could mint a valid session cookie
   for ci.vllm.ai.
+- **PKCE (S256).** Each sign-in also carries a one-time code verifier, kept
+  in the HttpOnly state cookie; GitHub only issues a token for a code
+  together with that verifier, so an intercepted code is useless.
+- **Suppression warning.** "Drop" and "slop" stop an item from ever being
+  routed again. If one person does that to `TRIAGE_SUPPRESSION_ALERT` (default
+  10) or more items in 24 hours, the queue shows a red warning and the daily
+  team digest leads with it. Every action records who did it.
 - **Writes** need a session and a same-origin `Origin` header (CSRF); all
   triage responses are `Cache-Control: private, no-store`.
 - **Untrusted text** (GitHub titles and bodies, LLM summaries) is rendered as

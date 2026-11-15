@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 /**
  * Access control for the maintainers-only Triage tab.
@@ -9,8 +9,27 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
  * - `TRIAGE_DEV_LOGIN` signs everyone in as that login, outside production only.
  */
 
-export const SESSION_COOKIE = "triage_session";
-export const OAUTH_STATE_COOKIE = "triage_oauth";
+/**
+ * Cookie names. In production they carry the `__Host-` prefix: browsers only
+ * accept such a cookie if it is Secure, Path=/ and has no Domain, so no other
+ * *.vllm.ai host can plant or overwrite it ("cookie tossing"). The prefix
+ * needs HTTPS, so local http dev uses the plain names.
+ */
+export function sessionCookieName(env: Env = process.env): string {
+  return env.NODE_ENV === "production" ? "__Host-triage_session" : "triage_session";
+}
+export function oauthStateCookieName(env: Env = process.env): string {
+  return env.NODE_ENV === "production" ? "__Host-triage_oauth" : "triage_oauth";
+}
+/**
+ * Pre-`__Host-` names still to clear on sign-in and sign-out. Outside
+ * production the current names are the same, so there is nothing to clear
+ * (clearing them would delete the cookie just set).
+ */
+export function legacyCookiesToClear(env: Env = process.env): string[] {
+  const current = new Set([sessionCookieName(env), oauthStateCookieName(env)]);
+  return ["triage_session", "triage_oauth"].filter((name) => !current.has(name));
+}
 // Membership is checked only at sign-in (the GitHub token is not kept), so
 // the session length bounds how long someone removed from the team keeps access.
 export const SESSION_TTL_SECONDS = 12 * 60 * 60;
@@ -166,21 +185,31 @@ export function newOAuthState(): string {
   return randomBytes(24).toString("base64url");
 }
 
-export function encodeOAuthStateCookie(state: string, next: string): string {
-  return base64url(JSON.stringify({ state, next }));
+/** PKCE (RFC 7636): a per-login secret the browser never sends to GitHub. */
+export function newPkceVerifier(): string {
+  return randomBytes(32).toString("base64url"); // 43 characters
+}
+export function pkceChallenge(verifier: string): string {
+  return createHash("sha256").update(verifier).digest("base64url");
+}
+
+export function encodeOAuthStateCookie(state: string, next: string, verifier: string): string {
+  return base64url(JSON.stringify({ state, next, verifier }));
 }
 
 export function decodeOAuthStateCookie(
   value: string | undefined,
-): { state: string; next: string } | null {
+): { state: string; next: string; verifier: string } | null {
   if (!value) return null;
   try {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as {
       state?: unknown;
       next?: unknown;
+      verifier?: unknown;
     };
     if (typeof parsed.state !== "string" || typeof parsed.next !== "string") return null;
-    return { state: parsed.state, next: safeNextPath(parsed.next) };
+    if (typeof parsed.verifier !== "string" || !/^[A-Za-z0-9_-]{43,128}$/.test(parsed.verifier)) return null;
+    return { state: parsed.state, next: safeNextPath(parsed.next), verifier: parsed.verifier };
   } catch {
     return null;
   }

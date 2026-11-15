@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import {
-  SESSION_COOKIE,
+  sessionCookieName,
   loginFromSessionCookie,
   triageEnabled,
 } from "@/lib/triage-auth";
@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 export default async function TriageLayout({ children }: { children: React.ReactNode }) {
   if (!triageEnabled()) notFound();
   const cookieStore = await cookies();
-  const login = loginFromSessionCookie(cookieStore.get(SESSION_COOKIE)?.value);
+  const login = loginFromSessionCookie(cookieStore.get(sessionCookieName())?.value);
   if (!login) {
     return (
       <Suspense fallback={null}>

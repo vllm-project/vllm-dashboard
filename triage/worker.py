@@ -65,6 +65,7 @@ def build_runtime(consumer: str) -> tuple[AlertingRuntime, ScheduledCommand]:
         handler = DigestHandler(  # type: ignore[assignment]
             store=store, clock=clock, delivery_mode=mode,
             team_channel=os.environ.get("TRIAGE_DIGEST_CHANNEL"),
+            suppression_threshold=int(os.environ.get("TRIAGE_SUPPRESSION_ALERT", "10")),
         )
     runtime = AlertingRuntime(
         executions=store, outbox=store, slack=_slack(), clock=clock,

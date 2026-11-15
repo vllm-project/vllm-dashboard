@@ -458,6 +458,17 @@ class PostgresTriageStore(PostgresAlertStore):
             ).fetchall()
         return [(DigestEntry(0, r[0], r[1], r[2], r[3], r[4], r[5], []), list(r[6])) for r in rows]
 
+    def suppression_since(self, since: datetime, *, threshold: int) -> list[tuple[str, int, int]]:
+        """(actor, drops, slops) for people who hid >= threshold items since `since`."""
+        with self._connection_factory() as c:
+            rows = c.execute(
+                """SELECT actor, count(*) FILTER (WHERE action = 'drop'), count(*) FILTER (WHERE action = 'slop')
+                   FROM triage_actions WHERE action IN ('drop', 'slop') AND created_at > %s
+                   GROUP BY actor HAVING count(*) >= %s ORDER BY count(*) DESC""",
+                (since, threshold),
+            ).fetchall()
+        return [(r[0], int(r[1]), int(r[2])) for r in rows]
+
     def commit_digest(
         self, notification: NotificationIntent, assignment_ids: list[int], *, now: datetime
     ) -> None:

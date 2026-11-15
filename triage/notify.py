@@ -103,9 +103,14 @@ def maintainer_digest(
 
 
 def team_digest(
-    *, channel: str, entries: list[tuple[DigestEntry, list[str]]], day: datetime, mode: DeliveryMode
+    *, channel: str, entries: list[tuple[DigestEntry, list[str]]], day: datetime, mode: DeliveryMode,
+    suppression: list[tuple[str, int, int]] | None = None,
 ) -> NotificationIntent:
     lines = [_item_line(e, owners) for e, owners in entries[:30]] or ["Nothing above the routing threshold today."]
+    if suppression:
+        who = "; ".join(f"{safe_slack_mrkdwn(a)}: {d} dropped, {s} slop" for a, d, s in suppression)
+        lines.insert(0, f":warning: *Unusual number of items hidden in the last 24h* ({who}). "
+                        f"Dropped and slop items are never routed again; check <{DASHBOARD}|the queue>.")
     return NotificationIntent(
         delivery_id=f"triage:team-digest:{day.date().isoformat()}",
         alert_ref="team-digest",

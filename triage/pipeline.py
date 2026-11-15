@@ -244,6 +244,7 @@ class DigestHandler:
     clock: Clock
     delivery_mode: DeliveryMode
     team_channel: str | None
+    suppression_threshold: int = 10
 
     def __call__(self, command: ScheduledCommand) -> None:
         now = self.clock.now()
@@ -261,10 +262,14 @@ class DigestHandler:
                 [e.assignment_id for e in entries],
                 now=now,
             )
+        suppression = self.store.suppression_since(now - timedelta(days=1), threshold=self.suppression_threshold)
+        for actor, drops, slops in suppression:
+            log.warning("triage: %s hid %d items in 24h (%d dropped, %d slop)", actor, drops + slops, drops, slops)
         if self.team_channel:
             top = self.store.top_new_items(since=now - timedelta(days=1), limit=30)
             self.store.commit_digest(
-                team_digest(channel=self.team_channel, entries=top, day=now, mode=self.delivery_mode),
+                team_digest(channel=self.team_channel, entries=top, day=now, mode=self.delivery_mode,
+                            suppression=suppression),
                 [],
                 now=now,
             )

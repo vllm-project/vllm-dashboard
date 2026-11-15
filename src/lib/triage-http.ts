@@ -3,7 +3,7 @@ import {
   isSameOrigin,
   loginFromSessionCookie,
   readCookie,
-  SESSION_COOKIE,
+  sessionCookieName,
   triageEnabled,
 } from "@/lib/triage-auth";
 import { hasPostgresErrorCode } from "@/lib/postgres-errors";
@@ -28,7 +28,7 @@ export function guardTriageRequest(
 ): { login: string } | NextResponse {
   if (!triageEnabled()) return triageError("Not found", 404);
   const login = loginFromSessionCookie(
-    readCookie(request.headers.get("cookie"), SESSION_COOKIE),
+    readCookie(request.headers.get("cookie"), sessionCookieName()),
   );
   if (!login) return triageError("Sign in with GitHub to use triage.", 401);
   if (mutating && !isSameOrigin(request)) {

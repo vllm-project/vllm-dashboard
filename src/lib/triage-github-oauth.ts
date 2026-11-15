@@ -12,12 +12,14 @@ export function oauthConfig(env: Env = process.env): { clientId: string; clientS
   return clientId && clientSecret ? { clientId, clientSecret } : null;
 }
 
-export function authorizeUrl(clientId: string, redirectUri: string, state: string): string {
+export function authorizeUrl(clientId: string, redirectUri: string, state: string, codeChallenge: string): string {
   const url = new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id", clientId);
   url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set("scope", "read:org");
   url.searchParams.set("state", state);
+  url.searchParams.set("code_challenge", codeChallenge);
+  url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("allow_signup", "false");
   return url.toString();
 }
@@ -51,6 +53,7 @@ export async function exchangeCode(
   code: string,
   redirectUri: string,
   config: { clientId: string; clientSecret: string },
+  codeVerifier: string,
   fetchImpl: Fetch = fetch,
 ): Promise<string | null> {
   const response = await fetchImpl("https://github.com/login/oauth/access_token", {
@@ -61,6 +64,7 @@ export async function exchangeCode(
       client_secret: config.clientSecret,
       code,
       redirect_uri: redirectUri,
+      code_verifier: codeVerifier,
     }),
     cache: "no-store",
   });
