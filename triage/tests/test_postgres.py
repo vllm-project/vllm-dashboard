@@ -28,7 +28,9 @@ pgserver = pytest.importorskip("pgserver")
 psycopg = pytest.importorskip("psycopg")
 
 MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations" / "sql"
-NOW = datetime(2026, 11, 12, 12, 0, tzinfo=timezone.utc)
+# Fixed and in the future: rows also get Postgres now() timestamps (e.g.
+# triage_items.updated_at), and the test clock must stay after those.
+NOW = datetime(2035, 1, 15, 12, 0, tzinfo=timezone.utc)
 
 
 class FixedClock:
@@ -238,7 +240,8 @@ def test_digest_marks_notified_and_is_idempotent_per_day(store: PostgresTriageSt
     digest(ScheduledCommand("triage_digest", NOW))
     digest(ScheduledCommand("triage_digest", NOW + timedelta(minutes=1)))
     ids = [d for d, *_ in outbox(database_url)]
-    assert ids == ["triage:digest:d:2026-11-12", "triage:team-digest:2026-11-12"]
+    day = NOW.date().isoformat()
+    assert ids == [f"triage:digest:d:{day}", f"triage:team-digest:{day}"]
     assert store.unnotified_assignments("d") == []
 
 

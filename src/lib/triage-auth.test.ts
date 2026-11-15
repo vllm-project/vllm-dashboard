@@ -13,6 +13,7 @@ import {
   signSession,
   statesMatch,
   verifySession,
+  newSession,
 } from "./triage-auth";
 
 const SECRET = "x".repeat(40);
@@ -119,4 +120,9 @@ test("allowlist and team settings parse", () => {
     team: "committers",
   });
   assert.equal(maintainerTeam({ TRIAGE_MAINTAINER_TEAM: "nope" }), null);
+});
+
+test("sessions last 12 hours", () => {
+  const session = newSession("alice", 1000);
+  assert.equal(session.exp - 1000, 12 * 60 * 60);
 });

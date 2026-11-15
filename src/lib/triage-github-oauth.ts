@@ -22,8 +22,29 @@ export function authorizeUrl(clientId: string, redirectUri: string, state: strin
   return url.toString();
 }
 
-export function callbackUrl(requestUrl: string, env: Env = process.env): string {
-  return env.TRIAGE_OAUTH_REDIRECT_URI || new URL("/api/triage/auth/callback", requestUrl).toString();
+/**
+ * The one origin sign-in runs on. It comes from configuration, never from the
+ * request: the Host header is attacker-influenced, and the OAuth app only
+ * accepts one redirect URI anyway. Other hostnames serving this deployment
+ * (e.g. the *.vercel.app alias) are sent here before sign-in starts.
+ */
+export const DEFAULT_CANONICAL_ORIGIN = "https://ci.vllm.ai";
+
+export function canonicalOrigin(env: Env = process.env): string {
+  const raw = env.TRIAGE_CANONICAL_ORIGIN?.trim() || DEFAULT_CANONICAL_ORIGIN;
+  const url = new URL(raw);
+  if (url.protocol !== "https:" && url.hostname !== "localhost") {
+    throw new Error("TRIAGE_CANONICAL_ORIGIN must be an https origin");
+  }
+  return url.origin;
+}
+
+export function isCanonicalRequest(requestUrl: string, env: Env = process.env): boolean {
+  return new URL(requestUrl).origin === canonicalOrigin(env);
+}
+
+export function callbackUrl(env: Env = process.env): string {
+  return `${canonicalOrigin(env)}/api/triage/auth/callback`;
 }
 
 export async function exchangeCode(

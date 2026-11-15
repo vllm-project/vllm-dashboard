@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { authorizeUrl, isTriageMaintainer } from "./triage-github-oauth";
+import { authorizeUrl, callbackUrl, canonicalOrigin, isTriageMaintainer } from "./triage-github-oauth";
 
 function fakeFetch(status: number, body: unknown, calls: string[] = []) {
   return (async (url: string | URL | Request) => {
@@ -36,4 +36,10 @@ test("team membership must be active", async () => {
 
 test("with neither allowlist nor team, nobody is a maintainer", async () => {
   assert.equal(await isTriageMaintainer("bob", "t", {}, fakeFetch(200, { state: "active" })), false);
+});
+
+test("the callback URL comes from configuration, never the request", () => {
+  assert.equal(callbackUrl({}), "https://ci.vllm.ai/api/triage/auth/callback");
+  assert.equal(canonicalOrigin({ TRIAGE_CANONICAL_ORIGIN: "https://ci.vllm.ai/some/path" }), "https://ci.vllm.ai");
+  assert.throws(() => canonicalOrigin({ TRIAGE_CANONICAL_ORIGIN: "http://ci.vllm.ai" }));
 });

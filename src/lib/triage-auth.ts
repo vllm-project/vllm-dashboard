@@ -11,7 +11,9 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 export const SESSION_COOKIE = "triage_session";
 export const OAUTH_STATE_COOKIE = "triage_oauth";
-export const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
+// Membership is checked only at sign-in (the GitHub token is not kept), so
+// the session length bounds how long someone removed from the team keeps access.
+export const SESSION_TTL_SECONDS = 12 * 60 * 60;
 export const OAUTH_STATE_TTL_SECONDS = 10 * 60;
 const MIN_SECRET_LENGTH = 32;
 const LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
