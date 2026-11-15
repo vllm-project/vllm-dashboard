@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import {
-  OAUTH_STATE_COOKIE,
+  legacyCookiesToClear,
   OAUTH_STATE_TTL_SECONDS,
   encodeOAuthStateCookie,
   newOAuthState,
+  newPkceVerifier,
+  oauthStateCookieName,
+  pkceChallenge,
   safeNextPath,
   sessionCookieOptions,
   sessionSecret,
@@ -29,14 +32,16 @@ export async function GET(request: Request) {
     return NextResponse.redirect(target, { status: 302, headers: { "Cache-Control": "no-store" } });
   }
   const state = newOAuthState();
+  const verifier = newPkceVerifier();
   const response = NextResponse.redirect(
-    authorizeUrl(config.clientId, callbackUrl(), state),
+    authorizeUrl(config.clientId, callbackUrl(), state, pkceChallenge(verifier)),
     { status: 302, headers: { "Cache-Control": "no-store" } },
   );
   response.cookies.set(
-    OAUTH_STATE_COOKIE,
-    encodeOAuthStateCookie(state, next),
+    oauthStateCookieName(),
+    encodeOAuthStateCookie(state, next, verifier),
     sessionCookieOptions(process.env, OAUTH_STATE_TTL_SECONDS),
   );
+  for (const legacy of legacyCookiesToClear()) response.cookies.set(legacy, "", { path: "/", maxAge: 0 });
   return response;
 }

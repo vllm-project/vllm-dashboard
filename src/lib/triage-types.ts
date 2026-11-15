@@ -207,4 +207,10 @@ export interface TriageStats {
   pageUnacked: number;
   assignedLast7d: number;
   notMineLast7d: number;
+  /**
+   * People who dropped or marked slop at least `threshold` items in the last
+   * 24 hours. Both actions stop an item from ever being routed again, so a
+   * burst can hide real problems (a compromised or careless account).
+   */
+  suppression: { threshold: number; actors: { actor: string; drops: number; slops: number }[] };
 }

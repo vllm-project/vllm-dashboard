@@ -14,6 +14,12 @@ import {
   statesMatch,
   verifySession,
   newSession,
+  newPkceVerifier,
+  oauthStateCookieName,
+  pkceChallenge,
+  sessionCookieName,
+  sessionCookieOptions,
+  legacyCookiesToClear,
 } from "./triage-auth";
 
 const SECRET = "x".repeat(40);
@@ -105,9 +111,12 @@ test("post-sign-in redirects stay under /triage", () => {
 });
 
 test("OAuth state round-trips and compares in constant time", () => {
-  const cookie = encodeOAuthStateCookie("abc", "/triage/rules");
-  assert.deepEqual(decodeOAuthStateCookie(cookie), { state: "abc", next: "/triage/rules" });
+  const verifier = newPkceVerifier();
+  const cookie = encodeOAuthStateCookie("abc", "/triage/rules", verifier);
+  assert.deepEqual(decodeOAuthStateCookie(cookie), { state: "abc", next: "/triage/rules", verifier });
   assert.equal(decodeOAuthStateCookie("garbage"), null);
+  // A state cookie without a usable PKCE verifier is rejected.
+  assert.equal(decodeOAuthStateCookie(encodeOAuthStateCookie("abc", "/triage", "short")), null);
   assert.equal(statesMatch("abc", "abc"), true);
   assert.equal(statesMatch("abc", "abd"), false);
   assert.equal(statesMatch("abc", null), false);
@@ -125,4 +134,25 @@ test("allowlist and team settings parse", () => {
 test("sessions last 12 hours", () => {
   const session = newSession("alice", 1000);
   assert.equal(session.exp - 1000, 12 * 60 * 60);
+});
+
+test("PKCE S256 challenge matches RFC 7636 appendix B", () => {
+  assert.equal(
+    pkceChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+    "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+  );
+  assert.match(newPkceVerifier(), /^[A-Za-z0-9_-]{43}$/);
+});
+
+test("production cookies use the __Host- prefix", () => {
+  assert.equal(sessionCookieName({ NODE_ENV: "production" }), "__Host-triage_session");
+  assert.equal(oauthStateCookieName({ NODE_ENV: "production" }), "__Host-triage_oauth");
+  assert.equal(sessionCookieName({ NODE_ENV: "development" }), "triage_session");
+  // __Host- requires Secure, Path=/ and no Domain.
+  const options = sessionCookieOptions({ NODE_ENV: "production" });
+  assert.equal(options.secure, true);
+  assert.equal(options.path, "/");
+  assert.equal("domain" in options, false);
+  assert.deepEqual(legacyCookiesToClear({ NODE_ENV: "production" }), ["triage_session", "triage_oauth"]);
+  assert.deepEqual(legacyCookiesToClear({ NODE_ENV: "development" }), []);
 });

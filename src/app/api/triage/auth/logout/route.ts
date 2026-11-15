@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import {
-  SESSION_COOKIE,
+  legacyCookiesToClear,
+  sessionCookieName,
   isSameOrigin,
   sessionCookieOptions,
   triageEnabled,
@@ -16,6 +17,7 @@ export async function POST(request: Request) {
     status: 303,
     headers: { "Cache-Control": "no-store" },
   });
-  response.cookies.set(SESSION_COOKIE, "", sessionCookieOptions(process.env, 0));
+  response.cookies.set(sessionCookieName(), "", sessionCookieOptions(process.env, 0));
+  for (const legacy of legacyCookiesToClear()) response.cookies.set(legacy, "", { path: "/", maxAge: 0 });
   return response;
 }

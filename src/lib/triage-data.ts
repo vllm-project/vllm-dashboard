@@ -528,9 +528,16 @@ export async function previewRules(
   return { scanned: rows.length, matches };
 }
 
+/** Drop/slop actions per person per 24h that raise the suppression warning. */
+export function suppressionThreshold(env: Record<string, string | undefined> = process.env): number {
+  const value = Number(env.TRIAGE_SUPPRESSION_ALERT);
+  return Number.isInteger(value) && value > 0 ? value : 10;
+}
+
 export async function getStats(): Promise<TriageStats> {
   const db = getDb();
-  const [[row], bands] = await Promise.all([
+  const threshold = suppressionThreshold();
+  const [[row], bands, suppressors] = await Promise.all([
     db<
       {
         ingested_24h: string;
@@ -577,6 +584,16 @@ export async function getStats(): Promise<TriageStats> {
       WHERE i.in_scope AND i.state = 'open'
       GROUP BY s.band
     `,
+    db<{ actor: string; drops: string; slops: string }[]>`
+      SELECT actor,
+             count(*) FILTER (WHERE action = 'drop') AS drops,
+             count(*) FILTER (WHERE action = 'slop') AS slops
+      FROM triage_actions
+      WHERE action IN ('drop', 'slop') AND created_at > now() - interval '24 hours'
+      GROUP BY actor
+      HAVING count(*) >= ${threshold}
+      ORDER BY count(*) DESC
+    `,
   ]);
   const bandCounts: TriageStats["bandCounts"] = { page: 0, route: 0, watch: 0, ignore: 0, unscored: 0 };
   for (const { band, n } of bands) {
@@ -594,6 +611,10 @@ export async function getStats(): Promise<TriageStats> {
     pageUnacked: Number(row.page_unacked),
     assignedLast7d: Number(row.assigned_7d),
     notMineLast7d: Number(row.not_mine_7d),
+    suppression: {
+      threshold,
+      actors: suppressors.map((r) => ({ actor: r.actor, drops: Number(r.drops), slops: Number(r.slops) })),
+    },
   };
 }
 

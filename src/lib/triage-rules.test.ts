@@ -271,3 +271,11 @@ test("rules file paths and GitHub links", () => {
   assert.equal(url.searchParams.get("filename"), "gau-nernst.yaml");
   assert.equal(url.searchParams.get("value"), content);
 });
+
+test("suppression warning threshold defaults to 10 and ignores junk", async () => {
+  const { suppressionThreshold } = await import("./triage-data");
+  assert.equal(suppressionThreshold({}), 10);
+  assert.equal(suppressionThreshold({ TRIAGE_SUPPRESSION_ALERT: "3" }), 3);
+  assert.equal(suppressionThreshold({ TRIAGE_SUPPRESSION_ALERT: "-1" }), 10);
+  assert.equal(suppressionThreshold({ TRIAGE_SUPPRESSION_ALERT: "lots" }), 10);
+});

@@ -82,6 +82,30 @@ function BandMix({
   );
 }
 
+/** Shown when someone dropped/slopped an unusual number of items in 24h. */
+function SuppressionWarning({ stats }: { stats: TriageStats | undefined }) {
+  const actors = stats?.suppression?.actors ?? [];
+  if (actors.length === 0) return null;
+  return (
+    <div
+      role="alert"
+      className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-500/40 dark:bg-red-950/40 dark:text-red-200"
+    >
+      <p className="font-semibold">Unusual number of items hidden in the last 24 hours</p>
+      <p className="mt-1">
+        {actors.map((a, i) => (
+          <span key={a.actor}>
+            {i > 0 ? "; " : ""}
+            <span className="font-medium">{a.actor}</span>: {a.drops} dropped, {a.slops} marked slop
+          </span>
+        ))}
+        . Dropped and slop items are never routed again. If this wasn&apos;t expected, check the item history and reopen what
+        was hidden. Threshold: {stats?.suppression.threshold} per person per day.
+      </p>
+    </div>
+  );
+}
+
 function StatStrip({
   stats,
   onPickBand,
@@ -212,6 +236,7 @@ export default function QueueContent() {
 
   return (
     <div className="space-y-4">
+      <SuppressionWarning stats={stats} />
       <StatStrip
         stats={stats}
         onPickBand={(band) => update({ bands: [band], status: "any" })}
