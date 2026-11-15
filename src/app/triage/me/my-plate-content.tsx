@@ -3,7 +3,15 @@
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ActionButtons } from "@/components/triage/action-buttons";
-import { BandBadge, Chips, GithubLink, KindBadge } from "@/components/triage/badges";
+import {
+  Chips,
+  GithubLink,
+  KindIcon,
+  ScoreCell,
+  SeverityFlags,
+  TypeLabel,
+} from "@/components/triage/badges";
+import { bandStyle } from "@/lib/triage-style";
 import { ItemDrawer } from "@/components/triage/item-drawer";
 import { formatAge, triageFetcher } from "@/lib/triage-format";
 import type { TriageMyPlate } from "@/lib/triage-types";
@@ -28,23 +36,25 @@ function PlateCard({
 }) {
   const reasons = matchedReasons(entry);
   return (
-    <li className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
-        <BandBadge band={entry.band} score={entry.score} />
-        <KindBadge kind={entry.kind} draft={entry.draft} />
-        <span>#{entry.number}</span>
-        <span>{entry.assignment.role}</span>
-        <span>· {entry.assignment.status}</span>
-        <span>· assigned {formatAge(entry.assignment.assignedAt)} ago by {entry.assignment.assignedBy}</span>
+    <li className="relative overflow-hidden rounded-lg border border-zinc-200 bg-white p-4 pl-5 dark:border-zinc-800 dark:bg-zinc-950">
+      <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${bandStyle(entry.band).fill}`} />
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
+        <ScoreCell band={entry.band} score={entry.score} />
+        <KindIcon kind={entry.kind} draft={entry.draft} />
+        <span className="tabular-nums">#{entry.number}</span>
+        <TypeLabel type={entry.type} />
+        <SeverityFlags facets={{ severity: entry.severity ?? undefined, type: entry.type ?? undefined }} max={5} />
+        <span>{entry.assignment.role} · {entry.assignment.status} · assigned {formatAge(entry.assignment.assignedAt)} ago by {entry.assignment.assignedBy}</span>
       </div>
-      <p className="mt-1 font-medium leading-snug">
-        <GithubLink href={entry.htmlUrl}>{entry.title}</GithubLink>
+      <p className="mt-1.5 line-clamp-2 font-medium leading-snug">
+        <GithubLink href={entry.htmlUrl} title={entry.title}>{entry.title}</GithubLink>
       </p>
-      {entry.summary && <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{entry.summary}</p>}
+      {entry.summary && <p className="mt-1 line-clamp-2 text-sm text-zinc-600 dark:text-zinc-400" title={entry.summary}>{entry.summary}</p>}
       <div className="mt-2 flex flex-wrap gap-3 text-xs">
-        <Chips values={entry.areas} max={4} />
-        <Chips values={entry.models} max={3} />
-        <Chips values={entry.hardware} max={3} />
+        <Chips kind="area" values={entry.areas} max={4} />
+        <Chips kind="model" values={entry.models} max={3} />
+        <Chips kind="hardware" values={entry.hardware} max={3} />
+        <Chips kind="serving" values={entry.serving} max={3} />
       </div>
       {reasons.length > 0 && (
         <p className="mt-2 text-[11px] text-zinc-500">Routed to you because: {reasons.join(", ")}</p>

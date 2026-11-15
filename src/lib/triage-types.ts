@@ -98,6 +98,8 @@ export interface TriageQueueItem {
   models: string[];
   hardware: string[];
   serving: string[];
+  /** facets.severity, for the scan-for flags (serving broken, crash, …). */
+  severity: NonNullable<TriageFacets["severity"]> | null;
   assignments: TriageAssignmentSummary[];
 }
 
@@ -191,6 +193,14 @@ export interface TriageMaintainer {
 }
 
 export interface TriageStats {
+  /** In-scope open items by band ("unscored" = no score row yet). */
+  bandCounts: Record<"page" | "route" | "watch" | "ignore" | "unscored", number>;
+  /** In-scope open page/route items with no open or acked assignment. */
+  unowned: number;
+  /** The page-band subset of `unowned`. */
+  unownedPage: number;
+  /** Items first seen since 00:00 UTC today. */
+  newToday: number;
   ingestedLast24h: number;
   inScopeLast7d: number;
   extractedLast7d: number;

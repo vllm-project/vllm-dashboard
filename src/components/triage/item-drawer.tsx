@@ -1,7 +1,16 @@
 "use client";
 
 import useSWR from "swr";
-import { BandBadge, Chips, GithubLink, KindBadge } from "@/components/triage/badges";
+import {
+  Assignee,
+  Chips,
+  GithubLink,
+  KindBadge,
+  ScoreCell,
+  SeverityFlags,
+  TypeLabel,
+} from "@/components/triage/badges";
+import { bandStyle } from "@/lib/triage-style";
 import { ActionButtons } from "@/components/triage/action-buttons";
 import { formatAge, triageFetcher } from "@/lib/triage-format";
 import type { TriageItemDetail } from "@/lib/triage-types";
@@ -97,8 +106,15 @@ export function ItemDrawer({
 
         {data && (
           <>
+            <div className="relative mb-3 flex items-center gap-4 pl-3">
+              <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 rounded-full ${bandStyle(data.score?.band).fill}`} />
+              <ScoreCell band={data.score?.band ?? null} score={data.score?.score ?? null} />
+              <div className="flex flex-wrap items-center gap-2">
+                <TypeLabel type={facets.type ?? null} />
+                <SeverityFlags facets={facets} max={8} />
+              </div>
+            </div>
             <div className="flex flex-wrap items-center gap-3 pb-3 text-xs text-zinc-500">
-              <BandBadge band={data.score?.band ?? null} score={data.score?.score ?? null} />
               <KindBadge kind={data.item.kind} draft={data.item.draft} />
               <span>{data.item.state}</span>
               <span>by {data.item.author} ({data.item.authorAssociation.toLowerCase()})</span>
@@ -162,11 +178,11 @@ export function ItemDrawer({
               {data.extraction ? (
                 <dl>
                   <Row label="Type">{facets.type ?? "—"}</Row>
-                  <Row label="Models"><Chips values={(facets.models ?? []).map((m) => m?.name ?? "").filter(Boolean)} max={10} /></Row>
+                  <Row label="Models"><Chips kind="model" values={(facets.models ?? []).map((m) => m?.name ?? "").filter(Boolean)} max={10} /></Row>
                   <Row label="Model traits"><Chips values={facets.model_traits ?? []} max={10} /></Row>
-                  <Row label="Hardware"><Chips values={facets.hardware ?? []} max={10} /></Row>
-                  <Row label="Serving"><Chips values={facets.serving ?? []} max={20} /></Row>
-                  <Row label="Areas"><Chips values={facets.areas ?? []} max={10} /></Row>
+                  <Row label="Hardware"><Chips kind="hardware" values={facets.hardware ?? []} max={10} /></Row>
+                  <Row label="Serving"><Chips kind="serving" values={facets.serving ?? []} max={20} /></Row>
+                  <Row label="Areas"><Chips kind="area" values={facets.areas ?? []} max={10} /></Row>
                   <Row label="Serving broken">{yesNo(severity.serving_broken)}</Row>
                   <Row label="Crash / hang">{yesNo(severity.crash)} / {yesNo(severity.hang)}</Row>
                   <Row label="Wrong output">{yesNo(severity.wrong_output)}</Row>
@@ -177,7 +193,7 @@ export function ItemDrawer({
                   </Row>
                   <Row label="Repro">{yesNo(facets.has_repro)}</Row>
                   {facets.pr && <Row label="PR"><JsonBlock value={facets.pr} /></Row>}
-                  <Row label="Slop signals"><Chips values={facets.slop_signals ?? []} tone="muted" max={10} /></Row>
+                  <Row label="Slop signals"><Chips values={facets.slop_signals ?? []} max={10} /></Row>
                   <Row label="Confidence">{facets.confidence ?? "—"}</Row>
                   {facets.notes && <Row label="Notes">{facets.notes}</Row>}
                   <Row label="Model">{data.extraction.model} · {data.extraction.promptVersion} · {formatAge(data.extraction.createdAt)} ago</Row>
@@ -204,9 +220,9 @@ export function ItemDrawer({
                 <ul className="space-y-2 text-xs">
                   {data.assignments.map((assignment) => (
                     <li key={assignment.id}>
-                      <span className="font-medium">{assignment.maintainer}</span>{" "}
+                      <Assignee login={assignment.maintainer} status={assignment.status} role={assignment.role} />{" "}
                       <span className="text-zinc-500">
-                        {assignment.role} · {assignment.status} · by {assignment.assignedBy} {formatAge(assignment.assignedAt)} ago · score {assignment.scoreAtAssign}
+                        {assignment.role} · by {assignment.assignedBy} {formatAge(assignment.assignedAt)} ago · score {assignment.scoreAtAssign}
                       </span>
                       {Object.keys(assignment.reason).length > 0 && <JsonBlock value={assignment.reason} />}
                     </li>
