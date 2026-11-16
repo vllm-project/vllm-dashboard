@@ -171,6 +171,19 @@ export interface TriageItemDetail {
   } | null;
   assignments: TriageAssignment[];
   actions: TriageActionRecord[];
+  /** Claude's relevance judgement per maintainer, strongest first. */
+  relevance: TriageRelevance[];
+}
+
+export interface TriageRelevance {
+  maintainer: string;
+  relevance: "high" | "medium" | "low" | "none";
+  reason: string;
+  /** PRs from the maintainer's own profile that justify the judgement. */
+  evidence: { number: number; kind: string; title: string }[];
+  /** False when the item changed since it was judged (a re-judge is queued). */
+  current: boolean;
+  judgedAt: string;
 }
 
 export interface TriageMyPlate {

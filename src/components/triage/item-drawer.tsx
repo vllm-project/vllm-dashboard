@@ -9,11 +9,12 @@ import {
   ScoreCell,
   SeverityFlags,
   TypeLabel,
+  RelevanceBadge,
 } from "@/components/triage/badges";
 import { bandStyle } from "@/lib/triage-style";
 import { ActionButtons } from "@/components/triage/action-buttons";
 import { formatAge, triageFetcher } from "@/lib/triage-format";
-import type { TriageItemDetail } from "@/lib/triage-types";
+import type { TriageItemDetail, TriageRelevance } from "@/lib/triage-types";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -45,6 +46,69 @@ function JsonBlock({ value }: { value: unknown }) {
     <pre className="max-h-64 overflow-auto rounded-md bg-zinc-50 p-2 text-[11px] leading-4 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
       {JSON.stringify(value, null, 2)}
     </pre>
+  );
+}
+
+const REASON_LABELS: { test: RegExp; label: (m: RegExpMatchArray) => string }[] = [
+  { test: /^authored #(\d+)$/, label: (m) => `wrote #${m[1]}, which this item names` },
+  { test: /^commented$/, label: () => "already commented on this item" },
+  { test: /^relevance:(high|medium)/, label: (m) => `judged ${m[1]} from their recent work` },
+  { test: /^(area|hardware|model|path|keyword):(.+)$/, label: (m) => `their rule: ${m[1]} ${m[2]}` },
+];
+
+function describeReason(raw: string): string {
+  for (const { test, label } of REASON_LABELS) {
+    const match = raw.match(test);
+    if (match) return label(match);
+  }
+  return raw;
+}
+
+/** Why the router picked this person, in words, with linked evidence. */
+function WhyThisPerson({
+  reason,
+  judgement,
+}: {
+  reason: Record<string, unknown>;
+  judgement: TriageRelevance | undefined;
+}) {
+  const matched = Array.isArray(reason.matched) ? reason.matched.filter((m): m is string => typeof m === "string") : [];
+  const manual = typeof reason.manual === "string" ? `${reason.manual} by ${String(reason.by ?? "someone")}` : null;
+  const why = typeof reason.why === "string" && reason.why ? reason.why : judgement?.reason;
+  const load = typeof reason.load === "number" && typeof reason.capacity === "number"
+    ? `${reason.load} of ${reason.capacity} this week when assigned`
+    : null;
+  return (
+    <div className="rounded-md border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-900/60">
+      <p className="font-medium text-zinc-700 dark:text-zinc-200">
+        Why: {manual ?? (matched.length ? matched.map(describeReason).join("; ") : "not recorded")}
+      </p>
+      {why && <p className="mt-1 text-zinc-600 dark:text-zinc-300">{why}</p>}
+      {judgement && <EvidenceList evidence={judgement.evidence} />}
+      {load && <p className="mt-1 text-[11px] text-zinc-500">{load}</p>}
+    </div>
+  );
+}
+
+/** Evidence PRs, as links to GitHub with their titles. */
+function EvidenceList({ evidence }: { evidence: TriageRelevance["evidence"] }) {
+  if (evidence.length === 0) return null;
+  return (
+    <ul className="mt-1 space-y-0.5">
+      {evidence.map((pr) => (
+        <li key={pr.number} className="text-zinc-600 dark:text-zinc-300">
+          <a
+            href={`https://github.com/vllm-project/vllm/pull/${pr.number}`}
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-sky-700 hover:underline dark:text-sky-400"
+          >
+            #{pr.number}
+          </a>{" "}
+          <span className="text-zinc-400">{pr.kind}</span> {pr.title}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -213,23 +277,51 @@ export function ItemDrawer({
               )}
             </Section>
 
-            <Section title="Assignments">
+            <Section title="Owners">
               {data.assignments.length === 0 ? (
                 <p className="text-xs text-zinc-500">Not routed.</p>
               ) : (
-                <ul className="space-y-2 text-xs">
+                <ul className="space-y-3 text-xs">
                   {data.assignments.map((assignment) => (
-                    <li key={assignment.id}>
-                      <Assignee login={assignment.maintainer} status={assignment.status} role={assignment.role} />{" "}
-                      <span className="text-zinc-500">
-                        {assignment.role} · by {assignment.assignedBy} {formatAge(assignment.assignedAt)} ago · score {assignment.scoreAtAssign}
-                      </span>
-                      {Object.keys(assignment.reason).length > 0 && <JsonBlock value={assignment.reason} />}
+                    <li key={assignment.id} className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Assignee login={assignment.maintainer} status={assignment.status} role={assignment.role} />
+                        <span className="text-zinc-500">
+                          {assignment.role === "primary" ? "primary owner" : "backup"} · assigned by{" "}
+                          {assignment.assignedBy} {formatAge(assignment.assignedAt)} ago at score {assignment.scoreAtAssign}
+                        </span>
+                      </div>
+                      <WhyThisPerson
+                        reason={assignment.reason}
+                        judgement={data.relevance.find((r) => r.maintainer === assignment.maintainer)}
+                      />
                     </li>
                   ))}
                 </ul>
               )}
             </Section>
+
+            {data.relevance.length > 0 && (
+              <Section title="Who it's for">
+                <p className="mb-2 text-xs text-zinc-500">
+                  Claude&apos;s judgement for every maintainer, from their last 6 months of PRs and their notes. Only
+                  high and medium are ever routed.
+                </p>
+                <ul className="space-y-2 text-xs">
+                  {data.relevance.map((r) => (
+                    <li key={r.maintainer} className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <RelevanceBadge level={r.relevance} />
+                        <span className="font-medium text-zinc-800 dark:text-zinc-200">{r.maintainer}</span>
+                        {!r.current && <span className="text-[10px] text-amber-600">item changed since; re-judging</span>}
+                      </div>
+                      {r.reason && <p className="text-zinc-600 dark:text-zinc-300">{r.reason}</p>}
+                      <EvidenceList evidence={r.evidence} />
+                    </li>
+                  ))}
+                </ul>
+              </Section>
+            )}
 
             <Section title="History">
               {data.actions.length === 0 ? (

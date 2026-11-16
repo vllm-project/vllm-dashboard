@@ -52,6 +52,11 @@ class Candidate:
         return (-int(authored), -int(commented), -level, -len(self.matched))
 
     @property
+    def strong(self) -> bool:
+        """A clear match: already involved, or judged high."""
+        return bool(self.involvement) or self.relevance == "high"
+
+    @property
     def reasons(self) -> list[str]:
         """What the dashboard shows as "why you": involvement, relevance with
         its evidence, then rule matches."""
@@ -138,8 +143,14 @@ def choose_owners(
     load: Mapping[str, int],
     excluded: set[str],
     today: date,
+    strong_only: bool = False,
 ) -> list[Candidate]:
     """Primary (and a backup for page-band items), best fit first.
+
+    With `strong_only`, only clear matches (involved or "high") qualify; the
+    route consumer runs that pass over the whole queue first, so weaker
+    matches only use capacity that clear matches left over. A backup must
+    always be a clear match: a second "medium" guess adds noise, not cover.
 
     Who qualifies, strongest first:
       1. involvement: wrote a PR the item names, or already commented;
@@ -172,6 +183,8 @@ def choose_owners(
                 level if relevant else None,
                 tuple(int(n) for n in judged.get("evidence_prs") or []) if relevant else (),
             ))
+    if strong_only:
+        candidates = [c for c in candidates if c.strong]
     candidates.sort(
         key=lambda c: (
             c.rank,
@@ -179,7 +192,10 @@ def choose_owners(
             c.maintainer.github_login,
         )
     )
-    return candidates[: 2 if ctx.band == "page" else 1]
+    owners = candidates[:1]
+    if ctx.band == "page":
+        owners += [c for c in candidates[1:] if c.strong][:1]
+    return owners
 
 
 def _excluded(rules: Mapping[str, Any], ctx: RoutingContext) -> bool:

@@ -222,9 +222,30 @@ export function Assignee({
     <span className="inline-flex min-w-0 items-center gap-1.5" title={`${login} · ${role ?? ""} ${status}`.trim()}>
       <Avatar login={login} />
       <span className="truncate text-xs text-zinc-800 dark:text-zinc-200">{login}</span>
+      {role === "backup" && (
+        <span className="rounded bg-zinc-100 px-1 text-[10px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+          backup
+        </span>
+      )}
       <span className={`text-[10px] font-medium ${STATUS_STYLES[status] ?? "text-zinc-500 dark:text-zinc-400"}`}>
         {status}
       </span>
+    </span>
+  );
+}
+
+const RELEVANCE_STYLES: Record<string, string> = {
+  high: "bg-emerald-600 text-white dark:bg-emerald-600",
+  medium: "bg-sky-100 text-sky-900 ring-1 ring-inset ring-sky-600/30 dark:bg-sky-500/15 dark:text-sky-200",
+  low: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
+  none: "bg-zinc-50 text-zinc-400 dark:bg-zinc-900 dark:text-zinc-500",
+};
+
+/** Claude's relevance level for one maintainer. */
+export function RelevanceBadge({ level }: { level: string }) {
+  return (
+    <span className={`inline-flex rounded px-1.5 py-px text-[11px] font-semibold leading-4 ${RELEVANCE_STYLES[level] ?? RELEVANCE_STYLES.none}`}>
+      {level}
     </span>
   );
 }
