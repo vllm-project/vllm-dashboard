@@ -14,6 +14,7 @@ from typing import Any
 from alerting.ports import AlertPath, DeliveryMode, DestinationMode, NotificationIntent
 from alerting.untrusted import safe_slack_mrkdwn, trusted_url
 
+from triage.model import BAND_LABELS
 from triage.store import DigestEntry
 
 DASHBOARD = "https://ci.vllm.ai/triage"
@@ -28,7 +29,8 @@ def _link(url: str, text: str) -> str:
 def _item_line(entry: DigestEntry, owners: list[str] | None = None) -> str:
     icon = _BAND_ICON.get(entry.band, "")
     number = entry.item_key.rsplit("#", 1)[-1]
-    parts = [f"{icon} *{entry.score}* {_link(entry.html_url, f'#{number} {entry.title}')}"]
+    level = BAND_LABELS.get(entry.band, "")
+    parts = [f"{icon} *{level}* · {entry.score} {_link(entry.html_url, f'#{number} {entry.title}')}".replace("  ", " ")]
     if entry.summary:
         parts.append(f"   _{safe_slack_mrkdwn(entry.summary[:240])}_")
     detail = []
@@ -68,7 +70,7 @@ def _payload(header: str, lines: list[str], footer: str) -> dict[str, Any]:
 def page_dm(
     *, assignment_key: str, maintainer_slack: str, entry: DigestEntry, role: str, mode: DeliveryMode
 ) -> NotificationIntent:
-    header = "Triage: high-impact item for you" if role == "primary" else "Triage: you are backup on a high-impact item"
+    header = "Triage: P0 item for you" if role == "primary" else "Triage: you are backup on a P0 item"
     return NotificationIntent(
         delivery_id=f"triage:page:{assignment_key}",
         alert_ref=entry.item_key,

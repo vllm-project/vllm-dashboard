@@ -6,6 +6,7 @@ import {
   loginFromSessionCookie,
   triageEnabled,
 } from "@/lib/triage-auth";
+import { TriageAccount } from "@/components/triage/triage-account";
 import { TriageSignIn } from "./sign-in";
 
 export const dynamic = "force-dynamic";
@@ -27,19 +28,7 @@ export default async function TriageLayout({ children }: { children: React.React
   }
   return (
     <div>
-      <div className="mb-4 flex items-center justify-end gap-3 text-xs text-zinc-500 dark:text-zinc-400">
-        <span>
-          Signed in as <span className="font-medium text-zinc-800 dark:text-zinc-200">{login}</span>
-        </span>
-        <form action="/api/triage/auth/logout" method="post">
-          <button
-            type="submit"
-            className="dashboard-control rounded-md px-2 py-1 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
-          >
-            Sign out
-          </button>
-        </form>
-      </div>
+      <TriageAccount login={login} />
       {children}
     </div>
   );

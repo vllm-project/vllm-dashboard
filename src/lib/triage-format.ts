@@ -33,3 +33,19 @@ export async function triageFetcher<T>(url: string): Promise<T> {
   if (!response.ok) throw new Error(payload.error ?? `Request failed with ${response.status}`);
   return payload;
 }
+
+const REASON_LABELS: { test: RegExp; label: (m: RegExpMatchArray) => string }[] = [
+  { test: /^authored #(\d+)$/, label: (m) => `wrote #${m[1]}, which this item names` },
+  { test: /^commented$/, label: () => "already commented on this item" },
+  { test: /^relevance:(high|medium)/, label: (m) => `judged ${m[1]} from their recent work` },
+  { test: /^(area|hardware|model|path|keyword):(.+)$/, label: (m) => `their rule: ${m[1]} ${m[2]}` },
+];
+
+/** One router `matched` token ("relevance:high", "area:moe", …) in plain words. */
+export function describeReason(raw: string): string {
+  for (const { test, label } of REASON_LABELS) {
+    const match = raw.match(test);
+    if (match) return label(match);
+  }
+  return raw;
+}

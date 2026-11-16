@@ -4,65 +4,109 @@ import type { TriageFacets } from "@/lib/triage-types";
  * One source of truth for triage colors, shared by the queue, drawer, My plate
  * and the rules preview. Class strings are literal so Tailwind sees them.
  *
- * Band hues were checked with the dataviz palette validator (CVD and
- * normal-vision separation pass in both themes): page red, route amber, watch
- * blue, ignore grey. Grey is deliberately low-chroma (it is the "nothing to
- * do" band), and every band also carries its name as text, so color is never
- * the only signal.
+ * Bands are stored as page/route/watch/ignore (DB, API, URLs, config) but
+ * shown as priorities P0/P1/P2/P3. `BAND_STYLES[band].label` is the only place
+ * that mapping lives.
+ *
+ * Hues were checked with the dataviz palette validator (CVD and normal-vision
+ * separation pass in both themes): P0 red, P1 amber, P2 blue, P3 grey. Color is
+ * kept for P0/P1 (stripe, solid badge); P2/P3 stay quiet. Every priority also
+ * carries its label as text, so color is never the only signal.
  */
 
 export const BAND_ORDER = ["page", "route", "watch", "ignore", "unscored"] as const;
 export type BandKey = (typeof BAND_ORDER)[number];
 
 export interface BandStyle {
+  /** Display label: P0…P3, or "Unscored". */
   label: string;
-  /** Solid mark: row stripe, score bar fill, segmented-bar part, legend swatch. */
+  /** What the priority means, for tooltips and section headers. */
+  meaning: string;
+  /** Solid mark: segmented-bar part, legend swatch. */
   fill: string;
-  /** Lighter step of the same ramp: the score bar's track. */
+  /** Text drawn inside `fill` (white or near-black by the fill's luminance). */
+  onFill: string;
+  /** Lighter step of the same ramp. */
   track: string;
-  /** Text in the band's ink (score number). Dark steps for contrast. */
+  /** Text in the priority's ink, for the rare colored number. */
   text: string;
-  /** Active filter button. White text stays on the 600 steps in both themes (≥ 4.5:1). */
-  active: string;
+  /** The P-badge. P0/P1 solid, P2 soft, P3/Unscored neutral. */
+  badge: string;
+  /** Toggled-on filter segment: tinted, not solid, so it doesn't shout. */
+  tint: string;
+  /** Left stripe on rows and cards; only P0/P1 get one. */
+  stripe: string;
+  /** Row background; only P0 gets a faint tint so it stands apart. */
+  row: string;
 }
 
 export const BAND_STYLES: Record<BandKey, BandStyle> = {
   page: {
-    label: "page",
+    label: "P0",
+    meaning: "Highest impact: routed first",
     fill: "bg-red-600 dark:bg-red-500",
+    onFill: "text-white",
     track: "bg-red-100 dark:bg-red-500/20",
     text: "text-red-700 dark:text-red-400",
-    active: "bg-red-600 text-white ring-red-600",
+    badge: "bg-red-600 text-white",
+    tint: "bg-red-50 text-red-800 ring-red-600/30 dark:bg-red-500/15 dark:text-red-200 dark:ring-red-400/40",
+    stripe: "bg-red-600 dark:bg-red-500",
+    row: "bg-red-50/40 dark:bg-red-500/[0.05]",
   },
   route: {
-    label: "route",
+    label: "P1",
+    meaning: "Needs an owner: routed to the best-matching maintainer",
     fill: "bg-amber-500",
+    onFill: "text-zinc-950",
     track: "bg-amber-100 dark:bg-amber-500/20",
     text: "text-amber-700 dark:text-amber-400",
-    active: "bg-amber-500 text-zinc-950 ring-amber-500",
+    badge: "bg-amber-500 text-zinc-950",
+    tint: "bg-amber-50 text-amber-900 ring-amber-600/30 dark:bg-amber-500/15 dark:text-amber-200 dark:ring-amber-400/40",
+    stripe: "bg-amber-500",
+    row: "",
   },
   watch: {
-    label: "watch",
+    label: "P2",
+    meaning: "Watch: on the dashboard only",
     fill: "bg-blue-600 dark:bg-blue-500",
+    onFill: "text-white",
     track: "bg-blue-100 dark:bg-blue-500/20",
     text: "text-blue-700 dark:text-blue-400",
-    active: "bg-blue-600 text-white ring-blue-600",
+    badge: "bg-blue-50 text-blue-800 ring-1 ring-inset ring-blue-600/25 dark:bg-blue-500/15 dark:text-blue-200 dark:ring-blue-400/30",
+    tint: "bg-blue-50 text-blue-800 ring-blue-600/30 dark:bg-blue-500/15 dark:text-blue-200 dark:ring-blue-400/40",
+    stripe: "",
+    row: "",
   },
   ignore: {
-    label: "ignore",
+    label: "P3",
+    meaning: "Low: no action expected; hidden by default",
     fill: "bg-zinc-400 dark:bg-zinc-500",
+    onFill: "text-zinc-950",
     track: "bg-zinc-200 dark:bg-zinc-700",
     text: "text-zinc-500 dark:text-zinc-400",
-    active: "bg-zinc-500 text-white ring-zinc-500 dark:bg-zinc-500 dark:ring-zinc-500",
+    badge: "bg-zinc-100 text-zinc-600 ring-1 ring-inset ring-zinc-500/20 dark:bg-zinc-800 dark:text-zinc-300 dark:ring-zinc-600/40",
+    tint: "bg-zinc-100 text-zinc-800 ring-zinc-500/30 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-zinc-500/50",
+    stripe: "",
+    row: "",
   },
   unscored: {
-    label: "unscored",
+    label: "Unscored",
+    meaning: "Not scored yet: waiting for the LLM read",
     fill: "bg-zinc-200 dark:bg-zinc-700",
+    onFill: "text-zinc-800 dark:text-zinc-100",
     track: "bg-zinc-100 dark:bg-zinc-800",
     text: "text-zinc-400 dark:text-zinc-500",
-    active: "bg-zinc-300 text-zinc-900 ring-zinc-300 dark:bg-zinc-600 dark:text-zinc-50 dark:ring-zinc-600",
+    badge: "border border-dashed border-zinc-300 text-zinc-500 dark:border-zinc-600 dark:text-zinc-400",
+    tint: "bg-zinc-100 text-zinc-800 ring-zinc-500/30 dark:bg-zinc-800 dark:text-zinc-100 dark:ring-zinc-500/50",
+    stripe: "",
+    row: "",
   },
 };
+
+/** "P0" for "page", …, "Unscored" for anything without a score. */
+export function priorityLabel(band: string | null | undefined): string {
+  return BAND_STYLES[bandKey(band)].label;
+}
 
 export function bandKey(band: string | null | undefined): BandKey {
   return band && (BAND_ORDER as readonly string[]).includes(band) ? (band as BandKey) : "unscored";
@@ -125,6 +169,10 @@ export function severityFlags(facets: Pick<TriageFacets, "severity" | "type"> | 
   if (severity.memory_regression === true) flags.push({ key: "memory", label: "memory", tone: "warning" });
   return flags;
 }
+
+/** Every flag after the worst one: neutral outline, so a row isn't a rainbow. */
+export const FLAG_STYLE_QUIET =
+  "bg-transparent text-zinc-600 ring-1 ring-inset ring-zinc-300 dark:text-zinc-300 dark:ring-zinc-600";
 
 /** Style for one flag; only "serving broken" is solid red. */
 export function flagStyle(flag: SeverityFlag): string {
@@ -212,4 +260,65 @@ export function avatarUrl(login: string, size = 40): string {
 /** Page/route items with no open assignment need an owner. */
 export function isUnrouted(band: string | null | undefined, openAssignments: number): boolean {
   return (band === "page" || band === "route") && openAssignments === 0;
+}
+
+// --- Queue view helpers ---------------------------------------------------
+
+/** Groups score-ordered items into priority sections, P0 first, empty ones dropped. */
+export function groupByPriority<T>(
+  items: readonly T[],
+  bandOf: (item: T) => string | null | undefined,
+): { band: BandKey; items: T[] }[] {
+  const groups = new Map<BandKey, T[]>();
+  for (const item of items) {
+    const key = bandKey(bandOf(item));
+    const list = groups.get(key);
+    if (list) list.push(item);
+    else groups.set(key, [item]);
+  }
+  return BAND_ORDER.filter((band) => groups.has(band)).map((band) => ({ band, items: groups.get(band)! }));
+}
+
+/**
+ * One search box for both free text and the model filter: `model:qwen3` (or
+ * `model:"Qwen3 235B"`) becomes the model filter, the rest is the text query.
+ */
+export function parseSearchInput(input: string): { q: string | null; model: string | null } {
+  let model: string | null = null;
+  const rest = input.replace(/(?:^|\s)model:(?:"([^"]*)"|(\S+))/i, (_, quoted: string | undefined, bare: string | undefined) => {
+    model = (quoted ?? bare ?? "").trim() || null;
+    return " ";
+  });
+  const q = rest.replace(/\s+/g, " ").trim();
+  return { q: q || null, model };
+}
+
+export function formatSearchInput(q: string | null, model: string | null): string {
+  const modelPart = model ? (/\s/.test(model) ? `model:"${model}"` : `model:${model}`) : "";
+  return [q ?? "", modelPart].filter(Boolean).join(" ");
+}
+
+export interface ContextChip {
+  kind: "hardware" | "model" | "area";
+  value: string;
+}
+
+/**
+ * The one compact context line under a title: hardware first (what breaks
+ * where), then the model, then the area; at most `max` chips, the rest
+ * returned for a "+N" with a tooltip.
+ */
+export function contextChips(
+  item: { hardware: string[]; models: string[]; areas: string[] },
+  max = 3,
+): { shown: ContextChip[]; hidden: ContextChip[] } {
+  const ordered: ContextChip[] = [
+    ...item.hardware.slice(0, 2).map((value) => ({ kind: "hardware" as const, value })),
+    ...item.models.slice(0, 1).map((value) => ({ kind: "model" as const, value })),
+    ...item.areas.slice(0, 1).map((value) => ({ kind: "area" as const, value })),
+    ...item.hardware.slice(2).map((value) => ({ kind: "hardware" as const, value })),
+    ...item.models.slice(1).map((value) => ({ kind: "model" as const, value })),
+    ...item.areas.slice(1).map((value) => ({ kind: "area" as const, value })),
+  ];
+  return { shown: ordered.slice(0, max), hidden: ordered.slice(max) };
 }

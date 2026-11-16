@@ -9,6 +9,9 @@ from typing import Any, Literal
 Kind = Literal["issue", "pr"]
 Band = Literal["page", "route", "watch", "ignore"]
 
+# What people see. Stored band values stay page/route/watch/ignore.
+BAND_LABELS: dict[str, str] = {"page": "P0", "route": "P1", "watch": "P2", "ignore": "P3"}
+
 AREAS = (
     "scheduler", "kv_cache", "attention", "moe", "quantization", "distributed",
     "model_loading", "models", "multimodal", "spec_decode", "lora",

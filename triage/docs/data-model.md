@@ -83,7 +83,10 @@ docs, benchmarks, performance, memory, other.
 
 ## `triage_scores`
 
-`score` is an integer 0–150ish, `band` one of:
+`score` is an integer 0–150ish, `band` one of the values below. People see
+them as priorities: page = **P0**, route = **P1**, watch = **P2**, ignore =
+**P3** (`triage.model.BAND_LABELS`, `src/lib/triage-style.ts`); the stored
+values and config keys keep the original names.
 
 | band | rule | effect |
 |---|---|---|
