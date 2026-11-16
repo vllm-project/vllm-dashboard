@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh the shard timings snapshot every hour
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*-*-* *:05:00 UTC
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+Unit=alerting-timings-snapshot.service
+
+[Install]
+WantedBy=timers.target
