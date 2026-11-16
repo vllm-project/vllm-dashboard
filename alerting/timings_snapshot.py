@@ -8,7 +8,7 @@ the generator downloads once per build.
 
 What is stored is the endpoint's own JSON, so its rules (p80, treatment
 branch, fallbacks) stay in one place. A key whose fetch fails keeps its last
-good entry; a run where every fetch fails publishes nothing. The snapshot is
+good entry, so a run where every fetch fails changes no timings. The snapshot is
 uploaded first and `latest.json` moved second, so a reader never finds a
 half-written one.
 """
@@ -156,7 +156,7 @@ def refresh(
     marks it `attempted_at`, so keys that keep failing go last and can't
     starve the rest. A 404 is stored as a null response, so builds skip the
     endpoint for a step main has never passed, unless the key had timings
-    before: those are kept, as for a failed fetch.
+    before: those are kept and marked, as for a failed fetch.
     """
     fetched_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     entries: dict[str, Any] = {}
@@ -186,7 +186,7 @@ def refresh(
             entries[key] = {**(old or {}), "attempted_at": fetched_at}
             continue
         if response is None and old is not None and old.get("response") is not None:
-            entries[key] = old
+            entries[key] = {**old, "attempted_at": fetched_at}
         else:
             entries[key] = {"fetched_at": fetched_at, "response": response}
     return entries, failed, skipped
@@ -245,7 +245,9 @@ def run(
     deadline: float = float("inf"),
     dry_run: bool = False,
 ) -> int:
-    """One refresh: fetch, then publish unless no fetch succeeded. Exit code."""
+    """One refresh: fetch, then publish. Exit code 1 when no fetch succeeded;
+    that run still publishes if it tried a key, so the retry order it learned
+    is kept, while every entry keeps its last response and `fetched_at`."""
     previous = store.read_entries()
     keys = {f"{step_key}|{queue}" for step_key, queue in pairs} | set(previous)
     entries, failed, skipped = refresh(
@@ -257,12 +259,13 @@ def run(
         f"last snapshot): {fetched} fetched, {len(failed)} failed, "
         f"{len(skipped)} left for the next run"
     )
-    if keys and fetched == 0:
+    none_fetched = bool(keys) and fetched == 0
+    if none_fetched:
         print(
-            "no fetch succeeded; latest.json still names the last snapshot",
-            file=sys.stderr,
+            "no fetch succeeded; every entry keeps its last response", file=sys.stderr
         )
-        return 1
+        if not failed:
+            return 1
     snapshot = {
         "published_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "tests_over_ms": TESTS_OVER_MS,
@@ -270,9 +273,9 @@ def run(
     }
     if dry_run:
         print(f"dry run: would publish {len(entries)} entries")
-        return 0
+        return int(none_fetched)
     print(f"published s3://{store.bucket}/{store.publish(snapshot)}")
-    return 0
+    return int(none_fetched)
 
 
 def main(arguments: list[str] | None = None) -> int:

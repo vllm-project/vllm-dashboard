@@ -294,7 +294,8 @@ def test_refresh_keeps_timings_through_a_404_but_not_an_old_404() -> None:
     )
 
     assert failed == []
-    assert entries["a|gpu_1"] == OLD_ENTRY
+    # Kept like a failed fetch: same data, but tried now, so it goes last.
+    assert entries["a|gpu_1"] == {**OLD_ENTRY, "attempted_at": "2026-11-13T12:00:00Z"}
     assert entries["b|gpu_1"] == {
         "fetched_at": "2026-11-13T12:00:00Z",
         "response": None,
@@ -522,15 +523,16 @@ def test_a_later_run_keeps_keys_main_no_longer_ran_and_refreshes_them(
     )
 
 
-def test_a_run_where_every_fetch_fails_leaves_the_pointer_alone(
+def test_a_run_where_every_fetch_fails_keeps_the_data_and_saves_the_retry_order(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # Otherwise keys that time out would go first again next run, use up the
+    # fetch budget every time, and the keys behind them would never refresh.
     s3 = FakeS3()
     store = ts.S3Store("bucket", client=s3)
     ts.run(
         pairs={("a", "gpu_1")}, store=store, fetch=_fetch({"a|gpu_1": GOOD}), now=NOW
     )
-    before = dict(s3.objects)
     capsys.readouterr()
 
     code = ts.run(
@@ -541,10 +543,39 @@ def test_a_run_where_every_fetch_fails_leaves_the_pointer_alone(
     )
 
     assert code == 1
-    assert s3.objects == before
+    assert store.read_entries() == {
+        "a|gpu_1": {
+            "fetched_at": "2026-11-13T12:00:00Z",
+            "response": GOOD,
+            "attempted_at": "2026-11-13T13:00:00Z",
+        }
+    }
     assert capsys.readouterr().err.splitlines()[-1] == (
-        "no fetch succeeded; latest.json still names the last snapshot"
+        "no fetch succeeded; every entry keeps its last response"
     )
+
+
+def test_a_run_that_fetched_nothing_publishes_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    s3 = FakeS3()
+    store = ts.S3Store("bucket", client=s3)
+    ts.run(
+        pairs={("a", "gpu_1")}, store=store, fetch=_fetch({"a|gpu_1": GOOD}), now=NOW
+    )
+    before = dict(s3.objects)
+
+    # The budget is gone before the first fetch: nothing new to save.
+    code = ts.run(
+        pairs={("a", "gpu_1")},
+        store=store,
+        fetch=_fetch({"a|gpu_1": GOOD}),
+        now=NOW + timedelta(hours=1),
+        deadline=float("-inf"),
+    )
+
+    assert code == 1
+    assert s3.objects == before
 
 
 def test_a_failed_snapshot_upload_never_moves_the_pointer() -> None:
