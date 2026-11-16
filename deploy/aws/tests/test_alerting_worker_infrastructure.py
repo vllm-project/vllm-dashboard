@@ -366,6 +366,11 @@ def test_instance_role_writes_only_the_timings_snapshot_prefix() -> None:
 
     assert "Resource: arn:aws:s3:::vllm-ci-timings/ci/timings/*" in template
     assert "arn:aws:s3:::vllm-ci-timings/*" not in template
+    # Without ListBucket a missing latest.json reads as 403, not NoSuchKey, so
+    # the first run on an empty bucket could never publish. Listing stays on
+    # the snapshot prefix.
+    assert "- s3:ListBucket\n                Resource: arn:aws:s3:::vllm-ci-timings\n" in template
+    assert "s3:prefix: ci/timings/*" in template
 
 
 @pytest.mark.parametrize(
