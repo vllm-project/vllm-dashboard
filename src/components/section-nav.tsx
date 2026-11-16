@@ -10,6 +10,8 @@ import {
   sectionForPathname,
 } from "@/lib/dashboard-navigation";
 
+export const SECTION_NAV_ACTIONS_ID = "section-nav-actions";
+
 export function SectionNav() {
   const pathname = usePathname();
   const section = sectionForPathname(pathname);
@@ -33,9 +35,10 @@ export function SectionNav() {
             {section.description}
           </p>
         </div>
+        <div className="flex items-end gap-4">
         <nav
           aria-label={`${section.label} views`}
-          className="scrollbar-hidden -mb-px flex gap-6 overflow-x-auto"
+          className="scrollbar-hidden -mb-px flex min-w-0 flex-1 gap-6 overflow-x-auto"
         >
           {section.links.map((entry) => {
             const group = isNavGroup(entry) ? entry : null;
@@ -59,6 +62,9 @@ export function SectionNav() {
             );
           })}
         </nav>
+          {/* Pages can portal right-aligned controls into the tab row (e.g. the triage account). */}
+          <div id={SECTION_NAV_ACTIONS_ID} className="flex shrink-0 items-center pb-1.5 empty:hidden" />
+        </div>
       </div>
       {activeGroup && (
         <nav

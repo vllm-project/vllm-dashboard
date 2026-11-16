@@ -6,17 +6,41 @@ triage pipeline (`triage/`, see `triage/README.md` and
 routed. It is **maintainers only**: it shows LLM judgements about outside
 contributors' work (including "slop" flags), so nothing is public.
 
+## Priorities
+
+The pipeline stores a score band per item (`page`, `route`, `watch`,
+`ignore`) in the database, API, URLs (`?bands=page,route`) and config. The
+dashboard shows them as priorities:
+
+| Stored band | Shown as | Meaning |
+|---|---|---|
+| `page` | **P0** | Highest impact: routed first |
+| `route` | **P1** | Needs an owner: routed to the best-matching maintainer |
+| `watch` | **P2** | Watch: on the dashboard only |
+| `ignore` | **P3** | Low: no action expected; hidden by default |
+| (no score) | **Unscored** | Not scored yet: waiting for the LLM read |
+
+The mapping lives in one place, `BAND_STYLES` in `src/lib/triage-style.ts`.
+Only P0 and P1 carry color in lists (a solid badge and a left stripe); P2 is
+a soft blue badge and P3 is grey.
+
 ## Pages
 
 | Path | What |
 |---|---|
-| `/triage` | Queue: in-scope items with score and band, kind, title, one-line summary, areas, models, hardware, serving config, assignees and age. Filters for band (default page/route/watch; `ignore` and `unscored` are opt-in), kind, area, hardware, model text, assignee, assignment status, search, and include-closed; sort by score, age or last update. Header: items ingested in 24h, extraction coverage over 7 days, page-band items nobody has acked, and the not-mine rate over 7 days. Clicking a row opens the item drawer (`?item=owner/repo#N`). |
-| `/triage/me` | My plate: the signed-in maintainer's open and acked assignments with Ack / Not mine / Reassign / Drop / Slop / Done, why the router picked them, and assignments closed in the last 14 days with Reopen. |
+| `/triage` | Queue. A strip on top: open items by priority (a segmented bar; each part filters), P0/P1 items with no owner (red when a P0 has none), how much the LLM has read in 7 days, and new items today. Below, one toolbar: a P0–P3 toggle with counts, kind, area, hardware, owner status, sort, a "Closed" switch, and a search box that applies as you type (`#123`, free text, or `model:qwen3`). Sorted by priority, the list is grouped into P0 / P1 / P2 / P3 sections with sticky headers; P3 starts collapsed. Each row shows the P-badge and score, kind and number, the worst severity flag in color (others neutral), the title, one line of context (hardware, model, area; the rest in the drawer), the owner, and age. Clicking a row opens the item drawer (`?item=owner/repo#N`). On a phone each row stacks and the owner moves under the title. |
+| `/triage/me` | My plate, grouped by priority like the queue: the signed-in maintainer's open and acked assignments, why the router picked them, and Ack / Not mine / Reassign / Drop / Slop / Done; then assignments closed in the last 14 days with Reopen. |
 | `/triage/rules` | Draft & preview. Loads the signed-in maintainer's current rules from the database (synced from `triage/config/maintainers/<login>.yaml`) into a local draft with the same fields (areas, hardware, model globs, path globs, keywords, type filter, excludes, minimum score, weekly capacity, away dates, Slack notification mode and user ID). **Preview last 30 days** lists which recent items the draft matches. **Copy as YAML** copies the full file content. If the maintainer already has a file (their row has `updated_by = 'repo'`), **Edit your rules file on GitHub** opens it in GitHub's editor on `main`; otherwise **Create your rules file on GitHub** opens GitHub's new-file page pre-filled with `<login>.yaml` and the draft's YAML. Nothing is saved from the dashboard. |
 
-The item drawer shows the score breakdown, every extracted facet, the
-deterministic prepass, the routing reason of each assignment, and the full
-action history.
+The item drawer opens with a summary: priority, score, title, every severity
+flag, the one-line summary, the owners (primary and backup, their status, and
+one line on why each was picked) and the actions. Details follow as
+collapsible sections: the score breakdown (open), why these owners with
+evidence, who it's for (every maintainer's relevance), what the LLM read, the
+raw prepass, and the action history. Esc closes it.
+
+The signed-in maintainer and **Sign out** sit at the right end of the
+section tab row.
 
 ## Access model
 

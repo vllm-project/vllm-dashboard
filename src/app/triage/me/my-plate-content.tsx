@@ -1,80 +1,42 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ActionButtons } from "@/components/triage/action-buttons";
-import {
-  Chips,
-  GithubLink,
-  KindIcon,
-  ScoreCell,
-  SeverityFlags,
-  TypeLabel,
-} from "@/components/triage/badges";
-import { bandStyle } from "@/lib/triage-style";
 import { ItemDrawer } from "@/components/triage/item-drawer";
-import { formatAge, triageFetcher } from "@/lib/triage-format";
+import { EmptyState, ItemRow, PriorityGroupHeader, RowSkeleton } from "@/components/triage/item-row";
+import { describeReason, triageFetcher } from "@/lib/triage-format";
+import { BAND_STYLES, groupByPriority } from "@/lib/triage-style";
 import type { TriageMyPlate } from "@/lib/triage-types";
 
 type Entry = TriageMyPlate["open"][number];
 
-function matchedReasons(entry: Entry): string[] {
-  const matched = (entry.assignment.reason as { matched?: unknown }).matched;
-  return Array.isArray(matched) ? matched.filter((value): value is string => typeof value === "string") : [];
+function routedBecause(entry: Entry): string | null {
+  const reason = entry.assignment.reason as { why?: unknown; matched?: unknown };
+  if (typeof reason.why === "string" && reason.why) return reason.why;
+  const matched = Array.isArray(reason.matched) ? reason.matched.filter((value): value is string => typeof value === "string") : [];
+  return matched.length > 0 ? matched.map(describeReason).join("; ") : null;
 }
 
-function PlateCard({
-  entry,
-  closed,
-  onOpen,
-  onChanged,
-}: {
-  entry: Entry;
-  closed: boolean;
-  onOpen: () => void;
-  onChanged: () => void;
-}) {
-  const reasons = matchedReasons(entry);
+/** Why it's yours plus the actions, under the item's context line. */
+function PlateFooter({ entry, closed, onChanged }: { entry: Entry; closed: boolean; onChanged: () => void }) {
+  const why = routedBecause(entry);
   return (
-    <li className="relative overflow-hidden rounded-lg border border-zinc-200 bg-white p-4 pl-5 dark:border-zinc-800 dark:bg-zinc-950">
-      <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${bandStyle(entry.band).fill}`} />
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-500">
-        <ScoreCell band={entry.band} score={entry.score} />
-        <KindIcon kind={entry.kind} draft={entry.draft} />
-        <span className="tabular-nums">#{entry.number}</span>
-        <TypeLabel type={entry.type} />
-        <SeverityFlags facets={{ severity: entry.severity ?? undefined, type: entry.type ?? undefined }} max={5} />
-        <span>{entry.assignment.role} · {entry.assignment.status} · assigned {formatAge(entry.assignment.assignedAt)} ago by {entry.assignment.assignedBy}</span>
-      </div>
-      <p className="mt-1.5 line-clamp-2 font-medium leading-snug">
-        <GithubLink href={entry.htmlUrl} title={entry.title}>{entry.title}</GithubLink>
+    <div className="space-y-2">
+      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+        <span className="font-medium text-zinc-600 dark:text-zinc-300">
+          {entry.assignment.role === "primary" ? "Primary" : "Backup"} · {entry.assignment.status === "acked" ? "✓ acked" : entry.assignment.status.replace("_", " ")}
+        </span>
+        {why && <span className="line-clamp-1"> {why}</span>}
       </p>
-      {entry.summary && <p className="mt-1 line-clamp-2 text-sm text-zinc-600 dark:text-zinc-400" title={entry.summary}>{entry.summary}</p>}
-      <div className="mt-2 flex flex-wrap gap-3 text-xs">
-        <Chips kind="area" values={entry.areas} max={4} />
-        <Chips kind="model" values={entry.models} max={3} />
-        <Chips kind="hardware" values={entry.hardware} max={3} />
-        <Chips kind="serving" values={entry.serving} max={3} />
-      </div>
-      {reasons.length > 0 && (
-        <p className="mt-2 text-[11px] text-zinc-500">Routed to you because: {reasons.join(", ")}</p>
-      )}
-      <div className="mt-3 flex flex-wrap items-start justify-between gap-2">
-        <ActionButtons
-          itemKey={entry.itemKey}
-          assignmentId={entry.assignment.id}
-          mode={closed ? "closed" : entry.assignment.status === "acked" ? "acked" : "open"}
-          onDone={onChanged}
-        />
-        <button
-          type="button"
-          onClick={onOpen}
-          className="dashboard-control text-xs text-zinc-500 underline-offset-2 hover:text-zinc-900 hover:underline dark:hover:text-zinc-100"
-        >
-          Details
-        </button>
-      </div>
-    </li>
+      <ActionButtons
+        itemKey={entry.itemKey}
+        assignmentId={entry.assignment.id}
+        mode={closed ? "closed" : entry.assignment.status === "acked" ? "acked" : "open"}
+        onDone={onChanged}
+      />
+    </div>
   );
 }
 
@@ -89,40 +51,77 @@ export default function MyPlateContent() {
     router.replace(item ? `${pathname}?item=${encodeURIComponent(item)}` : pathname, { scroll: false });
   }
 
-  if (error) return <p className="text-sm text-red-600 dark:text-red-400">{error.message}</p>;
-  if (!data) return <p className="text-sm text-zinc-400">Loading…</p>;
+  const groups = data ? groupByPriority(data.open, (entry) => entry.band) : [];
+  const notAcked = data?.open.filter((entry) => entry.assignment.status === "open").length ?? 0;
 
   return (
-    <div className="space-y-8">
-      <section>
-        <h2 className="mb-3 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-          On your plate <span className="font-normal text-zinc-500">({data.open.length})</span>
-        </h2>
-        {data.open.length === 0 ? (
-          <p className="text-sm text-zinc-500">Nothing assigned to you right now.</p>
-        ) : (
-          <ul className="space-y-3">
-            {data.open.map((entry) => (
-              <PlateCard key={entry.assignment.id} entry={entry} closed={false} onOpen={() => setItem(entry.itemKey)} onChanged={() => void mutate()} />
-            ))}
-          </ul>
+    <div className="space-y-6">
+      {error && <p className="text-sm text-red-600 dark:text-red-400">{error.message}</p>}
+
+      <div className="overflow-clip rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-zinc-200 bg-zinc-50/60 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/40">
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">On your plate</h2>
+          {data && (
+            <p className="text-xs tabular-nums text-zinc-500 dark:text-zinc-400">
+              {data.open.length} open · {notAcked} not acked yet
+              {groups.length > 0 && ` · ${groups.map((group) => `${group.items.length} ${BAND_STYLES[group.band].label}`).join(", ")}`}
+            </p>
+          )}
+        </div>
+        {!data && !error && <RowSkeleton rows={3} />}
+        {data && data.open.length === 0 && (
+          <EmptyState
+            title="Your plate is clear"
+            detail="Nothing is assigned to you right now. Unowned P0/P1 items are waiting in the queue."
+            action={
+              <Link
+                href="/triage?bands=page,route&status=unassigned"
+                className="dashboard-control mt-1 rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              >
+                See unowned P0/P1
+              </Link>
+            }
+          />
         )}
-      </section>
-      <section>
-        <h2 className="mb-3 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-          Closed in the last 14 days <span className="font-normal text-zinc-500">({data.recentlyClosed.length})</span>
-        </h2>
-        {data.recentlyClosed.length === 0 ? (
-          <p className="text-sm text-zinc-500">Nothing closed recently.</p>
-        ) : (
-          <ul className="space-y-3">
+        {groups.map((group) => (
+          <section key={group.band} aria-label={`${BAND_STYLES[group.band].label} items`}>
+            <PriorityGroupHeader band={group.band} count={group.items.length} />
+            <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
+              {group.items.map((entry) => (
+                <ItemRow
+                  key={entry.assignment.id}
+                  item={entry}
+                  hideOwner
+                  onOpen={() => setItem(entry.itemKey)}
+                  footer={<PlateFooter entry={entry} closed={false} onChanged={() => void mutate()} />}
+                />
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
+
+      {data && data.recentlyClosed.length > 0 && (
+        <div className="overflow-clip rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="flex items-baseline gap-3 border-b border-zinc-200 bg-zinc-50/60 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/40">
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Closed in the last 14 days</h2>
+            <p className="text-xs tabular-nums text-zinc-500 dark:text-zinc-400">{data.recentlyClosed.length}</p>
+          </div>
+          <ul className="divide-y divide-zinc-100 opacity-90 dark:divide-zinc-900">
             {data.recentlyClosed.map((entry) => (
-              <PlateCard key={entry.assignment.id} entry={entry} closed onOpen={() => setItem(entry.itemKey)} onChanged={() => void mutate()} />
+              <ItemRow
+                key={entry.assignment.id}
+                item={entry}
+                hideOwner
+                onOpen={() => setItem(entry.itemKey)}
+                footer={<PlateFooter entry={entry} closed onChanged={() => void mutate()} />}
+              />
             ))}
           </ul>
-        )}
-      </section>
-      {openItem && (
+        </div>
+      )}
+
+      {openItem && data && (
         <ItemDrawer itemKey={openItem} viewer={data.login} onClose={() => setItem(null)} onChanged={() => void mutate()} />
       )}
     </div>
