@@ -369,3 +369,17 @@ def test_claude_gets_an_allowlisted_environment_only() -> None:
     })
     assert env == {"PATH": "/bin", "HOME": "/home/u", "CLAUDE_CONFIG_DIR": "/c",
                    "CLAUDE_CODE_OAUTH_TOKEN": "t", "DISABLE_AUTOUPDATER": "1"}
+
+
+def test_slack_lines_use_p_levels() -> None:
+    from alerting.ports import DeliveryMode
+
+    from triage.notify import page_dm
+    from triage.store import DigestEntry
+
+    entry = DigestEntry(1, "vllm-project/vllm#48071", "MNNVL allreduce crash", "https://github.com/vllm-project/vllm/issues/48071",
+                        94, "page", "summary", ["relevance:medium (like #61989)"])
+    payload = page_dm(assignment_key="k", maintainer_slack="U0000000001", entry=entry, role="primary",
+                      mode=DeliveryMode.SHADOW).payload
+    assert payload["blocks"][0]["text"]["text"] == "Triage: P0 item for you"
+    assert "*P0* · 94 <https://github.com/vllm-project/vllm/issues/48071|#48071 MNNVL allreduce crash>" in payload["text"]
