@@ -8,6 +8,7 @@ import {
 } from "@/lib/triage-actions";
 import { matchRules, normalizeRules } from "@/lib/triage-rules";
 import type {
+  TriageRelevance,
   TriageAssignment,
   TriageBreakdownEntry,
   TriageAssignmentSummary,
@@ -272,7 +273,7 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
   `;
   if (!item) return null;
 
-  const [score, extraction, assignments, actions] = await Promise.all([
+  const [score, extraction, assignments, actions, relevance] = await Promise.all([
     db<{ score: number; band: string; breakdown: unknown; scoring_version: string; scored_at: Date }[]>`
       SELECT score, band, breakdown, scoring_version, scored_at
       FROM triage_scores WHERE item_key = ${itemKey}
@@ -305,6 +306,30 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
       FROM triage_actions WHERE item_key = ${itemKey}
       ORDER BY created_at DESC, id DESC LIMIT 200
     `,
+    db<
+      {
+        maintainer: string;
+        relevance: TriageRelevance["relevance"];
+        reason: string;
+        evidence: unknown;
+        current: boolean;
+        created_at: Date;
+      }[]
+    >`
+      SELECT r.maintainer, r.relevance, r.reason, r.created_at,
+             r.content_hash = i.content_hash AS current,
+             COALESCE((
+               SELECT jsonb_agg(pr ORDER BY pr->>'number')
+               FROM jsonb_array_elements(p.prs) AS pr
+               WHERE pr->'number' IN (SELECT jsonb_array_elements(r.evidence_prs))
+             ), '[]'::jsonb) AS evidence
+      FROM triage_relevance r
+      JOIN triage_items i ON i.item_key = r.item_key
+      LEFT JOIN triage_maintainer_profiles p ON p.github_login = r.maintainer
+      WHERE r.item_key = ${itemKey}
+      ORDER BY CASE r.relevance WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
+               r.maintainer
+    `,
   ]);
 
   const labelNames = Array.isArray(item.labels)
@@ -319,7 +344,24 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
         .filter((name): name is string => name !== null)
     : [];
 
+  const relevanceRows: TriageRelevance[] = relevance.map((r) => ({
+    maintainer: r.maintainer,
+    relevance: r.relevance,
+    reason: r.reason,
+    evidence: Array.isArray(r.evidence)
+      ? r.evidence.flatMap((pr) => {
+          const p = pr as { number?: unknown; kind?: unknown; title?: unknown };
+          return typeof p.number === "number"
+            ? [{ number: p.number, kind: String(p.kind ?? ""), title: String(p.title ?? "") }]
+            : [];
+        })
+      : [],
+    current: Boolean(r.current),
+    judgedAt: r.created_at.toISOString(),
+  }));
+
   return {
+    relevance: relevanceRows,
     item: {
       itemKey: item.item_key,
       repo: item.repo,

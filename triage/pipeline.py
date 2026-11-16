@@ -36,7 +36,8 @@ from triage.prepass import (
 from triage.relevance import profile_is_stale
 from triage.routing import RoutingContext, choose_owners
 from triage.scoring import score_item
-from triage.store import DigestEntry, NewAssignment, PostgresTriageStore, week_ago
+from triage.model import Maintainer
+from triage.store import DigestEntry, NewAssignment, PostgresTriageStore, RoutingRow, week_ago
 
 log = logging.getLogger(__name__)
 CURSOR_OVERLAP = timedelta(minutes=10)
@@ -191,51 +192,67 @@ class RouteHandler:
         by_login = {m.github_login: m for m in maintainers}
         load = self.store.maintainer_load(since=week_ago(now))
         judged_by = {m.github_login for m in maintainers}
-        for row in self.store.routing_candidates(limit=self.route_limit):
-            # Wait for relevance judgements unless someone is already involved,
-            # so an early rule match doesn't pre-empt the right person.
-            people = {str(c).lower() for c in row.prepass.get("commenters") or []}
-            people |= {str(a).lower() for a in (row.prepass.get("referenced_pr_authors") or {}).values()}
-            involved = bool(people & {login.lower() for login in judged_by})
-            if self.github is not None and not (judged_by <= set(row.relevance)) and not involved:
-                continue
-            ctx = RoutingContext(
-                item_key=row.item_key, kind=row.kind, title=row.title, score=row.score,
-                band=row.band,  # type: ignore[arg-type]
-                facets=row.facets, prepass=row.prepass, files=row.files,
-                relevance=row.relevance,
-                fresh=row.created_at is None or now - row.created_at <= FRESH_WINDOW,
-            )
-            owners = choose_owners(ctx, maintainers, load=load, excluded=set(row.excluded), today=now.date())
-            if not owners:
-                continue
-            assignments: list[NewAssignment] = []
-            for index, candidate in enumerate(owners):
-                role = "primary" if index == 0 else "backup"
-                maintainer = by_login[candidate.maintainer.github_login]
-                notification = None
-                wants_now = row.band == "page" or maintainer.notify_mode == "immediate"
-                if wants_now and maintainer.notify_mode != "off" and maintainer.slack_user_id:
-                    entry = DigestEntry(
-                        0, row.item_key, row.title, row.html_url, row.score, row.band,
-                        str(row.facets.get("summary") or ""),
-                        candidate.reasons,
-                    )
-                    notification = page_dm(
-                        assignment_key=f"{row.item_key}:{maintainer.github_login}:{role}",
-                        maintainer_slack=maintainer.slack_user_id, entry=entry, role=role,
-                        mode=self.delivery_mode,
-                    )
-                assignments.append(NewAssignment(
-                    maintainer=maintainer.github_login, role=role,
-                    reason={"matched": candidate.reasons,
-                            "why": str((row.relevance.get(maintainer.github_login) or {}).get("reason") or ""),
-                            "load": candidate.load, "capacity": maintainer.capacity_per_week},
-                    notification=notification,
-                ))
-                if role == "primary":
-                    load[maintainer.github_login] = load.get(maintainer.github_login, 0) + 1
-            self.store.commit_assignments(row.item_key, row.score, assignments, now=now)
+        rows = self.store.routing_candidates(limit=self.route_limit)
+        routed: set[str] = set()
+        # Pass 1 gives every clear match (involved / high) its slot across the
+        # whole queue; pass 2 lets "medium" and rule matches use what is left.
+        for strong_only in (True, False):
+            for row in rows:
+                if row.item_key not in routed and self._route_one(
+                    row, maintainers, by_login, load, judged_by, now, strong_only=strong_only
+                ):
+                    routed.add(row.item_key)
+
+    def _route_one(
+        self, row: RoutingRow, maintainers: list[Maintainer], by_login: dict[str, Maintainer],
+        load: dict[str, int], judged_by: set[str], now: datetime, *, strong_only: bool,
+    ) -> bool:
+        # Wait for relevance judgements unless someone is already involved,
+        # so an early rule match doesn't pre-empt the right person.
+        people = {str(c).lower() for c in row.prepass.get("commenters") or []}
+        people |= {str(a).lower() for a in (row.prepass.get("referenced_pr_authors") or {}).values()}
+        involved = bool(people & {login.lower() for login in judged_by})
+        if self.github is not None and not (judged_by <= set(row.relevance)) and not involved:
+            return False
+        ctx = RoutingContext(
+            item_key=row.item_key, kind=row.kind, title=row.title, score=row.score,
+            band=row.band,  # type: ignore[arg-type]
+            facets=row.facets, prepass=row.prepass, files=row.files,
+            relevance=row.relevance,
+            fresh=row.created_at is None or now - row.created_at <= FRESH_WINDOW,
+        )
+        owners = choose_owners(ctx, maintainers, load=load, excluded=set(row.excluded),
+                               today=now.date(), strong_only=strong_only)
+        if not owners:
+            return False
+        assignments: list[NewAssignment] = []
+        for index, candidate in enumerate(owners):
+            role = "primary" if index == 0 else "backup"
+            maintainer = by_login[candidate.maintainer.github_login]
+            notification = None
+            wants_now = row.band == "page" or maintainer.notify_mode == "immediate"
+            if wants_now and maintainer.notify_mode != "off" and maintainer.slack_user_id:
+                entry = DigestEntry(
+                    0, row.item_key, row.title, row.html_url, row.score, row.band,
+                    str(row.facets.get("summary") or ""),
+                    candidate.reasons,
+                )
+                notification = page_dm(
+                    assignment_key=f"{row.item_key}:{maintainer.github_login}:{role}",
+                    maintainer_slack=maintainer.slack_user_id, entry=entry, role=role,
+                    mode=self.delivery_mode,
+                )
+            assignments.append(NewAssignment(
+                maintainer=maintainer.github_login, role=role,
+                reason={"matched": candidate.reasons,
+                        "why": str((row.relevance.get(maintainer.github_login) or {}).get("reason") or ""),
+                        "load": candidate.load, "capacity": maintainer.capacity_per_week},
+                notification=notification,
+            ))
+            if role == "primary":
+                load[maintainer.github_login] = load.get(maintainer.github_login, 0) + 1
+        self.store.commit_assignments(row.item_key, row.score, assignments, now=now)
+        return True
 
 
 @dataclass

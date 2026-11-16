@@ -172,13 +172,12 @@ def test_full_pipeline_extract_score_route_notify(store: PostgresTriageStore, da
     assert scores["vllm-project/vllm#1"] == "page"
     assert scores["vllm-project/vllm#2"] in ("watch", "ignore")
     assert "vllm-project/vllm#3" not in scores
-    # Page band: a primary and a backup, both matched one criterion; tie broken by login.
-    assert assigned == [("vllm-project/vllm#1", "b200-person", "primary"),
-                        ("vllm-project/vllm#1", "moe-person", "backup")]
+    # Page band, rule matches only: a primary but no backup (backups must be
+    # clear matches). Tie broken by login.
+    assert assigned == [("vllm-project/vllm#1", "b200-person", "primary")]
     sent = outbox(database_url)
     assert [(d, mode, dest) for d, mode, dest, _ in sent] == [
         ("triage:page:vllm-project/vllm#1:b200-person:primary", "shadow", "U0000000002"),
-        ("triage:page:vllm-project/vllm#1:moe-person:backup", "shadow", "U0000000001"),
     ]
     assert "DeepSeek-V3.1 fails to start" in json.dumps(sent[0][3])
 
@@ -186,7 +185,7 @@ def test_full_pipeline_extract_score_route_notify(store: PostgresTriageStore, da
     RouteHandler(store=store, config=default_config(), clock=clock, delivery_mode=DeliveryMode.SHADOW)(
         ScheduledCommand("triage_route", NOW + timedelta(minutes=5))
     )
-    assert len(outbox(database_url)) == 2
+    assert len(outbox(database_url)) == 1
     assert store.scoring_candidates(scoring_version=default_config().version, limit=10) == []
 
 
@@ -421,3 +420,39 @@ def test_a_burst_of_drops_is_flagged_in_the_team_digest(store: PostgresTriageSto
                   team_channel="C1", suppression_threshold=3)(ScheduledCommand("triage_digest", NOW))
     [(_, mode, _, payload)] = outbox(database_url)
     assert mode == "shadow" and "mallory: 2 dropped, 1 slop" in json.dumps(payload)
+
+
+def test_clear_matches_get_capacity_before_higher_scoring_medium_ones(
+    store: PostgresTriageStore, database_url: str
+) -> None:
+    from triage.relevance import run_relevance
+
+    ingest(store, issue(1001, "Big crash, loosely related"))
+    ingest(store, issue(1002, "Smaller bug in their own kernel"))
+    seed(store, [{"github_login": "gau-nernst", "notes": "kernels", "capacity_per_week": 1},
+                 {"github_login": "amd-person", "notes": "ROCm"}])
+    loose = {**SEVERE, "type": "bug"}                       # scores higher
+    own = {**SEVERE, "type": "bug", "severity": {**SEVERE["severity"], "serving_broken": False,
+                                                  "crash": False, "hang": True}}
+    run_extraction(store, FakeBackend({"Big crash": loose, "Smaller bug": own}), budget=Budget(), now=NOW, workers=1)
+    with psycopg.connect(database_url, autocommit=True) as c:  # backlog: the weekly cap applies
+        c.execute("UPDATE triage_items SET gh_created_at = %s", (NOW - timedelta(days=10),))
+    route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
+                         delivery_mode=DeliveryMode.SHADOW, github=FakeProfiles())  # type: ignore[arg-type]
+    route(ScheduledCommand("triage_route", NOW))
+
+    class Judge:
+        def complete(self, *, system: str, prompt: str, schema: dict[str, Any]) -> LLMResult:
+            level = "medium" if "Big crash" in prompt else "high"
+            return LLMResult(output={"judgments": [
+                {"github_login": "gau-nernst", "relevance": level, "evidence_prs": [61343], "reason": level},
+                {"github_login": "amd-person", "relevance": "none", "evidence_prs": [], "reason": ""},
+            ]}, model="fake")
+
+    assert run_relevance(store, Judge(), now=NOW, min_score=40).judged == 2
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=5)))
+    with psycopg.connect(database_url) as c:
+        scores = dict(c.execute("SELECT i.number, s.score FROM triage_scores s JOIN triage_items i USING (item_key)").fetchall())
+        rows = c.execute("SELECT item_key FROM triage_assignments").fetchall()
+    assert scores[1001] > scores[1002]
+    assert rows == [("vllm-project/vllm#1002",)]  # the one slot went to the clear match

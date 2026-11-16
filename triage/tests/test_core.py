@@ -253,7 +253,8 @@ def test_choose_owners_respects_capacity_away_not_mine_and_min_score() -> None:
     # A page-band item ignores capacity and gets a backup.
     owners = choose_owners(ctx(f, score=95, band="page"), people, load={"busy": 2},
                            excluded={"declined"}, today=date(2026, 11, 12))
-    assert [o.maintainer.github_login for o in owners] == ["free", "picky"] or len(owners) == 2
+    # Rule-only matches never become the backup; a backup must be a clear match.
+    assert [o.maintainer.github_login for o in owners] == ["free"]
 
 
 def test_more_specific_match_wins() -> None:
@@ -342,7 +343,7 @@ def test_author_of_the_culprit_pr_outranks_rule_matches() -> None:
     author = Maintainer(github_login="gau-nernst", rules={"areas": ["moe"], "exclude": {"types": ["regression"]}})
     quant = Maintainer(github_login="quant-owner", rules={"areas": ["quantization"], "hardware": ["B200"]})
     owners = choose_owners(ctx, [quant, author], load={}, excluded=set(), today=date(2026, 11, 12))
-    assert [o.maintainer.github_login for o in owners] == ["gau-nernst", "quant-owner"]
+    assert [o.maintainer.github_login for o in owners] == ["gau-nernst"]  # rule-only: no backup
     assert owners[0].involvement == ("authored #61343", "commented")
     # Saying "not mine" still wins over involvement.
     owners = choose_owners(ctx, [quant, author], load={}, excluded={"gau-nernst"}, today=date(2026, 11, 12))

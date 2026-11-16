@@ -64,7 +64,20 @@ def test_high_beats_medium_beats_rules_and_exclude_blocks_relevance() -> None:
     owners = choose_owners(
         ctx({"medium": {"relevance": "medium"}, "nvidia": {"relevance": "high"}}, band="page", hardware=["B200"]),
         [rule_only, medium, high_but_excluded], load={}, excluded=set(), today=date(2026, 11, 12))
-    assert [o.maintainer.github_login for o in owners] == ["medium", "rules"]
+    assert [o.maintainer.github_login for o in owners] == ["medium"]  # backups must be clear matches
+
+
+def test_strong_only_pass_and_strong_backups() -> None:
+    people = [Maintainer(github_login="a"), Maintainer(github_login="b"), Maintainer(github_login="c")]
+    judged = {"a": {"relevance": "medium"}, "b": {"relevance": "high"}, "c": {"relevance": "high"}}
+    strong = choose_owners(ctx(judged, band="page"), people, load={}, excluded=set(),
+                           today=date(2026, 11, 12), strong_only=True)
+    assert [o.maintainer.github_login for o in strong] == ["b", "c"]
+    only_medium = {"a": {"relevance": "medium"}}
+    assert choose_owners(ctx(only_medium, band="page"), people, load={}, excluded=set(),
+                         today=date(2026, 11, 12), strong_only=True) == []
+    owners = choose_owners(ctx(only_medium, band="page"), people, load={}, excluded=set(), today=date(2026, 11, 12))
+    assert [(o.maintainer.github_login, o.strong) for o in owners] == [("a", False)]
 
 
 def test_backlog_page_items_respect_capacity_but_fresh_ones_do_not() -> None:

@@ -26,16 +26,17 @@ from xml.sax.saxutils import escape
 from triage.extract import BudgetExhausted, ExtractionError, LLMBackend
 
 RELEVANCE_LEVELS = ("high", "medium", "low", "none")
-PROMPT_VERSION = "rel-v1"
+PROMPT_VERSION = "rel-v2"
 MAX_PRS_PER_KIND = 120
 
 SYSTEM = """You decide which vLLM maintainers an issue or pull request is relevant to, judged by what each maintainer actually works on: their recent authored and reviewed PRs, and their own notes.
 
 Levels:
-- high: squarely in code or features they wrote or own (same kernel, feature, model path, or a PR of theirs is the likely cause or fix).
-- medium: adjacent: same subsystem or model family where they author or review, but not their exact code.
-- low: shares only generic words (a dtype like fp8, a popular model name, a GPU) with otherwise unrelated work.
+- high: squarely their code or feature: a PR they AUTHORED changed the code path involved, is the likely cause, or is the natural fix; or their notes claim this exact area.
+- medium: they would likely want to look at it: they AUTHOR regularly in the same subsystem (not just the same model, GPU or dtype), so the right fix is plausibly theirs to make or review.
+- low: only shares context with their work: same GPU family, dtype (fp8, nvfp4), popular model, or they merely REVIEWED nearby PRs. Reviews alone are never enough for medium.
 - none: unrelated.
+If your own reason would say "not their code" or "they authored none of it", the answer is low, not medium.
 
 Follow each maintainer's notes: if they say they do not want something, it is at most low for them; if they ask for something, treat it as at least medium.
 Cite as evidence only PR numbers from that maintainer's own list. Judge every maintainer listed. Be strict: most items are low or none for most people.
@@ -47,7 +48,9 @@ MAINTAINERS
 
 
 def profile_hash(prs: list[dict[str, Any]], notes: str) -> str:
-    digest = hashlib.sha256(json.dumps([prs, notes], sort_keys=True).encode())
+    """Covers the PRs, the maintainer's notes and the prompt version, so a
+    change to any of them re-queues that maintainer's judgements."""
+    digest = hashlib.sha256(json.dumps([PROMPT_VERSION, prs, notes], sort_keys=True).encode())
     return digest.hexdigest()[:24]
 
 
