@@ -12,7 +12,6 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import psycopg
 import pytest
 
 from alerting import timings_snapshot as ts
@@ -33,43 +32,70 @@ GOOD = {
 OLD_ENTRY = {"fetched_at": "2026-11-12T00:00:00Z", "response": {**GOOD, "setupMs": 1}}
 
 
-class FakeConnection:
-    def __init__(self, rows_per_call: list[list[tuple[str, str]]]) -> None:
-        self.rows_per_call = rows_per_call
-        self.params: list[dict[str, Any]] = []
+class FakeClickHouse:
+    def __init__(self, rows: list[dict[str, str]]) -> None:
+        self.rows = rows
+        self.calls: list[tuple[str, dict[str, str]]] = []
 
-    def __enter__(self) -> "FakeConnection":
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        pass
-
-    def execute(self, sql: str, params: dict[str, Any]) -> "FakeConnection":
-        self.params.append(params)
-        self.rows = self.rows_per_call[len(self.params) - 1]
-        return self
-
-    def fetchall(self) -> list[tuple[str, str]]:
+    def query(self, sql: str, params: dict[str, str]) -> list[dict[str, str]]:
+        self.calls.append((sql, params))
         return self.rows
 
 
-def test_list_pairs_reads_the_window_in_one_statement() -> None:
-    connection = FakeConnection(
-        [[("a", "gpu_1"), ("a", "gpu_1"), ("b", "amd_mi325_1")]]
+def test_list_pairs_reads_the_window_in_one_query() -> None:
+    client = FakeClickHouse(
+        [
+            {"step_key": "a", "agent_queue": "gpu_1"},
+            {"step_key": "a", "agent_queue": "gpu_1"},
+            {"step_key": "b", "agent_queue": "amd_mi325_1"},
+        ]
     )
 
-    pairs = ts.list_pairs(connection, now=NOW, days=ts.LOOKBACK_DAYS)
+    pairs = ts.list_pairs(client, now=NOW, days=ts.LOOKBACK_DAYS)
 
     assert pairs == {("a", "gpu_1"), ("b", "amd_mi325_1")}
-    assert connection.params == [{"since": NOW - timedelta(days=14), "newest": 20}]
+    assert client.calls == [
+        (ts.PAIRS_SQL, {"since": "2026-10-30 12:00:00.000000", "newest": "20"})
+    ]
 
 
-def test_pairs_query_repeats_each_branch_index_predicate_in_every_subquery() -> None:
-    for branch in ("main", "khluu/otel"):
-        predicate = f"(span_attributes->>'buildkite.build.branch') = '{branch}'"
-        assert ts.PAIRS_SQL.count(predicate) == 3
-    assert ts.PAIRS_SQL.count("span_name = 'buildkite.job'") == 6
-    assert "\nUNION\n" in ts.PAIRS_SQL
+def test_pairs_query_reads_the_job_spans_the_endpoint_reads() -> None:
+    # The same job-span filter as /api/timings/latest, on main and the
+    # treatment branch, deduped like every ClickHouse span read.
+    for predicate in (
+        "FROM ci.otel_spans",
+        "span_name = 'buildkite.job'",
+        "job_type = 'script'",
+        "pipeline_slug = 'ci'",
+        "build_branch IN ('main', 'khluu/otel')",
+        "start_time >= {since:DateTime64(6, 'UTC')}",
+        "LIMIT 1 BY trace_id, span_id",
+        "LIMIT {newest:UInt32} BY step_key, build_branch",
+    ):
+        assert predicate in ts.PAIRS_SQL
+    # ClickHouse applies DISTINCT before LIMIT BY: the newest-jobs limit must
+    # run in a subquery or a queue the step left would still be listed.
+    sql = ts.PAIRS_SQL.strip()
+    assert sql.startswith("SELECT DISTINCT step_key, agent_queue\nFROM (")
+    assert sql.index("LIMIT {newest:UInt32} BY") < sql.rindex(")")
+
+
+def _clickhouse_env(
+    monkeypatch: pytest.MonkeyPatch, client: FakeClickHouse
+) -> list[dict[str, str]]:
+    """The worker's ClickHouse read credentials, and a client that records how
+    it was built."""
+    monkeypatch.setenv("CLICKHOUSE_URL", "https://clickhouse.example")
+    monkeypatch.setenv("CLICKHOUSE_READ_USER", "reader")
+    monkeypatch.setenv("CLICKHOUSE_READ_PASSWORD", "secret")
+    built: list[dict[str, str]] = []
+
+    def build(**kwargs: str) -> FakeClickHouse:
+        built.append(kwargs)
+        return client
+
+    monkeypatch.setattr(ts, "ClickHouseQueryClient", build)
+    return built
 
 
 def test_tests_over_ms_matches_the_generator() -> None:
@@ -364,10 +390,7 @@ def test_main_gives_the_fetches_forty_minutes(monkeypatch: pytest.MonkeyPatch) -
     import time
 
     calls: list[dict[str, Any]] = []
-    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
-    monkeypatch.setattr(
-        psycopg, "connect", lambda url, prepare_threshold: FakeConnection([[]])
-    )
+    _clickhouse_env(monkeypatch, FakeClickHouse([]))
     monkeypatch.setattr(ts, "S3Store", lambda: None)
 
     def run(**kwargs: Any) -> int:
@@ -618,10 +641,10 @@ def test_the_store_defaults_to_the_public_bucket(
     assert clients == ["s3"]
 
 
-def test_main_needs_a_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("DATABASE_URL", raising=False)
+def test_main_needs_the_clickhouse_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLICKHOUSE_URL", raising=False)
 
-    with pytest.raises(RuntimeError, match="missing: DATABASE_URL"):
+    with pytest.raises(RuntimeError, match="missing: CLICKHOUSE_URL"):
         ts.main([])
 
 
@@ -629,32 +652,31 @@ def test_main_needs_a_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
     "arguments, days, puts",
     [([], 14, 2), (["--days", "3"], 3, 2), (["--dry-run"], 14, 0)],
 )
-def test_main_lists_pairs_without_prepared_statements_and_publishes(
+def test_main_lists_pairs_from_clickhouse_and_publishes(
     monkeypatch: pytest.MonkeyPatch, arguments: list[str], days: int, puts: int
 ) -> None:
-    connection = FakeConnection([[("a", "gpu_1")], [("b", "gpu_1")]])
-    connects = []
-
-    def connect(url: str, prepare_threshold: Any) -> FakeConnection:
-        connects.append((url, prepare_threshold))
-        return connection
-
+    client = FakeClickHouse(
+        [
+            {"step_key": "a", "agent_queue": "gpu_1"},
+            {"step_key": "b", "agent_queue": "gpu_1"},
+        ]
+    )
+    clients = _clickhouse_env(monkeypatch, client)
     s3 = FakeS3()
     _fake_boto3(monkeypatch, s3)
-    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
-    monkeypatch.setattr(psycopg, "connect", connect)
     monkeypatch.setattr(
         ts, "fetch_from_endpoint", _fetch({"a|gpu_1": GOOD, "b|gpu_1": GOOD})
     )
 
     assert ts.main(arguments) == 0
-    assert connects == [("postgresql://example", None)]
-    [params] = connection.params
-    assert params["since"] < datetime.now(timezone.utc) - timedelta(
-        days=days
-    ) + timedelta(minutes=1)
-    assert params["since"] > datetime.now(timezone.utc) - timedelta(
-        days=days
-    ) - timedelta(minutes=1)
+    assert clients == [
+        {"url": "https://clickhouse.example", "user": "reader", "password": "secret"}
+    ]
+    [(_, params)] = client.calls
+    since = datetime.strptime(params["since"], "%Y-%m-%d %H:%M:%S.%f").replace(
+        tzinfo=timezone.utc
+    )
+    expected = datetime.now(timezone.utc) - timedelta(days=days)
+    assert expected - timedelta(minutes=1) < since < expected + timedelta(minutes=1)
     assert [key for _, key in s3.puts][-1:] == ([ts.POINTER] if puts else [])
     assert len(s3.puts) == puts

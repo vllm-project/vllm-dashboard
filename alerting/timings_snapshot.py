@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import gzip
 import json
-import os
 import sys
 import time
 import urllib.error
@@ -26,6 +25,8 @@ import urllib.request
 from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from alerting.fast_ci import ClickHouseQueryClient
 
 TIMINGS_URL = "https://ci.vllm.ai/api/timings/latest"
 # The generator's own testsOverMs: (MAX_SHARD_SECONDS - MAX_SETUP_SECONDS) *
@@ -49,52 +50,44 @@ FETCH_TIMEOUT_SECONDS = 120
 FETCH_BUDGET_SECONDS = 40 * 60
 
 
-# A plain DISTINCT reads every job span in the window, each a heap fetch
-# (agent_queue is not in the index): 14 days ran past a 30 s statement
-# timeout. This skips through a branch's partial index (migrations 0029, 0035)
-# one step key at a time (about 560 descents), then reads each step's newest
-# job spans only: 5 s cold, under 0.1 s warm. Each subquery repeats the index
-# predicate literally, as /api/timings/latest does. The treatment branch
-# counts too: the endpoint serves its timings for a step main never timed.
-def _pairs_sql(branch: str) -> str:
-    jobs = f"""span_name = 'buildkite.job'
+# The job spans /api/timings/latest reads (latest-test-timings-clickhouse.ts),
+# on main and the treatment branch, whose timings the endpoint serves for a
+# step main never timed. Like every ClickHouse span read, a retried export's
+# duplicate rows are dropped first, so they can't crowd out a queue.
+# DISTINCT runs before ORDER BY and LIMIT BY, so it gets its own level.
+PAIRS_SQL = """
+SELECT DISTINCT step_key, agent_queue
+FROM (
+  SELECT step_key, agent_queue
+  FROM (
+    SELECT step_key, agent_queue, build_branch, start_time
+    FROM ci.otel_spans
+    WHERE span_name = 'buildkite.job'
       AND job_type = 'script'
       AND pipeline_slug = 'ci'
-      AND (span_attributes->>'buildkite.build.branch') = '{branch}'
-      AND start_time >= %(since)s"""
-    return f"""(
-  WITH RECURSIVE steps(step_key) AS (
-    (SELECT step_key FROM otel_spans
-     WHERE {jobs} AND step_key IS NOT NULL
-     ORDER BY step_key LIMIT 1)
-    UNION ALL
-    SELECT (SELECT step_key FROM otel_spans
-            WHERE {jobs} AND step_key > steps.step_key
-            ORDER BY step_key LIMIT 1)
-    FROM steps WHERE steps.step_key IS NOT NULL
+      AND build_branch IN ('main', 'khluu/otel')
+      AND start_time >= {since:DateTime64(6, 'UTC')}
+      AND step_key != ''
+      AND agent_queue != ''
+    ORDER BY received_at DESC
+    LIMIT 1 BY trace_id, span_id
   )
-  SELECT steps.step_key, newest.agent_queue
-  FROM steps
-  CROSS JOIN LATERAL (
-    SELECT agent_queue FROM otel_spans
-    WHERE {jobs} AND step_key = steps.step_key
-    ORDER BY start_time DESC LIMIT %(newest)s
-  ) AS newest
-  WHERE newest.agent_queue IS NOT NULL
-)"""
-
-
-PAIRS_SQL = _pairs_sql("main") + "\nUNION\n" + _pairs_sql("khluu/otel")
+  ORDER BY start_time DESC
+  LIMIT {newest:UInt32} BY step_key, build_branch
+)
+"""
 
 Fetch = Callable[[str, str], "dict[str, Any] | None"]
 
 
-def list_pairs(connection: Any, *, now: datetime, days: int) -> set[tuple[str, str]]:
+def list_pairs(client: Any, *, now: datetime, days: int) -> set[tuple[str, str]]:
     """The (step_key, agent_queue) pairs main or the treatment branch ran in
     the last `days` days."""
-    params = {"since": now - timedelta(days=days), "newest": NEWEST_JOBS_PER_STEP}
-    rows = connection.execute(PAIRS_SQL, params).fetchall()
-    return {(step_key, queue) for step_key, queue in rows}
+    since = (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S.%f")
+    rows = client.query(
+        PAIRS_SQL, {"since": since, "newest": str(NEWEST_JOBS_PER_STEP)}
+    )
+    return {(row["step_key"], row["agent_queue"]) for row in rows}
 
 
 def fetch_from_endpoint(step_key: str, queue: str) -> dict[str, Any] | None:
@@ -293,16 +286,16 @@ def main(arguments: list[str] | None = None) -> int:
         "--dry-run", action="store_true", help="fetch everything, publish nothing"
     )
     args = parser.parse_args(arguments)
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("required environment variable is missing: DATABASE_URL")
+    from alerting.worker import _required_environment
 
-    import psycopg
-
+    # The read credentials the worker's Fast CI scan uses.
+    client = ClickHouseQueryClient(
+        url=_required_environment("CLICKHOUSE_URL"),
+        user=_required_environment("CLICKHOUSE_READ_USER"),
+        password=_required_environment("CLICKHOUSE_READ_PASSWORD"),
+    )
     now = datetime.now(timezone.utc)
-    # The transaction pooler cannot hold prepared statements.
-    with psycopg.connect(database_url, prepare_threshold=None) as connection:
-        pairs = list_pairs(connection, now=now, days=args.days)
+    pairs = list_pairs(client, now=now, days=args.days)
     return run(
         pairs=pairs,
         store=S3Store(),
