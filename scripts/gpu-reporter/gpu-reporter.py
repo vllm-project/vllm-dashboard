@@ -117,9 +117,29 @@ MAX_XIDS_PER_REPORT = 200  # the ingestion contract allows 500
 # days) catches up over several reports instead of timing out every time.
 JOURNAL_READ_LIMIT = 10000
 MAX_XID_MESSAGE = 512
+# Fallback checkout roots, scanned when the agent config's build-path can't
+# be read; checkout_patterns() prefers the configured path over these.
 CHECKOUT_GLOBS = (
     "/mnt/local/buildkite-agent/builds/*/vllm/ci",
     "/dev/shm/buildkite-agent/builds/*/vllm/ci",
+    "/var/lib/buildkite-agent/builds/*/vllm/ci",
+    "/raid0/buildkite-agent/builds/*/vllm/ci",
+)
+AGENT_CONFIG = "/etc/buildkite-agent/buildkite-agent.cfg"
+BUILD_PATH_RE = re.compile(r'build-path\s*=\s*"?([^"\n]+)"?')
+# The agent's systemd unit (first existing path wins) and its drop-in
+# directories in increasing precedence: a later BUILDKITE_BUILD_PATH
+# assignment overrides an earlier one, matching systemd.
+AGENT_UNIT_PATHS = (
+    "/etc/systemd/system/buildkite-agent.service",
+    "/usr/lib/systemd/system/buildkite-agent.service",
+    "/lib/systemd/system/buildkite-agent.service",
+)
+AGENT_UNIT_DROPIN_DIRS = (
+    "/usr/lib/systemd/system/buildkite-agent.service.d",
+    "/lib/systemd/system/buildkite-agent.service.d",
+    "/run/systemd/system/buildkite-agent.service.d",
+    "/etc/systemd/system/buildkite-agent.service.d",
 )
 XID_RE = re.compile(r"NVRM: Xid \(PCI:([0-9A-Fa-f:.]+)\): (\d+)(?:,\s*(.*))?$")
 
@@ -129,6 +149,9 @@ XID_RE = re.compile(r"NVRM: Xid \(PCI:([0-9A-Fa-f:.]+)\): (\d+)(?:,\s*(.*))?$")
 #   /mnt/local   - buildkite build path is /mnt/local/buildkite-agent/builds
 #   /raid0       - docker data-root is /raid0/docker
 #   /mnt/vllm-ci - shared NFS share for datasets/models
+# The build path varies by host: some hosts build on /var/lib or /raid0
+# instead (all four roots are in the CHECKOUT_GLOBS fallback); the roles
+# below still classify those mounts by their other uses.
 # Unclassified mounts default to "system" for / and "other" (never alerted).
 MOUNT_ROLES = {
     "/": "system",
@@ -574,15 +597,143 @@ def _agent_cant_empty(path, root_uid):
     return False
 
 
-def find_root_owned_slots(patterns=CHECKOUT_GLOBS, root_uid=0):
+def checkout_patterns():
+    """Checkout globs for the agent's effective build-path.
+
+    The effective path comes first from the agent's systemd unit and
+    drop-ins (BUILDKITE_BUILD_PATH overrides the cfg for the agent, so it
+    overrides it here too; a later drop-in wins over an earlier one), then
+    from the cfg's build-path. Only that one setting is read from either
+    source — the cfg also holds the agent token — and nothing read is
+    logged. Falls back to CHECKOUT_GLOBS when neither source yields a
+    usable absolute path.
+    """
+    build_path = _systemd_build_path()
+    if build_path is None:
+        build_path = _cfg_build_path()
+    if build_path:
+        return (build_path + "/*/vllm/ci",)
+    return CHECKOUT_GLOBS
+
+
+def _cfg_build_path():
+    """The cfg's build-path, or None when missing, unreadable or unusable."""
+    try:
+        with open(AGENT_CONFIG) as f:
+            for line in f:
+                match = BUILD_PATH_RE.match(line)
+                if match:
+                    value = match.group(1).strip()
+                    return value if _usable_path(value) else None
+    except OSError:
+        pass
+    return None
+
+
+def _systemd_build_path():
+    """The effective BUILDKITE_BUILD_PATH from the agent unit + drop-ins.
+
+    Returns None when no unit file exists, nothing assigns a usable value,
+    or the last assignment is unusable (a value needing `$`/`%`/escape
+    expansion is not a path the reporter can check). A bare Environment=
+    line resets earlier assignments, matching systemd.
+    """
+    path = None
+    for unit in AGENT_UNIT_PATHS:
+        text = _read_text(unit)
+        if text is not None:
+            path = _unit_build_path(text, path)
+            break
+    for dropin_dir in AGENT_UNIT_DROPIN_DIRS:
+        try:
+            names = sorted(os.listdir(dropin_dir))
+        except OSError:
+            continue
+        for name in names:
+            if name.endswith(".conf"):
+                text = _read_text(os.path.join(dropin_dir, name))
+                if text is not None:
+                    path = _unit_build_path(text, path)
+    return path
+
+
+def _read_text(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _unit_build_path(text, current):
+    """Apply a unit file's [Service] Environment= lines to `current`.
+
+    Only the exact BUILDKITE_BUILD_PATH setting is extracted; every other
+    assignment is discarded unread.
+    """
+    in_service = False
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            in_service = line == "[Service]"
+            continue
+        if not in_service or not line.startswith("Environment="):
+            continue
+        rest = line[len("Environment="):]
+        if not rest.strip():
+            current = None  # a bare Environment= resets all assignments
+            continue
+        for word in _unit_words(rest):
+            if word.startswith("BUILDKITE_BUILD_PATH="):
+                value = word[len("BUILDKITE_BUILD_PATH="):]
+                current = value if _usable_path(value) else None
+    return current
+
+
+def _unit_words(text):
+    """Assignments in an Environment= value, honoring double quotes.
+
+    A backslash stays a plain character, so a value needing escape
+    expansion contains one and reads as unusable later. An unbalanced
+    quote makes the whole line unusable.
+    """
+    words = []
+    word = []
+    quoted = False
+    for char in text:
+        if char == '"':
+            quoted = not quoted
+        elif quoted or not char.isspace():
+            word.append(char)
+        elif word:
+            words.append("".join(word))
+            word = []
+    if quoted:
+        return []
+    if word:
+        words.append("".join(word))
+    return words
+
+
+def _usable_path(value):
+    """An absolute path needing no expansion."""
+    return (value.startswith("/")
+            and not any(c in value for c in "$%\\"))
+
+
+def find_root_owned_slots(patterns=None, root_uid=0):
     """Checkout dirs the agent can't delete because of root-owned files.
 
     Job containers run as root, so a directory created in the bind-mounted
     checkout comes out root:root 0755 and the agent can't empty it; the next
     clone on that slot fails. Only root-owned top-level directories are
-    walked, so a normal checkout costs one scandir. Raises on an unreadable
+    walked, so a normal checkout costs one scandir. With no `patterns` the
+    agent's effective build-path is used (see checkout_patterns), falling
+    back to CHECKOUT_GLOBS when it can't be read. Raises on an unreadable
     checkout; the caller reports null rather than an empty list.
     """
+    if patterns is None:
+        patterns = checkout_patterns()
     slots = []
     for pattern in patterns:
         for checkout in sorted(glob.glob(pattern)):

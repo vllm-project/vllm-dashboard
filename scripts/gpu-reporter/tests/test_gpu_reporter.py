@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import time
 
+import pytest
+
 HOST_KEYS = {
     "cpu_util", "cpu_count", "ram_used_bytes",
     "ram_total_bytes", "ram_available_bytes", "disks",
@@ -432,6 +434,412 @@ def test_find_root_owned_slots(reporter, tmp_path):
         str(deep), str(no_read), str(no_search), str(sticky), str(stuck)]
     assert reporter.find_root_owned_slots((pattern,), root_uid=os.getuid() + 1) == []
     assert reporter.find_root_owned_slots((str(tmp_path / "nope" / "*"),)) == []
+
+
+def test_root_owned_means_uid_0(reporter):
+    import inspect
+
+    # The default the production caller relies on: root is uid 0.
+    assert inspect.signature(
+        reporter.find_root_owned_slots).parameters["root_uid"].default == 0
+
+
+@pytest.fixture(autouse=True)
+def _isolated_unit_paths(reporter, monkeypatch, tmp_path):
+    """Never read the real host's unit files: a test that does not install
+    a fake unit must see no systemd override."""
+    monkeypatch.setattr(reporter, "AGENT_UNIT_PATHS",
+                        (str(tmp_path / "no-unit"),))
+    monkeypatch.setattr(reporter, "AGENT_UNIT_DROPIN_DIRS",
+                        (str(tmp_path / "no-dropins"),))
+
+
+def test_the_configured_build_path_is_scanned(reporter, tmp_path, monkeypatch):
+    """The build-path from the agent config is scanned, even when no
+    fallback glob would match it."""
+    import os
+
+    # Pinned so discovery reads the real config in production.
+    assert reporter.AGENT_CONFIG == "/etc/buildkite-agent/buildkite-agent.cfg"
+
+    builds = tmp_path / "novel-root" / "buildkite-agent" / "builds"
+    stuck = builds / "agent-1" / "vllm" / "ci"
+    (stuck / ".runtime-shard").mkdir(parents=True)
+    (stuck / ".runtime-shard" / "f").write_text("x")
+    deletable = builds / "agent-2" / "vllm" / "ci"
+    (deletable / ".fnrec").mkdir(parents=True)
+    (deletable / ".fnrec" / "f").write_text("x")
+    os.chmod(deletable / ".fnrec", 0o777)
+    config = tmp_path / "buildkite-agent.cfg"
+    # Other settings (the file also holds the agent token) are ignored.
+    config.write_text('name="agent-1"\nbuild-path="%s"\n' % builds)
+    monkeypatch.setattr(reporter, "AGENT_CONFIG", str(config))
+
+    # The test user stands in for root: the stuck slot is flagged, the
+    # agent-deletable one is not.
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+    # Standing in for the agent, everything here is owned by someone else,
+    # so nothing is flagged.
+    assert reporter.find_root_owned_slots(root_uid=os.getuid() + 1) == []
+
+
+def test_an_unquoted_build_path_with_trailing_whitespace_is_parsed(
+        reporter, tmp_path, monkeypatch):
+    import os
+
+    builds = tmp_path / "novel-root" / "buildkite-agent" / "builds"
+    stuck = builds / "agent-1" / "vllm" / "ci"
+    (stuck / ".runtime-shard").mkdir(parents=True)
+    (stuck / ".runtime-shard" / "f").write_text("x")
+    config = tmp_path / "buildkite-agent.cfg"
+    config.write_text("build-path=%s \n" % builds)
+    monkeypatch.setattr(reporter, "AGENT_CONFIG", str(config))
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_an_unreadable_agent_config_falls_back_to_the_known_globs(
+        reporter, tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setattr(reporter, "AGENT_CONFIG", str(tmp_path / "nope"))
+    stuck = tmp_path / "builds" / "agent-1" / "vllm" / "ci"
+    (stuck / ".runtime-shard").mkdir(parents=True)
+    (stuck / ".runtime-shard" / "f").write_text("x")
+    monkeypatch.setattr(reporter, "CHECKOUT_GLOBS",
+                        (str(tmp_path / "builds" / "*" / "vllm" / "ci"),))
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_an_agent_config_without_a_build_path_falls_back(
+        reporter, tmp_path, monkeypatch):
+    import os
+
+    config = tmp_path / "buildkite-agent.cfg"
+    config.write_text('name="agent-1"\n')
+    monkeypatch.setattr(reporter, "AGENT_CONFIG", str(config))
+    stuck = tmp_path / "builds" / "agent-1" / "vllm" / "ci"
+    (stuck / ".runtime-shard").mkdir(parents=True)
+    (stuck / ".runtime-shard" / "f").write_text("x")
+    monkeypatch.setattr(reporter, "CHECKOUT_GLOBS",
+                        (str(tmp_path / "builds" / "*" / "vllm" / "ci"),))
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def _stuck_slot(builds, name="agent-1"):
+    """A checkout with a directory the (test-user) agent can't empty."""
+    ci = builds / name / "vllm" / "ci"
+    (ci / ".runtime-shard").mkdir(parents=True)
+    (ci / ".runtime-shard" / "f").write_text("x")
+    return ci
+
+
+def _fake_agent_files(reporter, monkeypatch, tmp_path, cfg_builds,
+                      unit=None, dropins=None):
+    """Point the reporter at a fake agent cfg plus systemd unit layout."""
+    cfg = tmp_path / "buildkite-agent.cfg"
+    cfg.write_text('name="agent-1"\nbuild-path="%s"\n' % cfg_builds)
+    monkeypatch.setattr(reporter, "AGENT_CONFIG", str(cfg))
+    unit_file = tmp_path / "buildkite-agent.service"
+    if unit is not None:
+        unit_file.write_text(unit)
+    monkeypatch.setattr(reporter, "AGENT_UNIT_PATHS", (str(unit_file),))
+    dropin_dir = tmp_path / "buildkite-agent.service.d"
+    dropin_dir.mkdir()
+    for name, text in (dropins or {}).items():
+        (dropin_dir / name).write_text(text)
+    monkeypatch.setattr(reporter, "AGENT_UNIT_DROPIN_DIRS", (str(dropin_dir),))
+
+
+def test_the_systemd_build_path_override_wins_over_the_cfg(
+        reporter, tmp_path, monkeypatch):
+    """A BUILDKITE_BUILD_PATH drop-in overrides the cfg's build-path, like
+    systemd's environment does for the agent."""
+    import os
+
+    cfg_builds = tmp_path / "cfg-root" / "buildkite-agent" / "builds"
+    override_builds = tmp_path / "override-root" / "buildkite-agent" / "builds"
+    _stuck_slot(cfg_builds)
+    stuck = _stuck_slot(override_builds)
+    _fake_agent_files(
+        reporter, monkeypatch, tmp_path, cfg_builds,
+        dropins={"10-build-path.conf": (
+            "[Service]\n"
+            "Environment=BUILDKITE_BUILD_PATH=%s\n" % override_builds)})
+
+    # Only the effective root is scanned; the stale cfg root is not, so its
+    # obsolete checkout does not raise a false alarm.
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_later_dropins_override_earlier_ones(reporter, tmp_path, monkeypatch):
+    """systemd applies drop-ins in name order; the last assignment wins."""
+    import os
+
+    early_builds = tmp_path / "early" / "buildkite-agent" / "builds"
+    late_builds = tmp_path / "late" / "buildkite-agent" / "builds"
+    _stuck_slot(early_builds)
+    stuck = _stuck_slot(late_builds)
+    _fake_agent_files(
+        reporter, monkeypatch, tmp_path, tmp_path / "unused" / "builds",
+        dropins={
+            "10-a.conf": "[Service]\nEnvironment=BUILDKITE_BUILD_PATH=%s\n"
+                         % early_builds,
+            "20-b.conf": "[Service]\nEnvironment=BUILDKITE_BUILD_PATH=%s\n"
+                         % late_builds,
+            # Not a drop-in: ignored.
+            "old.conf.bak": "[Service]\nEnvironment=BUILDKITE_BUILD_PATH=%s\n"
+                            % (tmp_path / "backup" / "builds"),
+        })
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_a_build_path_set_in_the_main_unit_is_used(
+        reporter, tmp_path, monkeypatch):
+    import os
+
+    unit_builds = tmp_path / "unit-root" / "buildkite-agent" / "builds"
+    stuck = _stuck_slot(unit_builds)
+    _fake_agent_files(
+        reporter, monkeypatch, tmp_path, tmp_path / "unused" / "builds",
+        unit='[Service]\nEnvironment="BUILDKITE_BUILD_PATH=%s"\n'
+             % unit_builds)
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_a_later_bare_environment_line_resets_the_override(
+        reporter, tmp_path, monkeypatch):
+    """systemd: a bare Environment= clears earlier assignments, so the cfg
+    value is effective again."""
+    import os
+
+    cfg_builds = tmp_path / "cfg-root" / "buildkite-agent" / "builds"
+    stuck = _stuck_slot(cfg_builds)
+    _stuck_slot(tmp_path / "unit-root" / "buildkite-agent" / "builds")
+    _fake_agent_files(
+        reporter, monkeypatch, tmp_path, cfg_builds,
+        unit="[Service]\nEnvironment=BUILDKITE_BUILD_PATH=%s\n"
+             % (tmp_path / "unit-root" / "buildkite-agent" / "builds"),
+        dropins={"10-reset.conf": "[Service]\nEnvironment=\n"})
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_a_build_path_needing_expansion_is_not_trusted(
+        reporter, tmp_path, monkeypatch):
+    """A value with a specifier or variable reference is not a path the
+    reporter can check; the cfg value applies instead."""
+    import os
+
+    cfg_builds = tmp_path / "cfg-root" / "buildkite-agent" / "builds"
+    stuck = _stuck_slot(cfg_builds)
+    _stuck_slot(tmp_path / "expanded" / "buildkite-agent" / "builds")
+    _fake_agent_files(
+        reporter, monkeypatch, tmp_path, cfg_builds,
+        dropins={"10-build-path.conf": (
+            "[Service]\n"
+            f"Environment=BUILDKITE_BUILD_PATH={tmp_path}/expanded-%n"
+            "/buildkite-agent/builds\n")})
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_a_missing_dropin_directory_does_not_stop_the_scan(
+        reporter, tmp_path, monkeypatch):
+    """Drop-in dirs that don't exist (the common case) are skipped, and
+    later dirs still apply."""
+    import os
+
+    override_builds = tmp_path / "override-root" / "buildkite-agent" / "builds"
+    stuck = _stuck_slot(override_builds)
+    _fake_agent_files(
+        reporter, monkeypatch, tmp_path, tmp_path / "unused" / "builds",
+        dropins={"10-build-path.conf": (
+            "[Service]\n"
+            "Environment=BUILDKITE_BUILD_PATH=%s\n" % override_builds)})
+    monkeypatch.setattr(reporter, "AGENT_UNIT_DROPIN_DIRS", (
+        str(tmp_path / "nope.d"),
+        str(tmp_path / "buildkite-agent.service.d"),
+    ))
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_an_environment_line_outside_the_service_section_is_ignored(
+        reporter, tmp_path, monkeypatch):
+    import os
+
+    cfg_builds = tmp_path / "cfg-root" / "buildkite-agent" / "builds"
+    stuck = _stuck_slot(cfg_builds)
+    _stuck_slot(tmp_path / "wrong-root" / "buildkite-agent" / "builds")
+    _fake_agent_files(
+        reporter, monkeypatch, tmp_path, cfg_builds,
+        unit="Environment=BUILDKITE_BUILD_PATH=%s\n[Install]\n"
+             % (tmp_path / "wrong-root" / "buildkite-agent" / "builds"))
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_a_quoted_build_path_with_a_space_is_one_value(
+        reporter, tmp_path, monkeypatch):
+    """systemd: double quotes keep a space inside the value."""
+    import os
+
+    unit_builds = tmp_path / "sp aced" / "buildkite-agent" / "builds"
+    stuck = _stuck_slot(unit_builds)
+    _fake_agent_files(
+        reporter, monkeypatch, tmp_path, tmp_path / "unused" / "builds",
+        unit='[Service]\nEnvironment="BUILDKITE_BUILD_PATH=%s"\n'
+             % unit_builds)
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_an_environment_line_with_several_assignments_is_parsed(
+        reporter, tmp_path, monkeypatch):
+    """systemd allows several VAR=value assignments on one Environment=."""
+    import os
+
+    override_builds = tmp_path / "override-root" / "buildkite-agent" / "builds"
+    stuck = _stuck_slot(override_builds)
+    _fake_agent_files(
+        reporter, monkeypatch, tmp_path, tmp_path / "unused" / "builds",
+        dropins={"10-build-path.conf": (
+            "[Service]\n"
+            "Environment=BUILDKITE_BUILD_PATH=%s OTHER=1\n"
+            % override_builds)})
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_other_service_lines_do_not_stop_the_parse(
+        reporter, tmp_path, monkeypatch):
+    """Real drop-ins mix Environment= with other settings (ExecStartPre)."""
+    import os
+
+    override_builds = tmp_path / "override-root" / "buildkite-agent" / "builds"
+    stuck = _stuck_slot(override_builds)
+    _fake_agent_files(
+        reporter, monkeypatch, tmp_path, tmp_path / "unused" / "builds",
+        dropins={"10-build-path.conf": (
+            "[Service]\n"
+            "ExecStartPre=/usr/bin/install -d /x\n"
+            "Environment=BUILDKITE_BUILD_PATH=%s\n" % override_builds)})
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_a_reset_followed_by_a_new_assignment_uses_the_new_value(
+        reporter, tmp_path, monkeypatch):
+    """systemd: a bare Environment= clears, then a later line sets again."""
+    import os
+
+    override_builds = tmp_path / "override-root" / "buildkite-agent" / "builds"
+    stuck = _stuck_slot(override_builds)
+    _stuck_slot(tmp_path / "unit-root" / "buildkite-agent" / "builds")
+    _fake_agent_files(
+        reporter, monkeypatch, tmp_path, tmp_path / "unused" / "builds",
+        dropins={"10-a.conf": (
+            "[Service]\n"
+            f"Environment=BUILDKITE_BUILD_PATH={tmp_path}/unit-root"
+            "/buildkite-agent/builds\n"
+            "Environment=\n"
+            f"Environment=BUILDKITE_BUILD_PATH={override_builds}\n")})
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_a_custom_unit_file_masks_the_vendor_unit(
+        reporter, tmp_path, monkeypatch):
+    """systemd: a unit file in /etc fully replaces the vendor unit; the
+    vendor unit's assignments must not leak through."""
+    import os
+
+    cfg_builds = tmp_path / "cfg-root" / "buildkite-agent" / "builds"
+    stuck = _stuck_slot(cfg_builds)
+    _stuck_slot(tmp_path / "vendor-root" / "buildkite-agent" / "builds")
+    _fake_agent_files(reporter, monkeypatch, tmp_path, cfg_builds)
+    etc_unit = tmp_path / "etc.service"
+    etc_unit.write_text("[Service]\n")  # no Environment: nothing set
+    vendor_unit = tmp_path / "vendor.service"
+    vendor_unit.write_text(
+        "[Service]\nEnvironment=BUILDKITE_BUILD_PATH=%s\n"
+        % (tmp_path / "vendor-root" / "buildkite-agent" / "builds"))
+    monkeypatch.setattr(reporter, "AGENT_UNIT_PATHS",
+                        (str(etc_unit), str(vendor_unit)))
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_unit_search_paths_cover_the_real_unit_locations():
+    from conftest import load_module
+
+    # A fresh module: the autouse fixture points the fixture instance at
+    # fake paths, but production must read the real locations, with /etc
+    # last (highest precedence).
+    reporter = load_module("gpu_reporter_pins", "gpu-reporter.py")
+    assert reporter.AGENT_UNIT_PATHS == (
+        "/etc/systemd/system/buildkite-agent.service",
+        "/usr/lib/systemd/system/buildkite-agent.service",
+        "/lib/systemd/system/buildkite-agent.service",
+    )
+    assert reporter.AGENT_UNIT_DROPIN_DIRS == (
+        "/usr/lib/systemd/system/buildkite-agent.service.d",
+        "/lib/systemd/system/buildkite-agent.service.d",
+        "/run/systemd/system/buildkite-agent.service.d",
+        "/etc/systemd/system/buildkite-agent.service.d",
+    )
+
+
+def test_a_relative_build_path_in_the_cfg_falls_back(
+        reporter, tmp_path, monkeypatch):
+    """A cfg value that is not a plain absolute path is unusable."""
+    import os
+
+    config = tmp_path / "buildkite-agent.cfg"
+    config.write_text('build-path="relative/builds"\n')
+    monkeypatch.setattr(reporter, "AGENT_CONFIG", str(config))
+    stuck = _stuck_slot(tmp_path / "builds")
+    monkeypatch.setattr(reporter, "CHECKOUT_GLOBS",
+                        (str(tmp_path / "builds" / "*" / "vllm" / "ci"),))
+
+    assert reporter.find_root_owned_slots(root_uid=os.getuid()) == [str(stuck)]
+
+
+def test_checkout_globs_cover_the_var_lib_and_raid0_build_roots(
+        reporter, tmp_path):
+    """Hosts whose build-path is /var/lib or /raid0 must be scanned too."""
+    import os
+
+    for root in ("/var/lib", "/raid0"):
+        # The production constant must hold the root's glob, and the run
+        # below uses that glob, not a copy of it.
+        [pattern] = [p for p in reporter.CHECKOUT_GLOBS
+                     if p.startswith(root + "/")]
+
+        # The detector runs against a mirror of the root under tmp_path.
+        builds = tmp_path / root.lstrip("/") / "buildkite-agent" / "builds"
+        stuck = builds / "agent-1" / "vllm" / "ci"
+        (stuck / ".runtime-shard").mkdir(parents=True)
+        (stuck / ".runtime-shard" / "f").write_text("x")
+        deletable = builds / "agent-2" / "vllm" / "ci"
+        (deletable / ".fnrec").mkdir(parents=True)
+        (deletable / ".fnrec" / "f").write_text("x")
+        os.chmod(deletable / ".fnrec", 0o777)
+
+        local_pattern = str(tmp_path) + pattern
+        # The test user stands in for root: the stuck slot is flagged, the
+        # agent-deletable one is not.
+        assert reporter.find_root_owned_slots(
+            (local_pattern,), root_uid=os.getuid()) == [str(stuck)]
+        # Standing in for the agent, everything here is owned by someone
+        # else, so nothing is flagged.
+        assert reporter.find_root_owned_slots(
+            (local_pattern,), root_uid=os.getuid() + 1) == []
 
 
 def test_a_root_owned_directory_that_cant_be_read_is_an_unknown_reading(
