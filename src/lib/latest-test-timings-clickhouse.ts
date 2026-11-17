@@ -95,20 +95,39 @@ export async function clickHousePassingBuilds(
   if (builds.length === 0) return [];
 
   // A passing build whose test spans were lost in ingestion is skipped, so the
-  // previous build is used instead. Check newest first, in pages, and stop
-  // once enough builds have tests.
+  // previous build is used instead. So is one where a test's parent command
+  // span is missing or unlabelled (the job-end upload ran out of time before
+  // sending it): summarizeFiles() can't time such a build. Check newest first,
+  // in pages, and stop once enough builds have tests.
   const kept: ClickHousePassingBuild[] = [];
   const PAGE = 50;
   for (let offset = 0; offset < builds.length && kept.length < limit; offset += PAGE) {
     const page = builds.slice(offset, offset + PAGE);
-    const timed = new Set((await queryClickHouse<{ job_id: string }>(`
-      SELECT DISTINCT job_id
-      FROM ci.otel_spans
-      WHERE span_name = 'pytest.test' AND ci_span_kind = 'test' AND job_id IN {jobIds:Array(String)}
+    // Jobs with test spans, and how many of their tests' parents are not a
+    // labelled command span.
+    const orphansOfTimedJob = new Map((await queryClickHouse<{ job_id: string; orphans: string }>(`
+      SELECT t.job_id AS job_id, countIf(c.span_id IS NULL) AS orphans
+      FROM (
+        SELECT DISTINCT job_id, trace_id, parent_span_id
+        FROM ci.otel_spans
+        WHERE span_name = 'pytest.test' AND ci_span_kind = 'test' AND job_id IN {jobIds:Array(String)}
+      ) AS t
+      LEFT JOIN (
+        SELECT DISTINCT trace_id, span_id
+        FROM ci.otel_spans
+        WHERE span_name = 'ci.command' AND ci_span_kind = 'command' AND job_id IN {jobIds:Array(String)}
+          AND JSONExtractString(span_attributes, 'ci.command.label') != ''
+      ) AS c
+        ON c.trace_id = t.trace_id AND c.span_id = t.parent_span_id
+      GROUP BY t.job_id
+      SETTINGS join_use_nulls = 1
     `, { jobIds: page.flatMap((build) => build.job_ids) }, settings(options)))
-      .map((row) => row.job_id));
+      .map((row) => [row.job_id, Number(row.orphans)]));
     for (const build of page) {
-      if (build.job_ids.some((jobId) => timed.has(jobId))) kept.push(build);
+      const timedJobs = build.job_ids.filter((jobId) => orphansOfTimedJob.has(jobId));
+      if (timedJobs.length > 0 && timedJobs.every((jobId) => orphansOfTimedJob.get(jobId) === 0)) {
+        kept.push(build);
+      }
       if (kept.length === limit) break;
     }
   }
