@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { pipelineHref } from "@/lib/pipeline-navigation";
+import { usePipeline } from "@/lib/use-pipeline";
+import { Suspense } from "react";
 import {
   PerfSettingsMenu,
   PerfSettingsProvider,
@@ -19,13 +22,16 @@ export default function PerfLayout({
 }) {
   return (
     <PerfSettingsProvider>
-      <PerfLayoutContent>{children}</PerfLayoutContent>
+      <Suspense>
+        <PerfLayoutContent>{children}</PerfLayoutContent>
+      </Suspense>
     </PerfSettingsProvider>
   );
 }
 
 function PerfLayoutContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const pipeline = usePipeline();
 
   return (
     <div className="space-y-5">
@@ -37,7 +43,7 @@ function PerfLayoutContent({ children }: { children: React.ReactNode }) {
             return (
               <Link
                 key={t.href}
-                href={t.href}
+                href={pipelineHref(t.href, pipeline)}
                 className={`-mb-px inline-flex min-h-11 items-center border-b-2 px-3 text-sm font-medium transition-[color,transform] active:scale-[0.98] sm:min-h-10 ${
                   active
                     ? "border-indigo-500 text-zinc-900 dark:text-zinc-100"

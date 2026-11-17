@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { getPipeline, pipelineHref } from "@/lib/pipeline-navigation";
 import useSWR from "swr";
 import { ActionButtons } from "@/components/triage/action-buttons";
 import { ItemDrawer } from "@/components/triage/item-drawer";
@@ -44,11 +45,12 @@ export default function MyPlateContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const pipeline = getPipeline(searchParams);
   const openItem = searchParams.get("item");
   const { data, error, mutate } = useSWR<TriageMyPlate>("/api/triage/me", triageFetcher);
 
   function setItem(item: string | null) {
-    router.replace(item ? `${pathname}?item=${encodeURIComponent(item)}` : pathname, { scroll: false });
+    router.replace(pipelineHref(item ? `${pathname}?item=${encodeURIComponent(item)}` : pathname, pipeline), { scroll: false });
   }
 
   const groups = data ? groupByPriority(data.open, (entry) => entry.band) : [];
@@ -75,7 +77,7 @@ export default function MyPlateContent() {
             detail="Nothing is assigned to you right now. Unowned P0/P1 items are waiting in the queue."
             action={
               <Link
-                href="/triage?bands=page,route&status=unassigned"
+                href={pipelineHref("/triage?bands=page,route&status=unassigned", pipeline)}
                 className="dashboard-control mt-1 rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
               >
                 See unowned P0/P1

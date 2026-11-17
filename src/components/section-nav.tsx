@@ -1,7 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { Suspense } from "react";
 import { usePathname } from "next/navigation";
+import { DEFAULT_PIPELINE, pipelineHref, pipelineScopeNote } from "@/lib/pipeline-navigation";
+import { usePipeline } from "@/lib/use-pipeline";
 import {
   isNavGroup,
   navItemActive,
@@ -13,7 +16,13 @@ import {
 export const SECTION_NAV_ACTIONS_ID = "section-nav-actions";
 
 export function SectionNav() {
+  return <Suspense><SectionNavContent /></Suspense>;
+}
+
+function SectionNavContent() {
   const pathname = usePathname();
+  const pipeline = usePipeline();
+  const scopeNote = pipeline !== DEFAULT_PIPELINE ? pipelineScopeNote(pathname) : null;
   const section = sectionForPathname(pathname);
 
   if (!section) return null;
@@ -49,7 +58,7 @@ export function SectionNav() {
             return (
               <Link
                 key={entry.label}
-                href={href}
+                href={pipelineHref(href, pipeline)}
                 aria-current={active ? (group ? "true" : "page") : undefined}
                 className={`dashboard-control inline-flex min-h-11 shrink-0 items-center border-b-2 text-xs font-semibold sm:min-h-10 ${
                   active
@@ -76,7 +85,7 @@ export function SectionNav() {
             return (
               <Link
                 key={link.href}
-                href={link.href}
+                href={pipelineHref(link.href, pipeline)}
                 aria-current={active ? "page" : undefined}
                 className={`dashboard-control inline-flex min-h-11 shrink-0 items-center rounded-md px-3 text-xs font-medium sm:min-h-8 ${
                   active
@@ -89,6 +98,9 @@ export function SectionNav() {
             );
           })}
         </nav>
+      )}
+      {scopeNote && (
+        <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">{scopeNote}</p>
       )}
     </div>
   );

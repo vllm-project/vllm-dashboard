@@ -1,3 +1,5 @@
+import { getPipeline, pipelineHref } from "./pipeline-navigation";
+
 export type QueueView = "details" | "traffic";
 
 type QueueSearchParams = Pick<URLSearchParams, "get" | "toString">;
@@ -20,5 +22,5 @@ export function queueViewHref(
     const queue = params.get("queue");
     if (queue) next.set("queue", queue);
   }
-  return `/queue?${next}`;
+  return pipelineHref(`/queue?${next}`, getPipeline(params));
 }

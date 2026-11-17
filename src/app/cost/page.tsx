@@ -16,6 +16,7 @@ import { StatCard } from "@/components/stat-card";
 import { SearchableSelect } from "@/components/searchable-select";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { JobName, jobNameText } from "@/components/job-name";
+import { PipelineView } from "@/components/pipeline-view";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -170,7 +171,10 @@ function TabButton({
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function CostPage() {
-  const [pipeline, setPipeline] = useState("CI");
+  return <PipelineView>{(pipeline) => <CostContent pipeline={pipeline} />}</PipelineView>;
+}
+
+function CostContent({ pipeline }: { pipeline: string }) {
   const [branch, setBranch] = useState("");
   const [startDate, setStartDate] = useState(daysAgo(14));
   const [endDate, setEndDate] = useState(today());
@@ -271,13 +275,6 @@ export default function CostPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">Cost</h1>
         <div className="flex gap-3">
-          <SearchableSelect
-            label="Pipeline"
-            value={pipeline}
-            onChange={setPipeline}
-            options={filters?.pipelines ?? []}
-            allLabel="All Pipelines"
-          />
           <SearchableSelect
             label="Branch"
             value={branch}

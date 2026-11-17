@@ -14,6 +14,12 @@ client credentials are needed for dashboard reads.
 
 ## Pages
 
+The header pipeline selector filters Builds, Jobs, and Cost. Selection is stored
+in the URL and carried across dashboard tabs: `/?pipeline=speculators` and
+`/jobs?pipeline=speculators` can be bookmarked or shared. No pipeline parameter
+defaults to `CI`; `?pipeline=` selects all pipelines. Other views retain the
+selection for navigation and identify their shared-infrastructure or vLLM scope.
+
 - **Builds** — pass/fail rates, durations, and per-job breakdowns for recent pipeline builds.
 - **Jobs** — job failures, historical run times, and retry counts by job,
   with pipeline, branch, and time-range filtering. See [retry counting](./docs/jobs-retries.md).

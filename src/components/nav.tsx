@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { preload } from "swr";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { VllmMark } from "@/components/vllm-logo";
+import { PipelineSelect } from "@/components/pipeline-select";
+import { pipelineHref } from "@/lib/pipeline-navigation";
+import { usePipeline } from "@/lib/use-pipeline";
 import {
   routeMatches,
   TOP_LEVEL_NAV_ITEMS,
@@ -26,11 +29,12 @@ function isoDateDaysAgo(days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-function defaultDataUrls(href: string): string[] {
+function defaultDataUrls(href: string, pipeline: string): string[] {
   const startDate = isoDateDaysAgo(14);
   const endDate = isoDateDaysAgo(0);
+  const pipelineParam = pipeline ? `${new URLSearchParams({ pipeline })}&` : "";
   const buildParams =
-    `pipeline=CI&branch=main&startDate=${startDate}&endDate=${endDate}`;
+    `${pipelineParam}branch=main&startDate=${startDate}&endDate=${endDate}`;
 
   switch (href) {
     case "/":
@@ -41,7 +45,7 @@ function defaultDataUrls(href: string): string[] {
     case "/jobs":
       return [
         // Stable window key shared with the page's default view.
-        `/api/jobs?pipeline=CI&branch=main&window=14d`,
+        `/api/jobs?${pipelineParam}branch=main&window=14d`,
         "/api/builds/filters",
       ];
     case "/tests":
@@ -56,7 +60,7 @@ function defaultDataUrls(href: string): string[] {
       return ["/api/metrics?hours=1&v=3"];
     case "/cost":
       return [
-        `/api/cost?pipeline=CI&startDate=${startDate}&endDate=${endDate}`,
+        `/api/cost?${pipelineParam}startDate=${startDate}&endDate=${endDate}`,
         "/api/builds/filters",
       ];
     case "/perf":
@@ -74,14 +78,24 @@ function defaultDataUrls(href: string): string[] {
 }
 
 export function Nav() {
+  return (
+    <Suspense fallback={<div className="h-14 border-b border-black/5 dark:border-white/10" />}>
+      <NavContent />
+    </Suspense>
+  );
+}
+
+function NavContent() {
   const pathname = usePathname();
+  const pipeline = usePipeline();
   const mobileNavRef = useRef<HTMLDivElement>(null);
   const prefetchTimerRef = useRef<number | null>(null);
 
   function prefetchRouteData(href: string) {
-    if (prefetchedRoutes.has(href)) return;
-    prefetchedRoutes.add(href);
-    const requests = defaultDataUrls(href).map(async (url) => {
+    const cacheKey = pipelineHref(href, pipeline);
+    if (prefetchedRoutes.has(cacheKey)) return;
+    prefetchedRoutes.add(cacheKey);
+    const requests = defaultDataUrls(href, pipeline).map(async (url) => {
       const data = await preload(url, fetcher);
       if (href === "/" && url.startsWith("/api/builds?")) {
         const buildIds = (
@@ -112,7 +126,7 @@ export function Nav() {
       return data;
     });
     void Promise.all(requests).catch(() => {
-      prefetchedRoutes.delete(href);
+      prefetchedRoutes.delete(cacheKey);
     });
   }
 
@@ -165,9 +179,9 @@ export function Nav() {
     <nav className="dashboard-nav sticky top-0 z-50 border-b border-black/5 shadow-[0_1px_0_rgba(0,0,0,0.02)] dark:border-white/10">
       <div aria-hidden="true" className="brand-hairline" />
       <div className="px-4 sm:px-6 lg:px-8">
-        <div className="flex h-14 items-center gap-6">
+        <div className="flex h-14 items-center gap-3 lg:gap-6">
           <Link
-            href="/"
+            href={pipelineHref("/", pipeline)}
             aria-label="vLLM CI Dashboard home"
             className="brand-lockup group flex shrink-0 items-center whitespace-nowrap"
           >
@@ -184,7 +198,7 @@ export function Nav() {
             </span>
             <span
               aria-hidden="true"
-              className="ml-2.5 hidden items-center gap-2.5 sm:flex"
+              className="ml-2.5 hidden items-center gap-2.5 xl:flex"
             >
               <span className="h-4 w-px bg-zinc-950/15 dark:bg-white/15" />
               <span className="text-[13px] font-medium leading-none tracking-[-0.01em] text-zinc-500 dark:text-zinc-400">
@@ -198,7 +212,7 @@ export function Nav() {
               return (
                 <Link
                   key={link.href}
-                  href={link.href}
+                  href={pipelineHref(link.href, pipeline)}
                   aria-current={active ? "page" : undefined}
                   onPointerEnter={() => scheduleRoutePrefetch(link.href)}
                   onPointerLeave={cancelScheduledPrefetch}
@@ -215,7 +229,8 @@ export function Nav() {
               );
             })}
           </div>
-          <div className="ml-auto shrink-0">
+          <div className="ml-auto flex min-w-0 items-center gap-3">
+            <PipelineSelect />
             <ThemeToggle />
           </div>
         </div>
@@ -229,7 +244,7 @@ export function Nav() {
             return (
               <Link
                 key={link.href}
-                href={link.href}
+                href={pipelineHref(link.href, pipeline)}
                 aria-current={active ? "page" : undefined}
                 onPointerEnter={() => scheduleRoutePrefetch(link.href)}
                 onPointerLeave={cancelScheduledPrefetch}

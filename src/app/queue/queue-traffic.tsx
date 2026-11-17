@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { getPipeline, pipelineHref } from "@/lib/pipeline-navigation";
 import useSWR from "swr";
 import { SearchableSelect } from "@/components/searchable-select";
 import {
@@ -642,7 +643,7 @@ export default function QueueTraffic() {
             {noAgentRows.map((row) => (
               <li key={row.queue} className="flex flex-wrap justify-between gap-2">
                 <Link
-                  href={`/queue?${new URLSearchParams({ view: "details", queue: row.queue, range: String(hours) })}`}
+                  href={pipelineHref(`/queue?${new URLSearchParams({ view: "details", queue: row.queue, range: String(hours) })}`, getPipeline(params))}
                   className="break-all text-violet-600 hover:underline dark:text-violet-400"
                 >
                   {row.queue}
@@ -804,7 +805,7 @@ export default function QueueTraffic() {
         {queue && (
           <div className="border-t border-zinc-200 px-5 py-3 dark:border-zinc-800">
             <Link
-              href={`/queue?${new URLSearchParams({ view: "details", queue, range: String(hours) })}`}
+              href={pipelineHref(`/queue?${new URLSearchParams({ view: "details", queue, range: String(hours) })}`, getPipeline(params))}
               className="text-xs font-medium text-violet-600 hover:underline dark:text-violet-400"
             >
               Open {queue} job details →
