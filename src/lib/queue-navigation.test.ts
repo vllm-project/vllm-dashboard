@@ -39,3 +39,15 @@ test("same-view navigation preserves the view's parameters without mutating them
     assert.equal(params.toString(), query);
   }
 });
+
+test("switching queue views preserves a selected pipeline, including all pipelines", () => {
+  for (const pipeline of ["speculators", ""]) {
+    const params = new URLSearchParams({ view: "details", queue: "h100", range: "24", pipeline });
+    const traffic = new URL(queueViewHref(params, "traffic"), "https://ci.vllm.ai");
+    assert.equal(traffic.searchParams.get("pipeline"), pipeline);
+    assert.equal(traffic.searchParams.get("range"), "24");
+    assert.equal(traffic.searchParams.has("queue"), false);
+    const details = new URL(queueViewHref(traffic.searchParams, "details"), traffic);
+    assert.equal(details.searchParams.get("pipeline"), pipeline);
+  }
+});

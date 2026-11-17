@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { getPipeline, pipelineHref } from "@/lib/pipeline-navigation";
 import useSWR from "swr";
 import { SearchableSelect } from "@/components/searchable-select";
 import { DateRangePicker } from "@/components/date-range-picker";
@@ -1267,7 +1268,7 @@ export default function ComparePage() {
     }
 
     const queryString = params.toString();
-    router.replace(queryString ? `/compare?${queryString}` : "/compare", {
+    router.replace(pipelineHref(queryString ? `/compare?${queryString}` : "/compare", getPipeline(searchParams)), {
       scroll: false,
     });
   };

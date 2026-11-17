@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { getPipeline, pipelineHref } from "@/lib/pipeline-navigation";
 import useSWR from "swr";
 import { ItemDrawer } from "@/components/triage/item-drawer";
 import {
@@ -279,6 +280,7 @@ export default function QueueContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const pipeline = getPipeline(searchParams);
   const viewer = useTriageLogin();
   const filters = parseQueueFilters(new URLSearchParams(searchParams.toString()));
   const openItem = searchParams.get("item");
@@ -301,9 +303,9 @@ export default function QueueContent() {
       const item = "item" in extra ? extra.item : openItem;
       if (item) next.set("item", item);
       const query = next.toString();
-      router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+      router.replace(pipelineHref(query ? `${pathname}?${query}` : pathname, pipeline), { scroll: false });
     },
-    [filters, openItem, pathname, router],
+    [filters, openItem, pathname, pipeline, router],
   );
 
   // Search applies as you type (debounced) and immediately on Enter.
@@ -333,7 +335,7 @@ export default function QueueContent() {
 
   function clearFilters() {
     setSearch("");
-    router.replace(openItem ? `${pathname}?item=${encodeURIComponent(openItem)}` : pathname, { scroll: false });
+    router.replace(pipelineHref(openItem ? `${pathname}?item=${encodeURIComponent(openItem)}` : pathname, pipeline), { scroll: false });
   }
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;

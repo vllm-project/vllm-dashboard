@@ -8,6 +8,7 @@ import { DateRangePicker } from "@/components/date-range-picker";
 import { JobName, jobNameText } from "@/components/job-name";
 import { JobRetryRanking } from "@/components/job-retry-ranking";
 import { JobRunHistory } from "@/components/job-run-history";
+import { PipelineView } from "@/components/pipeline-view";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -539,7 +540,10 @@ function JobAnalysisTab({
 
 /* ── Main page ── */
 export default function JobsPage() {
-  const [pipeline, setPipeline] = useState("CI");
+  return <PipelineView>{(pipeline) => <JobsContent pipeline={pipeline} />}</PipelineView>;
+}
+
+function JobsContent({ pipeline }: { pipeline: string }) {
   const [branch, setBranch] = useState("main");
   // null = default rolling window (sent as window=14d with a stable cache key);
   // set once the user picks an explicit range.
@@ -557,13 +561,6 @@ export default function JobsPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">Jobs</h1>
         <div className="flex min-w-0 flex-wrap gap-3">
-          <SearchableSelect
-            label="Pipeline"
-            value={pipeline}
-            onChange={setPipeline}
-            options={filters?.pipelines ?? []}
-            allLabel="All Pipelines"
-          />
           <SearchableSelect
             label="Branch"
             value={branch}

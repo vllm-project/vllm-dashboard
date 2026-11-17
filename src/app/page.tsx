@@ -8,6 +8,7 @@ import { BuildsTable, Build } from "@/components/builds-table";
 import { SearchableSelect } from "@/components/searchable-select";
 import { MultiSelect } from "@/components/multi-select";
 import { DateRangePicker } from "@/components/date-range-picker";
+import { PipelineView } from "@/components/pipeline-view";
 import {
   buildsInRange,
   durationStats,
@@ -75,7 +76,10 @@ interface BuildGroupsResponse {
 }
 
 export default function BuildsPage() {
-  const [pipeline, setPipeline] = useState("CI");
+  return <PipelineView>{(pipeline) => <BuildsContent pipeline={pipeline} />}</PipelineView>;
+}
+
+function BuildsContent({ pipeline }: { pipeline: string }) {
   const [branch, setBranch] = useState("main");
   const [startDate, setStartDate] = useState(daysAgo(14));
   const [endDate, setEndDate] = useState(today());
@@ -227,13 +231,6 @@ export default function BuildsPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-2xl font-semibold">Builds</h1>
         <div className="flex gap-3">
-          <SearchableSelect
-            label="Pipeline"
-            value={pipeline}
-            onChange={(v) => { setPipeline(v); setPage(0); }}
-            options={filters?.pipelines ?? []}
-            allLabel="All Pipelines"
-          />
           <SearchableSelect
             label="Branch"
             value={branch}
