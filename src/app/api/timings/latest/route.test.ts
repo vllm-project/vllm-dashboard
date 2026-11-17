@@ -26,7 +26,7 @@ function answer(sql: string, url: URL): object[] {
       jobs: JSON.stringify([[JOB, 500_000]]),
     }];
   }
-  if (sql.includes("SELECT DISTINCT job_id")) return [{ job_id: JOB }];
+  if (sql.includes("AS orphans")) return [{ job_id: JOB, orphans: "0" }];
   if (sql.includes("LEFT JOIN")) {
     const test = (nodeid: string, ms: number) => ({
       job_id: JOB, duration_ms: String(ms), nodeid, outcome: "passed",
