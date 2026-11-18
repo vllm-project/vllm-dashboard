@@ -382,10 +382,14 @@ class PostgresTriageStore(PostgresAlertStore):
         ]
 
     def maintainer_load(self, *, since: datetime) -> dict[str, int]:
+        """Primary assignments this week that the person kept (open, acked,
+        done, dropped); ones they passed on or reassigned away don't count."""
         with self._connection_factory() as c:
             rows = c.execute(
                 """SELECT maintainer, count(*) FROM triage_assignments
-                   WHERE assigned_at >= %s AND role = 'primary' GROUP BY maintainer""",
+                   WHERE assigned_at >= %s AND role = 'primary'
+                     AND status NOT IN ('not_mine', 'reassigned')
+                   GROUP BY maintainer""",
                 (since,),
             ).fetchall()
         return {r[0]: int(r[1]) for r in rows}

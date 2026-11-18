@@ -230,7 +230,7 @@ function RulesDraft({ data }: { data: RulesResponse }) {
           <Field label="Minimum score">
             <input type="number" min={0} max={1000} className={INPUT} value={form.minScore} onChange={(e) => set("minScore", Number(e.target.value))} />
           </Field>
-          <Field label="Capacity per week" hint="P0 items ignore this">
+          <Field label="Capacity per week" hint="New P0s, and P0s clearly yours, ignore this">
             <input type="number" min={0} max={200} className={INPUT} value={form.capacityPerWeek} onChange={(e) => set("capacityPerWeek", Number(e.target.value))} />
           </Field>
           <Field label="Slack notifications">
