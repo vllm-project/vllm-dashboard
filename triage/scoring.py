@@ -19,7 +19,11 @@ _BANDS: tuple[Band, ...] = ("page", "route", "watch")
 
 
 def model_tier(facets: Mapping[str, Any], tiers: Mapping[str, Any]) -> tuple[str, str | None]:
-    """Best tier among the item's models, and the model that earned it."""
+    """Best tier among the item's models, and the model that earned it.
+
+    "other" means a model is named but matches no tier pattern; "unknown"
+    means no model is named at all. scoring.yaml weighs them differently.
+    """
     names: list[str] = []
     for model in facets.get("models") or []:
         names.extend(n.lower() for n in (model.get("name"), model.get("family")) if n)
@@ -28,7 +32,7 @@ def model_tier(facets: Mapping[str, Any], tiers: Mapping[str, Any]) -> tuple[str
             for name in names:
                 if fnmatch(name, pattern.lower()):
                     return tier, name
-    return "other", None
+    return ("other", names[0]) if names else ("unknown", None)
 
 
 def hardware_tier(hardware: list[str], tiers: Mapping[str, Any]) -> tuple[str, str | None]:
@@ -97,16 +101,21 @@ def score_item(
     config_key = "default" if default_config is True else "exotic" if default_config is False else "unknown"
 
     if candidates:
-        name, base, detail = max(candidates, key=lambda c: c[1])
         reach = weights["reach"]
-        model_key = tier if model else "unknown"
-        multiplier = reach["model"][model_key] * reach["hardware"][hw_tier] * reach["config"][config_key]
-        if name == "severity.security":
-            multiplier = 1.0  # a vulnerability's reach is not about the model or GPU
+        reach_multiplier = reach["model"][tier] * reach["hardware"][hw_tier] * reach["config"][config_key]
+
+        def scaled(candidate: tuple[str, float, str | None]) -> float:
+            # A vulnerability's reach is not about the model or GPU.
+            return candidate[1] * (1.0 if candidate[0] == "severity.security" else reach_multiplier)
+
+        # The largest symptom after reach, so an unscaled security flag is not
+        # beaten by an equal-base symptom that reach then shrinks.
+        name, base, detail = max(candidates, key=scaled)
+        multiplier = 1.0 if name == "severity.security" else reach_multiplier
         if kind == "pr":
             multiplier *= sev_w["pr_fraction"]
         parts = [] if name == "severity.security" else [
-            f"model {model_key} x{reach['model'][model_key]:g}",
+            f"model {tier} x{reach['model'][tier]:g}",
             f"hw {hw_tier} x{reach['hardware'][hw_tier]:g}",
             f"config {config_key} x{reach['config'][config_key]:g}",
         ]
@@ -119,7 +128,8 @@ def score_item(
         return _finish(factors, config, band="ignore")
 
     popularity = weights["popularity"]
-    add(f"popularity.model.{tier}", popularity["model"][tier], model)
+    if tier in popularity["model"]:
+        add(f"popularity.model.{tier}", popularity["model"][tier], model)
     if hw_tier in popularity["hardware"]:
         add(f"popularity.hardware.{hw_tier}", popularity["hardware"][hw_tier], hw_name)
 
