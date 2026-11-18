@@ -41,6 +41,10 @@ function interaction(action: Record<string, unknown>, extra: Record<string, unkn
 }
 
 test("parses ack, not mine, reassign and digest menu clicks", () => {
+  const done = parseSlackInteraction(interaction({ action_id: SLACK_ACTIONS.done, value: "vllm-project/vllm#48071" }));
+  assert.equal(done.kind === "action" && done.action, "done");
+  const doneMenu = parseSlackInteraction(interaction({ action_id: SLACK_ACTIONS.menu, selected_option: { value: "done|vllm-project/vllm#48071" } }));
+  assert.equal(doneMenu.kind === "action" && doneMenu.action, "done");
   const ack = parseSlackInteraction(interaction({ action_id: SLACK_ACTIONS.ack, value: "vllm-project/vllm#48071" }));
   assert.equal(ack.kind === "action" && ack.action, "ack");
   assert.equal(ack.kind === "action" && ack.slackUserId, "U07QCLE6Y8P");
@@ -78,19 +82,58 @@ test("rejects malformed or unsafe interactions", () => {
   assert.equal(parseSlackInteraction(interaction({}, { type: "view_submission" })).kind, "ignore");
 });
 
-test("after a click the item's buttons are replaced by the result", () => {
+test("ack keeps the buttons (Done replaces Ack); done / not mine / reassign leave only Open", () => {
   const key = "vllm-project/vllm#48071";
+  const button = (action_id: string, extra: Record<string, unknown> = {}) => ({ type: "button", action_id, ...extra });
   const blocks = [
     { type: "header", block_id: "h" },
-    { type: "section", block_id: `triage:item:${key}`, accessory: { type: "overflow" } },
-    { type: "actions", block_id: `triage:actions:${key}`, elements: [] },
+    { type: "section", block_id: `triage:item:${key}` },
+    {
+      type: "actions",
+      block_id: `triage:actions:${key}`,
+      elements: [
+        button(SLACK_ACTIONS.ack, { value: key }),
+        button(SLACK_ACTIONS.notMine, { value: key }),
+        { type: "static_select", action_id: SLACK_ACTIONS.reassign },
+        button(SLACK_ACTIONS.open, { url: "https://ci.vllm.ai/triage?item=x" }),
+      ],
+    },
     { type: "context", block_id: "footer" },
   ];
-  const out = blocksAfterAction(blocks, key, "reassign", "khluu", "gau-nernst", new Date(0));
-  assert.deepEqual(out.map((b) => b.block_id), ["h", `triage:item:${key}`, `triage:result:${key}`, "footer"]);
-  assert.equal("accessory" in out[1], false);
-  assert.match(JSON.stringify(out[2]), /Reassigned to \*gau-nernst\* by khluu/);
-  // Digest lines have no actions block: the result goes right under the item.
-  const digest = blocksAfterAction([blocks[1], { type: "section", block_id: "triage:item:x/y#2" }], key, "ack", "khluu", null, new Date(0));
-  assert.deepEqual(digest.map((b) => b.block_id), [`triage:item:${key}`, `triage:result:${key}`, "triage:item:x/y#2"]);
+  const acked = blocksAfterAction(blocks, key, "ack", "khluu", null, new Date(0));
+  assert.deepEqual(acked.map((b) => b.block_id), ["h", `triage:item:${key}`, `triage:result:${key}`, `triage:actions:${key}`, "footer"]);
+  const ids = (acked[3].elements as { action_id: string }[]).map((e) => e.action_id);
+  assert.deepEqual(ids, [SLACK_ACTIONS.done, SLACK_ACTIONS.notMine, SLACK_ACTIONS.reassign, SLACK_ACTIONS.open]);
+  assert.match(JSON.stringify(acked[2]), /Acked by \*khluu\*/);
+
+  // A later click on the same message replaces the result line, not adds one.
+  const done = blocksAfterAction(acked, key, "done", "khluu", null, new Date(0));
+  assert.deepEqual(done.map((b) => b.block_id), ["h", `triage:item:${key}`, `triage:result:${key}`, `triage:actions:${key}`, "footer"]);
+  assert.deepEqual((done[3].elements as { action_id: string }[]).map((e) => e.action_id), [SLACK_ACTIONS.open]);
+  assert.match(JSON.stringify(done[2]), /Marked done/);
+
+  const moved = blocksAfterAction(blocks, key, "reassign", "khluu", "gau-nernst", new Date(0));
+  assert.match(JSON.stringify(moved[2]), /Reassigned to \*gau-nernst\* by khluu/);
+  assert.deepEqual((moved[3].elements as { action_id: string }[]).map((e) => e.action_id), [SLACK_ACTIONS.open]);
+});
+
+test("digest menus: ack swaps Ack for Done, leaving ends with just Open", () => {
+  const key = "vllm-project/vllm#48071";
+  const menu = {
+    type: "overflow",
+    action_id: SLACK_ACTIONS.menu,
+    options: [
+      { value: `ack|${key}` },
+      { value: `not_mine|${key}` },
+      { value: "open", url: "https://ci.vllm.ai/triage?item=x" },
+    ],
+  };
+  const blocks = [{ type: "section", block_id: `triage:item:${key}`, accessory: menu }, { type: "section", block_id: "triage:item:x/y#2" }];
+  const acked = blocksAfterAction(blocks, key, "ack", "khluu", null, new Date(0));
+  assert.deepEqual(acked.map((b) => b.block_id), [`triage:item:${key}`, `triage:result:${key}`, "triage:item:x/y#2"]);
+  const options = (acked[0].accessory as { options: { value: string }[] }).options.map((o) => o.value);
+  assert.deepEqual(options, [`done|${key}`, `not_mine|${key}`, "open"]);
+  const gone = blocksAfterAction(acked, key, "not_mine", "khluu", null, new Date(0));
+  assert.deepEqual((gone[0].accessory as { options: { value: string }[] }).options.map((o) => o.value), ["open"]);
+  assert.equal(gone.filter((b) => b.block_id === `triage:result:${key}`).length, 1);
 });

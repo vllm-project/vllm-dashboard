@@ -12,6 +12,7 @@ import {
   RowSkeleton,
 } from "@/components/triage/item-row";
 import { useTriageLogin } from "@/components/triage/use-triage-session";
+import { useLocationHash } from "@/lib/use-location-hash";
 import { itemFromLocation, percent, triageFetcher } from "@/lib/triage-format";
 import { parseQueueFilters, queueFiltersToParams, type QueueFilters } from "@/lib/triage-query";
 import {
@@ -281,8 +282,7 @@ export default function QueueContent() {
   const searchParams = useSearchParams();
   const viewer = useTriageLogin();
   const filters = parseQueueFilters(new URLSearchParams(searchParams.toString()));
-  const [hash, setHash] = useState("");
-  useEffect(() => setHash(window.location.hash), []);
+  const hash = useLocationHash();
   const openItem = itemFromLocation(searchParams.get("item"), hash);
   const grouped = filters.sort === "score";
   const pageSize = grouped && !searchParams.get("pageSize") ? GROUPED_PAGE_SIZE : filters.pageSize;
