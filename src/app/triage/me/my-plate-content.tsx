@@ -13,6 +13,14 @@ import type { TriageMyPlate } from "@/lib/triage-types";
 
 type Entry = TriageMyPlate["open"][number];
 
+/** Status in words; notes when it followed GitHub rather than a click. */
+function statusText(entry: Entry): string {
+  const { status, reason } = entry.assignment;
+  if (status === "done" && reason.closed_by === "github") return `closed on GitHub (${String(reason.item_state ?? "closed")})`;
+  if (status === "acked") return reason.acked_by === "github_comment" ? "✓ acked (you commented on GitHub)" : "✓ acked";
+  return status.replace("_", " ");
+}
+
 function routedBecause(entry: Entry): string | null {
   const reason = entry.assignment.reason as { why?: unknown; matched?: unknown };
   if (typeof reason.why === "string" && reason.why) return reason.why;
@@ -27,7 +35,7 @@ function PlateFooter({ entry, closed, onChanged }: { entry: Entry; closed: boole
     <div className="space-y-2">
       <p className="text-xs text-zinc-500 dark:text-zinc-400">
         <span className="font-medium text-zinc-600 dark:text-zinc-300">
-          {entry.assignment.role === "primary" ? "Primary" : "Backup"} · {entry.assignment.status === "acked" ? "✓ acked" : entry.assignment.status.replace("_", " ")}
+          {entry.assignment.role === "primary" ? "Primary" : "Backup"} · {statusText(entry)}
         </span>
         {why && <span className="line-clamp-1"> {why}</span>}
       </p>

@@ -37,6 +37,7 @@ export async function triageFetcher<T>(url: string): Promise<T> {
 const REASON_LABELS: { test: RegExp; label: (m: RegExpMatchArray) => string }[] = [
   { test: /^authored #(\d+)$/, label: (m) => `wrote #${m[1]}, which this item names` },
   { test: /^commented$/, label: () => "already commented on this item" },
+  { test: /^assigned on GitHub$/, label: () => "assigned to them on GitHub" },
   { test: /^relevance:(high|medium)/, label: (m) => `judged ${m[1]} from their recent work` },
   { test: /^(area|hardware|model|path|keyword):(.+)$/, label: (m) => `their rule: ${m[1]} ${m[2]}` },
 ];

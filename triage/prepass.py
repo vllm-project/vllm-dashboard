@@ -199,6 +199,7 @@ def compute_prepass(item: Item, config: TriageConfig, now: datetime | None = Non
         "scope_reason": reason,
         "referenced_prs": referenced_prs(text, exclude={item.number, *links}),
         "commenters": commenters(item.comments),
+        "gh_assignees": list(item.assignees),
     }
 
 

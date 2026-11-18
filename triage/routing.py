@@ -45,11 +45,12 @@ class Candidate:
     evidence_prs: tuple[int, ...] = ()
 
     @property
-    def rank(self) -> tuple[int, int, int, int]:
+    def rank(self) -> tuple[int, int, int, int, int]:
+        assigned = GH_ASSIGNED in self.involvement
         authored = any(i.startswith("authored") for i in self.involvement)
         commented = "commented" in self.involvement
         level = {"high": 2, "medium": 1}.get(self.relevance or "", 0)
-        return (-int(authored), -int(commented), -level, -len(self.matched))
+        return (-int(assigned), -int(authored), -int(commented), -level, -len(self.matched))
 
     @property
     def strong(self) -> bool:
@@ -67,12 +68,31 @@ class Candidate:
         return out + list(self.matched)
 
 
+# Reason code: the item is assigned to this maintainer on GitHub.
+GH_ASSIGNED = "assigned on GitHub"
+
+
+def gh_assignees(prepass: Mapping[str, Any]) -> set[str]:
+    """GitHub assignees of the item, lower case."""
+    return {str(a).lower() for a in prepass.get("gh_assignees") or [] if a}
+
+
+def assigned_elsewhere(prepass: Mapping[str, Any], maintainers: Iterable[str]) -> bool:
+    """The item has GitHub assignees and none of them is one of our
+    maintainers: someone outside triage is already handling it, so the
+    router leaves it alone (it stays on the dashboard)."""
+    assignees = gh_assignees(prepass)
+    return bool(assignees) and not assignees & {m.lower() for m in maintainers}
+
+
 def involvement(login: str, ctx: RoutingContext) -> list[str]:
     """How a maintainer is already part of this item, strongest first:
-    they wrote a PR the item names (e.g. the commit a regression was
-    bisected to), or they have commented on it."""
+    the item is assigned to them on GitHub, they wrote a PR the item names
+    (e.g. the commit a regression was bisected to), or they have commented
+    on it."""
     me = login.lower()
-    out = [
+    out = [GH_ASSIGNED] if me in gh_assignees(ctx.prepass) else []
+    out += [
         f"authored #{number}"
         for number, author in (ctx.prepass.get("referenced_pr_authors") or {}).items()
         if str(author).lower() == me
@@ -153,7 +173,8 @@ def choose_owners(
     always be a clear match: a second "medium" guess adds noise, not cover.
 
     Who qualifies, strongest first:
-      1. involvement: wrote a PR the item names, or already commented;
+      1. involvement: assigned on GitHub, wrote a PR the item names, or
+         already commented;
       2. relevance judged high or medium from their recent work and notes;
       3. an explicit rule in their file (an "always send me" override).
     Relevance "low"/"none" alone never routes. A maintainer's `exclude`

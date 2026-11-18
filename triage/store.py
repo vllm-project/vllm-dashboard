@@ -301,6 +301,62 @@ class PostgresTriageStore(PostgresAlertStore):
                     ).rowcount or 0
         return len(keys), int(removed)
 
+    # --- following GitHub -------------------------------------------------------
+
+    def follow_github(self, *, now: datetime) -> tuple[int, int, int]:
+        """Bring open assignments in line with what happened on GitHub.
+        Returns (closed, reopened, acked).
+
+          * item closed or merged: its open/acked assignments become `done`
+            with reason.closed_by = "github" (and the status they had);
+          * such an item reopened (and still in the window): those rows go
+            back to the status they had, unless the role was filled since;
+          * the assigned maintainer commented after the assignment
+            (prepass.commented_at): open -> acked, reason.acked_by =
+            "github_comment".
+
+        No triage_actions rows: those record what people did on the
+        dashboard or in Slack."""
+        with self._connection_factory() as c:
+            with c.transaction():
+                closed = c.execute(
+                    """UPDATE triage_assignments a
+                       SET status = 'done', closed_at = %(now)s, updated_at = %(now)s,
+                           reason = a.reason || jsonb_build_object(
+                               'closed_by', 'github', 'closed_from', a.status, 'item_state', i.state)
+                       FROM triage_items i
+                       WHERE i.item_key = a.item_key AND a.status IN ('open', 'acked')
+                         AND i.state IN ('closed', 'merged')""",
+                    {"now": now},
+                ).rowcount
+                reopened = c.execute(
+                    """WITH pick AS (
+                           SELECT DISTINCT ON (a.item_key, a.role) a.id
+                           FROM triage_assignments a JOIN triage_items i USING (item_key)
+                           WHERE a.status = 'done' AND a.reason->>'closed_by' = 'github'
+                             AND i.state = 'open' AND i.in_scope
+                             AND NOT EXISTS (SELECT 1 FROM triage_assignments b
+                                             WHERE b.item_key = a.item_key AND b.role = a.role
+                                               AND b.status IN ('open', 'acked'))
+                           ORDER BY a.item_key, a.role, a.closed_at DESC, a.id DESC)
+                       UPDATE triage_assignments a
+                       SET status = COALESCE(a.reason->>'closed_from', 'open'), closed_at = NULL,
+                           updated_at = %(now)s,
+                           reason = a.reason - 'closed_by' - 'closed_from' - 'item_state'
+                       FROM pick WHERE a.id = pick.id""",
+                    {"now": now},
+                ).rowcount
+                acked = c.execute(
+                    """UPDATE triage_assignments a
+                       SET status = 'acked', updated_at = %(now)s,
+                           reason = a.reason || '{"acked_by": "github_comment"}'::jsonb
+                       FROM triage_items i
+                       WHERE i.item_key = a.item_key AND a.status = 'open' AND i.state = 'open'
+                         AND (i.prepass->'commented_at'->>lower(a.maintainer))::timestamptz > a.assigned_at""",
+                    {"now": now},
+                ).rowcount
+        return int(closed or 0), int(reopened or 0), int(acked or 0)
+
     # --- scoring -------------------------------------------------------------
 
     def scoring_candidates(self, *, scoring_version: str, limit: int) -> list[ScoringRow]:
@@ -385,12 +441,15 @@ class PostgresTriageStore(PostgresAlertStore):
 
     def maintainer_load(self, *, since: datetime) -> dict[str, int]:
         """Primary assignments this week that the person kept (open, acked,
-        done, dropped); ones they passed on or reassigned away don't count."""
+        done, dropped); ones they passed on or reassigned away don't count,
+        nor ones closed on GitHub before they acked them."""
         with self._connection_factory() as c:
             rows = c.execute(
                 """SELECT maintainer, count(*) FROM triage_assignments
                    WHERE assigned_at >= %s AND role = 'primary'
                      AND status NOT IN ('not_mine', 'reassigned')
+                     AND NOT (status = 'done' AND reason->>'closed_by' = 'github'
+                              AND reason->>'closed_from' = 'open')
                    GROUP BY maintainer""",
                 (since,),
             ).fetchall()
@@ -466,6 +525,7 @@ class PostgresTriageStore(PostgresAlertStore):
                    LEFT JOIN triage_extractions e ON e.id = s.extraction_id
                    LEFT JOIN triage_relevance r ON r.item_key = a.item_key AND r.maintainer = a.maintainer
                    WHERE a.maintainer = %s AND a.status = 'open' AND a.notified_at IS NULL
+                     AND i.state = 'open'
                    ORDER BY s.score DESC""",
                 (maintainer,),
             ).fetchall()

@@ -34,7 +34,7 @@ from triage.prepass import (
     prepass_priority,
 )
 from triage.relevance import profile_is_stale
-from triage.routing import RoutingContext, choose_owners
+from triage.routing import RoutingContext, assigned_elsewhere, choose_owners, gh_assignees
 from triage.scoring import score_item
 from triage.model import Maintainer
 from triage.store import DigestEntry, NewAssignment, PostgresTriageStore, RoutingRow, week_ago
@@ -75,15 +75,26 @@ class IngestHandler:
         scoped = in_scope(light["scope_reason"])
         stored = self.store.item_state(item.key)
         comments_excerpt = stored.comments_excerpt if stored else ""
+        # {login (lower case): latest comment time}; kept until comments are re-read.
+        commented_at: dict[str, str] = dict((stored.prepass if stored else {}).get("commented_at") or {})
         if scoped:
             if item.kind == "pr":
                 item.files = self.github.pull_files(self.repo, item.number)
             if item.comment_count and (stored is None or stored.comment_count != item.comment_count):
-                item.comments = self.github.comments(self.repo, item.number)
+                records = self.github.comment_records(self.repo, item.number)
+                item.comments = [text for _, _, text in records]
                 comments_excerpt = "\n\n".join(item.comments)[:COMMENTS_LIMIT]
+                latest: dict[str, datetime] = {}
+                for login, at, _ in records:
+                    key = login.lower()
+                    if at is not None and (key not in latest or at > latest[key]):
+                        latest[key] = at
+                commented_at = {login: at.isoformat() for login, at in latest.items()}
             elif comments_excerpt:
                 item.comments = comments_excerpt.split("\n\n")
         prepass = compute_prepass(item, self.config, now) if scoped else light
+        if scoped and commented_at:
+            prepass["commented_at"] = commented_at
         if scoped and prepass.get("referenced_prs"):
             prepass["referenced_pr_authors"] = self._pr_authors(
                 prepass["referenced_prs"], stored.prepass if stored else {}
@@ -134,6 +145,11 @@ class RouteHandler:
         # Items leave triage as they age past the window; unacted router
         # assignments on them go too (acked/done ones stay in people's history).
         self.store.expire_out_of_window(now - timedelta(days=self.config.max_age_days))
+        # Before routing, so closed items free capacity and reopened ones get
+        # their owner back instead of a new one.
+        closed, reopened, acked = self.store.follow_github(now=now)
+        if closed or reopened or acked:
+            log.info("triage: from GitHub, %d assignments closed, %d reopened, %d acked", closed, reopened, acked)
         self._refresh_profiles(now)
         self._rescore(now)
         self._route(now)
@@ -211,10 +227,14 @@ class RouteHandler:
         self, row: RoutingRow, maintainers: list[Maintainer], by_login: dict[str, Maintainer],
         load: dict[str, int], judged_by: set[str], now: datetime, *, strong_only: bool,
     ) -> bool:
+        # Assigned on GitHub to someone outside triage: they are handling it.
+        if assigned_elsewhere(row.prepass, judged_by):
+            return False
         # Wait for relevance judgements unless someone is already involved,
         # so an early rule match doesn't pre-empt the right person.
         people = {str(c).lower() for c in row.prepass.get("commenters") or []}
         people |= {str(a).lower() for a in (row.prepass.get("referenced_pr_authors") or {}).values()}
+        people |= gh_assignees(row.prepass)
         involved = bool(people & {login.lower() for login in judged_by})
         if self.github is not None and not (judged_by <= set(row.relevance)) and not involved:
             return False

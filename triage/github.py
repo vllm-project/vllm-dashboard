@@ -158,14 +158,19 @@ class GitHubClient:
         login = (pull.get("user") or {}).get("login")
         return login if isinstance(login, str) else None
 
-    def comments(self, repo: str, number: int) -> list[str]:
+    def comment_records(self, repo: str, number: int) -> list[tuple[str, datetime | None, str]]:
+        """(login, created_at, text as stored) for the first MAX_COMMENTS comments."""
         batch = self._get(f"/repos/{repo}/issues/{number}/comments", {"per_page": MAX_COMMENTS}) or []
         out = []
         for comment in batch:
             user = (comment.get("user") or {}).get("login", "?")
             association = comment.get("author_association", "")
-            out.append(f"[{user} ({association})]: {comment.get('body') or ''}")
+            out.append((user, _parse_time(comment.get("created_at")),
+                        f"[{user} ({association})]: {comment.get('body') or ''}"))
         return out
+
+    def comments(self, repo: str, number: int) -> list[str]:
+        return [text for _, _, text in self.comment_records(repo, number)]
 
 
 def item_from_raw(repo: str, raw: dict[str, Any]) -> Item:
@@ -195,4 +200,5 @@ def item_from_raw(repo: str, raw: dict[str, Any]) -> Item:
         reactions=int((raw.get("reactions") or {}).get("total_count") or 0),
         comment_count=int(raw.get("comments") or 0),
         is_bot=user.get("type") == "Bot",
+        assignees=[a["login"] for a in raw.get("assignees") or [] if isinstance(a, dict) and a.get("login")],
     )

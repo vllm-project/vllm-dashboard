@@ -346,8 +346,8 @@ class FakeGitHub:
     def pull_files(self, repo: str, number: int) -> list[FileChange]:
         return []
 
-    def comments(self, repo: str, number: int) -> list[str]:
-        return ["[gau-nernst (MEMBER)]: looking into it"]
+    def comment_records(self, repo: str, number: int) -> list[tuple[str, datetime | None, str]]:
+        return [("gau-nernst", NOW - timedelta(hours=1), "[gau-nernst (MEMBER)]: looking into it")]
 
 
 def test_regression_goes_to_the_author_of_the_bisected_pr(store: PostgresTriageStore, database_url: str) -> None:
@@ -479,3 +479,137 @@ def test_items_age_out_of_the_window(store: PostgresTriageStore, database_url: s
     assert scope == {1101: False, 1102: False, 1103: True}
     # The unacted assignment on the old item is gone; the acked one stays as history.
     assert left == ["vllm-project/vllm#1102", "vllm-project/vllm#1103"]
+
+
+def assignments(database_url: str) -> dict[tuple[str, str], tuple[str, bool, dict[str, Any]]]:
+    """{(item number, maintainer): (status, closed_at is set, reason)}"""
+    with psycopg.connect(database_url) as c:
+        rows = c.execute("SELECT item_key, maintainer, status, closed_at IS NOT NULL, reason "
+                         "FROM triage_assignments").fetchall()
+    return {(r[0].rsplit("#", 1)[1], r[1]): (r[2], r[3], r[4]) for r in rows}
+
+
+def test_closing_on_github_closes_assignments_and_reopening_restores_them(
+    store: PostgresTriageStore, database_url: str,
+) -> None:
+    from dataclasses import replace
+
+    items = {n: issue(n, f"DeepSeek startup crash {n}") for n in (1201, 1202, 1203)}
+    for item in items.values():
+        ingest(store, item)
+    seed(store, [{"github_login": "a", "slack_user_id": "U0000000001", "rules": {"areas": ["moe"]},
+                  "notify_mode": "digest"}])
+    run_extraction(store, FakeBackend({"DeepSeek": SEVERE}), budget=Budget(), now=NOW, workers=1)
+    route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW)
+    route(ScheduledCommand("triage_route", NOW))
+    outbox_before = len(outbox(database_url))
+    assert store.maintainer_load(since=NOW - timedelta(days=7)) == {"a": 3}
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_assignments SET status='acked' WHERE item_key='vllm-project/vllm#1202'")
+        c.execute("UPDATE triage_assignments SET notified_at=NULL")
+    # #1201 is closed and #1202 merged on GitHub; #1203 stays open.
+    ingest(store, replace(items[1201], state="closed", closed_at=NOW))
+    ingest(store, replace(items[1202], state="merged", closed_at=NOW))
+    # Even before the route consumer runs, the digest skips items no longer open.
+    assert [e.item_key for e in store.unnotified_assignments("a")] == ["vllm-project/vllm#1203"]
+
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=5)))
+    got = assignments(database_url)
+    assert got[("1201", "a")][:2] == ("done", True)
+    reason = got[("1201", "a")][2]
+    assert (reason["closed_by"], reason["closed_from"], reason["item_state"]) == ("github", "open", "closed")
+    assert reason["matched"] == ["area:moe"]  # the routing reason is kept
+    assert got[("1202", "a")][2]["closed_from"] == "acked" and got[("1202", "a")][2]["item_state"] == "merged"
+    assert got[("1203", "a")][:2] == ("open", False)
+    # The unacked item closed on GitHub frees its slot; the acked one was kept.
+    assert store.maintainer_load(since=NOW - timedelta(days=7)) == {"a": 2}
+    # Nothing new routed or sent, and no triage_actions rows invented.
+    assert len(assignments(database_url)) == 3
+    assert len(outbox(database_url)) == outbox_before
+    with psycopg.connect(database_url) as c:
+        assert c.execute("SELECT count(*) FROM triage_actions").fetchone()[0] == 0
+
+    DigestHandler(store=store, clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW, team_channel=None)(
+        ScheduledCommand("triage_digest", NOW + timedelta(minutes=6)))
+    digests = [p for d, _, _, p in outbox(database_url) if d.startswith("triage:digest:a:")]
+    assert len(digests) == 1
+    assert "#1203" in json.dumps(digests[0]) and "#1201" not in json.dumps(digests[0])
+
+    # #1202 is reopened: its owner gets it back as they had it, not a new owner.
+    ingest(store, replace(items[1202], state="open"))
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=10)))
+    got = assignments(database_url)
+    assert got[("1202", "a")][:2] == ("acked", False)
+    assert "closed_by" not in got[("1202", "a")][2] and "matched" in got[("1202", "a")][2]
+    assert got[("1201", "a")][0] == "done"
+    assert len(got) == 3
+
+
+class CommentingGitHub(FakeGitHub):
+    def __init__(self) -> None:
+        super().__init__({})
+        self.records: dict[int, list[tuple[str, datetime | None, str]]] = {}
+
+    def comment_records(self, repo: str, number: int) -> list[tuple[str, datetime | None, str]]:
+        return self.records.get(number, [])
+
+
+def test_a_comment_from_the_assignee_after_routing_acks_it(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.pipeline import IngestHandler
+
+    gh = CommentingGitHub()
+    seed(store, [{"github_login": "a", "rules": {"areas": ["moe"]}},
+                 {"github_login": "b", "rules": {"areas": ["moe"]}}])
+    clock = FixedClock(NOW)
+    ingest_handler = IngestHandler(store=store, github=gh, config=default_config(), clock=clock)  # type: ignore[arg-type]
+    # #1301: no comments yet. #1302: "a" commented before triage saw it.
+    gh.records[1302] = [("A", NOW - timedelta(hours=1), "[A (MEMBER)]: on it")]
+    ingest_handler._ingest(issue(1301, "DeepSeek startup crash one"))
+    ingest_handler._ingest(issue(1302, "DeepSeek startup crash two", comment_count=1))
+    run_extraction(store, FakeBackend({"DeepSeek": SEVERE}), budget=Budget(), now=NOW, workers=1)
+    route = RouteHandler(store=store, config=default_config(), clock=clock, delivery_mode=DeliveryMode.SHADOW)
+    route(ScheduledCommand("triage_route", NOW))
+    got = assignments(database_url)
+    owner_1301 = next(m for (n, m), (status, _, _) in got.items() if n == "1301" and status == "open")
+    other = "b" if owner_1301 == "a" else "a"
+    assert got[("1302", "a")][0] == "open"  # commented before it was assigned: no auto-ack
+
+    # Someone else comments on #1301 first, then its owner (login case differs).
+    clock.value = NOW + timedelta(minutes=10)
+    gh.records[1301] = [(other, NOW + timedelta(minutes=2), f"[{other} (MEMBER)]: hm"),
+                        (owner_1301.upper(), NOW + timedelta(minutes=5), "[x (MEMBER)]: looking")]
+    ingest_handler._ingest(replace_comments(issue(1301, "DeepSeek startup crash one"), 2))
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=10)))
+    got = assignments(database_url)
+    assert got[("1301", owner_1301)][0] == "acked"
+    assert got[("1301", owner_1301)][2]["acked_by"] == "github_comment"
+    assert got[("1302", "a")][0] == "open"
+    # The stored comment times survive a later ingest that doesn't re-read comments.
+    ingest_handler._ingest(replace_comments(issue(1301, "DeepSeek startup crash one"), 2))
+    state = store.item_state("vllm-project/vllm#1301")
+    assert state is not None and set(state.prepass["commented_at"]) == {other, owner_1301}
+
+
+def replace_comments(item: Item, count: int) -> Item:
+    item.comment_count = count
+    return item
+
+
+def test_github_assignees_steer_routing(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.routing import GH_ASSIGNED
+
+    seed(store, [{"github_login": "moe-person", "rules": {"areas": ["moe"]}},
+                 {"github_login": "assigned-person", "rules": {"areas": ["frontend_api"]}}])
+    ingest(store, issue(1401, "DeepSeek startup crash outsider", assignees=["some-contributor"]))
+    ingest(store, issue(1402, "DeepSeek startup crash ours", assignees=["some-contributor", "Assigned-Person"]))
+    ingest(store, issue(1403, "DeepSeek startup crash nobody"))
+    run_extraction(store, FakeBackend({"DeepSeek": SEVERE}), budget=Budget(), now=NOW, workers=1)
+    RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW)(
+        ScheduledCommand("triage_route", NOW))
+    got = assignments(database_url)
+    # Assigned on GitHub to someone outside triage: left alone (still on the dashboard).
+    assert not [k for k in got if k[0] == "1401"]
+    assert [r.item_key for r in store.routing_candidates(limit=10)] == ["vllm-project/vllm#1401"]
+    # Assigned to one of ours: theirs, even though no rule of theirs matches.
+    assert got[("1402", "assigned-person")][2]["matched"] == [GH_ASSIGNED]
+    assert ("1403", "moe-person") in got

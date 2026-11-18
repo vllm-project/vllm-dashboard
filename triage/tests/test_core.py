@@ -408,6 +408,45 @@ def test_a_commenter_is_routed_even_without_a_rule_match() -> None:
     assert [(o.maintainer.github_login, o.involvement) for o in owners] == [("gau-nernst", ("commented",))]
 
 
+def test_github_assignees_are_ingested_into_the_prepass() -> None:
+    from triage.github import item_from_raw
+
+    raw = {"number": 7, "title": "t", "user": {"login": "u"}, "state": "open",
+           "created_at": "2026-11-12T00:00:00Z", "updated_at": "2026-11-12T01:00:00Z",
+           "assignees": [{"login": "Gau-Nernst"}, {"login": "outsider"}, {}]}
+    item = item_from_raw("vllm-project/vllm", raw)
+    assert item.assignees == ["Gau-Nernst", "outsider"]
+    assert compute_prepass(item, default_config())["gh_assignees"] == ["Gau-Nernst", "outsider"]
+    assert item_from_raw("vllm-project/vllm", {**raw, "assignees": None}).assignees == []
+
+
+def test_a_github_assignee_who_is_a_maintainer_is_involved_and_ranks_first() -> None:
+    from triage.routing import GH_ASSIGNED
+
+    ctx = RoutingContext(item_key="r#1", kind="issue", title="t", score=50, band="route",
+                         facets=facets(areas=["moe"]), files=[],
+                         prepass={"gh_assignees": ["Assignee"], "commenters": ["commenter"]})
+    people = [Maintainer(github_login=login, rules={"areas": ["moe"]}) for login in ("commenter", "assignee")]
+    owners = choose_owners(ctx, people, load={}, excluded=set(), today=date(2026, 11, 12))
+    assert [(o.maintainer.github_login, o.involvement) for o in owners] == [("assignee", (GH_ASSIGNED,))]
+    # Involvement ignores rules and exclusions, like commenting does.
+    ctx = RoutingContext(item_key="r#1", kind="issue", title="t", score=50, band="route",
+                         facets=facets(areas=["frontend_api"]), files=[], prepass={"gh_assignees": ["assignee"]})
+    owners = choose_owners(ctx, [Maintainer(github_login="assignee", rules={"exclude": {"areas": ["frontend_api"]}})],
+                           load={}, excluded=set(), today=date(2026, 11, 12))
+    assert [o.maintainer.github_login for o in owners] == ["assignee"]
+
+
+def test_items_assigned_on_github_to_outsiders_are_left_alone() -> None:
+    from triage.routing import assigned_elsewhere
+
+    ours = ["gau-nernst", "mgoin"]
+    assert assigned_elsewhere({"gh_assignees": ["outsider"]}, ours)
+    assert not assigned_elsewhere({"gh_assignees": ["outsider", "Gau-Nernst"]}, ours)  # one of ours: route
+    assert not assigned_elsewhere({"gh_assignees": []}, ours)
+    assert not assigned_elsewhere({}, ours)  # ingested before assignees were recorded
+
+
 def test_claude_gets_an_allowlisted_environment_only() -> None:
     from triage.extract import claude_env
 
@@ -474,6 +513,8 @@ def test_dm_buttons_and_digest_menus_carry_the_item() -> None:
     assert actions["elements"][3]["url"] == "https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2348071"
     assert describe_reason("commented") == "you already commented on it"
     assert describe_reason("relevance:high") == "judged high from your recent work"
+    assert describe_reason("assigned on GitHub") == "it is assigned to you on GitHub"
+    assert describe_reason("assigned on GitHub", "vi") == "mục này được giao cho bạn trên GitHub"
 
 
 def test_vietnamese_wording_is_a_per_maintainer_one_off() -> None:
