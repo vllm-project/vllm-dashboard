@@ -1,0 +1,21 @@
+# Juan Pérez de Algaba. Beta tester; drafted 2026-11-18 from their vLLM history (170 PRs
+# authored, 10 reviewed since May). Edit freely; see README.md in this folder.
+github_login: jperezdealgaba
+# slack_user_id: U0AHWGQ0F8B   # found in vllm-dev Slack; Kevin to confirm before it's used
+min_score: 40
+capacity_per_week: 10
+notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+
+notes: |
+  I'm on Red Hat Product Security and harden vLLM: untrusted input handling
+  (bounding multimodal media decoding and allocations, image, audio and video
+  formats), request trust boundaries (chat templates, trust_remote_code,
+  structured outputs, NIXL and P/D peer validation), CORS, denial-of-service
+  limits, dependency vulnerabilities (CVEs, GHSAs, Dependabot) and supply
+  chain (pinned hashes, immutable references).
+  Send me anything security-related: vulnerability reports, crashes or memory
+  blow-ups from crafted inputs, unsafe defaults, and dependency CVEs.
+  Don't send me ordinary performance or correctness bugs.
+
+rules:
+  keywords: ["CVE", "GHSA", "vulnerability", "security"]

@@ -1,0 +1,16 @@
+# Mark McLoughlin. Beta tester; drafted 2026-11-18 from their vLLM history (7 PRs
+# authored, 56 reviewed since May). Edit freely; see README.md in this folder.
+github_login: markmc
+# slack_user_id: U07QRTKEGG6   # found in vllm-dev Slack; Kevin to confirm before it's used
+min_score: 40
+capacity_per_week: 5
+notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+
+notes: |
+  I own metrics, logging and observability: Prometheus metrics (vllm:* series,
+  labels, histograms and buckets), the periodic stats log line, request and
+  iteration metrics, MFU/MBU estimation, KV connector and NIXL transfer stats,
+  JSON logging, request-log correlation, OpenTelemetry and trace context.
+  Send me wrong, missing or exploding metrics (cardinality), logging bugs,
+  and observability feature requests.
+  Don't send me model, kernel or hardware bugs.

@@ -27,7 +27,7 @@ The dashboard shows why, e.g. `relevance:high (like #61343)`.
 ```yaml
 github_login: your-login          # must match the file name
 min_score: 40                     # only items scoring at least this (route band 40+, page 70+)
-capacity_per_week: 10             # new page-band items (last 3 days) may exceed it
+capacity_per_week: 10             # new P0s, and P0s clearly yours, may exceed it
 notify_mode: digest               # immediate | digest | off  (Slack is off for now)
 away:                             # optional
   - {start: 2026-12-20, end: 2027-01-03}

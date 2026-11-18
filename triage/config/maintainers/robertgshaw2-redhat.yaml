@@ -1,0 +1,20 @@
+# Robert Shaw. Beta tester; drafted 2026-11-18 from their vLLM history (67 PRs
+# authored, 126 reviewed since May). Edit freely; see README.md in this folder.
+github_login: robertgshaw2-redhat
+# slack_user_id: U07QM85EQR4   # found in vllm-dev Slack; Kevin to confirm before it's used
+min_score: 40
+capacity_per_week: 10
+notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+
+notes: |
+  I work on the API frontend: the OpenAI-compatible server and the Anthropic
+  Messages API (/v1/messages): chat templates and renderers, reasoning and
+  thinking (reasoning effort, stop strings after reasoning), tool use and
+  tool_reference, request validation and error responses, and the Rust
+  frontend. Also request-level metrics (success, failure, abort counters), P/D
+  disaggregation with NIXL, KV offload, HiSparse capacity, the scheduler's long
+  prefill threshold, startup memory profiling, and DeepSeek-V4.1 serving.
+  I review MoE refactors and DeepEP work.
+  Send me API compatibility bugs (OpenAI or Anthropic clients, Claude Code),
+  chat template and reasoning or tool-call issues, and P/D or KV offload bugs.
+  Don't send me kernel numerics or quantization kernel bugs.

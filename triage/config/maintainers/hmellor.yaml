@@ -1,0 +1,20 @@
+# Harry Mellor. Beta tester; drafted 2026-11-18 from their vLLM history (188 PRs
+# authored, 190 reviewed since May). Edit freely; see README.md in this folder.
+github_login: hmellor
+# slack_user_id: U07RKL31UDD   # found in vllm-dev Slack; Kevin to confirm before it's used
+min_score: 40
+capacity_per_week: 10
+notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+
+notes: |
+  I maintain the Transformers modeling backend (serving models through
+  Transformers' own modeling code: Llama, Qwen2, Gemma, Phi3, MoE and VLMs, M-RoPE,
+  EAGLE3 aux hidden states, LoRA, pooling) and model onboarding and removal.
+  Also Hugging Face integration: Transformers and huggingface_hub version bumps,
+  upstream configs, trust_remote_code, weight loading (AutoWeightsLoader,
+  WeightsMapper, WeightConverter), torch.compile config hashing, CI test
+  models, pre-commit hooks, docs build and docstrings, and CODEOWNERS.
+  Send me bugs with the Transformers backend, HF configs or checkpoints that
+  fail to load, Transformers version breakage, and docs or pre-commit problems.
+  Don't send me kernel performance, quantization kernels, or hardware-specific
+  crashes unless they come from model definitions or weight loading.
