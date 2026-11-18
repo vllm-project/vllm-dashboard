@@ -62,14 +62,15 @@ STRINGS: dict[str, dict[str, str]] = {
         "open": "Open in dashboard",
         "page_primary": "Triage: P0 item for you",
         "page_backup": "Triage: you are backup on a P0 item",
-        "digest_header": "Triage today: {n} item{s} for you",
-        "digest_hello": "Hi <@{slack}> 👋 {n} issue{s}/PR{s} that match your area came in.",
+        "digest_header": "📬 Daily triage digest: {n} item{s} for you",
+        "digest_hello": "Hi <@{slack}> 👋 Here's your daily triage digest: {n} issue{s}/PR{s} that match your area.",
         "digest_hello_mixed": " The {k} P0 item{ks} at the top {are} the most urgent; look at the rest when you have time.",
         "digest_hello_all_p0": " {they} P0, so please look soon.",
         "digest_hello_no_p0": " Look at them when you have time.",
         "group_page": "🚨 P0: look soon",
         "group_route": "🔶 P1: when you have time",
-        "digest_footer": "Use ⋮ on an item to *Ack* it or say it's *Not mine*, so it can go to someone else. "
+        "digest_more": "…and {m} more on <{url}|My list>.",
+        "digest_footer": "Press *Ack* to take an item, or *Not mine* so it can go to someone else. "
                          "Everything is on <{url}|My list>. To change what you get, edit <{file}|your file>.",
     },
     "vi": {
@@ -87,14 +88,15 @@ STRINGS: dict[str, dict[str, str]] = {
         "open": "Mở trên dashboard",
         "page_primary": "Triage: một P0 thuộc mảng của bạn",
         "page_backup": "Triage: bạn là người dự phòng cho một P0",
-        "digest_header": "Triage hôm nay: {n} mục cho bạn",
-        "digest_hello": "Chào <@{slack}> 👋 Hôm nay có {n} issue/PR hợp với mảng của bạn.",
+        "digest_header": "📬 Digest triage hằng ngày: {n} mục cho bạn",
+        "digest_hello": "Chào <@{slack}> 👋 Đây là digest triage hằng ngày của bạn: có {n} issue/PR hợp với mảng của bạn.",
         "digest_hello_mixed": " {k} mục P0 ở trên cùng là gấp nhất, mấy mục P1 còn lại bạn xem khi rảnh nhé.",
         "digest_hello_all_p0": " Tất cả đều là P0, bạn xem sớm nhé.",
         "digest_hello_no_p0": " Bạn xem khi rảnh nhé.",
         "group_page": "🚨 P0: cần xem sớm",
         "group_route": "🔶 P1: xem khi rảnh",
-        "digest_footer": "Bấm ⋮ ở mỗi mục để *Nhận việc* hoặc báo *Không phải của tôi*, để hệ thống tìm người khác. "
+        "digest_more": "…và {m} mục khác trong <{url}|My list>.",
+        "digest_footer": "Bấm *Nhận việc* nếu bạn nhận, hoặc *Không phải của tôi* để hệ thống tìm người khác. "
                          "Xem tất cả ở <{url}|My list>. Muốn đổi mảng nhận việc thì sửa <{file}|file của bạn> nhé.",
     },
 }
@@ -247,15 +249,21 @@ def page_dm(
     )
 
 
+# Each digest item is two blocks (line + buttons); Slack allows 50 per message.
+DIGEST_MAX_ITEMS = 20
+
+
 def maintainer_digest(
     *, maintainer: str, maintainer_slack: str, entries: list[DigestEntry], day: datetime, mode: DeliveryMode,
-    lang: str = "en",
+    lang: str = "en", reassign_to: list[str] | None = None,
 ) -> NotificationIntent:
     """The daily DM: a hello, then P0s and P1s in their own groups, each line
-    with why it's theirs. No summaries (titles plus reasons are enough to
-    scan; the P0 DM and the dashboard have them). Titles are never translated."""
-    entries = entries[:25]
-    n = len(entries)
+    with why it's theirs and the same buttons as a P0 DM. No summaries (titles
+    plus reasons are enough to scan; the P0 DM and the dashboard have them).
+    Titles are never translated."""
+    more = max(0, len(entries) - DIGEST_MAX_ITEMS)
+    entries = entries[:DIGEST_MAX_ITEMS]
+    n = len(entries) + more
     header = _t(lang, "digest_header", n=n, s="s" if n != 1 else "")
     p0 = sum(1 for e in entries if e.band == "page")
     hello = _t(lang, "digest_hello", slack=maintainer_slack, n=n, s="s" if n != 1 else "")
@@ -276,7 +284,12 @@ def maintainer_digest(
         key = f"group_{band}"
         title = _t(lang, key) if key in STRINGS["en"] else BAND_LABELS.get(band, band)
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}})
-        blocks += [_item_section(e, menu=True, lang=lang, summary=False) for e in group]
+        for e in group:
+            blocks.append(_item_section(e, menu=False, lang=lang, summary=False))
+            blocks.append(_actions(e, reassign_to or [], lang))
+    if more:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
+                       "text": _t(lang, "digest_more", m=more, url=f"{DASHBOARD}/me")}]})
     blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _t(
         lang, "digest_footer", url=f"{DASHBOARD}/me", file=MAINTAINER_FILE.format(login=quote(maintainer)))}]})
     return NotificationIntent(

@@ -444,11 +444,12 @@ def test_dm_buttons_and_digest_menus_carry_the_item() -> None:
 
     digest = maintainer_digest(maintainer="khluu", maintainer_slack="U0000000001", entries=[entry],
                                day=datetime(2026, 11, 18, tzinfo=timezone.utc), mode=DeliveryMode.SHADOW).payload
-    menu = digest["blocks"][3]["accessory"]  # header, hello, "P0" group title, then the item
-    assert menu["action_id"] == "triage:menu"
-    assert [o["value"] for o in menu["options"]] == [f"ack|{key}", f"not_mine|{key}", "open"]
-    assert all(len(o["value"]) <= 75 for o in menu["options"])
-    assert menu["options"][2]["url"] == "https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2348071"
+    # header, hello, "P0" group title, the item line, then its buttons (same as a DM)
+    assert digest["blocks"][3]["block_id"] == f"triage:item:{key}" and "accessory" not in digest["blocks"][3]
+    buttons = digest["blocks"][4]
+    assert buttons["block_id"] == f"triage:actions:{key}"
+    assert [e["action_id"] for e in buttons["elements"]] == ["triage:ack", "triage:not_mine", "triage:open"]
+    assert buttons["elements"][2]["url"] == "https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2348071"
     assert actions["elements"][3]["url"] == "https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2348071"
     assert describe_reason("commented") == "you already commented on it"
     assert describe_reason("relevance:high") == "judged high from your recent work"
@@ -498,18 +499,39 @@ def test_vietnamese_digest_is_friendly_grouped_and_keeps_titles() -> None:
                                 day=datetime(2026, 11, 18, tzinfo=timezone.utc), mode=DeliveryMode.SHADOW,
                                 lang="vi").payload
     texts = [b.get("text", {}).get("text", "") for b in payload["blocks"]]
-    assert texts[0] == "Triage hôm nay: 2 mục cho bạn"
-    assert texts[1].startswith("Chào <@U0B02RR385Q> 👋 Hôm nay có 2 issue/PR")
+    assert texts[0] == "📬 Digest triage hằng ngày: 2 mục cho bạn"
+    assert texts[1].startswith("Chào <@U0B02RR385Q> 👋 Đây là digest triage hằng ngày của bạn: có 2 issue/PR")
     assert "1 mục P0 ở trên cùng là gấp nhất" in texts[1]
-    assert texts[2] == "*🚨 P0: cần xem sớm*" and texts[4] == "*🔶 P1: xem khi rảnh*"
+    assert texts[2] == "*🚨 P0: cần xem sớm*" and texts[5] == "*🔶 P1: xem khi rảnh*"
+    assert [e["text"]["text"] for e in payload["blocks"][4]["elements"] if e["type"] == "button"] == [
+        "Nhận việc", "Không phải của tôi", "Mở trên dashboard"]
     # Title untouched, no score, no summary; Claude's Vietnamese reason with linked PRs.
     assert "|#66694 [Bugfix] Restore exact division in per-token-group FP8 quantization>" in texts[3]
     assert "99" not in texts[3] and "English summary" not in texts[3]
     assert "Vì sao là bạn: PR này revert <https://github.com/vllm-project/vllm/pull/61343|#61343> của bạn" in texts[3]
     # No Vietnamese line from Claude: involvement in Vietnamese, then the coded reason.
-    assert "Vì sao là bạn: bạn đã bình luận trong mục này; được đánh giá cao" in texts[5]
+    assert "Vì sao là bạn: bạn đã bình luận trong mục này; được đánh giá cao" in texts[6]
     footer = payload["blocks"][-1]["elements"][0]["text"]
     assert "triage/config/maintainers/gau-nernst.yaml|file của bạn>" in footer
+
+
+def test_digest_caps_items_to_fit_slacks_block_limit() -> None:
+    from datetime import datetime, timezone
+
+    from alerting.ports import DeliveryMode
+
+    from triage.notify import DIGEST_MAX_ITEMS, maintainer_digest
+    from triage.store import DigestEntry
+
+    entries = [DigestEntry(i, f"vllm-project/vllm#{i}", "t", f"https://github.com/vllm-project/vllm/issues/{i}",
+                           50, "route", "", ["commented"]) for i in range(1, 31)]
+    payload = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=entries,
+                                day=datetime(2026, 11, 18, tzinfo=timezone.utc), mode=DeliveryMode.SHADOW,
+                                reassign_to=["y"]).payload
+    assert len(payload["blocks"]) <= 50
+    assert sum(1 for b in payload["blocks"] if b.get("type") == "actions") == DIGEST_MAX_ITEMS
+    assert payload["blocks"][0]["text"]["text"] == "📬 Daily triage digest: 30 items for you"
+    assert "…and 10 more on <https://ci.vllm.ai/triage/me|My list>." in payload["blocks"][-2]["elements"][0]["text"]
 
 
 def test_relevance_reason_local_only_for_non_english_maintainers() -> None:
