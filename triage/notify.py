@@ -8,6 +8,7 @@ non-vLLM links.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -26,6 +27,28 @@ def _link(url: str, text: str) -> str:
     return f"<{url}|{label}>" if trusted_url(url) else label
 
 
+_PR_REF = re.compile(r"#(\d{2,7})")
+
+
+def _pr_links(text: str) -> str:
+    """#123 -> a link to that vllm PR (text is already Slack-escaped)."""
+    return _PR_REF.sub(lambda m: f"<https://github.com/vllm-project/vllm/pull/{m.group(1)}|#{m.group(1)}>", text)
+
+
+def describe_reason(raw: str) -> str:
+    """Router reason codes in plain words, matching the dashboard."""
+    if m := re.fullmatch(r"authored #(\d+)", raw):
+        return f"you wrote #{m.group(1)}, which this item names"
+    if raw == "commented":
+        return "you already commented on it"
+    if m := re.fullmatch(r"relevance:(high|medium)(?: \(like (.+)\))?", raw):
+        like = f" (like {m.group(2)})" if m.group(2) else ""
+        return f"judged {m.group(1)} from your recent work{like}"
+    if m := re.fullmatch(r"(area|hardware|model|path|keyword):(.+)", raw):
+        return f"your rule: {m.group(1)} {m.group(2)}"
+    return raw
+
+
 def _item_line(entry: DigestEntry, owners: list[str] | None = None) -> str:
     icon = _BAND_ICON.get(entry.band, "")
     number = entry.item_key.rsplit("#", 1)[-1]
@@ -35,7 +58,8 @@ def _item_line(entry: DigestEntry, owners: list[str] | None = None) -> str:
         parts.append(f"   _{safe_slack_mrkdwn(entry.summary[:240])}_")
     detail = []
     if entry.matched:
-        detail.append("matched " + ", ".join(safe_slack_mrkdwn(m) for m in entry.matched[:4]))
+        why = "; ".join(_pr_links(safe_slack_mrkdwn(describe_reason(m))) for m in entry.matched[:3])
+        detail.append(f"why you: {why}")
     if owners is not None:
         detail.append("owner: " + (", ".join(safe_slack_mrkdwn(o) for o in owners) if owners else "*unrouted*"))
     if detail:
@@ -43,9 +67,53 @@ def _item_line(entry: DigestEntry, owners: list[str] | None = None) -> str:
     return "\n".join(parts)
 
 
+def _item_section(entry: DigestEntry, *, menu: bool) -> dict[str, Any]:
+    """One item as a section; digest lines get an overflow menu (Ack / Not mine / Open)."""
+    block: dict[str, Any] = {
+        "type": "section",
+        "block_id": f"triage:item:{entry.item_key}",
+        "text": {"type": "mrkdwn", "text": _item_line(entry)[:2900]},
+    }
+    if menu:
+        block["accessory"] = {
+            "type": "overflow",
+            "action_id": "triage:menu",
+            "options": [
+                {"text": {"type": "plain_text", "text": "Ack"}, "value": f"ack|{entry.item_key}"},
+                {"text": {"type": "plain_text", "text": "Not mine"}, "value": f"not_mine|{entry.item_key}"},
+                {"text": {"type": "plain_text", "text": "Open in dashboard"}, "value": "open",
+                 "url": f"{DASHBOARD}?item={entry.item_key}"},
+            ],
+        }
+    return block
+
+
+def _actions(entry: DigestEntry, reassign_to: list[str]) -> dict[str, Any]:
+    """Ack / Not mine / Reassign / Open under a single-item DM. The click is
+    handled by the dashboard (/api/triage/slack/interactions), which checks
+    the request is signed by Slack and that the clicker owns the item."""
+    elements: list[dict[str, Any]] = [
+        {"type": "button", "action_id": "triage:ack", "style": "primary",
+         "text": {"type": "plain_text", "text": "Ack"}, "value": entry.item_key},
+        {"type": "button", "action_id": "triage:not_mine",
+         "text": {"type": "plain_text", "text": "Not mine"}, "value": entry.item_key},
+    ]
+    if reassign_to:
+        elements.append({
+            "type": "static_select",
+            "action_id": "triage:reassign",
+            "placeholder": {"type": "plain_text", "text": "Reassign to…"},
+            "options": [{"text": {"type": "plain_text", "text": login[:75]}, "value": login}
+                        for login in sorted(reassign_to, key=str.lower)[:100]],
+        })
+    elements.append({"type": "button", "action_id": "triage:open", "url": f"{DASHBOARD}?item={entry.item_key}",
+                     "text": {"type": "plain_text", "text": "Open in dashboard"}})
+    return {"type": "actions", "block_id": f"triage:actions:{entry.item_key}", "elements": elements}
+
+
 def _payload(header: str, lines: list[str], footer: str) -> dict[str, Any]:
+    """Plain line-based message (team digest): sections of <= ~2900 chars."""
     body = "\n\n".join(lines)
-    # Slack caps a section at 3000 chars; split long digests across sections.
     sections: list[dict[str, Any]] = []
     chunk = ""
     for line in lines:
@@ -68,7 +136,8 @@ def _payload(header: str, lines: list[str], footer: str) -> dict[str, Any]:
 
 
 def page_dm(
-    *, assignment_key: str, maintainer_slack: str, entry: DigestEntry, role: str, mode: DeliveryMode
+    *, assignment_key: str, maintainer_slack: str, entry: DigestEntry, role: str, mode: DeliveryMode,
+    reassign_to: list[str] | None = None,
 ) -> NotificationIntent:
     header = "Triage: P0 item for you" if role == "primary" else "Triage: you are backup on a P0 item"
     return NotificationIntent(
@@ -78,17 +147,23 @@ def page_dm(
         delivery_mode=mode,
         destination_mode=DestinationMode.BOT_TOKEN,
         destination=maintainer_slack,
-        payload=_payload(
-            header,
-            [_item_line(entry)],
-            f"Ack, reassign or mark not mine on <{DASHBOARD}/me|My plate>.",
-        ),
+        payload={
+            "text": f"{header}: {entry.title}"[:3900],
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": header[:150]}},
+                _item_section(entry, menu=False),
+                _actions(entry, reassign_to or []),
+            ],
+            "unfurl_links": False,
+            "unfurl_media": False,
+        },
     )
 
 
 def maintainer_digest(
     *, maintainer: str, maintainer_slack: str, entries: list[DigestEntry], day: datetime, mode: DeliveryMode
 ) -> NotificationIntent:
+    header = f"Triage: {len(entries)} new item{'s' if len(entries) != 1 else ''} for you"
     return NotificationIntent(
         delivery_id=f"triage:digest:{maintainer}:{day.date().isoformat()}",
         alert_ref=f"digest:{maintainer}",
@@ -96,11 +171,17 @@ def maintainer_digest(
         delivery_mode=mode,
         destination_mode=DestinationMode.BOT_TOKEN,
         destination=maintainer_slack,
-        payload=_payload(
-            f"Triage: {len(entries)} new item{'s' if len(entries) != 1 else ''} for you",
-            [_item_line(e) for e in entries[:25]],
-            f"Full list and actions on <{DASHBOARD}/me|My plate>.",
-        ),
+        payload={
+            "text": header,
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": header[:150]}},
+                *[_item_section(e, menu=True) for e in entries[:25]],
+                {"type": "context", "elements": [{"type": "mrkdwn",
+                    "text": f"Use ⋮ on an item to ack it or say it's not yours. Everything is on <{DASHBOARD}/me|My plate>."}]},
+            ],
+            "unfurl_links": False,
+            "unfurl_media": False,
+        },
     )
 
 
