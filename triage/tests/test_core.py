@@ -272,6 +272,20 @@ def test_a_clear_match_p0_is_not_blocked_by_capacity() -> None:
     assert owners("low", prepass={"commenters": ["full"]}) == ["full"]  # involvement is clear too
 
 
+def test_hardware_exclude_only_drops_items_entirely_about_that_hardware() -> None:
+    gau = Maintainer(github_login="gau", rules={"exclude": {"hardware": ["MI355X", "TPU"]}})
+    def routed(hw: list[str], hints: list[str]) -> bool:
+        c = RoutingContext(item_key="r#1", kind="pr", title="fix", score=95, band="page",
+                           facets=facets(hardware=hw), prepass={"hardware_hints": hints}, files=[],
+                           relevance={"gau": {"relevance": "high"}}, fresh=True)
+        return bool(choose_owners(c, [gau], load={}, excluded=set(), today=date(2026, 11, 12)))
+    assert routed(["H100"], ["H100", "B200", "MI355X"])  # NVIDIA fix that mentions an AMD GPU
+    assert routed(["H100", "MI355X"], [])                # spans both: still relevant
+    assert not routed(["MI355X"], ["H100"])              # about AMD only (Claude's label wins)
+    assert not routed([], ["TPU"])                       # no label: fall back to the text scan
+    assert routed([], [])
+
+
 def test_more_specific_match_wins() -> None:
     f = facets(areas=["moe"], hardware=["B200"])
     a = Maintainer(github_login="a", rules={"areas": ["moe"]})

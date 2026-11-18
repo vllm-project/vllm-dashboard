@@ -37,7 +37,8 @@ notes: |
   to send you. Claude reads this when judging relevance.
 
 rules:                            # optional
-  exclude: {hardware: [MI300X], types: [question]}   # hard limits
+  exclude: {hardware: [MI300X], types: [question]}   # hard limits; hardware only excludes
+                                                    # items about nothing but that hardware
   areas: [moe]                    # "always send me" overrides (any one matches)
   models: ["deepseek*"]
   keywords: ["expert parallel"]

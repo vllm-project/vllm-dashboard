@@ -204,11 +204,16 @@ def choose_owners(
 
 
 def _excluded(rules: Mapping[str, Any], ctx: RoutingContext) -> bool:
+    """A maintainer's hard "don't send me". Hardware only excludes an item
+    that is entirely about excluded hardware: an NVIDIA fix whose text also
+    mentions an AMD GPU (say, in a test matrix) is still theirs. Claude's
+    hardware label is used; the text scan only when Claude found none."""
     exclude = rules.get("exclude") or {}
     areas = set(ctx.facets.get("areas") or []) | set(ctx.prepass.get("areas") or [])
-    hardware = set(ctx.facets.get("hardware") or []) | set(ctx.prepass.get("hardware_hints") or [])
+    hardware = set(ctx.facets.get("hardware") or []) or set(ctx.prepass.get("hardware_hints") or [])
+    excluded_hw = set(exclude.get("hardware") or [])
     return bool(
         ctx.facets.get("type") in (exclude.get("types") or [])
         or areas & set(exclude.get("areas") or [])
-        or hardware & set(exclude.get("hardware") or [])
+        or (hardware and hardware <= excluded_hw)
     )
