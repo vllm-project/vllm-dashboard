@@ -141,6 +141,20 @@ export function matchRules(
 }
 
 /** Normalises a stored `rules` jsonb (untrusted shape) into TriageRules. */
+// IANA zone names like "Asia/Ho_Chi_Minh" or "UTC" (the worker checks they exist).
+const TIMEZONE = /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+){0,2}$/;
+
+/** language / timezone / digest_hour: file fields the form doesn't edit but must keep. */
+function passThrough(value: Record<string, unknown>): Pick<TriageRules, "language" | "timezone" | "digest_hour"> {
+  return {
+    ...(value.language === "vi" ? { language: "vi" as const } : {}),
+    ...(typeof value.timezone === "string" && TIMEZONE.test(value.timezone) ? { timezone: value.timezone } : {}),
+    ...(Number.isInteger(value.digest_hour) && (value.digest_hour as number) >= 0 && (value.digest_hour as number) <= 23
+      ? { digest_hour: value.digest_hour as number }
+      : {}),
+  };
+}
+
 export function normalizeRules(raw: unknown): TriageRules {
   const value = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const strings = (input: unknown): string[] =>
@@ -164,7 +178,7 @@ export function normalizeRules(raw: unknown): TriageRules {
     },
     natural_language:
       typeof value.natural_language === "string" ? value.natural_language : "",
-    ...(value.language === "vi" ? { language: "vi" as const } : {}),
+    ...passThrough(value),
   };
 }
 
@@ -226,8 +240,9 @@ export function validateMaintainerSettings(
     if (typeof value === "string") return { ok: false, error: value };
   }
   const naturalLanguage = rulesInput.natural_language ?? "";
-  if (typeof naturalLanguage !== "string" || naturalLanguage.length > 1000) {
-    return { ok: false, error: "natural_language must be text of at most 1000 characters." };
+  // Same limit as the worker (triage/maintainers.py keeps 4000 characters of notes).
+  if (typeof naturalLanguage !== "string" || naturalLanguage.length > 4000) {
+    return { ok: false, error: "Notes must be text of at most 4000 characters." };
   }
 
   const minScore = input.minScore ?? 40;
@@ -276,7 +291,7 @@ export function validateMaintainerSettings(
           hardware: fields.excludeHardware as string[],
         },
         natural_language: naturalLanguage.trim(),
-        ...(rulesInput.language === "vi" ? { language: "vi" as const } : {}),
+        ...passThrough(rulesInput),
       },
       minScore,
       capacityPerWeek: capacity,
@@ -325,6 +340,11 @@ function quoted(value: string): string {
   return JSON.stringify(value);
 }
 
+/** Lines of a literal block scalar (`|`): each line indented, blank lines kept empty. */
+function notesBlock(text: string): string[] {
+  return text.replace(/\r\n?/g, "\n").split("\n").map((line) => (line.trim() ? `  ${line.trimEnd()}` : ""));
+}
+
 function flowList(values: readonly string[], render: (value: string) => string): string {
   return `[${values.map(render).join(", ")}]`;
 }
@@ -332,17 +352,21 @@ function flowList(values: readonly string[], render: (value: string) => string):
 /**
  * The content of triage/config/maintainers/<login>.yaml: one top-level
  * mapping. Key order is fixed; empty lists and optional keys are omitted
- * (github_login always appears). Enum values (areas, hardware, types,
- * notify_mode) are plain; models, paths, keywords and natural_language are
- * always double-quoted.
+ * (github_login always appears). Enum values (areas, hardware, types) are
+ * plain, notify_mode is quoted when YAML would misread it (`off`); models,
+ * paths and keywords are double-quoted; notes are a literal block. Fields the
+ * form doesn't edit (language, timezone, digest_hour) are carried through.
  */
 export function maintainerFileYaml(login: string, settings: MaintainerSettingsInput): string {
   const lines = [`github_login: ${plainOrQuoted(login)}`];
   if (settings.slackUserId) lines.push(`slack_user_id: ${plainOrQuoted(settings.slackUserId)}`);
   lines.push(`min_score: ${settings.minScore}`);
   lines.push(`capacity_per_week: ${settings.capacityPerWeek}`);
-  lines.push(`notify_mode: ${settings.notifyMode}`);
+  // plainOrQuoted: a bare `off` would be read back as the boolean false.
+  lines.push(`notify_mode: ${plainOrQuoted(settings.notifyMode)}`);
   if (settings.rules.language === "vi") lines.push("language: vi");
+  if (settings.rules.timezone) lines.push(`timezone: ${plainOrQuoted(settings.rules.timezone)}`);
+  if (settings.rules.digest_hour !== undefined) lines.push(`digest_hour: ${settings.rules.digest_hour}`);
   if (settings.away.length > 0) {
     lines.push("away:");
     for (const range of settings.away) {
@@ -375,9 +399,8 @@ export function maintainerFileYaml(login: string, settings: MaintainerSettingsIn
         .join(", ")}}`,
     );
   }
-  if (rules.natural_language) {
-    ruleLines.push(`  natural_language: ${quoted(rules.natural_language)}`);
-  }
-  if (ruleLines.length > 0) lines.push("rules:", ...ruleLines);
+  // Notes go in the documented top-level `notes:` block, as in the files people write.
+  if (rules.natural_language) lines.push("", "notes: |", ...notesBlock(rules.natural_language));
+  if (ruleLines.length > 0) lines.push("", "rules:", ...ruleLines);
   return `${lines.join("\n")}\n`;
 }
