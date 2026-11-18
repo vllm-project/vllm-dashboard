@@ -305,7 +305,9 @@ class PostgresTriageStore(PostgresAlertStore):
 
     def scoring_candidates(self, *, scoring_version: str, limit: int) -> list[ScoringRow]:
         """In-scope items whose score is missing or stale (new extraction, new
-        GitHub activity, or a new scoring config version)."""
+        GitHub activity, or a new scoring config version). A PR is also stale
+        when an issue it links or fixes was scored after it: part of a PR's
+        score comes from that issue's score, which may have changed."""
         with self._connection_factory() as c:
             rows = c.execute(
                 """
@@ -321,7 +323,15 @@ class PostgresTriageStore(PostgresAlertStore):
                   AND (s.item_key IS NULL
                        OR s.scoring_version <> %s
                        OR e.created_at > s.scored_at
-                       OR i.updated_at > s.scored_at)
+                       OR i.updated_at > s.scored_at
+                       OR (i.kind = 'pr' AND EXISTS (
+                           SELECT 1
+                           FROM jsonb_array_elements_text(
+                                    COALESCE(i.prepass->'linked_issues', '[]'::jsonb)
+                                    || COALESCE(e.facets->'pr'->'fixes_issues', '[]'::jsonb)) AS n(num)
+                           JOIN triage_scores ls
+                             ON ls.item_key = split_part(i.item_key, '#', 1) || '#' || n.num
+                           WHERE ls.scored_at > s.scored_at)))
                 ORDER BY (i.kind = 'issue') DESC, i.gh_updated_at DESC
                 LIMIT %s
                 """,
