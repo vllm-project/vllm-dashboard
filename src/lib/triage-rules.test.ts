@@ -163,6 +163,10 @@ test("rules file: exact format, key order, quoting", () => {
       "notify_mode: digest",
       "away:",
       "  - {start: 2026-12-20, end: 2027-01-03}",
+      "",
+      "notes: |",
+      "  free text",
+      "",
       "rules:",
       "  areas: [moe, kernels]",
       "  hardware: [B200]",
@@ -171,7 +175,6 @@ test("rules file: exact format, key order, quoting", () => {
       '  keywords: ["deepgemm"]',
       "  types: [bug, regression]",
       "  exclude: {types: [question], hardware: [MI300X]}",
-      '  natural_language: "free text"',
       "",
     ].join("\n"),
   );
@@ -197,6 +200,7 @@ test("the coordinator's example file is reproduced exactly", () => {
 min_score: 40
 capacity_per_week: 8
 notify_mode: digest
+
 rules:
   models: ["qwen4*", "kimi-k3*"]
   paths: ["vllm/models/qwen4_exp/**"]
@@ -227,24 +231,25 @@ test("the file parses back to the same values, including awkward strings", () =>
     models: ["Qwen/Qwen3-*", "a: b", 'say "hi"'],
     keywords: ["#tag", "yes", "multi\nline"],
     exclude: { types: ["docs"], areas: [], hardware: ["MI300X"] },
-    natural_language: "colons: here, and 'quotes' \\ backslash",
+    natural_language: "colons: here, and 'quotes' \\ backslash\n\n  - a list: with *stars*\n# not a comment",
   };
-  const parsed = yaml.load(
-    maintainerFileYaml("true", {
+  const text = maintainerFileYaml("true", {
       slackUserId: "U01",
       minScore: 0,
       capacityPerWeek: 0,
       notifyMode: "off",
       away: [{ start: "2026-12-20", end: "2027-01-03" }],
       rules,
-    }),
-    { schema: yaml.JSON_SCHEMA },
-  ) as {
+    });
+  // YAML 1.1 parsers (PyYAML, used by the worker) read a bare `off` as false.
+  assert.match(text, /^notify_mode: "off"$/m);
+  const parsed = yaml.load(text, { schema: yaml.JSON_SCHEMA }) as {
     github_login: unknown;
     slack_user_id: unknown;
     min_score: unknown;
     notify_mode: unknown;
     away: unknown;
+    notes: unknown;
     rules: Record<string, unknown>;
   };
   assert.equal(parsed.github_login, "true");
@@ -256,7 +261,8 @@ test("the file parses back to the same values, including awkward strings", () =>
   assert.deepEqual(parsed.rules.models, rules.models);
   assert.deepEqual(parsed.rules.keywords, rules.keywords);
   assert.deepEqual(parsed.rules.exclude, { types: ["docs"], hardware: ["MI300X"] });
-  assert.equal(parsed.rules.natural_language, rules.natural_language);
+  assert.equal(String(parsed.notes).trimEnd(), rules.natural_language);
+  assert.equal(parsed.rules.natural_language, undefined);
 });
 
 test("rules file paths and GitHub links", () => {
@@ -289,4 +295,24 @@ test("language: vi survives the rules page round trip", async () => {
     rules, minScore: 40, capacityPerWeek: 8, away: [], notifyMode: "digest", slackUserId: "U0B02RR385Q",
   });
   assert.match(text, /^notify_mode: digest\nlanguage: vi$/m);
+});
+
+test("fields the form doesn't edit survive a save: language, timezone, digest_hour", () => {
+  const rules = normalizeRules({ areas: ["moe"], language: "vi", timezone: "Asia/Ho_Chi_Minh", digest_hour: 8 });
+  assert.deepEqual([rules.language, rules.timezone, rules.digest_hour], ["vi", "Asia/Ho_Chi_Minh", 8]);
+  assert.equal(normalizeRules({ timezone: "not a zone!" }).timezone, undefined);
+  assert.equal(normalizeRules({ digest_hour: 24 }).digest_hour, undefined);
+  const checked = validateMaintainerSettings({
+    rules, minScore: 40, capacityPerWeek: 8, away: [], notifyMode: "digest", slackUserId: "U0B02RR385Q",
+  });
+  assert.ok(checked.ok);
+  if (!checked.ok) return;
+  const text = maintainerFileYaml("gau-nernst", checked.value);
+  assert.match(text, /^language: vi\ntimezone: Asia\/Ho_Chi_Minh\ndigest_hour: 8$/m);
+});
+
+test("notes up to the worker's 4000-character limit are accepted", () => {
+  const base = { minScore: 40, capacityPerWeek: 8, away: [], notifyMode: "digest", slackUserId: null };
+  assert.ok(validateMaintainerSettings({ ...base, rules: { natural_language: "x".repeat(4000) } }).ok);
+  assert.equal(validateMaintainerSettings({ ...base, rules: { natural_language: "x".repeat(4001) } }).ok, false);
 });

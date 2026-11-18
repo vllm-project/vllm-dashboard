@@ -71,6 +71,9 @@ export interface TriageRules {
   natural_language: string;
   /** "vi" makes the bot write to this person in Vietnamese (a one-off; see gau-nernst.yaml). */
   language?: "vi";
+  // Digest delivery (maintainer file fields); kept as-is when the file is regenerated.
+  timezone?: string;
+  digest_hour?: number;
 }
 
 export interface TriageAssignmentSummary {

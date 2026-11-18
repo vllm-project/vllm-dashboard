@@ -13,7 +13,7 @@ import {
   maintainerFileYaml,
   validateMaintainerSettings,
 } from "@/lib/triage-rules";
-import type { TriageMaintainer } from "@/lib/triage-types";
+import type { TriageMaintainer, TriageRules } from "@/lib/triage-types";
 import {
   NOTIFY_MODES,
   TRIAGE_AREAS,
@@ -72,6 +72,7 @@ interface FormState {
   paths: string;
   keywords: string;
   naturalLanguage: string;
+  keep: Pick<TriageRules, "language" | "timezone" | "digest_hour">;
   minScore: number;
   capacityPerWeek: number;
   notifyMode: NotifyMode;
@@ -91,6 +92,12 @@ function toForm(maintainer: TriageMaintainer): FormState {
     paths: maintainer.rules.paths.join("\n"),
     keywords: maintainer.rules.keywords.join("\n"),
     naturalLanguage: maintainer.rules.natural_language,
+    // Not editable here, but must survive a save (e.g. language: vi).
+    keep: {
+      ...(maintainer.rules.language ? { language: maintainer.rules.language } : {}),
+      ...(maintainer.rules.timezone ? { timezone: maintainer.rules.timezone } : {}),
+      ...(maintainer.rules.digest_hour !== undefined ? { digest_hour: maintainer.rules.digest_hour } : {}),
+    },
     minScore: maintainer.minScore,
     capacityPerWeek: maintainer.capacityPerWeek,
     notifyMode: maintainer.notifyMode,
@@ -114,6 +121,7 @@ function toBody(form: FormState) {
         hardware: [...form.excludeHardware],
       },
       natural_language: form.naturalLanguage,
+      ...form.keep,
     },
     minScore: form.minScore,
     capacityPerWeek: form.capacityPerWeek,
