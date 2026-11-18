@@ -257,6 +257,21 @@ def test_choose_owners_respects_capacity_away_not_mine_and_min_score() -> None:
     assert [o.maintainer.github_login for o in owners] == ["free"]
 
 
+def test_a_clear_match_p0_is_not_blocked_by_capacity() -> None:
+    f = facets(areas=["moe"])
+    full = Maintainer(github_login="full", capacity_per_week=2)
+    def owners(level: str, band: str = "page", score: int = 95, prepass: dict[str, Any] | None = None) -> list[str]:
+        c = RoutingContext(item_key="r#1", kind="issue", title="MoE crash", score=score, band=band,  # type: ignore[arg-type]
+                           facets=f, prepass=prepass or {}, files=[],
+                           relevance={"full": {"relevance": level}}, fresh=False)
+        return [o.maintainer.github_login for o in choose_owners(
+            c, [full], load={"full": 2}, excluded=set(), today=date(2026, 11, 12))]
+    assert owners("high") == ["full"]                    # old P0, clear match: still theirs
+    assert owners("medium") == []                        # weaker match waits for capacity
+    assert owners("high", band="route", score=60) == []  # P1s always respect capacity
+    assert owners("low", prepass={"commenters": ["full"]}) == ["full"]  # involvement is clear too
+
+
 def test_more_specific_match_wins() -> None:
     f = facets(areas=["moe"], hardware=["B200"])
     a = Maintainer(github_login="a", rules={"areas": ["moe"]})

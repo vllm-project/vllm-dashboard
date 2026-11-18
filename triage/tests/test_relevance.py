@@ -80,9 +80,11 @@ def test_strong_only_pass_and_strong_backups() -> None:
     assert [(o.maintainer.github_login, o.strong) for o in owners] == [("a", False)]
 
 
-def test_backlog_page_items_respect_capacity_but_fresh_ones_do_not() -> None:
+def test_backlog_page_items_respect_capacity_unless_fresh_or_a_clear_match() -> None:
     m = Maintainer(github_login="gau", capacity_per_week=2)
-    judged = {"gau": {"relevance": "high"}}
+    medium, high = {"gau": {"relevance": "medium"}}, {"gau": {"relevance": "high"}}
     full = {"gau": 2}
-    assert choose_owners(ctx(judged, band="page", fresh=False), [m], load=full, excluded=set(), today=date(2026, 11, 12)) == []
-    assert len(choose_owners(ctx(judged, band="page", fresh=True), [m], load=full, excluded=set(), today=date(2026, 11, 12))) == 1
+    today = date(2026, 11, 12)
+    assert choose_owners(ctx(medium, band="page", fresh=False), [m], load=full, excluded=set(), today=today) == []
+    assert len(choose_owners(ctx(medium, band="page", fresh=True), [m], load=full, excluded=set(), today=today)) == 1
+    assert len(choose_owners(ctx(high, band="page", fresh=False), [m], load=full, excluded=set(), today=today)) == 1

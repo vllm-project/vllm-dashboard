@@ -158,9 +158,11 @@ def choose_owners(
       3. an explicit rule in their file (an "always send me" override).
     Relevance "low"/"none" alone never routes. A maintainer's `exclude`
     applies to relevance and rules but not to involvement. min_score, time
-    away, not_mine and capacity always apply; only page-band items opened in
-    the last few days (`fresh`) may exceed capacity, so a backlog is spread
-    out instead of landing on one person at once.
+    away and not_mine always apply. Capacity applies too, except to page-band
+    items that are fresh (opened in the last few days) or a clear match for
+    that person (involved or "high"): a weekly cap must not keep a P0 from
+    the one person it is clearly for, but a backlog of weaker matches is
+    still spread out instead of landing on one person at once.
     """
     candidates: list[Candidate] = []
     for maintainer in maintainers:
@@ -168,15 +170,18 @@ def choose_owners(
             continue
         if ctx.score < maintainer.min_score or is_away(maintainer, today):
             continue
-        current = load.get(maintainer.github_login, 0)
-        if current >= maintainer.capacity_per_week and not (ctx.band == "page" and ctx.fresh):
-            continue
         involved = involvement(maintainer.github_login, ctx)
         judged = ctx.relevance.get(maintainer.github_login) or {}
         level = judged.get("relevance")
         is_excluded = _excluded(maintainer.rules, ctx)
         relevant = level in ("high", "medium") and not is_excluded
         matched = match_rules(maintainer.rules, ctx)
+        current = load.get(maintainer.github_login, 0)
+        clear_match = bool(involved) or (relevant and level == "high")
+        if current >= maintainer.capacity_per_week and not (
+            ctx.band == "page" and (ctx.fresh or clear_match)
+        ):
+            continue
         if involved or relevant or matched:
             candidates.append(Candidate(
                 maintainer, tuple(matched), current, tuple(involved),

@@ -132,7 +132,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     ex.add_argument("--max-tokens-per-day", type=int, default=int(os.environ.get("TRIAGE_MAX_TOKENS_PER_DAY", "2000000")))
 
     rel = sub.add_parser("relevance")
-    rel.add_argument("--model", default=os.environ.get("TRIAGE_MODEL", "sonnet"))
+    # Opus: in a review of 44 items it followed the "medium means the same
+    # component" rule far better than Sonnet (fewer weak matches routed).
+    rel.add_argument("--model", default=os.environ.get("TRIAGE_RELEVANCE_MODEL", "opus"))
     rel.add_argument("--min-score", type=int, default=int(os.environ.get("TRIAGE_RELEVANCE_MIN_SCORE", "40")))
     rel.add_argument("--limit", type=int, default=int(os.environ.get("TRIAGE_RELEVANCE_PER_RUN", "40")))
     rel.add_argument("--workers", type=int, default=2)
