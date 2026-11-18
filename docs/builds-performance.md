@@ -53,9 +53,5 @@ build set users are most likely to load.
   To reproduce: `node --env-file=.env.local --import tsx scripts/profile-groups.mjs`
   (without a Buildkite token the roster returns empty and the fallback runs).
 
-To time the filters queries directly, bypassing browser/CDN/application
-caches:
-
-```bash
-node --env-file=.env.local --import tsx scripts/profile-filters-db.mjs
-```
+The filters queries profiled here ran on Postgres `otel_spans`, which was
+dropped in migration 0041; they now read ClickHouse `ci.otel_spans`.
