@@ -49,3 +49,16 @@ export function describeReason(raw: string): string {
   }
   return raw;
 }
+
+/**
+ * The item to open from `?item=`. Links must URL-encode the key
+ * (`vllm-project%2Fvllm%2348071`); an unencoded `?item=vllm-project/vllm#48071`
+ * arrives as `item=vllm-project/vllm` plus the `#48071` fragment, so the two
+ * are put back together.
+ */
+export function itemFromLocation(param: string | null, hash: string): string | null {
+  if (param && !param.includes("#") && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(param) && /^#\d+$/.test(hash)) {
+    return `${param}${hash}`;
+  }
+  return param;
+}

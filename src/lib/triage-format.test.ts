@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { describeReason, formatAge } from "./triage-format";
+import { describeReason, formatAge, itemFromLocation } from "./triage-format";
 
 test("router reasons read as plain words", () => {
   assert.equal(describeReason("relevance:high"), "judged high from their recent work");
@@ -16,4 +16,11 @@ test("ages are compact", () => {
   assert.equal(formatAge("2026-11-15T12:00:00Z", now), "24h");
   assert.equal(formatAge("2026-11-10T12:00:00Z", now), "6d");
   assert.equal(formatAge("not a date", now), "—");
+});
+
+test("item links survive an unencoded '#'", () => {
+  assert.equal(itemFromLocation("vllm-project/vllm#48071", ""), "vllm-project/vllm#48071");
+  assert.equal(itemFromLocation("vllm-project/vllm", "#48071"), "vllm-project/vllm#48071");
+  assert.equal(itemFromLocation("vllm-project/vllm", "#section"), "vllm-project/vllm");
+  assert.equal(itemFromLocation(null, "#48071"), null);
 });
