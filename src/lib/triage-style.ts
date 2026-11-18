@@ -1,7 +1,7 @@
 import type { TriageFacets } from "@/lib/triage-types";
 
 /**
- * One source of truth for triage colors, shared by the queue, drawer, My plate
+ * One source of truth for triage colors, shared by the queue, drawer, My list
  * and the rules preview. Class strings are literal so Tailwind sees them.
  *
  * Bands are stored as page/route/watch/ignore (DB, API, URLs, config) but

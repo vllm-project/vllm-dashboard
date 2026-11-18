@@ -184,7 +184,7 @@ def maintainer_digest(
                 {"type": "header", "text": {"type": "plain_text", "text": header[:150]}},
                 *[_item_section(e, menu=True) for e in entries[:25]],
                 {"type": "context", "elements": [{"type": "mrkdwn",
-                    "text": f"Use ⋮ on an item to ack it or say it's not yours. Everything is on <{DASHBOARD}/me|My plate>."}]},
+                    "text": f"Use ⋮ on an item to ack it or say it's not yours. Everything is on <{DASHBOARD}/me|My list>."}]},
             ],
             "unfurl_links": False,
             "unfurl_media": False,

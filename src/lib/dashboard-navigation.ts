@@ -89,9 +89,9 @@ export const TRIAGE_SECTION = {
     "Incoming vLLM issues and PRs, scored by impact and routed to maintainers.",
   links: [
     { href: "/triage", label: "Queue", exact: true },
-    { href: "/triage/me", label: "My plate" },
-    { href: "/triage/rules", label: "Rules" },
-    { href: "/triage/scoring", label: "Scoring" },
+    { href: "/triage/me", label: "My list" },
+    { href: "/triage/rules", label: "Configure rules" },
+    { href: "/triage/scoring", label: "Scoring guidelines" },
   ],
 } as const satisfies DashboardSection;
 

@@ -62,7 +62,7 @@ export default function MyPlateContent() {
 
       <div className="overflow-clip rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-zinc-200 bg-zinc-50/60 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/40">
-          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">On your plate</h2>
+          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">On your list</h2>
           {data && (
             <p className="text-xs tabular-nums text-zinc-500 dark:text-zinc-400">
               {data.open.length} open · {notAcked} not acked yet
@@ -73,7 +73,7 @@ export default function MyPlateContent() {
         {!data && !error && <RowSkeleton rows={3} />}
         {data && data.open.length === 0 && (
           <EmptyState
-            title="Your plate is clear"
+            title="Your list is clear"
             detail="Nothing is assigned to you right now. Unowned P0/P1 items are waiting in the queue."
             action={
               <Link

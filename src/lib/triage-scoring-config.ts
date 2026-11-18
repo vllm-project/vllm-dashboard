@@ -1,5 +1,5 @@
 /**
- * The scoring numbers the "How scoring works" page shows, mirrored from
+ * The scoring numbers the "Scoring guidelines" page shows, mirrored from
  * triage/config/scoring.yaml and triage/config/tiers.yaml (the router's
  * source of truth). triage-scoring-config.test.ts loads both YAML files and
  * fails if anything here drifts, so update this file in the same PR as any

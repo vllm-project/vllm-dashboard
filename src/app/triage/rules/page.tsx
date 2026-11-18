@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import RulesContent from "./rules-content";
 
-export const metadata: Metadata = { title: "Triage rules" };
+export const metadata: Metadata = { title: "Configure rules" };
 
 export default function RulesPage() {
   return (
