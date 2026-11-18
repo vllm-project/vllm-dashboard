@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import MyPlateContent from "./my-plate-content";
 
-export const metadata: Metadata = { title: "My plate" };
+export const metadata: Metadata = { title: "My list" };
 
 export default function MyPlatePage() {
   return (

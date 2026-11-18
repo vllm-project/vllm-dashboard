@@ -4,7 +4,7 @@ import { Chips, PriorityBadge } from "@/components/triage/badges";
 import { ScoreBreakdown } from "@/components/triage/score-breakdown";
 import { NICHE_EXAMPLE, SCORING, TIERS, WORKED_EXAMPLE, scoreExample } from "@/lib/triage-scoring-config";
 
-export const metadata: Metadata = { title: "How scoring works" };
+export const metadata: Metadata = { title: "Scoring guidelines" };
 
 const S = SCORING;
 const fmt = (value: number) => String(Number(value.toFixed(2)));
@@ -111,7 +111,7 @@ export default function ScoringGuidePage() {
   return (
     <article className="mx-auto max-w-3xl space-y-6 pb-10">
       <header className="space-y-2">
-        <h1 className="text-xl font-semibold text-zinc-950 dark:text-zinc-50">How scoring works</h1>
+        <h1 className="text-xl font-semibold text-zinc-950 dark:text-zinc-50">Scoring guidelines</h1>
         <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
           Every open issue and PR gets a score. An LLM reads the item and reports facts (which model, which GPU, what broke);
           a fixed formula turns those facts into points. The LLM never picks the score, so every number can be explained,

@@ -46,7 +46,7 @@ function Owner({ item }: { item: TriageQueueItem }) {
 
 /**
  * One item. The whole row opens the drawer; the title links to GitHub.
- * `footer` (e.g. My plate's action buttons) renders under the context line.
+ * `footer` (e.g. My list's action buttons) renders under the context line.
  */
 export function ItemRow({
   item,
