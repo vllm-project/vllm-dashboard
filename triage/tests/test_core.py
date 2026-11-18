@@ -411,7 +411,9 @@ def test_slack_lines_use_p_levels() -> None:
     payload = page_dm(assignment_key="k", maintainer_slack="U0000000001", entry=entry, role="primary",
                       mode=DeliveryMode.SHADOW).payload
     assert payload["blocks"][0]["text"]["text"] == "Triage: P0 item for you"
-    assert "*P0* · 94 <https://github.com/vllm-project/vllm/issues/48071|#48071 MNNVL allreduce crash>" in payload["blocks"][1]["text"]["text"]
+    text = payload["blocks"][1]["text"]["text"]
+    assert "*P0* <https://github.com/vllm-project/vllm/issues/48071|#48071 MNNVL allreduce crash>" in text
+    assert "94" not in text  # no score in Slack: the P-level is what people read
 
 
 def test_dm_buttons_and_digest_menus_carry_the_item() -> None:
@@ -442,7 +444,7 @@ def test_dm_buttons_and_digest_menus_carry_the_item() -> None:
 
     digest = maintainer_digest(maintainer="khluu", maintainer_slack="U0000000001", entries=[entry],
                                day=datetime(2026, 11, 18, tzinfo=timezone.utc), mode=DeliveryMode.SHADOW).payload
-    menu = digest["blocks"][1]["accessory"]
+    menu = digest["blocks"][3]["accessory"]  # header, hello, "P0" group title, then the item
     assert menu["action_id"] == "triage:menu"
     assert [o["value"] for o in menu["options"]] == [f"ack|{key}", f"not_mine|{key}", "open"]
     assert all(len(o["value"]) <= 75 for o in menu["options"])
@@ -476,6 +478,58 @@ def test_vietnamese_wording_is_a_per_maintainer_one_off() -> None:
     assert [e["text"]["text"] for e in blocks[2]["elements"] if e["type"] == "button"] == [
         "Nhận việc", "Không phải của tôi", "Mở trên dashboard"]
     assert describe_reason("commented") == "you already commented on it"
+
+
+def test_vietnamese_digest_is_friendly_grouped_and_keeps_titles() -> None:
+    from datetime import datetime, timezone
+
+    from alerting.ports import DeliveryMode
+
+    from triage.notify import maintainer_digest
+    from triage.store import DigestEntry
+
+    gh = "https://github.com/vllm-project/vllm/pull/"
+    p0 = DigestEntry(1, "vllm-project/vllm#66694", "[Bugfix] Restore exact division in per-token-group FP8 quantization",
+                     gh + "66694", 99, "page", "an English summary", ["relevance:high (like #61343)"],
+                     "PR này revert #61343 của bạn (per_token_group_quant_8bit)")
+    p1 = DigestEntry(2, "vllm-project/vllm#65340", "[Bugfix][GDN] Size repeat_interleave from the device token total",
+                     gh + "65340", 58, "route", "s", ["commented", "relevance:high (like #67733)"], "")
+    payload = maintainer_digest(maintainer="gau-nernst", maintainer_slack="U0B02RR385Q", entries=[p0, p1],
+                                day=datetime(2026, 11, 18, tzinfo=timezone.utc), mode=DeliveryMode.SHADOW,
+                                lang="vi").payload
+    texts = [b.get("text", {}).get("text", "") for b in payload["blocks"]]
+    assert texts[0] == "Triage hôm nay: 2 mục cho bạn"
+    assert texts[1].startswith("Chào <@U0B02RR385Q> 👋 Hôm nay có 2 issue/PR")
+    assert "1 mục P0 ở trên cùng là gấp nhất" in texts[1]
+    assert texts[2] == "*🚨 P0: cần xem sớm*" and texts[4] == "*🔶 P1: xem khi rảnh*"
+    # Title untouched, no score, no summary; Claude's Vietnamese reason with linked PRs.
+    assert "|#66694 [Bugfix] Restore exact division in per-token-group FP8 quantization>" in texts[3]
+    assert "99" not in texts[3] and "English summary" not in texts[3]
+    assert "Vì sao là bạn: PR này revert <https://github.com/vllm-project/vllm/pull/61343|#61343> của bạn" in texts[3]
+    # No Vietnamese line from Claude: involvement in Vietnamese, then the coded reason.
+    assert "Vì sao là bạn: bạn đã bình luận trong mục này; được đánh giá cao" in texts[5]
+    footer = payload["blocks"][-1]["elements"][0]["text"]
+    assert "triage/config/maintainers/gau-nernst.yaml|file của bạn>" in footer
+
+
+def test_relevance_reason_local_only_for_non_english_maintainers() -> None:
+    from triage.relevance import MaintainerProfile, RelevanceTask, parse_judgments, profile_hash, render_profiles
+
+    prs = [{"number": 61343, "kind": "authored", "title": "t"}]
+    assert profile_hash(prs, "n") == profile_hash(prs, "n", "en") != profile_hash(prs, "n", "vi")
+    profiles = {
+        "vi": MaintainerProfile("vi", prs, "", "h", "vi"),
+        "en": MaintainerProfile("en", prs, "", "h"),
+    }
+    assert "<language>Vietnamese</language>" in render_profiles([profiles["vi"]])
+    assert "<language>Vietnamese" not in render_profiles([profiles["en"]])
+    task = RelevanceTask("k", "pr", "t", {}, "c", ["vi", "en"])
+    out = {"judgments": [
+        {"github_login": "vi", "relevance": "high", "evidence_prs": [61343], "reason": "r", "reason_local": "bạn viết #61343"},
+        {"github_login": "en", "relevance": "low", "evidence_prs": [], "reason": "r", "reason_local": "ignored"},
+    ]}
+    by = {j.maintainer: j for j in parse_judgments(out, task, profiles)}
+    assert by["vi"].reason_local == "bạn viết #61343" and by["en"].reason_local == ""
 
 
 def test_items_older_than_the_window_are_out_of_scope() -> None:

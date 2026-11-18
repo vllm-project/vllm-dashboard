@@ -240,6 +240,7 @@ class RouteHandler:
                     0, row.item_key, row.title, row.html_url, row.score, row.band,
                     str(row.facets.get("summary") or ""),
                     candidate.reasons,
+                    str((row.relevance.get(maintainer.github_login) or {}).get("reason_local") or ""),
                 )
                 notification = page_dm(
                     assignment_key=f"{row.item_key}:{maintainer.github_login}:{role}",
