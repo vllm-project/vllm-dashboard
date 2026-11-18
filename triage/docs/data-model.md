@@ -20,7 +20,8 @@ dashboard / Slack ──► triage_actions + triage_assignments.status
 ```json
 {
   "areas": ["moe", "kernels"],          // from changed paths (PRs) and labels
-  "linked_issues": [12345],             // "Fixes #N", "Closes #N", issue URLs
+  "linked_issues": [12345],             // "Fixes #N", "Closes #N", issue URLs, and (GraphQL
+                                        // ingest) the PR's closing references in the sidebar
   "hardware_hints": ["B200"],           // regex hits in title/body
   "model_hints": ["DeepSeek-V3"],       // regex hits in title/body
   "is_maintainer": false,               // author_association in OWNER/MEMBER/COLLABORATOR
@@ -28,12 +29,27 @@ dashboard / Slack ──► triage_actions + triage_assignments.status
   "template": {"has_env": true, "has_repro": true, "test_plan": false},
   "slop_hints": ["empty_test_plan"],
   "scope_reason": "issue" | "pr_external" | "pr_linked_issue" | "pr_maintainer_unlinked" | "bot",
-  "commenters": ["gau-nernst"],         // logins in the stored comments, in order
-  "commented_at": {"gau-nernst": "2026-11-18T09:12:00+00:00"},  // latest comment per login (lower case);
-                                        // first 30 comments only, kept until comments are re-read
-  "gh_assignees": ["gau-nernst"]        // the item's assignees on GitHub
+  "commenters": ["gau-nernst"],         // who commented, in order: the first 30 comments and
+                                        // (GraphQL ingest) the latest 30; kept until comments are re-read
+  "commented_at": {"gau-nernst": "2026-11-18T09:12:00+00:00"},  // latest comment per login (lower case),
+                                        // same comments; kept until comments are re-read
+  "gh_assignees": ["gau-nernst"],       // the item's assignees on GitHub
+  // Open PRs only: whose move it is (prepass.whose_move). "author" when it is
+  // a draft, pre-commit or DCO fails, it has merge conflicts, or changes were
+  // requested; the router holds P1 PRs waiting on their author (not P0).
+  "waiting_on": "author" | "reviewer",
+  "waiting_reasons": ["draft", "ci_failing", "merge_conflict", "changes_requested"],
+  "failing_checks": ["pre-run-check"]   // checks failing on the head commit (GraphQL ingest only)
 }
 ```
+
+Comments are re-read only when the comment count changes (or the item comes
+into scope); in between, the stored excerpt stands in for them, and the
+content hash is always computed from that excerpt, so a re-read that finds
+nothing new doesn't change it. `waiting_on` can change without the PR's
+`updatedAt` moving (a check finishes, `main` moves under it), so each ingest
+run also re-reads the status of unowned P1 PRs held back as waiting on their
+author.
 
 `in_scope` is false for `pr_maintainer_unlinked` and `bot`; those items are
 stored but not extracted, scored or routed.

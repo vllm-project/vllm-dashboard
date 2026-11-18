@@ -85,6 +85,13 @@ def assigned_elsewhere(prepass: Mapping[str, Any], maintainers: Iterable[str]) -
     return bool(assignees) and not assignees & {m.lower() for m in maintainers}
 
 
+def waiting_on_author(prepass: Mapping[str, Any], band: str) -> bool:
+    """A PR whose next move is its author's (prepass.waiting_on, see
+    prepass.whose_move) isn't routed, unless it is page band: a P0 fix needs
+    an owner even while it is red, so someone can get it over the line."""
+    return prepass.get("waiting_on") == "author" and band != "page"
+
+
 def involvement(login: str, ctx: RoutingContext) -> list[str]:
     """How a maintainer is already part of this item, strongest first:
     the item is assigned to them on GitHub, they wrote a PR the item names

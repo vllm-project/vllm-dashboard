@@ -67,6 +67,16 @@ _ENV_SECTION = re.compile(r"(?i)(collect_env|your current environment|PyTorch ve
 _REPRO_SECTION = re.compile(r"(?i)(```|steps to reproduce|minimal reproduc|how to reproduce|vllm serve )")
 _TEST_PLAN = re.compile(r"(?is)##\s*Test Plan\s*(.*?)(?:\n##\s|\Z)")
 _BOT_LOGINS = re.compile(r"(?i)(\[bot\]$|^dependabot|^renovate|^github-actions|^mergify)")
+# A GitHub user login, as _COMMENTER reads it (bots, "name[bot]", are not).
+LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
+
+# Checks whose failure is the PR author's to fix. vLLM's other red checks
+# are not: "pre-run-check" fails until a maintainer adds the `ready` label
+# (the reviewers' move), the docs build and the full Buildkite run
+# ("buildkite/ci/pr...") are often red for reasons outside the PR.
+AUTHOR_CHECKS = frozenset({"pre-commit", "DCO"})
+# Why a PR waits on its author, in the order the dashboard lists them.
+WAITING_REASONS = ("draft", "ci_failing", "merge_conflict", "changes_requested")
 
 
 def content_hash(item: Item) -> str:
@@ -168,6 +178,29 @@ def in_scope(reason: str) -> bool:
     return reason not in ("bot", "pr_maintainer_unlinked", "too_old")
 
 
+def whose_move(
+    *, draft: bool, review_decision: str | None, mergeable: str | None, failing_checks: list[str] | None
+) -> dict[str, Any]:
+    """Whose move an open PR is: "author" when it is a draft, a check the
+    author must fix is failing (AUTHOR_CHECKS), it has merge conflicts, or a
+    reviewer requested changes; "reviewer" otherwise. `failing_checks` None
+    means the client could not read checks/reviews (REST): draft only."""
+    failing = list(failing_checks or [])
+    reasons = {
+        "draft": draft,
+        "ci_failing": any(name in AUTHOR_CHECKS for name in failing),
+        "merge_conflict": mergeable == "CONFLICTING",
+        "changes_requested": review_decision == "CHANGES_REQUESTED",
+    }
+    out: dict[str, Any] = {
+        "waiting_on": "author" if any(reasons.values()) else "reviewer",
+        "waiting_reasons": [r for r in WAITING_REASONS if reasons[r]],
+    }
+    if failing_checks is not None:
+        out["failing_checks"] = failing[:10]
+    return out
+
+
 def compute_prepass(item: Item, config: TriageConfig, now: datetime | None = None) -> dict[str, Any]:
     """`now` enables the age limit (config.max_age_days); without it (e.g.
     offline backtests) every item is judged on content alone."""
@@ -181,7 +214,9 @@ def compute_prepass(item: Item, config: TriageConfig, now: datetime | None = Non
     # Tests and docs alone say little about where the change lives.
     if item.kind == "pr" and areas - {"docs", "ci"}:
         areas.discard("docs")
-    links = linked_issues(text)
+    # The PR's closing references ("Development" sidebar) count as links
+    # too, whether or not the body says "Fixes #N".
+    links = sorted(set(linked_issues(text)) | set(item.closing_issues))
     template = _template(item)
     reason = scope_reason(item, links)
     if now is not None and item.created_at < now - timedelta(days=config.max_age_days):
@@ -200,6 +235,11 @@ def compute_prepass(item: Item, config: TriageConfig, now: datetime | None = Non
         "referenced_prs": referenced_prs(text, exclude={item.number, *links}),
         "commenters": commenters(item.comments),
         "gh_assignees": list(item.assignees),
+        **(
+            whose_move(draft=item.draft, review_decision=item.review_decision,
+                       mergeable=item.mergeable, failing_checks=item.failing_checks)
+            if item.kind == "pr" and item.state == "open" else {}
+        ),
     }
 
 

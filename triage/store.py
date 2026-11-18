@@ -512,6 +512,8 @@ class PostgresTriageStore(PostgresAlertStore):
                                   AND a.role = 'primary' AND a.status IN ('open', 'acked', 'done'))
                   AND NOT EXISTS (SELECT 1 FROM triage_actions a WHERE a.item_key = i.item_key
                                   AND a.action IN ('drop', 'slop'))
+                  -- routing.waiting_on_author: PRs waiting on their author don't take a slot.
+                  AND NOT (COALESCE(i.prepass->>'waiting_on', '') = 'author' AND s.band <> 'page')
                 ORDER BY s.score DESC
                 LIMIT %s
                 """,
@@ -526,6 +528,34 @@ class PostgresTriageStore(PostgresAlertStore):
             )
             for r in rows
         ]
+
+    def waiting_prs(self, repo: str, *, limit: int) -> list[tuple[str, int, dict[str, Any]]]:
+        """(item_key, number, prepass) of open P1 PRs the router holds back
+        because they wait on their author and nobody owns yet, highest score
+        first: the ones whose status the ingest re-reads."""
+        with self._connection_factory() as c:
+            rows = c.execute(
+                """
+                SELECT i.item_key, i.number, i.prepass
+                FROM triage_items i JOIN triage_scores s ON s.item_key = i.item_key
+                WHERE i.repo = %s AND i.kind = 'pr' AND i.in_scope AND i.state = 'open'
+                  AND s.band = 'route' AND i.prepass->>'waiting_on' = 'author'
+                  AND NOT EXISTS (SELECT 1 FROM triage_assignments a WHERE a.item_key = i.item_key
+                                  AND a.role = 'primary' AND a.status IN ('open', 'acked', 'done'))
+                ORDER BY s.score DESC
+                LIMIT %s
+                """,
+                (repo, limit),
+            ).fetchall()
+        return [(r[0], int(r[1]), dict(r[2])) for r in rows]
+
+    def update_prepass(self, item_key: str, fields: dict[str, Any]) -> None:
+        """Merge `fields` into an item's prepass (content hash untouched)."""
+        with self._connection_factory() as c:
+            c.execute(
+                "UPDATE triage_items SET prepass = prepass || %s::jsonb WHERE item_key = %s",
+                (json.dumps(fields), item_key),
+            )
 
     def commit_assignments(
         self, item_key: str, score: int, assignments: list[NewAssignment], *, now: datetime

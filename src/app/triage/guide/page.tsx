@@ -109,7 +109,9 @@ export default function TriageGuidePage() {
           Each item gets one owner; a P0 can also get a backup who is a clear match. The item drawer shows why it
           picked you, e.g. <Code>relevance:high (like #61343)</Code>. Routing waits up to{" "}
           {GUIDE_FACTS.relevanceGraceHours} hours for Claude&apos;s judgements, then goes ahead. Items assigned on
-          GitHub only to people outside the maintainer list aren&apos;t routed.
+          GitHub only to people outside the maintainer list aren&apos;t routed. Neither are P1 PRs waiting on their
+          author (a draft, failing pre-commit or DCO, merge conflicts, or changes requested); they&apos;re routed once
+          it&apos;s the reviewers&apos; move. P0 PRs are routed either way.
         </p>
         <p>
           <b>Weekly capacity.</b> <Code>capacity_per_week</Code> caps how many items you get in 7 days. Items you

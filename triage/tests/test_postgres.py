@@ -496,13 +496,18 @@ def test_a_broken_or_unfetchable_set_keeps_the_last_good_rules(
 
 
 class FakeGitHub:
+    reads_pr_status = False
+
     def __init__(self, authors: dict[int, str]) -> None:
         self.authors = authors
         self.lookups: list[int] = []
 
-    def pull_author(self, repo: str, number: int) -> str | None:
-        self.lookups.append(number)
-        return self.authors.get(number)
+    def pull_authors(self, repo: str, numbers: list[int]) -> dict[int, str]:
+        self.lookups.extend(numbers)
+        return {n: self.authors[n] for n in numbers if n in self.authors}
+
+    def comment_tail(self, repo: str, number: int) -> list[tuple[str, datetime | None]]:
+        return []
 
     def pull_files(self, repo: str, number: int) -> list[FileChange]:
         return []
@@ -890,3 +895,32 @@ def test_feedback_reaches_the_relevance_prompt_through_the_profile(
                   "('vllm-project/vllm#1503', 'gau-nernst', 'not_mine', 'dashboard', %s)", (NOW,))
     route(ScheduledCommand("triage_route", NOW + timedelta(hours=1)))
     assert run_relevance(restricted, Judge(), now=NOW, min_score=40).judged == 0
+
+
+def test_prs_waiting_on_their_author_are_held_back_unless_p0(store: PostgresTriageStore, database_url: str) -> None:
+    seed(store, [{"github_login": "moe-person", "rules": {"areas": ["moe"]}}])
+    pr_facets = {**SEVERE, "type": "bug", "pr": {"fixes_issues": [], "hot_path": False, "size": "s",
+                                                 "has_tests": True, "low_effort": False}}
+    for number, conflict in ((1501, True), (1502, True), (1503, False)):
+        ingest(store, issue(number, f"DeepSeek MoE fix {number}", kind="pr", body="## Test Plan\n" + "x" * 200,
+                            files=[FileChange("vllm/x.py")], failing_checks=[],
+                            mergeable="CONFLICTING" if conflict else "MERGEABLE"))
+    run_extraction(store, FakeBackend({"DeepSeek MoE fix": pr_facets}), budget=Budget(), now=NOW, workers=1)
+    route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
+                         delivery_mode=DeliveryMode.SHADOW)
+    route._rescore(NOW)
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_scores SET band = CASE WHEN item_key LIKE '%%1502' THEN 'page' ELSE 'route' END")
+    state = store.item_state("vllm-project/vllm#1501")
+    assert state is not None
+    assert (state.prepass["waiting_on"], state.prepass["waiting_reasons"]) == ("author", ["merge_conflict"])
+    # 1501 (P1, conflicts) doesn't even take a candidate slot; 1502 is P0, so routed anyway.
+    assert {r.item_key[-4:] for r in store.routing_candidates(limit=10)} == {"1502", "1503"}
+    assert [(key, n) for key, n, _ in store.waiting_prs("vllm-project/vllm", limit=10)] == [("vllm-project/vllm#1501", 1501)]
+    route._route(NOW)
+    assert {n for n, _ in assignments(database_url)} == {"1502", "1503"}
+    # The conflict is resolved (the status refresh writes it): routed on the next run.
+    store.update_prepass("vllm-project/vllm#1501", {"waiting_on": "reviewer", "waiting_reasons": []})
+    assert store.waiting_prs("vllm-project/vllm", limit=10) == []
+    route._route(NOW)
+    assert {n for n, _ in assignments(database_url)} == {"1501", "1502", "1503"}

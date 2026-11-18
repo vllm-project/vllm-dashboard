@@ -25,22 +25,24 @@ from alerting.commands import ScheduledCommand
 from alerting.ports import Clock, DeliveryMode
 
 from triage.config import TriageConfig
-from triage.github import GitHubClient, GitHubError, item_from_raw
+from triage.github import GitHubClient, GitHubError, IngestClient
 from triage.model import Item, Score
 from triage.maintainers import MaintainersFileError, parse_maintainer_files
 from triage.notify import WAITING_AFTER_DAYS, WAITING_MAX_ITEMS, maintainer_digest, page_dm, team_digest
 from triage.prepass import (
     COMMENTS_LIMIT,
+    LOGIN,
     compute_prepass,
     content_hash,
     in_scope,
     prepass_priority,
+    whose_move,
 )
 from triage.relevance import profile_is_stale
-from triage.routing import RoutingContext, assigned_elsewhere, choose_owners, gh_assignees
+from triage.routing import RoutingContext, assigned_elsewhere, choose_owners, gh_assignees, waiting_on_author
 from triage.scoring import score_item
 from triage.model import Maintainer
-from triage.store import DigestEntry, NewAssignment, PostgresTriageStore, RoutingRow, week_ago
+from triage.store import DigestEntry, NewAssignment, PostgresTriageStore, RoutingRow, StoredItemState, week_ago
 
 log = logging.getLogger(__name__)
 CURSOR_OVERLAP = timedelta(minutes=10)
@@ -59,51 +61,100 @@ FIRST_RUN_LOOKBACK = timedelta(days=2)
 RELEVANCE_GRACE = timedelta(hours=2)
 
 
+_UNREAD: Any = object()
+
+
 @dataclass
 class IngestHandler:
     store: PostgresTriageStore
-    github: GitHubClient
+    github: IngestClient
     config: TriageConfig
     clock: Clock
     repo: str = "vllm-project/vllm"
     max_items: int = 1000
+    # Items per GitHub prefetch (one GraphQL query for their files, comments
+    # and named PRs' authors).
+    batch_size: int = 25
+    # PRs whose "waiting on the author" state is re-read each run.
+    status_refresh_limit: int = 50
 
     def __call__(self, command: ScheduledCommand) -> None:
         name = f"github:{self.repo}"
         now = self.clock.now()
         since = (self.store.cursor(name) or now - FIRST_RUN_LOOKBACK) - CURSOR_OVERLAP
+        items = self.github.updated_items(self.repo, since, max_items=self.max_items)
         newest: datetime | None = None
-        for raw in self.github.issues_updated_since(self.repo, since, max_items=self.max_items):
-            item = item_from_raw(self.repo, raw)
-            self._ingest(item)
-            newest = item.updated_at if newest is None else max(newest, item.updated_at)
+        for start in range(0, len(items), self.batch_size):
+            batch = items[start:start + self.batch_size]
+            states = {item.key: self.store.item_state(item.key) for item in batch}
+            self._prefetch(batch, states, now)
+            for item in batch:
+                self._ingest(item, states[item.key])
+                newest = item.updated_at if newest is None else max(newest, item.updated_at)
         if newest is not None:
             self.store.set_cursor(name, newest)
+        if self.github.reads_pr_status:
+            try:
+                self._refresh_pr_status()
+            except GitHubError as exc:
+                log.warning("triage: PR status not refreshed: %s", exc)
+        log.info("triage ingest: %d items; GitHub calls so far %s, GraphQL points %s",
+                 len(items), getattr(self.github, "calls", "?"), getattr(self.github, "cost", "-"))
 
-    def _ingest(self, item: Item) -> None:
+    def _prefetch(self, batch: list[Item], states: dict[str, StoredItemState | None], now: datetime) -> None:
+        """Tell the client what _ingest will ask for, so it can fetch it in one go."""
+        files: list[int] = []
+        comments: list[int] = []
+        authors: set[int] = set()
+        for item in batch:
+            light = compute_prepass(item, self.config, now)
+            if not in_scope(light["scope_reason"]):
+                continue
+            stored = states[item.key]
+            if item.kind == "pr":
+                files.append(item.number)
+            if rereads_comments(item, stored):
+                comments.append(item.number)
+            known = (stored.prepass if stored else {}).get("referenced_pr_authors") or {}
+            authors.update(n for n in light["referenced_prs"] if str(n) not in known)
+        self.github.prefetch(self.repo, files=files, comments=comments, authors=sorted(authors))
+
+    def _ingest(self, item: Item, stored: StoredItemState | None = _UNREAD) -> None:
         now = self.clock.now()
         light = compute_prepass(item, self.config, now)
         scoped = in_scope(light["scope_reason"])
-        stored = self.store.item_state(item.key)
+        if stored is _UNREAD:
+            stored = self.store.item_state(item.key)
         comments_excerpt = stored.comments_excerpt if stored else ""
         # {login (lower case): latest comment time}; kept until comments are re-read.
         commented_at: dict[str, str] = dict((stored.prepass if stored else {}).get("commented_at") or {})
+        commenters: list[str] | None = None
         if scoped:
             if item.kind == "pr":
                 item.files = self.github.pull_files(self.repo, item.number)
-            if item.comment_count and (stored is None or stored.comment_count != item.comment_count):
+            if rereads_comments(item, stored):
                 records = self.github.comment_records(self.repo, item.number)
-                item.comments = [text for _, _, text in records]
-                comments_excerpt = "\n\n".join(item.comments)[:COMMENTS_LIMIT]
+                comments_excerpt = "\n\n".join(text for _, _, text in records)[:COMMENTS_LIMIT]
+                # Who wrote the first comments and, on long threads, the latest ones.
+                seen = [(login, at) for login, at, _ in records] + self.github.comment_tail(self.repo, item.number)
                 latest: dict[str, datetime] = {}
-                for login, at, _ in records:
+                for login, at in seen:
                     key = login.lower()
                     if at is not None and (key not in latest or at > latest[key]):
                         latest[key] = at
                 commented_at = {login: at.isoformat() for login, at in latest.items()}
-            elif comments_excerpt:
+                commenters = list(dict.fromkeys(login for login, _ in seen if LOGIN.fullmatch(login)))
+            elif stored is not None and "commenters" in stored.prepass:
+                commenters = list(stored.prepass["commenters"])
+            # The hash reads the comments back from the stored excerpt whether
+            # or not they were just re-read, so it doesn't change on a re-read
+            # that found nothing new (it used to: the excerpt joins comments
+            # with a blank line, the fresh list with a newline).
+            if comments_excerpt:
                 item.comments = comments_excerpt.split("\n\n")
         prepass = compute_prepass(item, self.config, now) if scoped else light
+        if commenters is not None:
+            prepass["commenters"] = commenters
         if scoped and commented_at:
             prepass["commented_at"] = commented_at
         if scoped and prepass.get("referenced_prs"):
@@ -119,20 +170,41 @@ class IngestHandler:
             comments_excerpt=comments_excerpt,
         )
 
-
     def _pr_authors(self, numbers: list[int], previous: dict[str, Any]) -> dict[str, str]:
         """Authors of the PRs an item names; reuses earlier lookups."""
         known: dict[str, str] = dict(previous.get("referenced_pr_authors") or {})
-        out: dict[str, str] = {}
-        for number in numbers:
-            key = str(number)
-            if key not in known:
-                author = self.github.pull_author(self.repo, number)
-                if author is None:
-                    continue
-                known[key] = author
-            out[key] = known[key]
-        return out
+        missing = [n for n in numbers if str(n) not in known]
+        if missing:
+            known.update({str(n): login for n, login in self.github.pull_authors(self.repo, missing).items()})
+        return {str(n): known[str(n)] for n in numbers if str(n) in known}
+
+    def _refresh_pr_status(self) -> None:
+        """Re-read PRs held back from routing because they wait on their
+        author. A check finishing or a conflict appearing doesn't bump a PR's
+        updatedAt, so the cursor wouldn't see the PR become the reviewers'
+        move. Writes only what changed."""
+        rows = self.store.waiting_prs(self.repo, limit=self.status_refresh_limit)
+        if not rows:
+            return
+        statuses = self.github.pr_statuses(self.repo, [number for _, number, _ in rows])
+        for item_key, number, prepass in rows:
+            status = statuses.get(number)
+            if status is None or status.state != "open":
+                continue  # closed or merged: the next ingest sees that
+            fields = whose_move(draft=status.draft, review_decision=status.review_decision,
+                                mergeable=status.mergeable, failing_checks=status.failing_checks)
+            if any(prepass.get(k) != v for k, v in fields.items()):
+                self.store.update_prepass(item_key, fields)
+
+
+def rereads_comments(item: Item, stored: StoredItemState | None) -> bool:
+    """Comments are read when their count changed, or when the item comes
+    into scope (out-of-scope items are stored without comments)."""
+    if not item.comment_count:
+        return False
+    if stored is None or stored.comment_count != item.comment_count:
+        return True
+    return not in_scope(str(stored.prepass.get("scope_reason") or ""))
 
 
 @dataclass
@@ -248,6 +320,12 @@ class RouteHandler:
         load: dict[str, int], judged_by: set[str], now: datetime, *, strong_only: bool,
         partial: dict[str, set[str]] | None = None,
     ) -> bool:
+        # A PR waiting on its author (draft, failing pre-commit/DCO, merge
+        # conflict, changes requested) isn't routed: there's nothing for a
+        # reviewer to do yet. It stays on the dashboard, and is routed once
+        # it's the reviewers' move. P0 PRs are routed anyway.
+        if waiting_on_author(row.prepass, row.band):
+            return False
         # Assigned on GitHub to someone outside triage: they are handling it.
         if assigned_elsewhere(row.prepass, judged_by):
             return False

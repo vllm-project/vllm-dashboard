@@ -509,6 +509,7 @@ async function explainItemRouting(
                             AND a.role = 'primary' AND a.status IN ('open', 'acked', 'done'))
             AND NOT EXISTS (SELECT 1 FROM triage_actions a WHERE a.item_key = i.item_key
                             AND a.action IN ('drop', 'slop'))
+            AND NOT (COALESCE(i.prepass->>'waiting_on', '') = 'author' AND s.band <> 'page')
         `
       : Promise.resolve([{ n: "0" }]),
     // RoutingRow.waiting_since: GREATEST(routable_since, first label). Read
