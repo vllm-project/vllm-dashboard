@@ -279,3 +279,14 @@ test("suppression warning threshold defaults to 10 and ignores junk", async () =
   assert.equal(suppressionThreshold({ TRIAGE_SUPPRESSION_ALERT: "-1" }), 10);
   assert.equal(suppressionThreshold({ TRIAGE_SUPPRESSION_ALERT: "lots" }), 10);
 });
+
+test("language: vi survives the rules page round trip", async () => {
+  const { maintainerFileYaml, normalizeRules } = await import("./triage-rules");
+  const rules = normalizeRules({ areas: ["moe"], language: "vi" });
+  assert.equal(rules.language, "vi");
+  assert.equal(normalizeRules({ language: "fr" }).language, undefined);
+  const text = maintainerFileYaml("gau-nernst", {
+    rules, minScore: 40, capacityPerWeek: 8, away: [], notifyMode: "digest", slackUserId: "U0B02RR385Q",
+  });
+  assert.match(text, /^notify_mode: digest\nlanguage: vi$/m);
+});

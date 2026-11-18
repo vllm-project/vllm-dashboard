@@ -119,31 +119,44 @@ export function parseSlackInteraction(rawBody: string): SlackTriageClick | { kin
   return { kind: "ignore" };
 }
 
-const RESULT_TEXT: Record<SlackClickAction, (login: string, target: string | null) => string> = {
-  ack: (login) => `:white_check_mark: Acked by *${login}*`,
-  done: (login) => `:checkered_flag: Marked done by *${login}*`,
-  not_mine: (login) => `:leftwards_arrow_with_hook: *${login}* said not mine; it will be routed to someone else`,
-  reassign: (login, target) => `:arrow_right: Reassigned to *${target}* by ${login}`,
+export type SlackLanguage = "en" | "vi";
+
+const RESULT_TEXT: Record<SlackLanguage, Record<SlackClickAction, (login: string, target: string | null) => string>> = {
+  en: {
+    ack: (login) => `:white_check_mark: Acked by *${login}*`,
+    done: (login) => `:checkered_flag: Marked done by *${login}*`,
+    not_mine: (login) => `:leftwards_arrow_with_hook: *${login}* said not mine; it will be routed to someone else`,
+    reassign: (login, target) => `:arrow_right: Reassigned to *${target}* by ${login}`,
+  },
+  // One-off for maintainers whose file says `language: vi`.
+  vi: {
+    ack: (login) => `:white_check_mark: *${login}* đã nhận việc`,
+    done: (login) => `:checkered_flag: *${login}* đã hoàn thành`,
+    not_mine: (login) => `:leftwards_arrow_with_hook: *${login}* báo không phải việc của mình; hệ thống sẽ chuyển cho người khác`,
+    reassign: (login, target) => `:arrow_right: *${login}* đã chuyển cho *${target}*`,
+  },
 };
+
+const DONE_LABEL: Record<SlackLanguage, string> = { en: "Done", vi: "Hoàn thành" };
 
 type Block = Record<string, unknown>;
 type Element = Record<string, unknown>;
 
-const doneButton = (itemKey: string): Element => ({
+const doneButton = (itemKey: string, lang: SlackLanguage): Element => ({
   type: "button",
   action_id: SLACK_ACTIONS.done,
   style: "primary",
-  text: { type: "plain_text", text: "Done" },
+  text: { type: "plain_text", text: DONE_LABEL[lang] },
   value: itemKey,
 });
 
 /** Digest ⋮ menu after an ack: Done replaces Ack; Not mine and Open stay. */
-function menuAfterAck(accessory: Record<string, unknown>, itemKey: string): Record<string, unknown> {
+function menuAfterAck(accessory: Record<string, unknown>, itemKey: string, lang: SlackLanguage): Record<string, unknown> {
   const options = Array.isArray(accessory.options) ? (accessory.options as Record<string, unknown>[]) : [];
   return {
     ...accessory,
     options: [
-      { text: { type: "plain_text", text: "Done" }, value: `done|${itemKey}` },
+      { text: { type: "plain_text", text: DONE_LABEL[lang] }, value: `done|${itemKey}` },
       ...options.filter((o) => typeof o.value === "string" && !o.value.startsWith("ack|") && !o.value.startsWith("done|")),
     ],
   };
@@ -170,12 +183,13 @@ export function blocksAfterAction(
   login: string,
   target: string | null,
   at: Date,
+  lang: SlackLanguage = "en",
 ): Block[] {
   const time = `<!date^${Math.floor(at.getTime() / 1000)}^{time}|${at.toISOString()}>`;
   const result: Block = {
     type: "context",
     block_id: `triage:result:${itemKey}`,
-    elements: [{ type: "mrkdwn", text: `${RESULT_TEXT[action](login, target)} · ${time}` }],
+    elements: [{ type: "mrkdwn", text: `${RESULT_TEXT[lang][action](login, target)} · ${time}` }],
   };
   const out: Block[] = [];
   let placed = false;
@@ -187,14 +201,14 @@ export function blocksAfterAction(
       const elements = Array.isArray(block.elements) ? (block.elements as Element[]) : [];
       const kept =
         action === "ack"
-          ? [doneButton(itemKey), ...elements.filter((e) => e.action_id !== SLACK_ACTIONS.ack && e.action_id !== SLACK_ACTIONS.done)]
+          ? [doneButton(itemKey, lang), ...elements.filter((e) => e.action_id !== SLACK_ACTIONS.ack && e.action_id !== SLACK_ACTIONS.done)]
           : elements.filter((e) => e.action_id === SLACK_ACTIONS.open);
       if (kept.length) out.push({ ...block, elements: kept });
       continue;
     }
     if (block.block_id === `triage:item:${itemKey}` && block.accessory && typeof block.accessory === "object") {
       const accessory = block.accessory as Record<string, unknown>;
-      const next = action === "ack" ? menuAfterAck(accessory, itemKey) : menuOpenOnly(accessory);
+      const next = action === "ack" ? menuAfterAck(accessory, itemKey, lang) : menuOpenOnly(accessory);
       const rest = { ...block };
       if (next) rest.accessory = next;
       else delete rest.accessory;

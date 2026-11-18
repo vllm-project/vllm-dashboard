@@ -32,7 +32,7 @@ _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 _SLACK_USER = re.compile(r"^[UW][A-Z0-9]{6,}$")
 _TOP_KEYS = {
     "github_login", "slack_user_id", "min_score", "capacity_per_week",
-    "notify_mode", "away", "rules", "active", "notes",
+    "notify_mode", "away", "rules", "active", "notes", "language",
 }
 _RULE_KEYS = {"areas", "hardware", "models", "paths", "keywords", "types", "exclude", "natural_language"}
 _EXCLUDE_KEYS = {"types", "areas", "hardware"}
@@ -184,6 +184,13 @@ def _parse_entries(entries: list[Any], problems: list[str]) -> list[Maintainer]:
                 texts.append(value.strip())
         if texts:
             rules["natural_language"] = "\n\n".join(texts)[:4000]
+        # Language of the bot's own Slack wording. Not a general option: only
+        # Vietnamese exists, as a one-off for one maintainer.
+        language = entry.get("language", "en")
+        if language not in ("en", "vi"):
+            problems.append(f"{where}.language: must be en or vi")
+        elif language != "en":
+            rules["language"] = language
         out.append(Maintainer(
             github_login=login,
             slack_user_id=slack if isinstance(slack, str) else None,
