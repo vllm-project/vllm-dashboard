@@ -482,6 +482,24 @@ function toMaintainer(row: MaintainerRow): TriageMaintainer {
   };
 }
 
+/** The active maintainer whose file links this Slack user, if any. */
+export async function maintainerForSlackUser(slackUserId: string): Promise<string | null> {
+  const [row] = await getDb()<{ github_login: string }[]>`
+    SELECT github_login FROM triage_maintainers WHERE active AND slack_user_id = ${slackUserId} LIMIT 1
+  `;
+  return row?.github_login ?? null;
+}
+
+/** The person's open (or acked) assignment on an item, if they have one. */
+export async function openAssignmentFor(itemKey: string, login: string): Promise<number | null> {
+  const [row] = await getDb()<{ id: string }[]>`
+    SELECT id FROM triage_assignments
+    WHERE item_key = ${itemKey} AND lower(maintainer) = lower(${login}) AND status IN ('open', 'acked')
+    ORDER BY role = 'primary' DESC, assigned_at DESC LIMIT 1
+  `;
+  return row ? Number(row.id) : null;
+}
+
 export async function listActiveMaintainers(): Promise<
   { githubLogin: string; openAssignments: number }[]
 > {
@@ -668,6 +686,7 @@ export async function getStats(): Promise<TriageStats> {
 export async function applyTriageAction(
   actor: string,
   request: ActionRequest,
+  source: "dashboard" | "slack" = "dashboard",
 ): Promise<PlanResult | { ok: true; assignmentId: number | null; actionId: number }> {
   const db = getDb();
   return db.begin(async (transaction) => {
@@ -762,7 +781,7 @@ export async function applyTriageAction(
     const [action] = await tx<{ id: string }[]>`
       INSERT INTO triage_actions (item_key, assignment_id, actor, action, target, note, source)
       VALUES (${request.itemKey}, ${assignmentId}, ${actor}, ${request.action},
-              ${request.target}, ${request.note}, 'dashboard')
+              ${request.target}, ${request.note}, ${source})
       RETURNING id
     `;
     return { ok: true as const, assignmentId, actionId: Number(action.id) };

@@ -1,6 +1,7 @@
 # Kevin Luu. Drafted 2026-11-12 from their vLLM history; edit freely.
 # See gau-nernst.yaml for how this file is used.
 github_login: khluu
+slack_user_id: U07QCLE6Y8P
 min_score: 40
 capacity_per_week: 10
 notify_mode: digest

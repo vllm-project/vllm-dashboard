@@ -159,3 +159,17 @@ test("rules are read-only: PUT is 405 and points at the maintainers directory", 
     assert.equal((await putRules(new Request("https://ci.vllm.ai/api/triage/rules", { method: "PUT" }))).status, 404);
   });
 });
+
+test("Slack interactions: 404 when off, 503 unconfigured, 401 unsigned", async () => {
+  const { POST: slack } = await import("./slack/interactions/route");
+  const req = () => new Request("https://ci.vllm.ai/api/triage/slack/interactions", { method: "POST", body: "payload=%7B%7D" });
+  await withEnv({ ...ENABLED, TRIAGE_ENABLED: undefined }, async () => {
+    assert.equal((await slack(req())).status, 404);
+  });
+  await withEnv({ ...ENABLED, SLACK_SIGNING_SECRET: undefined }, async () => {
+    assert.equal((await slack(req())).status, 503);
+  });
+  await withEnv({ ...ENABLED, SLACK_SIGNING_SECRET: "s3cret-s3cret-s3cret" }, async () => {
+    assert.equal((await slack(req())).status, 401);
+  });
+});
