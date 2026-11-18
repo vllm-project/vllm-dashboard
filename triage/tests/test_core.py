@@ -417,5 +417,7 @@ def test_dm_buttons_and_digest_menus_carry_the_item() -> None:
     assert menu["action_id"] == "triage:menu"
     assert [o["value"] for o in menu["options"]] == [f"ack|{key}", f"not_mine|{key}", "open"]
     assert all(len(o["value"]) <= 75 for o in menu["options"])
+    assert menu["options"][2]["url"] == "https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2348071"
+    assert actions["elements"][3]["url"] == "https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2348071"
     assert describe_reason("commented") == "you already commented on it"
     assert describe_reason("relevance:high") == "judged high from your recent work"

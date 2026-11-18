@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from urllib.parse import quote
 from typing import Any
 
 from alerting.ports import AlertPath, DeliveryMode, DestinationMode, NotificationIntent
@@ -28,6 +29,12 @@ def _link(url: str, text: str) -> str:
 
 
 _PR_REF = re.compile(r"#(\d{2,7})")
+
+
+def _item_url(item_key: str) -> str:
+    """Dashboard link that opens the item. The key must be encoded: an
+    unencoded "#" would start the URL fragment and cut the key short."""
+    return f"{DASHBOARD}?item={quote(item_key, safe='')}"
 
 
 def _pr_links(text: str) -> str:
@@ -82,7 +89,7 @@ def _item_section(entry: DigestEntry, *, menu: bool) -> dict[str, Any]:
                 {"text": {"type": "plain_text", "text": "Ack"}, "value": f"ack|{entry.item_key}"},
                 {"text": {"type": "plain_text", "text": "Not mine"}, "value": f"not_mine|{entry.item_key}"},
                 {"text": {"type": "plain_text", "text": "Open in dashboard"}, "value": "open",
-                 "url": f"{DASHBOARD}?item={entry.item_key}"},
+                 "url": _item_url(entry.item_key)},
             ],
         }
     return block
@@ -106,7 +113,7 @@ def _actions(entry: DigestEntry, reassign_to: list[str]) -> dict[str, Any]:
             "options": [{"text": {"type": "plain_text", "text": login[:75]}, "value": login}
                         for login in sorted(reassign_to, key=str.lower)[:100]],
         })
-    elements.append({"type": "button", "action_id": "triage:open", "url": f"{DASHBOARD}?item={entry.item_key}",
+    elements.append({"type": "button", "action_id": "triage:open", "url": _item_url(entry.item_key),
                      "text": {"type": "plain_text", "text": "Open in dashboard"}})
     return {"type": "actions", "block_id": f"triage:actions:{entry.item_key}", "elements": elements}
 
