@@ -40,6 +40,11 @@ class TriageConfig:
     def version(self) -> str:
         return f"{self.scoring['version']}+tiers.{self.tiers['version']}"
 
+    @property
+    def max_age_days(self) -> int:
+        """Only items opened within this many days are triaged."""
+        return int((self.scoring.get("scope") or {}).get("max_age_days", 30))
+
 
 def load_config(config_dir: Path | None = None) -> TriageConfig:
     raw_areas = _load("areas.yaml", config_dir)

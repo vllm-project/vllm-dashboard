@@ -8,6 +8,7 @@ the model: areas from changed paths, linked issues, hardware/model mentions.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta
 import re
 from typing import Any
 
@@ -164,10 +165,12 @@ def scope_reason(item: Item, links: list[int]) -> str:
 
 
 def in_scope(reason: str) -> bool:
-    return reason not in ("bot", "pr_maintainer_unlinked")
+    return reason not in ("bot", "pr_maintainer_unlinked", "too_old")
 
 
-def compute_prepass(item: Item, config: TriageConfig) -> dict[str, Any]:
+def compute_prepass(item: Item, config: TriageConfig, now: datetime | None = None) -> dict[str, Any]:
+    """`now` enables the age limit (config.max_age_days); without it (e.g.
+    offline backtests) every item is judged on content alone."""
     text = f"{item.title}\n{item.body}"
     areas: set[str] = set()
     for change in item.files:
@@ -181,6 +184,8 @@ def compute_prepass(item: Item, config: TriageConfig) -> dict[str, Any]:
     links = linked_issues(text)
     template = _template(item)
     reason = scope_reason(item, links)
+    if now is not None and item.created_at < now - timedelta(days=config.max_age_days):
+        reason = "too_old"
     return {
         "areas": sorted(areas),
         "linked_issues": links,

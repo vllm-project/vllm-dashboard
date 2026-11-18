@@ -70,7 +70,8 @@ class IngestHandler:
             self.store.set_cursor(name, newest)
 
     def _ingest(self, item: Item) -> None:
-        light = compute_prepass(item, self.config)
+        now = self.clock.now()
+        light = compute_prepass(item, self.config, now)
         scoped = in_scope(light["scope_reason"])
         stored = self.store.item_state(item.key)
         comments_excerpt = stored.comments_excerpt if stored else ""
@@ -82,7 +83,7 @@ class IngestHandler:
                 comments_excerpt = "\n\n".join(item.comments)[:COMMENTS_LIMIT]
             elif comments_excerpt:
                 item.comments = comments_excerpt.split("\n\n")
-        prepass = compute_prepass(item, self.config) if scoped else light
+        prepass = compute_prepass(item, self.config, now) if scoped else light
         if scoped and prepass.get("referenced_prs"):
             prepass["referenced_pr_authors"] = self._pr_authors(
                 prepass["referenced_prs"], stored.prepass if stored else {}
@@ -130,6 +131,9 @@ class RouteHandler:
     def __call__(self, command: ScheduledCommand) -> None:
         now = self.clock.now()
         self._sync_maintainers()
+        # Items leave triage as they age past the window; unacted router
+        # assignments on them go too (acked/done ones stay in people's history).
+        self.store.expire_out_of_window(now - timedelta(days=self.config.max_age_days))
         self._refresh_profiles(now)
         self._rescore(now)
         self._route(now)

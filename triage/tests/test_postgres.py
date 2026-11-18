@@ -456,3 +456,26 @@ def test_clear_matches_get_capacity_before_higher_scoring_medium_ones(
         rows = c.execute("SELECT item_key FROM triage_assignments").fetchall()
     assert scores[1001] > scores[1002]
     assert rows == [("vllm-project/vllm#1002",)]  # the one slot went to the clear match
+
+
+def test_items_age_out_of_the_window(store: PostgresTriageStore, database_url: str) -> None:
+    ingest(store, issue(1101, "DeepSeek startup crash old"))
+    ingest(store, issue(1102, "DeepSeek startup crash acked"))
+    ingest(store, issue(1103, "DeepSeek startup crash new"))
+    seed(store, [{"github_login": "a", "rules": {"areas": ["moe"]}}])
+    run_extraction(store, FakeBackend({"DeepSeek": SEVERE}), budget=Budget(), now=NOW, workers=1)
+    route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW)
+    route(ScheduledCommand("triage_route", NOW))
+    with psycopg.connect(database_url, autocommit=True) as c:
+        assert c.execute("SELECT count(*) FROM triage_assignments").fetchone()[0] == 3
+        # #1102 was acked by its owner; then #1101 and #1102 age past 30 days.
+        c.execute("UPDATE triage_assignments SET status='acked' WHERE item_key='vllm-project/vllm#1102'")
+        c.execute("INSERT INTO triage_actions (item_key, actor, action, source) VALUES ('vllm-project/vllm#1102','a','ack','dashboard')")
+        c.execute("UPDATE triage_items SET gh_created_at = %s WHERE number IN (1101, 1102)", (NOW - timedelta(days=40),))
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=5)))
+    with psycopg.connect(database_url) as c:
+        scope = dict(c.execute("SELECT number, in_scope FROM triage_items WHERE number > 1100").fetchall())
+        left = sorted(r[0] for r in c.execute("SELECT item_key FROM triage_assignments"))
+    assert scope == {1101: False, 1102: False, 1103: True}
+    # The unacted assignment on the old item is gone; the acked one stays as history.
+    assert left == ["vllm-project/vllm#1102", "vllm-project/vllm#1103"]
