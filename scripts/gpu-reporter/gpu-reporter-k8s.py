@@ -304,10 +304,13 @@ probe() {
   u=${1#https://}; a=${u%%%%/*}; q=${u#"$a"}
   printf 'HEAD %%s HTTP/1.0\\r\\nHost: %%s\\r\\n\\r\\n' "${q:-/}" "$a" |
     openssl s_client -quiet -connect "$a:443" -servername "$a" 2>&1 &
-  p=$! n=0
+  p=$!; read u _ < /proc/uptime; d=$(( ${u%%.*}${u#*.} + %d ))
   while jobs > /dev/null; kill -0 $p 2> /dev/null; do
-    [ $n -eq %d ] && { kill $p; echo "timed out"; }
-    usleep 10000; n=$((n + 1))
+    read u _ < /proc/uptime
+    if [ ${u%%.*}${u#*.} -ge $d ]; then
+      kill $p; wait $p; echo "timed out"; break
+    fi
+    usleep 10000
   done
 }
 for t in %s; do
@@ -361,8 +364,8 @@ def parse_probe_output(text):
 
 def read_network_probes(pod):
     targets = " ".join(shlex.quote(f"{t}={url}") for t, url in NETWORK_PROBES)
-    # 10 ms poll ticks (~11 ms each with the usleep fork, so ~12 s measured),
-    # still under the exec timeout.
+    # Deadline in centiseconds, 1 s past the probe timeout and inside the
+    # exec timeout.
     script = PROBE_SCRIPT % ((NETWORK_PROBE_TIMEOUT + 1) * 100, targets)
     return parse_probe_output(kubectl(
         "exec", "-n", DCGM_NS, pod, "-c", PLUGIN_CONTAINER, "--",

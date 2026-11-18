@@ -751,8 +751,8 @@ def test_read_network_probes_gives_up_after_the_probe_timeout(
 
     monkeypatch.setattr(reporter_k8s, "kubectl", fake_kubectl)
     assert len(reporter_k8s.read_network_probes("plugin-pod")) == 3
-    # 11 s of 10 ms ticks, inside the 15 s exec timeout.
-    assert "[ $n -eq 1100 ]" in sent["script"]
+    # Gives up 11 s in (centiseconds), inside the 15 s exec timeout.
+    assert "+ 1100 ))" in sent["script"]
     assert sent["timeout"] == 15
 
 
@@ -770,6 +770,8 @@ esac
 """
 
 
+@pytest.mark.skipif(not Path("/proc/uptime").exists(),
+                    reason="the probe clock is Linux /proc/uptime")
 def test_probe_script_end_to_end(reporter_k8s, tmp_path):
     """The script's own logic, run by sh against a fake openssl.
 
@@ -782,8 +784,10 @@ def test_probe_script_end_to_end(reporter_k8s, tmp_path):
     fake = tmp_path / "openssl"
     fake.write_text(FAKE_OPENSSL)
     fake.chmod(0o755)
-    usleep = tmp_path / "usleep"  # busybox has it; macOS and dash do not
-    usleep.write_text('#!/bin/sh\nsleep "$(( $1 / 10000 ))e-2"\n')
+    # 10x slower than asked, as on a loaded node: the deadline is wall
+    # time, so the 0.5 s limit must still hold.
+    usleep = tmp_path / "usleep"
+    usleep.write_text("#!/bin/sh\nsleep 0.1\n")
     usleep.chmod(0o755)
     targets = "ok=https://ok.test/v2/ bad=https://bad.test hang=https://hang.test"
     script = reporter_k8s.PROBE_SCRIPT % (50, targets)
@@ -801,7 +805,7 @@ def test_probe_script_end_to_end(reporter_k8s, tmp_path):
     assert lines["bad"].endswith("SSL routines:wrong version number")
     assert lines["hang"].split(" ", 3)[1] == "143"
     assert lines["hang"].endswith(" timed out")
-    assert elapsed < 5  # the 0.5 s limit killed the hung openssl
+    assert elapsed < 2  # 50 slow ticks would be 5 s
     assert (tmp_path / "request").read_bytes() == (
         b"HEAD /v2/ HTTP/1.0\r\nHost: ok.test\r\n\r\n")
     assert [p["error"] for p in reporter_k8s.parse_probe_output(
