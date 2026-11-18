@@ -314,25 +314,26 @@ class GraphQLGitHubClient:
     # --- per-item details, batched ---------------------------------------------
 
     def prefetch(self, repo: str, *, files: list[int], comments: list[int], authors: list[int]) -> None:
-        wanted: dict[int, list[str]] = {}
-        for number in files:
-            if number not in self._files:
-                wanted.setdefault(number, []).append(f"... on PullRequest {{ {_FILES} }}")
-        for number in comments:
-            if number not in self._comments:
-                wanted.setdefault(number, []).append(
-                    f"... on Issue {{ {_COMMENTS} }} ... on PullRequest {{ {_COMMENTS} }}"
-                )
-        for number in authors:
-            if number not in self._authors:
-                wanted.setdefault(number, []).append(f"... on PullRequest {{ author {_ACTOR} }}")
-        numbers = sorted(wanted)
-        for start in range(0, len(numbers), DETAIL_BATCH):
-            chunk = numbers[start:start + DETAIL_BATCH]
+        fragments = {
+            "files": f"... on PullRequest {{ {_FILES} }}",
+            "comments": f"... on Issue {{ {_COMMENTS} }} ... on PullRequest {{ {_COMMENTS} }}",
+            "authors": f"... on PullRequest {{ author {_ACTOR} }}",
+        }
+        wanted: dict[int, set[str]] = {}
+        for kind, numbers, cache in (("files", files, self._files), ("comments", comments, self._comments),
+                                     ("authors", authors, self._authors)):
+            for number in numbers:
+                if number not in cache:
+                    wanted.setdefault(number, set()).add(kind)
+        ordered = sorted(wanted)
+        owner, name = _split(repo)
+        for start in range(0, len(ordered), DETAIL_BATCH):
+            chunk = ordered[start:start + DETAIL_BATCH]
             fields = "\n".join(
-                f"n{n}: issueOrPullRequest(number: {n}) {{ __typename {' '.join(wanted[n])} }}" for n in chunk
+                f"n{n}: issueOrPullRequest(number: {n}) {{ __typename "
+                f"{' '.join(fragments[k] for k in sorted(wanted[n]))} }}"
+                for n in chunk
             )
-            owner, name = _split(repo)
             data = self._query(
                 f"query($owner: String!, $name: String!) {{ {_RATE} "
                 f"repository(owner: $owner, name: $name) {{ {fields} }} }}",
@@ -340,28 +341,25 @@ class GraphQLGitHubClient:
             )
             repository = data.get("repository") or {}
             for n in chunk:
-                self._store_details(repo, n, repository.get(f"n{n}"), files=n in files,
-                                    comments=n in comments, authors=n in authors)
+                self._store_details(repo, n, repository.get(f"n{n}"), wanted[n])
 
-    def _store_details(
-        self, repo: str, number: int, node: dict[str, Any] | None, *, files: bool, comments: bool, authors: bool
-    ) -> None:
+    def _store_details(self, repo: str, number: int, node: dict[str, Any] | None, kinds: set[str]) -> None:
         node = node or {}
         is_pr = node.get("__typename") == "PullRequest"
-        if files:
+        if "files" in kinds:
             got = node.get("files") or {}
             changes = [_file(f) for f in got.get("nodes") or [] if f]
             page = got.get("pageInfo") or {}
             if page.get("hasNextPage"):
                 changes += self._more_files(repo, number, page.get("endCursor"))
             self._files[number] = changes
-        if comments:
+        if "comments" in kinds:
             self._comments[number] = [_comment(c) for c in (node.get("first") or {}).get("nodes") or [] if c]
             self._tails[number] = [
                 (rest_login(c.get("author")) or "ghost", _parse_time(c.get("createdAt")))
                 for c in (node.get("tail") or {}).get("nodes") or [] if c
             ]
-        if authors:
+        if "authors" in kinds:
             self._authors[number] = rest_login(node.get("author")) if is_pr else None
 
     def _more_files(self, repo: str, number: int, after: str | None) -> list[FileChange]:

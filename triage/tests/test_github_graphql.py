@@ -403,3 +403,22 @@ def test_the_api_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRIAGE_GITHUB_API", "soap")
     with pytest.raises(ValueError):
         ingest_client("t")
+
+
+def test_prefetch_asks_only_for_what_is_not_cached(fake: Any) -> None:
+    def handler(query: str, v: dict[str, Any]) -> dict[str, Any]:
+        node: dict[str, Any] = {"__typename": "PullRequest"}
+        if "files(first" in query:
+            node["files"] = {"pageInfo": {}, "nodes": [{"path": "a.py", "additions": 1, "deletions": 0}]}
+        if "first: comments" in query:
+            node["first"] = {"nodes": [comment("mgoin", 1, "hi")]}
+            node["tail"] = {"nodes": []}
+        return {"repository": {"n11": node}}
+
+    transport = fake(handler)
+    client = GraphQLGitHubClient("t")
+    client.prefetch(REPO, files=[11], comments=[], authors=[])
+    client.prefetch(REPO, files=[11], comments=[11], authors=[])  # files already cached
+    assert "files(first" not in transport.queries[1][0]
+    assert client.pull_files(REPO, 11) == [FileChange("a.py", 1, 0)]
+    assert [t for _, _, t in client.comment_records(REPO, 11)] == ["[mgoin (MEMBER)]: hi"]
