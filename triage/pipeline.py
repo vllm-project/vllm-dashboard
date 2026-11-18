@@ -13,6 +13,7 @@ notification is rendered and stored but never delivered.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -46,6 +47,14 @@ PROFILE_WINDOW = timedelta(days=180)
 # capacity; older (backlog) items are spread out under it.
 FRESH_WINDOW = timedelta(days=3)
 FIRST_RUN_LOOKBACK = timedelta(days=2)
+# How long routing waits for every active maintainer's relevance judgement,
+# counted from when the item became routable (entered the page/route band, or
+# was first extracted, whichever is later). The relevance job runs every 10
+# minutes, so a healthy item is fully judged well within this; it also covers
+# re-judging the open queue after maintainers are added. After it, the item is
+# routed among the maintainers who have been judged, so a broken or lagging
+# relevance job delays routing by at most this much instead of stopping it.
+RELEVANCE_GRACE = timedelta(hours=2)
 
 
 @dataclass
@@ -214,30 +223,49 @@ class RouteHandler:
         judged_by = {m.github_login for m in maintainers}
         rows = self.store.routing_candidates(limit=self.route_limit)
         routed: set[str] = set()
+        partial: dict[str, set[str]] = {}  # item -> maintainers still unjudged, past the grace
         # Pass 1 gives every clear match (involved / high) its slot across the
         # whole queue; pass 2 lets "medium" and rule matches use what is left.
         for strong_only in (True, False):
             for row in rows:
                 if row.item_key not in routed and self._route_one(
-                    row, maintainers, by_login, load, judged_by, now, strong_only=strong_only
+                    row, maintainers, by_login, load, judged_by, now, strong_only=strong_only, partial=partial
                 ):
                     routed.add(row.item_key)
+        if partial:
+            missing = Counter(login for logins in partial.values() for login in logins)
+            log.warning(
+                "triage: %d item(s) waited over %s for relevance and were considered with partial "
+                "judgements (%d routed); missing judgements per maintainer: %s",
+                len(partial), RELEVANCE_GRACE, len(partial.keys() & routed),
+                ", ".join(f"{login}={n}" for login, n in sorted(missing.items())),
+            )
 
     def _route_one(
         self, row: RoutingRow, maintainers: list[Maintainer], by_login: dict[str, Maintainer],
         load: dict[str, int], judged_by: set[str], now: datetime, *, strong_only: bool,
+        partial: dict[str, set[str]] | None = None,
     ) -> bool:
         # Assigned on GitHub to someone outside triage: they are handling it.
         if assigned_elsewhere(row.prepass, judged_by):
             return False
         # Wait for relevance judgements unless someone is already involved,
-        # so an early rule match doesn't pre-empt the right person.
+        # so an early rule match doesn't pre-empt the right person. Wait only
+        # for RELEVANCE_GRACE, though: after that, route among those judged.
+        # A missing judgement is never a match (choose_owners only routes on
+        # "high"/"medium" judgements that exist), so an unjudged maintainer
+        # can still get the item through involvement or their own rules, but
+        # never through relevance.
         people = {str(c).lower() for c in row.prepass.get("commenters") or []}
         people |= {str(a).lower() for a in (row.prepass.get("referenced_pr_authors") or {}).values()}
         people |= gh_assignees(row.prepass)
         involved = bool(people & {login.lower() for login in judged_by})
-        if self.github is not None and not (judged_by <= set(row.relevance)) and not involved:
-            return False
+        missing = judged_by - set(row.relevance)
+        if self.github is not None and missing and not involved:
+            if not relevance_grace_over(row, now):
+                return False
+            if partial is not None:
+                partial[row.item_key] = missing
         ctx = RoutingContext(
             item_key=row.item_key, kind=row.kind, title=row.title, score=row.score,
             band=row.band,  # type: ignore[arg-type]
@@ -280,6 +308,12 @@ class RouteHandler:
                 load[maintainer.github_login] = load.get(maintainer.github_login, 0) + 1
         self.store.commit_assignments(row.item_key, row.score, assignments, now=now)
         return True
+
+
+def relevance_grace_over(row: RoutingRow, now: datetime) -> bool:
+    """True once the item has waited RELEVANCE_GRACE for relevance
+    judgements (or when we can't tell how long it has waited)."""
+    return row.waiting_since is None or now - row.waiting_since >= RELEVANCE_GRACE
 
 
 @dataclass

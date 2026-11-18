@@ -177,14 +177,27 @@ and no exclude matches. Each matched criterion is recorded in
 
 `triage_maintainer_profiles`: per active maintainer, their recent authored
 and reviewed PRs (`[{"number", "kind", "title"}]`), rebuilt daily by
-`triage-route`. `profile_hash` covers the PRs and the maintainer's notes
-(`rules.natural_language`).
+`triage-route`. `feedback` (migration 0043) is a snapshot taken at the same
+rebuild of what they did with items in the last 60 days, newest first, at
+most 15 of each: `{"declined": [{"item_key", "title", "at"}], "took": [...]}`
+(`declined` = their `not_mine` actions, `took` = their acked or done
+assignments). The worker builds it because only it can read
+`triage_actions` and `triage_assignments`; the relevance job reads the
+snapshot. Claude sees it as "said not mine: <title>" / "took: <title>" lines.
+`profile_hash` covers the PRs, the maintainer's notes
+(`rules.natural_language`), their language and the feedback titles, so
+feedback re-judges a maintainer at most once a day, at the rebuild.
 
 `triage_relevance`: one row per (item, maintainer): `relevance` in high /
 medium / low / none, `evidence_prs` (only PRs from that maintainer's
 profile), `reason`, plus the item `content_hash` and `profile_hash` it was
 judged against. A change to either re-queues the judgement. Written by the
 extractor host (`vllm-triage relevance`) for open items scoring at least the
-route threshold. Routing waits for judgements unless a maintainer is
-already involved, and records them in `triage_assignments.reason`
+route threshold. Routing waits for every active maintainer's judgement
+unless a maintainer is already involved, but only for
+`pipeline.RELEVANCE_GRACE` (2 hours) from `triage_scores.routable_since`
+(when the item entered the page/route band) or its first extraction,
+whichever is later; after that it routes among the maintainers judged so
+far and logs a warning naming who is missing. A missing judgement never
+counts as a match. Judgements are recorded in `triage_assignments.reason`
 (`matched`, `why`).

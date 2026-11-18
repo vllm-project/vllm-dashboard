@@ -22,6 +22,10 @@ for you, citing your PRs as evidence. You get it if:
 
 The dashboard shows why, e.g. `relevance:high (like #61343)`.
 
+Claude also learns from what you do: items you mark **Not mine** count
+against similar items, and items you ack or finish count for them (last 60
+days, picked up once a day).
+
 ## Your file
 
 ```yaml

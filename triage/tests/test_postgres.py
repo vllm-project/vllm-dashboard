@@ -289,15 +289,19 @@ def test_budget_stops_extraction(store: PostgresTriageStore) -> None:
 ROLE_SQL = Path(__file__).resolve().parents[2] / "deploy" / "triage-extractor" / "extractor-role.sql"
 
 
-def test_extractor_role_can_extract_and_nothing_else(store: PostgresTriageStore, database_url: str) -> None:
-    ingest(store, issue(50, "DeepSeek startup crash"))
+def extractor_role_url(database_url: str) -> str:
     with psycopg.connect(database_url, autocommit=True) as c:
         c.execute(ROLE_SQL.read_text().replace(":pw", "'extractor-test-pw'"))
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
     params = conninfo_to_dict(database_url)
     params.update(user="triage_extractor", password="extractor-test-pw")
-    role_url = make_conninfo("", **params)
+    return make_conninfo("", **params)
+
+
+def test_extractor_role_can_extract_and_nothing_else(store: PostgresTriageStore, database_url: str) -> None:
+    ingest(store, issue(50, "DeepSeek startup crash"))
+    role_url = extractor_role_url(database_url)
 
     restricted = PostgresTriageStore(role_url)
     result = run_extraction(restricted, FakeBackend({"DeepSeek": SEVERE}), budget=Budget(), now=NOW, workers=1)
@@ -307,8 +311,10 @@ def test_extractor_role_can_extract_and_nothing_else(store: PostgresTriageStore,
     with psycopg.connect(role_url, autocommit=True) as c:
         # It reads maintainers and their profiles to judge relevance...
         c.execute("SELECT * FROM triage_maintainers")
-        c.execute("SELECT * FROM triage_maintainer_profiles")
-        for statement in (  # ...but writes nothing except extractions and judgements.
+        c.execute("SELECT github_login, prs, feedback FROM triage_maintainer_profiles")
+        for statement in (  # ...but writes nothing except extractions and judgements,
+            "SELECT * FROM triage_actions",  # and never sees who did what with items.
+            "SELECT * FROM triage_assignments",
             "UPDATE triage_maintainers SET min_score = 0",
             "INSERT INTO triage_maintainer_profiles (github_login, prs, profile_hash) VALUES ('x', '[]', 'h')",
             "SELECT * FROM alerting_notification_outbox",
@@ -637,3 +643,116 @@ def test_github_assignees_steer_routing(store: PostgresTriageStore, database_url
     # Assigned to one of ours: theirs, even though no rule of theirs matches.
     assert got[("1402", "assigned-person")][2]["matched"] == [GH_ASSIGNED]
     assert ("1403", "moe-person") in got
+class ProfilesFor(FakeProfiles):
+    def maintainer_prs(self, repo: str, login: str, *, since: datetime, per_kind: int = 120) -> list[dict[str, Any]]:
+        if login == "newbie":
+            return [{"number": 9, "kind": "authored", "title": "GDN kernels"}]
+        return super().maintainer_prs(repo, login, since=since)
+
+
+def test_routing_waits_for_new_maintainers_only_for_the_grace(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.pipeline import RELEVANCE_GRACE
+    from triage.relevance import run_relevance
+
+    ingest(store, issue(1301, "Qwen3.5 FP8 GSM8K accuracy drop"))
+    seed(store, [{"github_login": "gau-nernst", "notes": "FP8 kernels"}, {"github_login": "amd-person"}])
+    run_extraction(store, FakeBackend({"Qwen3.5": SEVERE}), budget=Budget(), now=NOW, workers=1)
+    clock = FixedClock(NOW)
+    route = RouteHandler(store=store, config=default_config(), clock=clock,
+                         delivery_mode=DeliveryMode.SHADOW, github=ProfilesFor())  # type: ignore[arg-type]
+    route(ScheduledCommand("triage_route", NOW))
+
+    class Judge:
+        def complete(self, *, system: str, prompt: str, schema: dict[str, Any]) -> LLMResult:
+            return LLMResult(output={"judgments": [
+                {"github_login": "gau-nernst", "relevance": "medium", "evidence_prs": [61343], "reason": "FP8"},
+                {"github_login": "amd-person", "relevance": "none", "evidence_prs": [], "reason": ""},
+            ]}, model="fake")
+
+    assert run_relevance(store, Judge(), now=NOW, min_score=40).judged == 1
+    # A maintainer is added before the route consumer runs: the item now waits for their judgement...
+    seed(store, [{"github_login": "gau-nernst", "notes": "FP8 kernels"}, {"github_login": "amd-person"},
+                 {"github_login": "newbie"}])
+    for minutes in (5, 60, 115):
+        clock.value = NOW + timedelta(minutes=minutes)
+        route(ScheduledCommand("triage_route", clock.value))
+    with psycopg.connect(database_url) as c:
+        assert c.execute("SELECT count(*) FROM triage_assignments").fetchone()[0] == 0
+        assert c.execute("SELECT routable_since FROM triage_scores").fetchone()[0] == NOW
+    # ...but only for the grace; then it goes to the best judged maintainer.
+    clock.value = NOW + RELEVANCE_GRACE
+    route(ScheduledCommand("triage_route", clock.value))
+    with psycopg.connect(database_url) as c:
+        rows = c.execute("SELECT maintainer, reason->'matched' FROM triage_assignments").fetchall()
+    assert rows == [("gau-nernst", ["relevance:medium (like #61343)"])]
+
+
+def test_routable_since_is_kept_in_band_and_cleared_outside(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.model import Score
+
+    ingest(store, issue(1401, "Something"))
+    key = "vllm-project/vllm#1401"
+
+    def save(band: str, at: datetime) -> datetime | None:
+        store.save_scores([(key, None, Score(50, band, (), "v"))], now=at)  # type: ignore[arg-type]
+        with psycopg.connect(database_url) as c:
+            return c.execute("SELECT routable_since FROM triage_scores").fetchone()[0]  # type: ignore[no-any-return]
+
+    assert save("watch", NOW) is None
+    assert save("route", NOW + timedelta(hours=1)) == NOW + timedelta(hours=1)
+    assert save("page", NOW + timedelta(hours=2)) == NOW + timedelta(hours=1)  # still routable: clock keeps running
+    assert save("route", NOW + timedelta(hours=3)) == NOW + timedelta(hours=1)
+    assert save("ignore", NOW + timedelta(hours=4)) is None
+    assert save("route", NOW + timedelta(hours=5)) == NOW + timedelta(hours=5)
+
+
+def test_feedback_reaches_the_relevance_prompt_through_the_profile(
+    store: PostgresTriageStore, database_url: str
+) -> None:
+    from triage.relevance import profile_hash, run_relevance
+
+    for number, title in ((1501, "Declined <thing>"), (1502, "Taken thing"), (1503, "Long ago"),
+                          (1504, "Qwen3.5 FP8 GSM8K accuracy drop")):
+        ingest(store, issue(number, title))
+    seed(store, [{"github_login": "gau-nernst", "notes": "FP8 kernels"}, {"github_login": "amd-person"}])
+    run_extraction(store, FakeBackend({"Qwen3.5": SEVERE, "thing": MINOR, "Long ago": MINOR}),
+                   budget=Budget(), now=NOW, workers=1)
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("INSERT INTO triage_actions (item_key, actor, action, source, created_at) VALUES "
+                  "('vllm-project/vllm#1501', 'Gau-Nernst', 'not_mine', 'dashboard', %s), "
+                  "('vllm-project/vllm#1503', 'gau-nernst', 'not_mine', 'dashboard', %s), "
+                  "('vllm-project/vllm#1502', 'amd-person', 'not_mine', 'dashboard', %s)",
+                  (NOW - timedelta(days=1), NOW - timedelta(days=90), NOW - timedelta(days=3)))
+        c.execute("INSERT INTO triage_assignments (item_key, maintainer, role, status, score_at_assign, "
+                  "assigned_at, closed_at, updated_at) VALUES "
+                  "('vllm-project/vllm#1502', 'gau-nernst', 'primary', 'done', 50, %s, %s, %s)",
+                  (NOW - timedelta(days=3), NOW - timedelta(days=2), NOW - timedelta(days=2)))
+    route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
+                         delivery_mode=DeliveryMode.SHADOW, github=FakeProfiles())  # type: ignore[arg-type]
+    route(ScheduledCommand("triage_route", NOW))  # builds profiles, with feedback
+
+    restricted = PostgresTriageStore(extractor_role_url(database_url))
+    profiles = {p.login: p for p in restricted.maintainer_profiles()}
+    gau = profiles["gau-nernst"]
+    titles = {kind: [e["title"] for e in entries] for kind, entries in gau.feedback.items()}
+    assert titles == {"declined": ["Declined <thing>"], "took": ["Taken thing"]}  # 90 days ago is too old
+    assert gau.profile_hash != profile_hash(gau.prs, gau.notes)
+    assert [e["title"] for e in profiles["amd-person"].feedback["declined"]] == ["Taken thing"]
+
+    class Judge:
+        def complete(self, *, system: str, prompt: str, schema: dict[str, Any]) -> LLMResult:
+            gau_block = system.split('<maintainer login="gau-nernst">')[1].split("</maintainer>")[0]
+            assert "said not mine: Declined &lt;thing&gt;" in gau_block and "took: Taken thing" in gau_block
+            assert "Long ago" not in system
+            return LLMResult(output={"judgments": [
+                {"github_login": "gau-nernst", "relevance": "high", "evidence_prs": [61343], "reason": "his PR"},
+                {"github_login": "amd-person", "relevance": "none", "evidence_prs": [], "reason": ""},
+            ]}, model="fake")
+
+    assert run_relevance(restricted, Judge(), now=NOW, min_score=40).judged == 1
+    # New feedback during the day doesn't re-judge anyone until the profile is rebuilt.
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("INSERT INTO triage_actions (item_key, actor, action, source, created_at) VALUES "
+                  "('vllm-project/vllm#1503', 'gau-nernst', 'not_mine', 'dashboard', %s)", (NOW,))
+    route(ScheduledCommand("triage_route", NOW + timedelta(hours=1)))
+    assert run_relevance(restricted, Judge(), now=NOW, min_score=40).judged == 0
