@@ -20,6 +20,7 @@ from triage.model import BAND_LABELS
 from triage.store import DigestEntry
 
 DASHBOARD = "https://ci.vllm.ai/triage"
+MAINTAINER_FILE = "https://github.com/vllm-project/vllm-dashboard/blob/main/triage/config/maintainers/{login}.yaml"
 _BAND_ICON = {"page": ":rotating_light:", "route": ":large_orange_diamond:", "watch": ":small_blue_diamond:"}
 
 
@@ -61,8 +62,15 @@ STRINGS: dict[str, dict[str, str]] = {
         "open": "Open in dashboard",
         "page_primary": "Triage: P0 item for you",
         "page_backup": "Triage: you are backup on a P0 item",
-        "digest_header": "Triage: {n} new item{s} for you",
-        "digest_footer": "Use ⋮ on an item to ack it or say it's not yours. Everything is on <{url}|My list>.",
+        "digest_header": "Triage today: {n} item{s} for you",
+        "digest_hello": "Hi <@{slack}> 👋 {n} issue{s}/PR{s} that match your area came in.",
+        "digest_hello_mixed": " The {k} P0 item{ks} at the top {are} the most urgent; look at the rest when you have time.",
+        "digest_hello_all_p0": " {they} P0, so please look soon.",
+        "digest_hello_no_p0": " Look at them when you have time.",
+        "group_page": "🚨 P0: look soon",
+        "group_route": "🔶 P1: when you have time",
+        "digest_footer": "Use ⋮ on an item to *Ack* it or say it's *Not mine*, so it can go to someone else. "
+                         "Everything is on <{url}|My list>. To change what you get, edit <{file}|your file>.",
     },
     "vi": {
         "authored": "bạn đã viết #{n}, PR được nhắc tới trong mục này",
@@ -79,8 +87,15 @@ STRINGS: dict[str, dict[str, str]] = {
         "open": "Mở trên dashboard",
         "page_primary": "Triage: một P0 thuộc mảng của bạn",
         "page_backup": "Triage: bạn là người dự phòng cho một P0",
-        "digest_header": "Triage: {n} mục mới cho bạn",
-        "digest_footer": "Dùng ⋮ trên mỗi mục để nhận việc hoặc báo không phải của bạn. Xem tất cả trong <{url}|My list>.",
+        "digest_header": "Triage hôm nay: {n} mục cho bạn",
+        "digest_hello": "Chào <@{slack}> 👋 Hôm nay có {n} issue/PR hợp với mảng của bạn.",
+        "digest_hello_mixed": " {k} mục P0 ở trên cùng là gấp nhất, mấy mục P1 còn lại bạn xem khi rảnh nhé.",
+        "digest_hello_all_p0": " Tất cả đều là P0, bạn xem sớm nhé.",
+        "digest_hello_no_p0": " Bạn xem khi rảnh nhé.",
+        "group_page": "🚨 P0: cần xem sớm",
+        "group_route": "🔶 P1: xem khi rảnh",
+        "digest_footer": "Bấm ⋮ ở mỗi mục để *Nhận việc* hoặc báo *Không phải của tôi*, để hệ thống tìm người khác. "
+                         "Xem tất cả ở <{url}|My list>. Muốn đổi mảng nhận việc thì sửa <{file}|file của bạn> nhé.",
     },
 }
 _LEVELS_VI = {"high": "cao", "medium": "trung bình"}
@@ -106,17 +121,31 @@ def describe_reason(raw: str, lang: str = "en") -> str:
     return raw
 
 
-def _item_line(entry: DigestEntry, owners: list[str] | None = None, lang: str = "en") -> str:
+def _why(entry: DigestEntry, lang: str) -> str:
+    """Why this person: involvement in plain words, then Claude's own
+    one-liner in their language when there is one, else the reason codes."""
+    involved = [m for m in entry.matched if m == "commented" or m.startswith("authored ")]
+    others = [m for m in entry.matched if m not in involved]
+    phrases = [describe_reason(m, lang) for m in involved]
+    if lang != "en" and entry.why_local:
+        phrases.append(entry.why_local[:300])
+    else:
+        phrases += [describe_reason(m, lang) for m in others]
+    return "; ".join(_pr_links(safe_slack_mrkdwn(p)) for p in phrases[:3])
+
+
+def _item_line(entry: DigestEntry, owners: list[str] | None = None, lang: str = "en", *, summary: bool = True) -> str:
+    # No score: "P0 · 99" means nothing in Slack; the P-level says how urgent
+    # it is and the dashboard explains the number.
     icon = _BAND_ICON.get(entry.band, "")
     number = entry.item_key.rsplit("#", 1)[-1]
     level = BAND_LABELS.get(entry.band, "")
-    parts = [f"{icon} *{level}* · {entry.score} {_link(entry.html_url, f'#{number} {entry.title}')}".replace("  ", " ")]
-    if entry.summary:
+    parts = [f"{icon} *{level}* {_link(entry.html_url, f'#{number} {entry.title}')}".strip()]
+    if summary and entry.summary:
         parts.append(f"   _{safe_slack_mrkdwn(entry.summary[:240])}_")
     detail = []
-    if entry.matched:
-        why = "; ".join(_pr_links(safe_slack_mrkdwn(describe_reason(m, lang))) for m in entry.matched[:3])
-        detail.append(f"{_t(lang, 'why_you')}: {why}")
+    if entry.matched or entry.why_local:
+        detail.append(f"{_t(lang, 'why_you')}: {_why(entry, lang)}")
     if owners is not None:
         unrouted = _t(lang, "unrouted")
         detail.append(f"{_t(lang, 'owner')}: " + (", ".join(safe_slack_mrkdwn(o) for o in owners) if owners else f"*{unrouted}*"))
@@ -125,12 +154,12 @@ def _item_line(entry: DigestEntry, owners: list[str] | None = None, lang: str = 
     return "\n".join(parts)
 
 
-def _item_section(entry: DigestEntry, *, menu: bool, lang: str = "en") -> dict[str, Any]:
+def _item_section(entry: DigestEntry, *, menu: bool, lang: str = "en", summary: bool = True) -> dict[str, Any]:
     """One item as a section; digest lines get an overflow menu (Ack / Not mine / Open)."""
     block: dict[str, Any] = {
         "type": "section",
         "block_id": f"triage:item:{entry.item_key}",
-        "text": {"type": "mrkdwn", "text": _item_line(entry, lang=lang)[:2900]},
+        "text": {"type": "mrkdwn", "text": _item_line(entry, lang=lang, summary=summary)[:2900]},
     }
     if menu:
         block["accessory"] = {
@@ -222,7 +251,34 @@ def maintainer_digest(
     *, maintainer: str, maintainer_slack: str, entries: list[DigestEntry], day: datetime, mode: DeliveryMode,
     lang: str = "en",
 ) -> NotificationIntent:
-    header = _t(lang, "digest_header", n=len(entries), s="s" if len(entries) != 1 else "")
+    """The daily DM: a hello, then P0s and P1s in their own groups, each line
+    with why it's theirs. No summaries (titles plus reasons are enough to
+    scan; the P0 DM and the dashboard have them). Titles are never translated."""
+    entries = entries[:25]
+    n = len(entries)
+    header = _t(lang, "digest_header", n=n, s="s" if n != 1 else "")
+    p0 = sum(1 for e in entries if e.band == "page")
+    hello = _t(lang, "digest_hello", slack=maintainer_slack, n=n, s="s" if n != 1 else "")
+    if p0 and p0 < n:
+        hello += _t(lang, "digest_hello_mixed", k=p0, ks="s" if p0 != 1 else "", are="are" if p0 != 1 else "is")
+    elif p0:
+        hello += _t(lang, "digest_hello_all_p0", they="They're all" if n != 1 else "It's")
+    else:
+        hello += _t(lang, "digest_hello_no_p0")
+    blocks: list[dict[str, Any]] = [
+        {"type": "header", "text": {"type": "plain_text", "text": header[:150]}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": hello}},
+    ]
+    for band in ("page", "route", "watch", "ignore"):
+        group = [e for e in entries if e.band == band]
+        if not group:
+            continue
+        key = f"group_{band}"
+        title = _t(lang, key) if key in STRINGS["en"] else BAND_LABELS.get(band, band)
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}})
+        blocks += [_item_section(e, menu=True, lang=lang, summary=False) for e in group]
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _t(
+        lang, "digest_footer", url=f"{DASHBOARD}/me", file=MAINTAINER_FILE.format(login=quote(maintainer)))}]})
     return NotificationIntent(
         delivery_id=f"triage:digest:{maintainer}:{day.date().isoformat()}",
         alert_ref=f"digest:{maintainer}",
@@ -232,12 +288,7 @@ def maintainer_digest(
         destination=maintainer_slack,
         payload={
             "text": header,
-            "blocks": [
-                {"type": "header", "text": {"type": "plain_text", "text": header[:150]}},
-                *[_item_section(e, menu=True, lang=lang) for e in entries[:25]],
-                {"type": "context", "elements": [{"type": "mrkdwn",
-                    "text": _t(lang, "digest_footer", url=f"{DASHBOARD}/me")}]},
-            ],
+            "blocks": blocks,
             "unfurl_links": False,
             "unfurl_media": False,
         },

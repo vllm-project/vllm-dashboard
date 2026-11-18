@@ -86,6 +86,8 @@ class DigestEntry:
     band: str
     summary: str
     matched: list[str]
+    # Claude's one-line "why you" in the maintainer's language ("" for English).
+    why_local: str = ""
 
 
 class PostgresTriageStore(PostgresAlertStore):
@@ -406,7 +408,7 @@ class PostgresTriageStore(PostgresAlertStore):
                                  WHERE a.item_key = i.item_key AND a.action = 'not_mine'), '{}'),
                        COALESCE((SELECT jsonb_object_agg(r.maintainer, jsonb_build_object(
                                      'relevance', r.relevance, 'evidence_prs', r.evidence_prs,
-                                     'reason', r.reason))
+                                     'reason', r.reason, 'reason_local', r.reason_local))
                                  FROM triage_relevance r
                                  WHERE r.item_key = i.item_key AND r.content_hash = i.content_hash),
                                 '{}'::jsonb),
@@ -457,17 +459,18 @@ class PostgresTriageStore(PostgresAlertStore):
         with self._connection_factory() as c:
             rows = c.execute(
                 """SELECT a.id, i.item_key, i.title, i.html_url, s.score, s.band,
-                          COALESCE(e.facets->>'summary', ''), a.reason
+                          COALESCE(e.facets->>'summary', ''), a.reason, COALESCE(r.reason_local, '')
                    FROM triage_assignments a
                    JOIN triage_items i USING (item_key)
                    JOIN triage_scores s USING (item_key)
                    LEFT JOIN triage_extractions e ON e.id = s.extraction_id
+                   LEFT JOIN triage_relevance r ON r.item_key = a.item_key AND r.maintainer = a.maintainer
                    WHERE a.maintainer = %s AND a.status = 'open' AND a.notified_at IS NULL
                    ORDER BY s.score DESC""",
                 (maintainer,),
             ).fetchall()
         return [
-            DigestEntry(r[0], r[1], r[2], r[3], r[4], r[5], r[6], list((r[7] or {}).get("matched", [])))
+            DigestEntry(r[0], r[1], r[2], r[3], r[4], r[5], r[6], list((r[7] or {}).get("matched", [])), r[8])
             for r in rows
         ]
 
@@ -540,11 +543,12 @@ class PostgresTriageStore(PostgresAlertStore):
         notes, so editing notes re-queues their judgements."""
         with self._connection_factory() as c:
             rows = c.execute(
-                """SELECT m.github_login, p.prs, COALESCE(m.rules->>'natural_language', '')
+                """SELECT m.github_login, p.prs, COALESCE(m.rules->>'natural_language', ''),
+                          COALESCE(m.rules->>'language', 'en')
                    FROM triage_maintainers m JOIN triage_maintainer_profiles p USING (github_login)
                    WHERE m.active ORDER BY m.github_login"""
             ).fetchall()
-        return [MaintainerProfile(r[0], list(r[1]), r[2], profile_hash(list(r[1]), r[2])) for r in rows]
+        return [MaintainerProfile(r[0], list(r[1]), r[2], profile_hash(list(r[1]), r[2], r[3]), r[3]) for r in rows]
 
     def relevance_queue(self, *, limit: int, min_score: int) -> list[RelevanceTask]:
         """Open, extracted items scoring >= min_score with at least one active
@@ -588,15 +592,16 @@ class PostgresTriageStore(PostgresAlertStore):
                 for j in judgments:
                     c.execute(
                         """INSERT INTO triage_relevance (item_key, maintainer, relevance, evidence_prs, reason,
-                               content_hash, profile_hash, model, created_at)
-                           VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s)
+                               reason_local, content_hash, profile_hash, model, created_at)
+                           VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s)
                            ON CONFLICT (item_key, maintainer) DO UPDATE SET
                                relevance = EXCLUDED.relevance, evidence_prs = EXCLUDED.evidence_prs,
-                               reason = EXCLUDED.reason, content_hash = EXCLUDED.content_hash,
+                               reason = EXCLUDED.reason, reason_local = EXCLUDED.reason_local,
+                               content_hash = EXCLUDED.content_hash,
                                profile_hash = EXCLUDED.profile_hash, model = EXCLUDED.model,
                                created_at = EXCLUDED.created_at""",
                         (task.item_key, j.maintainer, j.relevance, json.dumps(j.evidence_prs), j.reason,
-                         task.content_hash, profiles[j.maintainer].profile_hash, model, now),
+                         j.reason_local, task.content_hash, profiles[j.maintainer].profile_hash, model, now),
                     )
 
     # --- maintainers (synced from triage/config/maintainers/*.yaml) --------
