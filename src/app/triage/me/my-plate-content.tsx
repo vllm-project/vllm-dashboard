@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ActionButtons } from "@/components/triage/action-buttons";
 import { ItemDrawer } from "@/components/triage/item-drawer";
 import { EmptyState, ItemRow, PriorityGroupHeader, RowSkeleton } from "@/components/triage/item-row";
+import { useLocationHash } from "@/lib/use-location-hash";
 import { describeReason, itemFromLocation, triageFetcher } from "@/lib/triage-format";
 import { BAND_STYLES, groupByPriority } from "@/lib/triage-style";
 import type { TriageMyPlate } from "@/lib/triage-types";
@@ -45,8 +45,7 @@ export default function MyPlateContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [hash, setHash] = useState("");
-  useEffect(() => setHash(window.location.hash), []);
+  const hash = useLocationHash();
   const openItem = itemFromLocation(searchParams.get("item"), hash);
   const { data, error, mutate } = useSWR<TriageMyPlate>("/api/triage/me", triageFetcher);
 
