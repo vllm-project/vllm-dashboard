@@ -1,0 +1,17 @@
+# Matthew Bonanni. Beta tester; drafted 2026-11-18 from their vLLM history (98 PRs
+# authored, 147 reviewed since May). Edit freely; see README.md in this folder.
+github_login: MatthewBonanni
+# slack_user_id: U096X84UJLV   # found in vllm-dev Slack; Kevin to confirm before it's used
+min_score: 40
+capacity_per_week: 10
+notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+
+notes: |
+  I lead HiSparse: the host-memory tier for sparse-attention (DSA/QSA) KV
+  caches, with page residency, prefill staging and host pools, for
+  GLM-5.3-Flash, Kimi K3.1 and DeepSeek models. Also attention backends: MLA,
+  FlashMLA, FlashAttention (FA4, upstream syncs), FlashInfer sparse MLA and
+  FlashInfer upgrades, KV block sizes, KV connector and KV offload interactions
+  with attention, and the extensible KV cache with HiSparse.
+  Send me HiSparse bugs, sparse or MLA attention backend crashes and wrong
+  outputs, and FlashAttention or FlashInfer attention regressions.
