@@ -189,6 +189,30 @@ def test_full_pipeline_extract_score_route_notify(store: PostgresTriageStore, da
     assert store.scoring_candidates(scoring_version=default_config().version, limit=10) == []
 
 
+def test_a_pr_is_rescored_when_the_issue_it_fixes_is(store: PostgresTriageStore, database_url: str) -> None:
+    ingest(store, issue(10, "DeepSeek startup crash"))
+    ingest(store, issue(11, "Fix DeepSeek startup", kind="pr", body="Fixes #10\n" + "x" * 200,
+                        files=[FileChange("vllm/x.py")]))
+    pr_facets = {**SEVERE, "type": "bug", "pr": {"fixes_issues": [10], "hot_path": False, "size": "s",
+                                                 "has_tests": True, "low_effort": False}}
+    run_extraction(store, FakeBackend({"DeepSeek startup crash": SEVERE, "Fix DeepSeek startup": pr_facets}),
+                   budget=Budget(), now=NOW, workers=1)
+    clock = FixedClock(NOW)
+    RouteHandler(store=store, config=default_config(), clock=clock, delivery_mode=DeliveryMode.SHADOW)(
+        ScheduledCommand("triage_route", NOW))
+    version = default_config().version
+    assert store.scoring_candidates(scoring_version=version, limit=10) == []
+    # The issue is rescored later (say a new comment changed its score): the PR follows.
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_scores SET scored_at = scored_at + interval '1 minute' "
+                  "WHERE item_key = 'vllm-project/vllm#10'")
+    assert [r.number for r in store.scoring_candidates(scoring_version=version, limit=10)] == [11]
+    clock.value = NOW + timedelta(minutes=5)
+    RouteHandler(store=store, config=default_config(), clock=clock, delivery_mode=DeliveryMode.SHADOW)(
+        ScheduledCommand("triage_route", NOW + timedelta(minutes=5)))
+    assert store.scoring_candidates(scoring_version=version, limit=10) == []
+
+
 def test_not_mine_reroutes_and_drop_stops_routing(store: PostgresTriageStore, database_url: str) -> None:
     ingest(store, issue(10, "DeepSeek startup crash"))
     seed(store, [
