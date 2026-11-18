@@ -250,7 +250,11 @@ export function withTreatmentFiles(main: FileTiming[], treatment: FileTiming[]):
 // latest-test-timings-clickhouse.ts for the build-selection rules. Tests pass
 // an in-memory store.
 export interface TimingStore {
-  passingBuilds(treatment: boolean, stepKey: string, days: number | null, queue: string | null): Promise<PassingBuild[]>;
+  // Newest first, at most TIMING_BUILDS; days null is no time window, and
+  // `before` keeps only builds numbered below it.
+  passingBuilds(
+    treatment: boolean, stepKey: string, days: number | null, queue: string | null, before?: number,
+  ): Promise<PassingBuild[]>;
   spans(jobIds: string[]): Promise<{ rows: TestSpanRow[]; commands: CommandSpanRow[] }>;
   mainEverTimed(stepKey: string): Promise<boolean>;
   // Runs fn against a store whose reads give up after TREATMENT_TIMEOUT_MS.
@@ -260,8 +264,8 @@ export interface TimingStore {
 export function clickHouseStore(timeoutMs?: number): TimingStore {
   const options = { timeoutMs };
   return {
-    passingBuilds: (treatment, stepKey, days, queue) =>
-      clickHousePassingBuilds(treatment, stepKey, days, queue, TIMING_BUILDS, options),
+    passingBuilds: (treatment, stepKey, days, queue, before) =>
+      clickHousePassingBuilds(treatment, stepKey, days, queue, TIMING_BUILDS, options, before ?? null),
     spans: (jobIds) => clickHouseTimingSpans(jobIds, options),
     mainEverTimed: (stepKey) => clickHouseMainEverTimed(stepKey, options),
     withTreatmentTimeout: (fn) => fn(clickHouseStore(TREATMENT_TIMEOUT_MS)),
@@ -371,8 +375,18 @@ export async function queryLatestTestTimings(
     builds = await store.passingBuilds(false, stepKey, null, queue);
     if (builds.length === 0) return null;
   }
-  const main = await timingsOfBuilds(store, builds);
-  if (main.used.length === 0) throw main.firstError;
+  let main = await timingsOfBuilds(store, builds);
+  if (main.used.length === 0) {
+    // Every build in the window failed validation (an ingestion outage lost
+    // part of each one's spans). Look once past the oldest of them, without
+    // the window, as for a step main passed only before it: older timings
+    // shard the step, while an error runs it as one job past its timeout.
+    const oldest = Math.min(...builds.map((build) => Number(build.build_number)));
+    const older = await store.passingBuilds(false, stepKey, null, queue, oldest);
+    const back = older.length > 0 ? await timingsOfBuilds(store, older) : null;
+    if (!back || back.used.length === 0) throw main.firstError;
+    main = { ...back, skippedBuilds: [...main.skippedBuilds, ...back.skippedBuilds] };
+  }
   const files = p80Files(main.filesPerBuild);
   const treatment = await treatmentTimings(store, stepKey, days, queue);
   const merged = withTreatmentFiles(files, treatment?.files ?? []);
