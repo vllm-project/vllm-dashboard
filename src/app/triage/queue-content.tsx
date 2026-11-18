@@ -313,10 +313,13 @@ export default function QueueContent() {
   // Search applies as you type (debounced) and immediately on Enter.
   const applySearch = useCallback(
     (text: string) => {
-      const parsed = parseSearchInput(text);
-      if (parsed.q !== filters.q || parsed.model !== filters.model) update(parsed);
+      const { owner, ...parsed } = parseSearchInput(text);
+      const ownerChanged = owner !== undefined && owner !== filters.owner;
+      if (parsed.q !== filters.q || parsed.model !== filters.model || ownerChanged) {
+        update(ownerChanged ? { ...parsed, owner } : parsed);
+      }
     },
-    [filters.q, filters.model, update],
+    [filters.q, filters.model, filters.owner, update],
   );
   const searchTimer = useRef<number | null>(null);
   useEffect(() => {
@@ -425,8 +428,8 @@ export default function QueueContent() {
             </svg>
             <input
               type="search"
-              aria-label="Search title, summary, number; model:name filters by model"
-              placeholder="Search · #123 · model:x"
+              aria-label="Search title, summary, number; model:name filters by model; owner:login or owner:none filters by owner"
+              placeholder="Search · #123 · model:x · owner:x"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               className={`${CONTROL} w-full pl-7`}

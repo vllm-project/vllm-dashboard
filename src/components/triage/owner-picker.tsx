@@ -20,7 +20,8 @@ interface Option {
 
 /**
  * "Anyone" / "Unowned" / each active maintainer (avatar, login, how many
- * items they own now). A small listbox: arrows move, Enter picks, Esc closes.
+ * items they own now). Type to filter; arrows move, Enter picks the
+ * highlighted (first by default) match, Esc closes.
  */
 export function OwnerPicker({
   value,
@@ -33,8 +34,9 @@ export function OwnerPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const [query, setQuery] = useState("");
   const root = useRef<HTMLDivElement>(null);
-  const list = useRef<HTMLUListElement>(null);
+  const input = useRef<HTMLInputElement>(null);
   const listId = useId();
   const { data } = useSWR<{ maintainers: Maintainer[] }>("/api/triage/maintainers", triageFetcher, {
     revalidateOnFocus: false,
@@ -53,6 +55,12 @@ export function OwnerPicker({
   const selected =
     options.find((option) => option.value?.toLowerCase() === value?.toLowerCase()) ??
     (value ? { value, label: value, login: value } : options[0]);
+  const needle = query.trim().toLowerCase().replace(/^@/, "");
+  const shown = needle
+    ? options.filter((option) =>
+        `${option.label} ${option.value === OWNER_NONE ? "none unowned nobody" : ""}`.toLowerCase().includes(needle),
+      )
+    : options;
 
   useEffect(() => {
     if (!open) return;
@@ -64,10 +72,11 @@ export function OwnerPicker({
   }, [open]);
 
   useEffect(() => {
-    if (open) list.current?.focus();
+    if (open) input.current?.focus();
   }, [open]);
 
   function openList() {
+    setQuery("");
     setActive(Math.max(0, options.findIndex((option) => option.value === selected.value)));
     setOpen(true);
   }
@@ -104,30 +113,42 @@ export function OwnerPicker({
         </svg>
       </button>
       {open && (
-        <ul
-          ref={list}
-          id={listId}
-          role="listbox"
-          tabIndex={-1}
-          aria-label="Owner"
-          aria-activedescendant={`${listId}-${active}`}
+        <div className="absolute left-0 z-30 mt-1 w-60 rounded-lg border border-zinc-200 bg-white p-1 text-xs shadow-lg shadow-black/10 dark:border-zinc-700 dark:bg-zinc-900 dark:shadow-black/40">
+        <input
+          ref={input}
+          type="search"
+          value={query}
+          placeholder="Find an owner…"
+          aria-label="Find an owner"
+          aria-controls={listId}
+          aria-activedescendant={shown.length ? `${listId}-${active}` : undefined}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setActive(0);
+          }}
           onKeyDown={(event) => {
             if (event.key === "ArrowDown") {
               event.preventDefault();
-              setActive((index) => Math.min(options.length - 1, index + 1));
+              setActive((index) => Math.min(shown.length - 1, index + 1));
             } else if (event.key === "ArrowUp") {
               event.preventDefault();
               setActive((index) => Math.max(0, index - 1));
-            } else if (event.key === "Enter" || event.key === " ") {
+            } else if (event.key === "Enter") {
               event.preventDefault();
-              pick(options[active]);
+              if (shown[active]) pick(shown[active]);
             } else if (event.key === "Escape" || event.key === "Tab") {
               setOpen(false);
             }
           }}
-          className="absolute left-0 z-30 mt-1 max-h-80 w-60 overflow-auto rounded-lg border border-zinc-200 bg-white p-1 text-xs shadow-lg shadow-black/10 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:shadow-black/40"
+          className="mb-1 h-7 w-full rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-400 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+        />
+        <ul
+          id={listId}
+          role="listbox"
+          aria-label="Owner"
+          className="max-h-72 overflow-auto"
         >
-          {options.map((option, index) => {
+          {shown.map((option, index) => {
             const isSelected = option.value === selected.value;
             return (
               <li
@@ -139,7 +160,7 @@ export function OwnerPicker({
                 onClick={() => pick(option)}
                 className={`flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 ${
                   index === active ? "bg-zinc-100 dark:bg-zinc-800" : ""
-                } ${index === 1 ? "mb-1 border-b border-zinc-100 pb-2 dark:border-zinc-800" : ""}`}
+                } ${!needle && index === 1 ? "mb-1 border-b border-zinc-100 pb-2 dark:border-zinc-800" : ""}`}
               >
                 {option.login ? (
                   <Avatar login={option.login} size={18} />
@@ -161,7 +182,9 @@ export function OwnerPicker({
             );
           })}
           {!data && <li className="px-2 py-1.5 text-zinc-400">Loading maintainers…</li>}
+          {data && shown.length === 0 && <li className="px-2 py-1.5 text-zinc-400">No owner matches “{query}”.</li>}
         </ul>
+        </div>
       )}
     </div>
   );
