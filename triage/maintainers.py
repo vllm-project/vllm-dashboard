@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -33,6 +34,7 @@ _SLACK_USER = re.compile(r"^[UW][A-Z0-9]{6,}$")
 _TOP_KEYS = {
     "github_login", "slack_user_id", "min_score", "capacity_per_week",
     "notify_mode", "away", "rules", "active", "notes", "language",
+    "timezone", "digest_hour",
 }
 _RULE_KEYS = {"areas", "hardware", "models", "paths", "keywords", "types", "exclude", "natural_language"}
 _EXCLUDE_KEYS = {"types", "areas", "hardware"}
@@ -68,6 +70,17 @@ def _date(value: Any) -> date | None:
         except ValueError:
             return None
     return None
+
+
+def valid_timezone(name: Any) -> bool:
+    """An IANA zone name zoneinfo knows ("Asia/Ho_Chi_Minh", "UTC")."""
+    if not isinstance(name, str) or not name.strip() or name != name.strip():
+        return False
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+    return True
 
 
 def _load_entry(name: str, text: str, problems: list[str]) -> dict[str, Any] | None:
@@ -191,6 +204,21 @@ def _parse_entries(entries: list[Any], problems: list[str]) -> list[Maintainer]:
             problems.append(f"{where}.language: must be en or vi")
         elif language != "en":
             rules["language"] = language
+        # When the daily digest arrives: at `digest_hour` (default 9) in the
+        # maintainer's own time zone (default UTC). Kept in `rules` next to
+        # `language`, so no schema change; see pipeline.DigestHandler.
+        tz_name = entry.get("timezone")
+        if tz_name is not None:
+            if valid_timezone(tz_name):
+                rules["timezone"] = tz_name
+            else:
+                problems.append(f"{where}.timezone: must be an IANA time zone name like Europe/London")
+        digest_hour = entry.get("digest_hour")
+        if digest_hour is not None:
+            if isinstance(digest_hour, bool) or not isinstance(digest_hour, int) or not 0 <= digest_hour <= 23:
+                problems.append(f"{where}.digest_hour: must be an hour 0-23")
+            else:
+                rules["digest_hour"] = digest_hour
         out.append(Maintainer(
             github_login=login,
             slack_user_id=slack if isinstance(slack, str) else None,

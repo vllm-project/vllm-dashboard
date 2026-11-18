@@ -17,7 +17,7 @@ GitHub ─► triage-ingest (worker, 5 min) ─► triage_items + deterministic 
                                                │
           triage-route (worker, 5 min) ─► triage_scores ─► triage_assignments
                                                │                 │
-          triage-digest (worker, daily) ─────────────────► outbox (shadow)
+          triage-digest (worker, hourly) ────────────────► outbox (shadow)
                                                │
                      ci.vllm.ai/triage ◄───────┘  ─► triage_actions
 ```
@@ -31,7 +31,7 @@ GitHub ─► triage-ingest (worker, 5 min) ─► triage_items + deterministic 
 | Score | `scoring.py`, `config/scoring.yaml`, `config/tiers.yaml` | Deterministic. `severity × reach (model × hardware × config) + additive factors`. The breakdown always sums to the score. |
 | Route | `routing.py`, `relevance.py`, `config/maintainers/` | Who an item is for, strongest first: a maintainer already **involved** (assigned on GitHub, wrote a PR the item names, or commented), then **relevance** judged by Claude from each maintainer's last 6 months of authored/reviewed PRs plus the free-text `notes` in their own file (`vllm-triage relevance` on the extractor host), then optional rules. Profiles are rebuilt daily by the route consumer, with what the person recently said "not mine" to or took. Routing waits up to 2 hours for every maintainer's judgement, then routes among those judged. Relevance runs on Opus (`TRIAGE_RELEVANCE_MODEL`); "medium" means the same specific component the person authors in, not a broad area, and a broad "send me" category in their notes only counts inside components they author (rel-v4). Weekly capacity counts items the person kept (not ones they passed on). Only page-band items that are new or a clear match (involved or "high") may exceed it, so a backlog of weaker matches is spread out. Items assigned on GitHub only to people outside the maintainer list are not routed. |
 | Follow GitHub | `store.follow_github`, run by the route consumer | Closed/merged items: open and acked assignments become `done` (reason `closed_by: github`); unacked ones stop counting toward capacity; reopened items get their assignment back. A maintainer commenting on their item after it was assigned acks it. See docs/data-model.md. |
-| Notify | `notify.py` | Immediate DM for P0, daily DM digest, daily team digest. DMs have Ack / Not mine / Reassign buttons handled by the dashboard (see docs/triage-dashboard.md, "Slack buttons"). **Shadow only for now.** |
+| Notify | `notify.py` | Immediate DM for P0, daily DM digest at each maintainer's local morning (with a "Still waiting" reminder section for items un-acked after 3 days), daily team digest. DMs have Ack / Not mine / Reassign buttons handled by the dashboard (see docs/triage-dashboard.md, "Slack buttons"). **Shadow only for now.** |
 | Act | dashboard ([docs/triage-dashboard.md](../docs/triage-dashboard.md)) | ack / not mine / reassign / drop / slop / done / reopen. The router never re-routes dropped or slop items, and never routes an item back to someone who said it isn't theirs. |
 
 The data contract between all of these is [docs/data-model.md](docs/data-model.md).

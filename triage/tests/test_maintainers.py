@@ -58,3 +58,30 @@ def test_notes_alone_are_enough_and_merge_with_natural_language() -> None:
                                             "rules: {natural_language: no TPU please}\n"})
     assert m.rules["natural_language"] == "I own the scheduler.\n\nno TPU please"
     assert not any(m.rules[k] for k in ("areas", "hardware", "models", "paths", "keywords"))
+
+
+def test_timezone_and_digest_hour_are_validated_and_kept_in_rules() -> None:
+    [m] = parse_maintainer_files({"x.yaml": "github_login: x\ntimezone: Asia/Ho_Chi_Minh\ndigest_hour: 7\n"})
+    assert m.rules["timezone"] == "Asia/Ho_Chi_Minh" and m.rules["digest_hour"] == 7
+    [plain] = parse_maintainer_files({"y.yaml": "github_login: y\n"})
+    assert "timezone" not in plain.rules and "digest_hour" not in plain.rules
+    with pytest.raises(MaintainersFileError) as exc:
+        parse_maintainer_files({
+            "a.yaml": "github_login: a\ntimezone: Mars/Olympus_Mons\n",
+            "b.yaml": "github_login: b\ntimezone: UTC+7\n",
+            "c.yaml": "github_login: c\ntimezone: ../../etc/passwd\n",
+            "d.yaml": "github_login: d\ndigest_hour: 24\n",
+            "e.yaml": "github_login: e\ndigest_hour: true\n",
+            "f.yaml": "github_login: f\ndigest_hour: '9'\n",
+            "g.yaml": "github_login: g\ntimezone: 7\n",
+        })
+    assert len(exc.value.problems) == 7
+    assert "a.timezone: must be an IANA time zone name like Europe/London" in exc.value.problems
+
+
+def test_checked_in_time_zones() -> None:
+    zones = {m.github_login: m.rules.get("timezone") for m in parse_maintainer_files(load_local_dir(LOCAL_DIR))}
+    assert zones["gau-nernst"] == "Asia/Ho_Chi_Minh" and zones["khluu"] == "America/Los_Angeles"
+    assert zones["hmellor"] == zones["markmc"] == "Europe/London"
+    assert zones["robertgshaw2-redhat"] == zones["mgoin"] == zones["MatthewBonanni"] == "America/New_York"
+    assert zones["njhill"] == "America/Los_Angeles" and zones["jperezdealgaba"] == "Europe/Amsterdam"

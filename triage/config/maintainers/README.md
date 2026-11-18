@@ -39,6 +39,8 @@ github_login: your-login          # must match the file name
 min_score: 40                     # only items scoring at least this (route band 40+, page 70+)
 capacity_per_week: 10             # new P0s, and P0s clearly yours, may exceed it
 notify_mode: digest               # immediate | digest | off  (Slack is off for now)
+timezone: Europe/London           # optional, IANA name; default UTC
+digest_hour: 9                    # optional, local hour 0-23 for the daily digest; default 9
 away:                             # optional
   - {start: 2026-12-20, end: 2027-01-03}
 
@@ -53,6 +55,20 @@ rules:                            # optional
   models: ["deepseek*"]
   keywords: ["expert parallel"]
 ```
+
+## When the daily digest arrives
+
+The digest DM goes out once a day between `digest_hour`:00 and the next hour
+(default 09:00-10:00) in your `timezone`, so set `timezone` to where you are
+(names like `America/Los_Angeles`, `Asia/Ho_Chi_Minh`; the list is
+[here](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)). Without
+one it is UTC, i.e. 09:00 UTC (the old fixed time for everyone was 15:00 UTC).
+The team channel digest stays at 15:00 UTC.
+
+The digest lists what was assigned to you since the last one, then a short
+**Still waiting** section: up to 5 of your items assigned 3 or more days ago
+that you haven't acked yet, oldest first. Ack or pass them on to stop the
+reminders. A day with nothing new and nothing waiting sends no digest.
 
 To stop getting items, delete your file, or set `active: false` to pause.
 Check it locally with

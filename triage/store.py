@@ -99,6 +99,8 @@ class DigestEntry:
     matched: list[str]
     # Claude's one-line "why you" in the maintainer's language ("" for English).
     why_local: str = ""
+    # Set on "still waiting" reminders (waiting_assignments) only.
+    assigned_at: datetime | None = None
 
 
 class PostgresTriageStore(PostgresAlertStore):
@@ -564,6 +566,41 @@ class PostgresTriageStore(PostgresAlertStore):
             for r in rows
         ]
 
+    def waiting_assignments(
+        self, maintainer: str, *, assigned_before: datetime, limit: int
+    ) -> tuple[list[DigestEntry], int]:
+        """Reminders: the maintainer's open assignments already sent once
+        (notified_at set) and assigned before `assigned_before`, oldest
+        first, at most `limit`, plus how many there are in all. Skips items
+        that are closed, dropped or slop, or that someone else has already
+        taken (acked or done)."""
+        with self._connection_factory() as c:
+            rows = c.execute(
+                """SELECT a.id, i.item_key, i.title, i.html_url, s.score, s.band,
+                          COALESCE(e.facets->>'summary', ''), a.reason, COALESCE(r.reason_local, ''),
+                          a.assigned_at, count(*) OVER ()
+                   FROM triage_assignments a
+                   JOIN triage_items i USING (item_key)
+                   JOIN triage_scores s USING (item_key)
+                   LEFT JOIN triage_extractions e ON e.id = s.extraction_id
+                   LEFT JOIN triage_relevance r ON r.item_key = a.item_key AND r.maintainer = a.maintainer
+                   WHERE a.maintainer = %s AND a.status = 'open' AND a.notified_at IS NOT NULL
+                     AND a.assigned_at <= %s AND i.state = 'open'
+                     AND NOT EXISTS (SELECT 1 FROM triage_assignments o WHERE o.item_key = a.item_key
+                                     AND o.id <> a.id AND o.status IN ('acked', 'done'))
+                     AND NOT EXISTS (SELECT 1 FROM triage_actions x WHERE x.item_key = a.item_key
+                                     AND x.action IN ('drop', 'slop'))
+                   ORDER BY a.assigned_at, a.id
+                   LIMIT %s""",
+                (maintainer, assigned_before, limit),
+            ).fetchall()
+        entries = [
+            DigestEntry(r[0], r[1], r[2], r[3], r[4], r[5], r[6], list((r[7] or {}).get("matched", [])), r[8],
+                        assigned_at=r[9])
+            for r in rows
+        ]
+        return entries, int(rows[0][10]) if rows else 0
+
     def top_new_items(self, *, since: datetime, limit: int) -> list[tuple[DigestEntry, list[str]]]:
         with self._connection_factory() as c:
             rows = c.execute(
@@ -593,15 +630,27 @@ class PostgresTriageStore(PostgresAlertStore):
 
     def commit_digest(
         self, notification: NotificationIntent, assignment_ids: list[int], *, now: datetime
-    ) -> None:
+    ) -> bool:
+        """Queue a digest and mark `assignment_ids` notified, once per
+        delivery_id. If that digest is already in the outbox (the hourly
+        timer fired twice in the same hour, or a rerun) nothing changes and
+        this returns False: the outbox would drop the duplicate anyway, and
+        marking items notified without sending them would lose them."""
         with self._connection_factory() as c:
             with c.transaction():
+                c.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (notification.delivery_id,))
+                if c.execute(
+                    "SELECT 1 FROM alerting_notification_outbox WHERE delivery_id = %s",
+                    (notification.delivery_id,),
+                ).fetchone():
+                    return False
                 self._enqueue(c, notification, next_attempt_at=now)
                 if assignment_ids:
                     c.execute(
                         "UPDATE triage_assignments SET notified_at = %s WHERE id = ANY(%s)",
                         (now, assignment_ids),
                     )
+        return True
 
     # --- profiles and relevance --------------------------------------------
 

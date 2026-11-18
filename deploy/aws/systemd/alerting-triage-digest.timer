@@ -1,9 +1,9 @@
 [Unit]
-Description=Schedule: Send daily triage digests
+Description=Schedule: Send triage digests (hourly; each maintainer at their local morning, team at 15:00 UTC)
 
 [Timer]
 OnBootSec=3min
-OnCalendar=*-*-* 15:00:00 UTC
+OnCalendar=*-*-* *:00:00 UTC
 Persistent=true
 AccuracySec=30s
 RandomizedDelaySec=0

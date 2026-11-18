@@ -3,7 +3,8 @@
   triage_ingest  every 5 min: GitHub -> triage_items (+ prepass)
   triage_route   every 5 min: re-score stale items, route page/route band
                  items to maintainers, DM page-band owners immediately
-  triage_digest  daily: per-maintainer DM digest + team channel digest
+  triage_digest  hourly: per-maintainer DM digest at their local morning,
+                 team channel digest once a day
 
 Each handler is registered with alerting.runtime.AlertingRuntime, which
 gives it idempotent claims and the Slack outbox. In shadow mode every
@@ -16,8 +17,9 @@ import logging
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from alerting.commands import ScheduledCommand
 from alerting.ports import Clock, DeliveryMode
@@ -26,7 +28,7 @@ from triage.config import TriageConfig
 from triage.github import GitHubClient, GitHubError, item_from_raw
 from triage.model import Item, Score
 from triage.maintainers import MaintainersFileError, parse_maintainer_files
-from triage.notify import maintainer_digest, page_dm, team_digest
+from triage.notify import WAITING_AFTER_DAYS, WAITING_MAX_ITEMS, maintainer_digest, page_dm, team_digest
 from triage.prepass import (
     COMMENTS_LIMIT,
     compute_prepass,
@@ -316,13 +318,46 @@ def relevance_grace_over(row: RoutingRow, now: datetime) -> bool:
     return row.waiting_since is None or now - row.waiting_since >= RELEVANCE_GRACE
 
 
+# Maintainers get their digest at this local hour unless their file sets
+# `digest_hour`; with no `timezone` it is UTC.
+DEFAULT_DIGEST_HOUR = 9
+# The team channel digest goes out once a day at this UTC hour (as before).
+TEAM_DIGEST_HOUR_UTC = 15
+
+
+def maintainer_local_time(maintainer: Maintainer, now: datetime) -> datetime:
+    """`now` in the maintainer's own time zone (UTC if unset or unknown)."""
+    name = maintainer.rules.get("timezone")
+    tz: tzinfo = timezone.utc
+    if isinstance(name, str) and name:
+        try:
+            tz = ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            log.warning("triage: unknown timezone %r for %s; using UTC", name, maintainer.github_login)
+    return now.astimezone(tz)
+
+
+def digest_hour(maintainer: Maintainer) -> int:
+    hour = maintainer.rules.get("digest_hour")
+    return hour if isinstance(hour, int) and not isinstance(hour, bool) and 0 <= hour <= 23 else DEFAULT_DIGEST_HOUR
+
+
 @dataclass
 class DigestHandler:
+    """Runs hourly. Each maintainer's DM digest goes out in the run where
+    their local hour is their digest_hour (09:00 by default, UTC unless
+    their file sets `timezone`), at most once per local day: the delivery
+    id carries the local date and commit_digest skips one already queued.
+    An hour skipped by a daylight-saving jump means no digest that day;
+    the items wait for the next one. The team channel digest goes out once
+    a day at team_digest_hour_utc."""
+
     store: PostgresTriageStore
     clock: Clock
     delivery_mode: DeliveryMode
     team_channel: str | None
     suppression_threshold: int = 10
+    team_digest_hour_utc: int = TEAM_DIGEST_HOUR_UTC
 
     def __call__(self, command: ScheduledCommand) -> None:
         now = self.clock.now()
@@ -330,27 +365,38 @@ class DigestHandler:
         for maintainer in active:
             if maintainer.notify_mode == "off" or not maintainer.slack_user_id:
                 continue
-            entries = self.store.unnotified_assignments(maintainer.github_login)
-            if not entries:
+            local = maintainer_local_time(maintainer, now)
+            if local.hour != digest_hour(maintainer):
                 continue
+            entries = self.store.unnotified_assignments(maintainer.github_login)
+            waiting, waiting_total = self.store.waiting_assignments(
+                maintainer.github_login, assigned_before=now - timedelta(days=WAITING_AFTER_DAYS),
+                limit=WAITING_MAX_ITEMS,
+            )
+            if not entries and not waiting:
+                continue
+            # Reminders are not re-marked: notified_at stays the first send.
             self.store.commit_digest(
                 maintainer_digest(
                     maintainer=maintainer.github_login, maintainer_slack=maintainer.slack_user_id,
-                    entries=entries, day=now, mode=self.delivery_mode,
+                    entries=entries, day=local, mode=self.delivery_mode,
                     lang=str(maintainer.rules.get("language") or "en"),
                     reassign_to=[m.github_login for m in active if m.github_login != maintainer.github_login],
+                    waiting=waiting, waiting_total=waiting_total,
                 ),
                 [e.assignment_id for e in entries],
                 now=now,
             )
+        if now.astimezone(timezone.utc).hour != self.team_digest_hour_utc:
+            return
         suppression = self.store.suppression_since(now - timedelta(days=1), threshold=self.suppression_threshold)
         for actor, drops, slops in suppression:
             log.warning("triage: %s hid %d items in 24h (%d dropped, %d slop)", actor, drops + slops, drops, slops)
         if self.team_channel:
             top = self.store.top_new_items(since=now - timedelta(days=1), limit=30)
             self.store.commit_digest(
-                team_digest(channel=self.team_channel, entries=top, day=now, mode=self.delivery_mode,
-                            suppression=suppression),
+                team_digest(channel=self.team_channel, entries=top, day=now.astimezone(timezone.utc),
+                            mode=self.delivery_mode, suppression=suppression),
                 [],
                 now=now,
             )

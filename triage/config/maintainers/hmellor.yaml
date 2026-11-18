@@ -5,6 +5,7 @@ github_login: hmellor
 min_score: 40
 capacity_per_week: 10
 notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+timezone: Europe/London
 
 notes: |
   I maintain the Transformers modeling backend (serving models through

@@ -5,6 +5,7 @@ slack_user_id: U07QCLE6Y8P
 min_score: 40
 capacity_per_week: 10
 notify_mode: digest
+timezone: America/Los_Angeles
 
 notes: |
   I own vLLM CI, build and release infrastructure: Buildkite pipelines and
