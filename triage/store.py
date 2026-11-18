@@ -19,7 +19,14 @@ from alerting.ports import NotificationIntent
 from alerting.postgres import PostgresAlertStore
 
 from triage.extract import ExtractionTask, LLMResult
-from triage.relevance import Judgment, MaintainerProfile, RelevanceTask, profile_hash
+from triage.relevance import (
+    FEEDBACK_LIMIT,
+    FEEDBACK_WINDOW,
+    Judgment,
+    MaintainerProfile,
+    RelevanceTask,
+    profile_hash,
+)
 from triage.model import Item, Maintainer, Score
 from triage.prepass import BODY_LIMIT, COMMENTS_LIMIT, MAX_FILES
 
@@ -66,6 +73,10 @@ class RoutingRow:
     # only judgements that match the item's current text.
     relevance: dict[str, dict[str, Any]] = dataclass_field(default_factory=dict)
     created_at: datetime | None = None
+    # When the item became routable: the later of entering the page/route
+    # band and its first extraction. Routing waits for relevance judgements
+    # for a grace period counted from here. None: unknown, no wait.
+    waiting_since: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -422,15 +433,22 @@ class PostgresTriageStore(PostgresAlertStore):
             with c.transaction():
                 with c.cursor() as cur:
                     cur.executemany(
+                        # routable_since: when the item last entered the page/route
+                        # band; kept while it stays in either, cleared when it leaves.
                         """INSERT INTO triage_scores (item_key, extraction_id, score, band, breakdown,
-                               scoring_version, scored_at)
-                           VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s)
+                               scoring_version, scored_at, routable_since)
+                           VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,%s)
                            ON CONFLICT (item_key) DO UPDATE SET extraction_id = EXCLUDED.extraction_id,
                                score = EXCLUDED.score, band = EXCLUDED.band, breakdown = EXCLUDED.breakdown,
-                               scoring_version = EXCLUDED.scoring_version, scored_at = EXCLUDED.scored_at""",
+                               scoring_version = EXCLUDED.scoring_version, scored_at = EXCLUDED.scored_at,
+                               routable_since = CASE
+                                   WHEN EXCLUDED.routable_since IS NULL THEN NULL
+                                   WHEN triage_scores.band IN ('page', 'route')
+                                       THEN COALESCE(triage_scores.routable_since, EXCLUDED.routable_since)
+                                   ELSE EXCLUDED.routable_since END""",
                         [
                             (key, ext, s.score, s.band, json.dumps([f.as_json() for f in s.breakdown]),
-                             s.version, now)
+                             s.version, now, now if s.band in ("page", "route") else None)
                             for key, ext, s in scores
                         ],
                     )
@@ -481,7 +499,9 @@ class PostgresTriageStore(PostgresAlertStore):
                                  FROM triage_relevance r
                                  WHERE r.item_key = i.item_key AND r.content_hash = i.content_hash),
                                 '{}'::jsonb),
-                       i.gh_created_at
+                       i.gh_created_at,
+                       GREATEST(s.routable_since,
+                                (SELECT min(x.created_at) FROM triage_extractions x WHERE x.item_key = i.item_key))
                 FROM triage_items i
                 JOIN triage_scores s ON s.item_key = i.item_key
                 JOIN triage_extractions e ON e.id = s.extraction_id
@@ -500,7 +520,7 @@ class PostgresTriageStore(PostgresAlertStore):
                 item_key=r[0], kind=r[1], title=r[2], html_url=r[3], score=r[4], band=r[5],
                 facets=dict(r[6]), prepass=_with_commenters(dict(r[7]), r[9]),
                 files=[f["path"] for f in r[8]], excluded=frozenset(r[10]),
-                relevance=dict(r[11]), created_at=r[12],
+                relevance=dict(r[11]), created_at=r[12], waiting_since=r[13],
             )
             for r in rows
         ]
@@ -595,18 +615,56 @@ class PostgresTriageStore(PostgresAlertStore):
         return {r[0]: r[1] for r in rows}
 
     def save_profile(self, login: str, prs: list[dict[str, Any]], *, now: datetime) -> None:
+        """Store a maintainer's rebuilt profile, with a snapshot of what they
+        recently did with items routed to them (see maintainer_feedback)."""
         with self._connection_factory() as c:
-            notes = c.execute(
-                "SELECT COALESCE(rules->>'natural_language', '') FROM triage_maintainers WHERE github_login = %s",
+            row = c.execute(
+                """SELECT COALESCE(rules->>'natural_language', ''), COALESCE(rules->>'language', 'en')
+                   FROM triage_maintainers WHERE github_login = %s""",
                 (login,),
             ).fetchone()
+            notes, language = (row[0], row[1]) if row else ("", "en")
+            feedback = self._maintainer_feedback(c, login, now=now)
             c.execute(
-                """INSERT INTO triage_maintainer_profiles (github_login, prs, profile_hash, built_at)
-                   VALUES (%s, %s::jsonb, %s, %s)
+                """INSERT INTO triage_maintainer_profiles (github_login, prs, profile_hash, built_at, feedback)
+                   VALUES (%s, %s::jsonb, %s, %s, %s::jsonb)
                    ON CONFLICT (github_login) DO UPDATE SET prs = EXCLUDED.prs,
-                       profile_hash = EXCLUDED.profile_hash, built_at = EXCLUDED.built_at""",
-                (login, json.dumps(prs), profile_hash(prs, notes[0] if notes else ""), now),
+                       profile_hash = EXCLUDED.profile_hash, built_at = EXCLUDED.built_at,
+                       feedback = EXCLUDED.feedback""",
+                (login, json.dumps(prs), profile_hash(prs, notes, language, feedback), now, json.dumps(feedback)),
             )
+
+    def maintainer_feedback(self, login: str, *, now: datetime) -> dict[str, list[dict[str, Any]]]:
+        with self._connection_factory() as c:
+            return self._maintainer_feedback(c, login, now=now)
+
+    @staticmethod
+    def _maintainer_feedback(c: Any, login: str, *, now: datetime) -> dict[str, list[dict[str, Any]]]:
+        """Items this maintainer said "not mine" to (declined) and items
+        they acked or finished (took) in the last FEEDBACK_WINDOW, newest
+        first, at most FEEDBACK_LIMIT each. Needs triage_actions and
+        triage_assignments, so only the worker builds it; the relevance job
+        reads the snapshot from triage_maintainer_profiles.feedback."""
+        since = now - FEEDBACK_WINDOW
+        declined = c.execute(
+            """SELECT a.item_key, i.title, max(a.created_at) AS at
+               FROM triage_actions a JOIN triage_items i USING (item_key)
+               WHERE a.action = 'not_mine' AND lower(a.actor) = lower(%s) AND a.created_at >= %s
+               GROUP BY a.item_key, i.title ORDER BY at DESC, a.item_key LIMIT %s""",
+            (login, since, FEEDBACK_LIMIT),
+        ).fetchall()
+        took = c.execute(
+            """SELECT a.item_key, i.title, max(COALESCE(a.closed_at, a.updated_at)) AS at
+               FROM triage_assignments a JOIN triage_items i USING (item_key)
+               WHERE a.maintainer = %s AND a.status IN ('acked', 'done')
+                 AND COALESCE(a.closed_at, a.updated_at) >= %s
+               GROUP BY a.item_key, i.title ORDER BY at DESC, a.item_key LIMIT %s""",
+            (login, since, FEEDBACK_LIMIT),
+        ).fetchall()
+        return {
+            kind: [{"item_key": r[0], "title": r[1], "at": r[2].isoformat()} for r in rows]
+            for kind, rows in (("declined", declined), ("took", took))
+        }
 
     def maintainer_profiles(self) -> list[MaintainerProfile]:
         """Active maintainers' profiles; the hash also covers their current
@@ -614,11 +672,15 @@ class PostgresTriageStore(PostgresAlertStore):
         with self._connection_factory() as c:
             rows = c.execute(
                 """SELECT m.github_login, p.prs, COALESCE(m.rules->>'natural_language', ''),
-                          COALESCE(m.rules->>'language', 'en')
+                          COALESCE(m.rules->>'language', 'en'), p.feedback
                    FROM triage_maintainers m JOIN triage_maintainer_profiles p USING (github_login)
                    WHERE m.active ORDER BY m.github_login"""
             ).fetchall()
-        return [MaintainerProfile(r[0], list(r[1]), r[2], profile_hash(list(r[1]), r[2], r[3]), r[3]) for r in rows]
+        return [
+            MaintainerProfile(r[0], list(r[1]), r[2], profile_hash(list(r[1]), r[2], r[3], dict(r[4])), r[3],
+                              dict(r[4]))
+            for r in rows
+        ]
 
     def relevance_queue(self, *, limit: int, min_score: int) -> list[RelevanceTask]:
         """Open, extracted items scoring >= min_score with at least one active
