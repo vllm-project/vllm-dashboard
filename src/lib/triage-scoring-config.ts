@@ -7,7 +7,7 @@
  */
 
 export const SCORING = {
-  version: "2026-11-12.3",
+  version: "2026-11-18.1",
   scope: { max_age_days: 30 },
   thresholds: { page: 70, route: 40, watch: 20 },
   severity: {
@@ -110,8 +110,9 @@ export interface ExampleInput {
 
 /**
  * The same arithmetic as triage/scoring.py for the inputs the guide's worked
- * examples use (one severity flag, tiers given directly). It is for
- * explaining, not scoring: the router's Python is what scores real items.
+ * examples use (one severity flag, tiers given directly; `modelTier: null`
+ * means no model is named). It is for explaining, not scoring: the router's
+ * Python is what scores real items.
  */
 export function scoreExample(input: ExampleInput): { score: number; band: "page" | "route" | "watch" | "ignore"; factors: ExampleFactor[] } {
   const factors: ExampleFactor[] = [];
@@ -120,13 +121,12 @@ export function scoreExample(input: ExampleInput): { score: number; band: "page"
     if (rounded) factors.push({ factor, points: rounded, ...(detail ? { detail } : {}) });
   };
   const kind = input.kind ?? "issue";
+  // Like scoring.py: "other" is a named model outside the tier lists, and
+  // no model named at all (null) is "unknown".
+  const modelKey: ModelTier = input.modelTier ?? "unknown";
   const isDefect = (SCORING.severity.defect_types as readonly string[]).includes(input.type);
   if (input.severity && (kind === "pr" || isDefect)) {
     const base = SCORING.severity[input.severity];
-    // scoring.py names a model only when it matches tier1/tier2, and uses
-    // "unknown" whenever no model is named, so every model outside the tier
-    // lists gets the "unknown" multiplier; reach.model.other is never used.
-    const modelKey: ModelTier = input.modelTier === "tier1" || input.modelTier === "tier2" ? input.modelTier : "unknown";
     const hwKey: HardwareTier = input.hardwareTier ?? "unknown";
     let multiplier =
       input.severity === "security"
@@ -147,8 +147,9 @@ export function scoreExample(input: ExampleInput): { score: number; band: "page"
     add(`severity.${input.severity}`, base * multiplier, [`${fmt(base)} base`, ...parts].join("; "));
   }
   add(`type.${input.type}`, SCORING.type[input.type]);
-  const modelTier = input.modelTier ?? "other";
-  add(`popularity.model.${modelTier}`, SCORING.popularity.model[modelTier], input.model);
+  if (input.modelTier) {
+    add(`popularity.model.${input.modelTier}`, SCORING.popularity.model[input.modelTier], input.model);
+  }
   if (input.hardwareTier) {
     add(`popularity.hardware.${input.hardwareTier}`, SCORING.popularity.hardware[input.hardwareTier], input.hardware);
   }

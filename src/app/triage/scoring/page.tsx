@@ -100,7 +100,7 @@ function Example({ title, sentence, input }: { title: string; sentence: string; 
 
 export default function ScoringGuidePage() {
   const best = S.reach.model.tier1 * S.reach.hardware.tier1 * S.reach.config.default;
-  const worst = S.reach.model.unknown * S.reach.hardware.other * S.reach.config.exotic;
+  const worst = S.reach.model.other * S.reach.hardware.other * S.reach.config.exotic;
   const levels = [
     { band: "page" as const, range: `${S.thresholds.page} and up`, what: "Routed to an owner first; a new P0 can go past their weekly cap." },
     { band: "route" as const, range: `${S.thresholds.route}–${S.thresholds.page - 1}`, what: "Routed to the best-matching owner, within their weekly cap." },
@@ -183,7 +183,8 @@ export default function ScoringGuidePage() {
           rows={[
             ["Popular (top tier)", "DeepSeek, Qwen 3, Llama 3/4, Kimi, gpt-oss…", `×${fmt(S.reach.model.tier1)}`],
             ["Common", "Phi, Granite, Nemotron, InternVL…", `×${fmt(S.reach.model.tier2)}`],
-            ["Anything else, or not named", "fine-tunes, new or rare models", `×${fmt(S.reach.model.unknown)}`],
+            ["Not named", "", `×${fmt(S.reach.model.unknown)}`],
+            ["Anything else", "fine-tunes, new or rare models", `×${fmt(S.reach.model.other)}`],
           ]}
         />
         <Table

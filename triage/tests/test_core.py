@@ -184,6 +184,53 @@ def test_security_is_not_scaled_by_reach() -> None:
     assert next(f.points for f in s.breakdown if f.factor == "severity.security") == 50
 
 
+def _severity_factor(s: Any) -> Any:
+    return next(f for f in s.breakdown if f.factor.startswith("severity."))
+
+
+def test_named_model_outside_tiers_uses_other_and_unnamed_uses_unknown() -> None:
+    common = dict(severity={"serving_broken": True}, hardware=["H100"], default_config=True)
+    named = _score(facets(**common, models=[{"name": "my-finetune-7b", "family": "custom"}]))
+    unnamed = _score(facets(**common))
+    tiered = _score(facets(**common, models=[{"name": "Phi-4", "family": "phi"}]))
+    # 50 x model x hw tier1 1.0 x config default 1.15
+    assert _severity_factor(named).points == 34  # x0.6 (other)
+    assert "model other x0.6" in (_severity_factor(named).detail or "")
+    assert _severity_factor(unnamed).points == 43  # x0.75 (unknown)
+    assert "model unknown x0.75" in (_severity_factor(unnamed).detail or "")
+    assert _severity_factor(tiered).points == 46  # x0.8 (tier2)
+    # Neither earns popularity points.
+    for s in (named, unnamed):
+        assert not any(f.factor.startswith("popularity.model.") for f in s.breakdown)
+
+
+def test_hardware_tiers_other_and_unknown() -> None:
+    common = dict(severity={"serving_broken": True}, models=[{"name": "Qwen3-8B", "family": "qwen3"}],
+                  default_config=True)
+    rtx = _score(facets(**common, hardware=["RTX"]))
+    none = _score(facets(**common))
+    hinted = _score(facets(**common), prepass={"hardware_hints": ["A100"], "linked_issues": []})
+    assert "hw other x0.55" in (_severity_factor(rtx).detail or "")
+    assert "hw unknown x0.85" in (_severity_factor(none).detail or "")
+    assert "hw tier2 x0.8" in (_severity_factor(hinted).detail or "")  # prepass hint when facets have none
+
+
+def test_security_wins_over_an_equal_symptom_that_reach_shrinks() -> None:
+    # serving_broken and security both have base 50, but only security ignores
+    # reach, so on a niche setup the security flag is the larger symptom.
+    both = _score(facets(severity={"serving_broken": True, "security": True},
+                         models=[{"name": "my-finetune", "family": "custom"}], hardware=["RTX"],
+                         default_config=False))
+    assert _severity_factor(both).factor == "severity.security"
+    assert _severity_factor(both).points == 50
+    # On a popular default setup, serving_broken x1.15 is larger and wins.
+    wide = _score(facets(severity={"serving_broken": True, "security": True},
+                         models=[{"name": "Qwen3-8B", "family": "qwen3"}], hardware=["H100"],
+                         default_config=True))
+    assert _severity_factor(wide).factor == "severity.serving_broken"
+    assert _severity_factor(wide).points == 57
+
+
 def test_niche_question_is_ignored() -> None:
     s = _score(facets(type="question", hardware=["other"]))
     assert s.band in ("ignore", "watch")

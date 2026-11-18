@@ -54,17 +54,48 @@ test("worked example: serving broken on DeepSeek, H100, default flags → 83, P0
   });
 });
 
-test("contrast example: the same outage on a niche setup → 14, P3", () => {
+test("contrast example: the same outage on a niche setup → 12, P3", () => {
   assert.deepEqual(scoreExample(NICHE_EXAMPLE), {
-    score: 14,
+    score: 12,
     band: "ignore",
     factors: [
       {
         factor: "severity.serving_broken",
-        points: 11,
-        detail: "50 base; model unknown x0.75; hw other x0.55; config exotic x0.55",
+        points: 9,
+        detail: "50 base; model other x0.6; hw other x0.55; config exotic x0.55",
       },
       { factor: "type.bug", points: 3 },
+    ],
+  });
+});
+
+test("a named model outside the tier lists gets reach.model.other, not unknown", () => {
+  const onH100 = { ...NICHE_EXAMPLE, hardwareTier: "tier1", hardware: "H100", config: "default" } as const;
+  assert.deepEqual(scoreExample(onH100), {
+    score: 40,
+    band: "route",
+    factors: [
+      {
+        factor: "severity.serving_broken",
+        points: 34,
+        detail: "50 base; model other x0.6; hw tier1 x1; config default x1.15",
+      },
+      { factor: "type.bug", points: 3 },
+      { factor: "popularity.hardware.tier1", points: 3, detail: "H100" },
+    ],
+  });
+  // No model named at all: the "unknown" multiplier.
+  assert.deepEqual(scoreExample({ ...onH100, modelTier: null, model: undefined }), {
+    score: 49,
+    band: "route",
+    factors: [
+      {
+        factor: "severity.serving_broken",
+        points: 43,
+        detail: "50 base; model unknown x0.75; hw tier1 x1; config default x1.15",
+      },
+      { factor: "type.bug", points: 3 },
+      { factor: "popularity.hardware.tier1", points: 3, detail: "H100" },
     ],
   });
 });

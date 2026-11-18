@@ -7,7 +7,7 @@
 # a popular model with default flags on H100 is worth far more than the same
 # symptom on an unusual setup, and a feature request on a popular model is
 # not urgent just because the model is popular.
-version: "2026-11-12.3"
+version: "2026-11-18.1"
 
 # Only issues and PRs opened within this many days are triaged (labelled,
 # scored, routed). Older ones are recorded but skipped, and items leave the
@@ -39,6 +39,7 @@ severity:
   defect_types: [bug, regression, perf_regression, performance, ci]
 
 reach:
+  # other: a model is named but matches no tier in tiers.yaml; unknown: none is named.
   model: {tier1: 1.0, tier2: 0.8, other: 0.6, unknown: 0.75}
   hardware: {tier1: 1.0, tier2: 0.8, other: 0.55, unknown: 0.85}
   config: {default: 1.15, exotic: 0.55, unknown: 0.9}
