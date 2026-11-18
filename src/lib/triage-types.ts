@@ -52,6 +52,8 @@ export interface TriagePrepass {
   template?: Record<string, boolean>;
   slop_hints?: string[];
   scope_reason?: string;
+  /** GitHub logins the item is assigned to on GitHub. */
+  gh_assignees?: string[];
 }
 
 export interface TriageBreakdownEntry {

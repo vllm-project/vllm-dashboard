@@ -6,6 +6,7 @@ test("router reasons read as plain words", () => {
   assert.equal(describeReason("relevance:high"), "judged high from their recent work");
   assert.equal(describeReason("authored #61201"), "wrote #61201, which this item names");
   assert.equal(describeReason("commented"), "already commented on this item");
+  assert.equal(describeReason("assigned on GitHub"), "assigned to them on GitHub");
   assert.equal(describeReason("area:moe"), "their rule: area moe");
   assert.equal(describeReason("something:new"), "something:new");
 });

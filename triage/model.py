@@ -73,6 +73,8 @@ class Item:
     comment_count: int = 0
     comments: list[str] = field(default_factory=list)
     is_bot: bool = False
+    # GitHub logins the item is assigned to on GitHub.
+    assignees: list[str] = field(default_factory=list)
 
     @property
     def key(self) -> str:

@@ -149,6 +149,7 @@ function OwnerSummary({ assignment, judgement }: { assignment: TriageAssignment;
           >
             {assignment.status === "acked" ? "✓ " : ""}
             {STATUS_TEXT[assignment.status] ?? assignment.status}
+            {assignment.status === "acked" && assignment.reason.acked_by === "github_comment" ? " (commented on GitHub)" : ""}
           </span>
         </p>
         <p className="mt-0.5 line-clamp-2 text-xs text-zinc-600 dark:text-zinc-400">{oneLineWhy(assignment.reason, judgement)}</p>
@@ -180,6 +181,7 @@ function QuickSignals({ prepass }: { prepass: TriageItemDetail["item"]["prepass"
           {prepass.is_maintainer ? "a maintainer" : prepass.first_time ? "a first-time contributor" : "a contributor"}
         </Row>
         <Row label="Issue template">{templateChecks.length ? templateChecks.join(" · ") : "—"}</Row>
+        <Row label="Assigned on GitHub">{prepass.gh_assignees?.length ? prepass.gh_assignees.join(", ") : "nobody"}</Row>
         <Row label="Low-quality hints">{prepass.slop_hints?.length ? prepass.slop_hints.map(humanizeTag).join(", ") : "none"}</Row>
       </dl>
       <details className="text-xs">
@@ -301,9 +303,11 @@ export function ItemDrawer({
                     <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
                       {isUnrouted(band, 0) && <UnroutedBadge />}
                       <span>
-                        {isUnrouted(band, 0)
-                          ? `This ${priorityLabel(band)} has no owner yet. Take it, or reassign it to someone.`
-                          : "Not routed; only P0 and P1 get an owner."}
+                        {data.item.prepass.gh_assignees?.length
+                          ? `Assigned on GitHub to ${data.item.prepass.gh_assignees.join(", ")}, so triage leaves it with them. Take it, or reassign it, if that's wrong.`
+                          : isUnrouted(band, 0)
+                            ? `This ${priorityLabel(band)} has no owner yet. Take it, or reassign it to someone.`
+                            : "Not routed; only P0 and P1 get an owner."}
                       </span>
                     </div>
                   ) : (

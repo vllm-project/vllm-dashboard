@@ -17,6 +17,7 @@ from alerting.ports import AlertPath, DeliveryMode, DestinationMode, Notificatio
 from alerting.untrusted import safe_slack_mrkdwn, trusted_url
 
 from triage.model import BAND_LABELS
+from triage.routing import GH_ASSIGNED
 from triage.store import DigestEntry
 
 DASHBOARD = "https://ci.vllm.ai/triage"
@@ -49,6 +50,7 @@ def _pr_links(text: str) -> str:
 STRINGS: dict[str, dict[str, str]] = {
     "en": {
         "authored": "you wrote #{n}, which this item names",
+        "gh_assigned": "it is assigned to you on GitHub",
         "commented": "you already commented on it",
         "relevance": "judged {level} from your recent work{like}",
         "like": " (like {prs})",
@@ -76,6 +78,7 @@ STRINGS: dict[str, dict[str, str]] = {
     },
     "vi": {
         "authored": "bạn đã viết #{n}, PR được nhắc tới trong mục này",
+        "gh_assigned": "mục này được giao cho bạn trên GitHub",
         "commented": "bạn đã bình luận trong mục này",
         "relevance": "được đánh giá {level} dựa trên công việc gần đây của bạn{like}",
         "like": " (giống {prs})",
@@ -116,6 +119,8 @@ def describe_reason(raw: str, lang: str = "en") -> str:
         return _t(lang, "authored", n=m.group(1))
     if raw == "commented":
         return _t(lang, "commented")
+    if raw == GH_ASSIGNED:
+        return _t(lang, "gh_assigned")
     if m := re.fullmatch(r"relevance:(high|medium)(?: \(like (.+)\))?", raw):
         like = _t(lang, "like", prs=m.group(2)) if m.group(2) else ""
         level = _LEVELS_VI.get(m.group(1), m.group(1)) if lang == "vi" else m.group(1)
@@ -128,7 +133,7 @@ def describe_reason(raw: str, lang: str = "en") -> str:
 def _why(entry: DigestEntry, lang: str) -> str:
     """Why this person: involvement in plain words, then Claude's own
     one-liner in their language when there is one, else the reason codes."""
-    involved = [m for m in entry.matched if m == "commented" or m.startswith("authored ")]
+    involved = [m for m in entry.matched if m in ("commented", GH_ASSIGNED) or m.startswith("authored ")]
     others = [m for m in entry.matched if m not in involved]
     phrases = [describe_reason(m, lang) for m in involved]
     if lang != "en" and entry.why_local:

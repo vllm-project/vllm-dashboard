@@ -27,7 +27,11 @@ dashboard / Slack ──► triage_actions + triage_assignments.status
   "first_time": true,                   // FIRST_TIME_CONTRIBUTOR / FIRST_TIMER / NONE
   "template": {"has_env": true, "has_repro": true, "test_plan": false},
   "slop_hints": ["empty_test_plan"],
-  "scope_reason": "issue" | "pr_external" | "pr_linked_issue" | "pr_maintainer_unlinked" | "bot"
+  "scope_reason": "issue" | "pr_external" | "pr_linked_issue" | "pr_maintainer_unlinked" | "bot",
+  "commenters": ["gau-nernst"],         // logins in the stored comments, in order
+  "commented_at": {"gau-nernst": "2026-11-18T09:12:00+00:00"},  // latest comment per login (lower case);
+                                        // first 30 comments only, kept until comments are re-read
+  "gh_assignees": ["gau-nernst"]        // the item's assignees on GitHub
 }
 ```
 
@@ -124,6 +128,21 @@ status change:
 
 The router never re-opens an item that has a `drop` or `slop` action, and
 never routes an item to a maintainer who said `not_mine` for it.
+
+The route consumer also follows GitHub on every run (`store.follow_github`),
+without `triage_actions` rows (those are what people did):
+
+| on GitHub | assignment change |
+|---|---|
+| item closed or merged | open/acked → done, closed_at=now; `reason` gains `closed_by: "github"`, `closed_from` (the old status) and `item_state` |
+| that item reopened (still in the window) | back to `closed_from`, closed_at=null, those keys removed; skipped if the role was filled since |
+| the assigned maintainer comments after `assigned_at` | open → acked; `reason.acked_by = "github_comment"` |
+
+Weekly capacity does not count a primary that was closed on GitHub before it
+was acked. An item whose GitHub assignees are all people outside the active
+maintainer list is not routed (it stays on the dashboard); a GitHub assignee
+who is a maintainer counts as involvement (`"assigned on GitHub"`) and ranks
+above every other reason.
 
 ## `triage_maintainers.rules`
 
