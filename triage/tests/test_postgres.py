@@ -249,7 +249,7 @@ def test_not_mine_reroutes_and_drop_stops_routing(store: PostgresTriageStore, da
 def test_digest_marks_notified_and_is_idempotent_per_day(store: PostgresTriageStore, database_url: str) -> None:
     ingest(store, issue(20, "DeepSeek startup crash"))
     seed(store, [{"github_login": "d", "slack_user_id": "U0000000009", "rules": {"areas": ["moe"]},
-                             "notify_mode": "digest"}])
+                             "notify_mode": "digest", "digest_hour": NOW.hour}])
     with psycopg.connect(database_url, autocommit=True) as c:
         c.execute("UPDATE triage_items SET prepass = prepass || '{}'::jsonb")
     run_extraction(store, FakeBackend({"DeepSeek": {**SEVERE, "severity": {
@@ -259,13 +259,144 @@ def test_digest_marks_notified_and_is_idempotent_per_day(store: PostgresTriageSt
                  delivery_mode=DeliveryMode.LIVE)(ScheduledCommand("triage_route", NOW))
     assert outbox(database_url) == []  # route band + digest mode: no immediate DM
     digest = DigestHandler(store=store, clock=FixedClock(NOW), delivery_mode=DeliveryMode.LIVE,
-                           team_channel="C1")
+                           team_channel="C1", team_digest_hour_utc=NOW.hour)
     digest(ScheduledCommand("triage_digest", NOW))
     digest(ScheduledCommand("triage_digest", NOW + timedelta(minutes=1)))
     ids = [d for d, *_ in outbox(database_url)]
     day = NOW.date().isoformat()
     assert ids == [f"triage:digest:d:{day}", f"triage:team-digest:{day}"]
     assert store.unnotified_assignments("d") == []
+
+
+def scored_items(store: PostgresTriageStore, numbers: list[int]) -> None:
+    """Page-band items with scores and nobody routed (no rule matches)."""
+    for n in numbers:
+        ingest(store, issue(n, f"DeepSeek crash {n}"))
+    run_extraction(store, FakeBackend({"DeepSeek": SEVERE}), budget=Budget(), now=NOW, workers=1)
+    RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
+                 delivery_mode=DeliveryMode.SHADOW)(ScheduledCommand("triage_route", NOW))
+
+
+def assign(database_url: str, number: int, maintainer: str, *, assigned_at: datetime,
+           notified_at: datetime | None = None, status: str = "open", role: str = "primary") -> int:
+    with psycopg.connect(database_url, autocommit=True) as c:
+        row = c.execute(
+            """INSERT INTO triage_assignments (item_key, maintainer, role, status, score_at_assign,
+                   assigned_at, notified_at) VALUES (%s, %s, %s, %s, 90, %s, %s) RETURNING id""",
+            (f"vllm-project/vllm#{number}", maintainer, role, status, assigned_at, notified_at),
+        ).fetchone()
+    return int(row[0])
+
+
+def notified_at(database_url: str, assignment_id: int) -> datetime | None:
+    with psycopg.connect(database_url) as c:
+        value: datetime | None = c.execute("SELECT notified_at FROM triage_assignments WHERE id = %s",
+                                           (assignment_id,)).fetchone()[0]
+    return value
+
+
+def test_digest_goes_out_at_each_maintainers_local_morning(
+    store: PostgresTriageStore, database_url: str
+) -> None:
+    seed(store, [
+        # 06:00 in Vietnam is 23:00 UTC the day before: the digest is dated locally.
+        {"github_login": "vn", "slack_user_id": "U0000000011", "rules": {"areas": ["tpu"]},
+         "timezone": "Asia/Ho_Chi_Minh", "digest_hour": 6, "language": "vi"},
+        {"github_login": "la", "slack_user_id": "U0000000012", "rules": {"areas": ["tpu"]},
+         "timezone": "America/Los_Angeles"},                     # 09:00 PST = 17:00 UTC
+        {"github_login": "utc", "slack_user_id": "U0000000013", "rules": {"areas": ["tpu"]}},  # 09:00 UTC
+    ])
+    scored_items(store, [501, 502, 503, 504])
+    assert outbox(database_url) == []
+    for number, login in ((501, "vn"), (502, "la"), (503, "utc")):
+        assign(database_url, number, login, assigned_at=NOW)
+    digest = DigestHandler(store=store, clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW,
+                           team_channel="C1")
+
+    def run_at(when: datetime) -> list[str]:
+        digest.clock = FixedClock(when)
+        digest(ScheduledCommand("triage_digest", when))
+        return [d for d, *_ in outbox(database_url)]
+
+    day = datetime(2035, 1, 15, tzinfo=timezone.utc)
+    assert run_at(day.replace(hour=13)) == []                 # nobody's morning
+    assert run_at(day.replace(hour=15)) == ["triage:team-digest:2035-01-15"]
+    assert run_at(day.replace(hour=17)) == ["triage:digest:la:2035-01-15", "triage:team-digest:2035-01-15"]
+    vn = run_at(day.replace(hour=23))
+    assert "triage:digest:vn:2035-01-16" in vn and len(vn) == 3
+
+    # The timer fires twice in the same hour (e.g. a catch-up after a reboot):
+    # the second run must not send again, nor mark a newly routed item as
+    # notified, or it would never be sent.
+    late = assign(database_url, 504, "vn", assigned_at=day.replace(hour=23, minute=20))
+    assert run_at(day.replace(hour=23, minute=40)) == vn
+    assert notified_at(database_url, late) is None
+    assert run_at(datetime(2035, 1, 16, 9, tzinfo=timezone.utc)) == sorted(vn + ["triage:digest:utc:2035-01-16"])
+    assert notified_at(database_url, late) is None             # vn's next morning is 23:00 UTC
+    assert "triage:digest:vn:2035-01-17" in run_at(datetime(2035, 1, 16, 23, tzinfo=timezone.utc))
+    assert notified_at(database_url, late) == datetime(2035, 1, 16, 23, tzinfo=timezone.utc)
+    payloads = {d: p for d, _, _, p in outbox(database_url)}
+    assert payloads["triage:digest:vn:2035-01-16"]["blocks"][0]["text"]["text"] == "📬 Digest triage hằng ngày · 16/1"
+
+
+def test_still_waiting_reminders_in_the_digest(store: PostgresTriageStore, database_url: str) -> None:
+    seed(store, [
+        {"github_login": "r", "slack_user_id": "U0000000021", "rules": {"areas": ["tpu"]}, "digest_hour": NOW.hour},
+        {"github_login": "o", "rules": {"areas": ["tpu"]}},
+    ])
+    scored_items(store, list(range(601, 609)))
+    def ago(days: int) -> datetime:
+        return NOW - timedelta(days=days)
+
+    oldest = assign(database_url, 601, "r", assigned_at=ago(6), notified_at=ago(6))
+    older = assign(database_url, 602, "r", assigned_at=ago(4), notified_at=ago(4))
+    recent = assign(database_url, 603, "r", assigned_at=ago(1), notified_at=ago(1))   # too recent
+    assign(database_url, 604, "r", assigned_at=ago(5), notified_at=ago(5), status="acked")
+    assign(database_url, 605, "o", assigned_at=ago(5), status="acked")                 # o took it
+    assign(database_url, 605, "r", assigned_at=ago(5), notified_at=ago(5), role="backup")
+    assign(database_url, 606, "r", assigned_at=ago(5), notified_at=ago(5))
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_items SET state = 'closed' WHERE item_key = 'vllm-project/vllm#606'")
+    assign(database_url, 607, "r", assigned_at=ago(5), notified_at=ago(5))
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("INSERT INTO triage_actions (item_key, actor, action, source) "
+                  "VALUES ('vllm-project/vllm#607', 'o', 'drop', 'dashboard')")
+    fresh = assign(database_url, 608, "r", assigned_at=NOW - timedelta(hours=1))
+
+    entries, total = store.waiting_assignments("r", assigned_before=ago(3), limit=5)
+    assert [e.item_key for e in entries] == ["vllm-project/vllm#601", "vllm-project/vllm#602"] and total == 2
+    assert store.waiting_assignments("r", assigned_before=ago(3), limit=1)[1] == 2
+
+    digest = DigestHandler(store=store, clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW, team_channel=None)
+    digest(ScheduledCommand("triage_digest", NOW))
+    [(delivery_id, _, _, payload)] = outbox(database_url)
+    assert delivery_id == f"triage:digest:r:{NOW.date().isoformat()}"
+    texts = [b.get("text", {}).get("text", "") for b in payload["blocks"]]
+    title = texts.index("*⏳ Still waiting (2)*")
+    assert "#608" in "".join(texts[:title]) and "#608" not in "".join(texts[title:])
+    assert "#601" in texts[title + 1] and "assigned 6 days ago" in texts[title + 1]
+    assert "#602" in texts[title + 3] and payload["blocks"][title + 4]["type"] == "actions"
+    assert payload["text"] == "Triage digest: 1 P0, 2 still waiting"
+    # The new item is marked notified; reminders keep their first notified_at.
+    assert notified_at(database_url, fresh) == NOW
+    assert notified_at(database_url, oldest) == ago(6) and notified_at(database_url, older) == ago(4)
+
+    # Next day: nothing new, but the reminders alone make a digest.
+    tomorrow = NOW + timedelta(days=1)
+    digest.clock = FixedClock(tomorrow)
+    digest(ScheduledCommand("triage_digest", tomorrow))
+    payload = dict((d, p) for d, _, _, p in outbox(database_url))[f"triage:digest:r:{tomorrow.date().isoformat()}"]
+    assert payload["blocks"][1]["text"]["text"].startswith("Hi <@U0000000021> 👋 Nothing new today, but you still have *2 waiting*")
+    assert payload["text"] == "Triage digest: 2 still waiting"
+
+    # Once everything is acked there is nothing to say: no digest.
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_assignments SET status = 'acked' WHERE id = ANY(%s)",
+                  ([oldest, older, recent, fresh],))
+    later = NOW + timedelta(days=2)
+    digest.clock = FixedClock(later)
+    digest(ScheduledCommand("triage_digest", later))
+    assert len(outbox(database_url)) == 2
 
 
 def test_changed_text_requeues_extraction(store: PostgresTriageStore, database_url: str) -> None:
@@ -447,7 +578,8 @@ def test_a_burst_of_drops_is_flagged_in_the_team_digest(store: PostgresTriageSto
     assert store.suppression_since(NOW - timedelta(days=1), threshold=3) == [("mallory", 2, 1)]
     assert store.suppression_since(NOW - timedelta(days=1), threshold=4) == []
     DigestHandler(store=store, clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW,
-                  team_channel="C1", suppression_threshold=3)(ScheduledCommand("triage_digest", NOW))
+                  team_channel="C1", suppression_threshold=3,
+                  team_digest_hour_utc=NOW.hour)(ScheduledCommand("triage_digest", NOW))
     [(_, mode, _, payload)] = outbox(database_url)
     assert mode == "shadow" and "mallory: 2 dropped, 1 slop" in json.dumps(payload)
 
@@ -527,7 +659,9 @@ def test_closing_on_github_closes_assignments_and_reopening_restores_them(
     items = {n: issue(n, f"DeepSeek startup crash {n}") for n in (1201, 1202, 1203)}
     for item in items.values():
         ingest(store, item)
+    # digest_hour = the test clock's hour, so the digest step below sends.
     seed(store, [{"github_login": "a", "slack_user_id": "U0000000001", "rules": {"areas": ["moe"]},
+                  "digest_hour": NOW.hour,
                   "notify_mode": "digest"}])
     run_extraction(store, FakeBackend({"DeepSeek": SEVERE}), budget=Budget(), now=NOW, workers=1)
     route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW)

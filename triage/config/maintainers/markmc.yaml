@@ -5,6 +5,7 @@ github_login: markmc
 min_score: 40
 capacity_per_week: 5
 notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+timezone: Europe/London
 
 notes: |
   I own metrics, logging and observability: Prometheus metrics (vllm:* series,

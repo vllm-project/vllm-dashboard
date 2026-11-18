@@ -660,3 +660,6 @@ def test_triage_consumers_run_the_triage_module_under_their_own_control() -> Non
         assert "User=alerting" in service
         assert "StandardOutput=null" in service
         assert f"Unit=alerting-triage-{consumer}.service" in timer
+    # Hourly: each maintainer's digest goes out at their own local morning
+    # (triage.pipeline.DigestHandler picks who is due), the team digest once a day.
+    assert "OnCalendar=*-*-* *:00:00 UTC" in read("systemd/alerting-triage-digest.timer")

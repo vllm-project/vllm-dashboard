@@ -75,6 +75,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "digest_more": "…and {m} more on <{url}|My list>.",
         "digest_footer": "Press *Ack* to take an item, or *Not mine* to pass it on. "
                          "Everything is on <{url}|My list> · <{file}|Change what you get>",
+        "digest_hello_waiting": "Hi <@{slack}> 👋 Nothing new today, but you still have *{n} waiting* "
+                                "from earlier days. <{url}|📋 Open your list>",
+        "text_waiting": "{n} still waiting",
+        "waiting_title": "⏳ Still waiting ({n})",
+        "waiting_age": "assigned {d} days ago",
+        "waiting_more": "…and {m} more waiting on <{url}|My list>.",
     },
     "vi": {
         "authored": "bạn đã viết #{n}, PR được nhắc tới trong mục này",
@@ -103,6 +109,12 @@ STRINGS: dict[str, dict[str, str]] = {
         "digest_more": "…và {m} mục khác trong <{url}|My list>.",
         "digest_footer": "Bấm *Nhận việc* nếu bạn nhận, hoặc *Không phải của tôi* để chuyển cho người khác. "
                          "Tất cả ở <{url}|My list> · <{file}|Đổi mảng nhận việc>",
+        "digest_hello_waiting": "Chào <@{slack}> 👋 Hôm nay không có mục mới, nhưng vẫn còn *{n} mục* "
+                                "từ mấy hôm trước đang chờ bạn nhé. <{url}|📋 Mở danh sách của bạn>",
+        "text_waiting": "{n} mục đang chờ",
+        "waiting_title": "⏳ Vẫn đang chờ bạn ({n})",
+        "waiting_age": "đã giao {d} ngày trước",
+        "waiting_more": "…và {m} mục đang chờ khác trong <{url}|My list>.",
     },
 }
 _LEVELS_VI = {"high": "cao", "medium": "trung bình"}
@@ -260,12 +272,28 @@ def page_dm(
 
 
 # Each digest item is two blocks (line + buttons); Slack allows 50 per message.
+SLACK_MAX_BLOCKS = 50
 DIGEST_MAX_ITEMS = 20
+# "Still waiting" reminders: open, un-acked items assigned at least this long
+# ago, oldest first, at most this many (also two blocks each).
+WAITING_AFTER_DAYS = 3
+WAITING_MAX_ITEMS = 5
+
+
+def _waiting_line(entry: DigestEntry, now: datetime, lang: str) -> str:
+    """One compact reminder line: level, bold linked title, how long ago."""
+    number = entry.item_key.rsplit("#", 1)[-1]
+    level = f"{_BAND_ICON.get(entry.band, '')} *{BAND_LABELS.get(entry.band, '')}* ".lstrip()
+    line = f"{level}*{_link(entry.html_url, f'#{number} {entry.title}')}*"
+    if entry.assigned_at is not None:
+        line += f" · _{_t(lang, 'waiting_age', d=max(0, (now - entry.assigned_at).days))}_"
+    return line
 
 
 def maintainer_digest(
     *, maintainer: str, maintainer_slack: str, entries: list[DigestEntry], day: datetime, mode: DeliveryMode,
     lang: str = "en", reassign_to: list[str] | None = None,
+    waiting: list[DigestEntry] | None = None, waiting_total: int = 0,
 ) -> NotificationIntent:
     """The daily DM, laid out to scan in Slack:
 
@@ -274,40 +302,86 @@ def maintainer_digest(
       ── P0 (n) / ── P1 (n), each group behind a divider
         bold linked title, then a bold "Why you:" line
         [Ack] [Not mine] [Reassign ▾]   (the title already opens GitHub)
+      ── ⏳ Still waiting (n)   older items nobody has acked, oldest first
+        level, bold linked title · assigned N days ago
+        [Ack] [Not mine] [Reassign ▾]
       footer      My list and the maintainer's own file
 
-    No summaries or per-line P-levels (the group says it). Titles are never
-    translated. At most DIGEST_MAX_ITEMS items fit Slack's 50-block limit."""
-    more = max(0, len(entries) - DIGEST_MAX_ITEMS)
-    shown = entries[:DIGEST_MAX_ITEMS]
+    `day` is the maintainer's local time now: it dates the header and the
+    delivery id (one digest per maintainer per local day). No summaries or
+    per-line P-levels in the new-item groups (the group says it). Titles are
+    never translated. Everything fits Slack's 50-block limit: reminders are
+    capped at WAITING_MAX_ITEMS and new items at DIGEST_MAX_ITEMS, fewer when
+    reminders need the room (the rest are counted in "…and N more")."""
+    new_keys = {e.item_key for e in entries}
+    reminders: list[DigestEntry] = []
+    for e in waiting or []:
+        # A block_id may appear only once per message.
+        if e.item_key not in new_keys and all(e.item_key != r.item_key for r in reminders):
+            reminders.append(e)
+    reminders = reminders[:WAITING_MAX_ITEMS]
+    waiting_total = max(waiting_total, len(reminders))
+    me = f"{DASHBOARD}/me"
+
     date = f"{day.day}/{day.month}" if lang == "vi" else f"{day:%b} {day.day}"
     header = _t(lang, "digest_header", date=date)
     counts = {band: sum(1 for e in entries if e.band == band) for band in ("page", "route")}
     hello_parts = [_t(lang, f"hello_{band}", n=n) for band, n in counts.items() if n]
-    hello = _t(lang, "digest_hello", slack=maintainer_slack, url=f"{DASHBOARD}/me",
-               parts=_t(lang, "hello_join").join(hello_parts) or str(len(entries)))
-    text = _t(lang, "digest_text", counts=", ".join(f"{n} {BAND_LABELS[b]}" for b, n in counts.items() if n))
-    blocks: list[dict[str, Any]] = [
+    if entries:
+        hello = _t(lang, "digest_hello", slack=maintainer_slack, url=me,
+                   parts=_t(lang, "hello_join").join(hello_parts) or str(len(entries)))
+    else:
+        hello = _t(lang, "digest_hello_waiting", slack=maintainer_slack, url=me, n=waiting_total)
+    text_parts = [f"{n} {BAND_LABELS[b]}" for b, n in counts.items() if n]
+    if waiting_total:
+        text_parts.append(_t(lang, "text_waiting", n=waiting_total))
+    text = _t(lang, "digest_text", counts=", ".join(text_parts))
+    head: list[dict[str, Any]] = [
         {"type": "header", "text": {"type": "plain_text", "text": header[:150]}},
         {"type": "section", "text": {"type": "mrkdwn", "text": hello}},
     ]
-    for band in ("page", "route", "watch", "ignore"):
-        group = [e for e in shown if e.band == band]
-        if not group:
-            continue
-        key = f"group_{band}"
-        title = _t(lang, key, n=counts.get(band, len(group))) if key in STRINGS["en"] else BAND_LABELS.get(band, band)
-        blocks.append({"type": "divider"})
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}})
-        for e in group:
-            blocks.append(_item_section(e, menu=False, lang=lang, summary=False, level=False))
-            blocks.append(_actions(e, reassign_to or [], lang, open_button=False))
-    if more:
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
-                       "text": _t(lang, "digest_more", m=more, url=f"{DASHBOARD}/me")}]})
-    blocks.append({"type": "divider"})
-    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _t(
-        lang, "digest_footer", url=f"{DASHBOARD}/me", file=MAINTAINER_FILE.format(login=quote(maintainer)))}]})
+
+    def new_items(n: int) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        shown = entries[:n]
+        for band in ("page", "route", "watch", "ignore"):
+            group = [e for e in shown if e.band == band]
+            if not group:
+                continue
+            key = f"group_{band}"
+            title = _t(lang, key, n=counts.get(band, len(group))) if key in STRINGS["en"] else BAND_LABELS.get(band, band)
+            blocks.append({"type": "divider"})
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}})
+            for e in group:
+                blocks.append(_item_section(e, menu=False, lang=lang, summary=False, level=False))
+                blocks.append(_actions(e, reassign_to or [], lang, open_button=False))
+        if len(entries) > n:
+            blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
+                           "text": _t(lang, "digest_more", m=len(entries) - n, url=me)}]})
+        return blocks
+
+    tail: list[dict[str, Any]] = []
+    if reminders:
+        tail.append({"type": "divider"})
+        tail.append({"type": "section", "text": {"type": "mrkdwn",
+                     "text": f"*{_t(lang, 'waiting_title', n=waiting_total)}*"}})
+        for e in reminders:
+            tail.append({"type": "section", "block_id": f"triage:item:{e.item_key}",
+                         "text": {"type": "mrkdwn", "text": _waiting_line(e, day, lang)[:2900]}})
+            tail.append(_actions(e, reassign_to or [], lang, open_button=False))
+        if waiting_total > len(reminders):
+            tail.append({"type": "context", "elements": [{"type": "mrkdwn",
+                         "text": _t(lang, "waiting_more", m=waiting_total - len(reminders), url=me)}]})
+    tail.append({"type": "divider"})
+    tail.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _t(
+        lang, "digest_footer", url=me, file=MAINTAINER_FILE.format(login=quote(maintainer)))}]})
+
+    shown = min(len(entries), DIGEST_MAX_ITEMS)
+    body = new_items(shown)
+    while shown > 0 and len(head) + len(body) + len(tail) > SLACK_MAX_BLOCKS:
+        shown -= 1
+        body = new_items(shown)
+    blocks = head + body + tail
     return NotificationIntent(
         delivery_id=f"triage:digest:{maintainer}:{day.date().isoformat()}",
         alert_ref=f"digest:{maintainer}",
@@ -317,7 +391,7 @@ def maintainer_digest(
         destination=maintainer_slack,
         payload={
             "text": text,
-            "blocks": blocks[:50],
+            "blocks": blocks[:SLACK_MAX_BLOCKS],
             "unfurl_links": False,
             "unfurl_media": False,
         },

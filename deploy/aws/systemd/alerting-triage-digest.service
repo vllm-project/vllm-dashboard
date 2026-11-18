@@ -1,5 +1,5 @@
 [Unit]
-Description=Send daily triage digests
+Description=Send triage digests (maintainers at their local morning, team daily)
 After=network-online.target
 Wants=network-online.target
 OnFailure=alerting-failure-notify@%n.service

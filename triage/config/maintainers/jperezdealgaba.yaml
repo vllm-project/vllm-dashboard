@@ -5,6 +5,7 @@ github_login: jperezdealgaba
 min_score: 40
 capacity_per_week: 10
 notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+timezone: Europe/Amsterdam
 
 notes: |
   I'm on Red Hat Product Security and harden vLLM: untrusted input handling

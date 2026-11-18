@@ -468,6 +468,7 @@ source = { editable = "." }
 dependencies = [
     { name = "alerting" },
     { name = "pyyaml" },
+    { name = "tzdata" },
 ]
 
 [package.optional-dependencies]
@@ -492,6 +493,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.14.0" },
     { name = "types-pyyaml", marker = "extra == 'dev'" },
+    { name = "tzdata" },
 ]
 provides-extras = ["postgres", "dev"]
 

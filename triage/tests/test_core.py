@@ -18,6 +18,7 @@ from triage.extract import (
 )
 from triage.facets import FACETS_SCHEMA, FacetsError, normalize_facets
 from triage.model import FileChange, Item, Maintainer
+from triage.store import DigestEntry
 from triage.prepass import compute_prepass, content_hash, hardware_hints, in_scope, linked_issues
 from triage.routing import RoutingContext, choose_owners, match_rules
 from triage.scoring import score_item
@@ -649,6 +650,147 @@ def test_digest_caps_items_to_fit_slacks_block_limit() -> None:
         "Hi <@U1> 👋 Today you have *30 P1* for when you have time. <https://ci.vllm.ai/triage/me|📋 Open your list>")
     assert payload["blocks"][-1]["type"] == "context"  # the footer survives the cap
     assert "…and 10 more on <https://ci.vllm.ai/triage/me|My list>." in payload["blocks"][-3]["elements"][0]["text"]
+
+
+def _entries(n: int, band: str = "route", start: int = 1, assigned_at: datetime | None = None) -> list[DigestEntry]:
+    return [DigestEntry(i, f"vllm-project/vllm#{i}", f"title {i}", f"https://github.com/vllm-project/vllm/issues/{i}",
+                        50, band, "", ["commented"], assigned_at=assigned_at) for i in range(start, start + n)]
+
+
+def test_digest_local_time_and_hour() -> None:
+    from datetime import datetime, timezone
+
+    from triage.model import Maintainer
+    from triage.pipeline import digest_hour, maintainer_local_time
+
+    now = datetime(2026, 11, 18, 2, 30, tzinfo=timezone.utc)
+    vn = Maintainer("gau-nernst", rules={"timezone": "Asia/Ho_Chi_Minh"})
+    la = Maintainer("khluu", rules={"timezone": "America/Los_Angeles", "digest_hour": 18})
+    assert maintainer_local_time(vn, now).hour == 9 and digest_hour(vn) == 9
+    assert (maintainer_local_time(la, now).hour, maintainer_local_time(la, now).day) == (18, 17)
+    assert digest_hour(la) == 18
+    # No zone, or one the host does not know, means UTC; junk hours mean 9.
+    for rules in ({}, {"timezone": "Nowhere/Land"}):
+        assert maintainer_local_time(Maintainer("x", rules=rules), now).utcoffset().total_seconds() == 0  # type: ignore[union-attr]
+    assert digest_hour(Maintainer("x", rules={"digest_hour": True})) == 9
+    assert digest_hour(Maintainer("x", rules={"digest_hour": 30})) == 9
+
+
+def test_digest_delivery_id_uses_the_local_date() -> None:
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from alerting.ports import DeliveryMode
+
+    from triage.notify import maintainer_digest
+
+    utc = datetime(2026, 11, 18, 23, 0, tzinfo=timezone.utc)
+    local = utc.astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))  # 06:00 on the 19th
+    intent = maintainer_digest(maintainer="gau-nernst", maintainer_slack="U1", entries=_entries(1), day=local,
+                               mode=DeliveryMode.SHADOW, lang="vi")
+    assert intent.delivery_id == "triage:digest:gau-nernst:2026-11-19"
+    assert intent.payload["blocks"][0]["text"]["text"] == "📬 Digest triage hằng ngày · 19/11"
+    # Same local day, later run: same id, so the outbox keeps only the first.
+    again = maintainer_digest(maintainer="gau-nernst", maintainer_slack="U1", entries=_entries(2), day=local,
+                              mode=DeliveryMode.SHADOW, lang="vi")
+    assert again.delivery_id == intent.delivery_id
+
+
+def test_still_waiting_section_fits_slacks_block_limit() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from alerting.ports import DeliveryMode
+
+    from triage.notify import DIGEST_MAX_ITEMS, SLACK_MAX_BLOCKS, WAITING_MAX_ITEMS, maintainer_digest
+
+    day = datetime(2026, 11, 18, 9, tzinfo=timezone.utc)
+    # Worst case: new items in all four bands, a full reminder list and more waiting.
+    entries = (_entries(10, "page") + _entries(10, "route", 11) + _entries(5, "watch", 21)
+               + _entries(5, "ignore", 26))
+    waiting = _entries(8, "route", 100, assigned_at=day - timedelta(days=4))
+    payload = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=entries, day=day,
+                                mode=DeliveryMode.SHADOW, reassign_to=["y"], waiting=waiting,
+                                waiting_total=12).payload
+    blocks = payload["blocks"]
+    assert len(blocks) <= SLACK_MAX_BLOCKS
+    ids = [b["block_id"] for b in blocks if "block_id" in b]
+    assert len(ids) == len(set(ids))
+    texts = [b.get("text", {}).get("text", "") for b in blocks]
+    title = texts.index("*⏳ Still waiting (12)*")
+    reminders = [t for t in texts[title + 1:] if "#10" in t]
+    assert len(reminders) == WAITING_MAX_ITEMS and all("assigned 4 days ago" in t for t in reminders)
+    assert sum(1 for b in blocks if b["type"] == "actions") < DIGEST_MAX_ITEMS + WAITING_MAX_ITEMS
+    shown_new = sum(1 for b in blocks[:title] if b["type"] == "actions")
+    contexts = [b["elements"][0]["text"] for b in blocks if b["type"] == "context"]
+    assert f"…and {len(entries) - shown_new} more on <https://ci.vllm.ai/triage/me|My list>." in contexts
+    assert "…and 7 more waiting on <https://ci.vllm.ai/triage/me|My list>." in contexts
+    assert blocks[-1]["type"] == "context" and "Change what you get" in blocks[-1]["elements"][0]["text"]
+    # Reminder buttons are the digest's: Ack / Not mine / Reassign.
+    reminder_actions = blocks[title + 2]
+    assert reminder_actions["block_id"] == "triage:actions:vllm-project/vllm#100"
+    assert [e["action_id"] for e in reminder_actions["elements"]] == ["triage:ack", "triage:not_mine", "triage:reassign"]
+
+    # Without reminders the new items keep their full DIGEST_MAX_ITEMS.
+    plain = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=_entries(30), day=day,
+                              mode=DeliveryMode.SHADOW, reassign_to=["y"]).payload["blocks"]
+    assert sum(1 for b in plain if b["type"] == "actions") == DIGEST_MAX_ITEMS and len(plain) <= SLACK_MAX_BLOCKS
+
+
+def test_reminder_never_repeats_an_item_already_in_the_new_list() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from alerting.ports import DeliveryMode
+
+    from triage.notify import maintainer_digest
+
+    day = datetime(2026, 11, 18, 9, tzinfo=timezone.utc)
+    waiting = _entries(2, "route", 1, assigned_at=day - timedelta(days=5))
+    payload = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=_entries(1), day=day,
+                                mode=DeliveryMode.SHADOW, waiting=waiting + waiting[1:], waiting_total=2).payload
+    ids = [b["block_id"] for b in payload["blocks"] if "block_id" in b]
+    assert ids == ["triage:item:vllm-project/vllm#1", "triage:actions:vllm-project/vllm#1",
+                   "triage:item:vllm-project/vllm#2", "triage:actions:vllm-project/vllm#2"]
+
+
+def test_vietnamese_reminder_only_digest() -> None:
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+
+    from alerting.ports import DeliveryMode
+
+    from triage.notify import maintainer_digest
+    from triage.store import DigestEntry
+
+    day = datetime(2026, 11, 19, 9, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+    old = DigestEntry(7, "vllm-project/vllm#65385", "GDN prefill wrong results",
+                      "https://github.com/vllm-project/vllm/issues/65385", 76, "page", "s",
+                      ["relevance:high"], "", assigned_at=(day - timedelta(days=5, hours=2)).astimezone(timezone.utc))
+    payload = maintainer_digest(maintainer="gau-nernst", maintainer_slack="U0B02RR385Q", entries=[], day=day,
+                                mode=DeliveryMode.SHADOW, lang="vi", reassign_to=["khluu"],
+                                waiting=[old], waiting_total=1).payload
+    blocks = payload["blocks"]
+    assert [b["type"] for b in blocks] == ["header", "section", "divider", "section", "section", "actions",
+                                           "divider", "context"]
+    assert blocks[1]["text"]["text"] == (
+        "Chào <@U0B02RR385Q> 👋 Hôm nay không có mục mới, nhưng vẫn còn *1 mục* từ mấy hôm trước đang chờ bạn nhé. "
+        "<https://ci.vllm.ai/triage/me|📋 Mở danh sách của bạn>")
+    assert blocks[3]["text"]["text"] == "*⏳ Vẫn đang chờ bạn (1)*"
+    assert blocks[4]["text"]["text"] == (
+        ":rotating_light: *P0* *<https://github.com/vllm-project/vllm/issues/65385|#65385 GDN prefill wrong results>*"
+        " · _đã giao 5 ngày trước_")
+    assert [e["text"]["text"] for e in blocks[5]["elements"] if e["type"] == "button"] == [
+        "Nhận việc", "Không phải của tôi"]
+    assert payload["text"] == "Digest triage: 1 mục đang chờ"
+    # Every Vietnamese string has an English twin and the same placeholders.
+    import string
+
+    from triage.notify import STRINGS
+
+    assert set(STRINGS["vi"]) == set(STRINGS["en"])
+    def fields(text: str) -> set[str]:
+        return {f for _, f, _, _ in string.Formatter().parse(text) if f}
+
+    assert all(fields(STRINGS["vi"][k]) == fields(STRINGS["en"][k]) for k in STRINGS["en"])
 
 
 def test_relevance_reason_local_only_for_non_english_maintainers() -> None:

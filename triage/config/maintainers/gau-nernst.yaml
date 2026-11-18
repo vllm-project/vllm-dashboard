@@ -9,6 +9,7 @@ language: vi              # bot messages in Vietnamese; delete this line for Eng
 min_score: 40
 capacity_per_week: 8
 notify_mode: digest
+timezone: Asia/Ho_Chi_Minh
 
 notes: |
   I work on NVIDIA (Hopper/Blackwell) performance and correctness for new MoE
