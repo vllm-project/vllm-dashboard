@@ -14,6 +14,13 @@ test("the guide's routing windows match triage/pipeline.py", () => {
   const pipeline = python("pipeline.py");
   assert.match(pipeline, new RegExp(`^PROFILE_WINDOW = timedelta\\(days=${GUIDE_FACTS.profileDays}\\)$`, "m"));
   assert.match(pipeline, new RegExp(`^FRESH_WINDOW = timedelta\\(days=${GUIDE_FACTS.freshDays}\\)$`, "m"));
+  assert.match(pipeline, new RegExp(`^RELEVANCE_GRACE = timedelta\\(hours=${GUIDE_FACTS.relevanceGraceHours}\\)$`, "m"));
+  assert.match(pipeline, new RegExp(`^DEFAULT_DIGEST_HOUR = ${GUIDE_FACTS.defaultDigestHour}$`, "m"));
+});
+
+test("the guide's feedback and reminder windows match relevance.py and notify.py", () => {
+  assert.match(python("relevance.py"), new RegExp(`^FEEDBACK_WINDOW = timedelta\\(days=${GUIDE_FACTS.feedbackDays}\\)$`, "m"));
+  assert.match(python("notify.py"), new RegExp(`^WAITING_AFTER_DAYS = ${GUIDE_FACTS.waitingAfterDays}$`, "m"));
 });
 
 test("the guide's languages and notify modes match triage/maintainers.py", () => {

@@ -88,8 +88,8 @@ export default function TriageGuidePage() {
         <p>You get an item for one of these reasons, strongest first:</p>
         <ol className="list-decimal space-y-1.5 pl-5">
           <li>
-            <b>You&apos;re already involved:</b> you commented on it, or you wrote a PR it names (for example the
-            commit a regression was bisected to).
+            <b>You&apos;re already involved:</b> it&apos;s assigned to you on GitHub, you wrote a PR it names (for
+            example the commit a regression was bisected to), or you commented on it.
           </li>
           <li>
             <b>Claude judges it high or medium for you</b>, from the PRs you authored and reviewed in the last{" "}
@@ -102,8 +102,14 @@ export default function TriageGuidePage() {
           </li>
         </ol>
         <p>
+          <b>Claude learns from what you do.</b> Items you mark Not mine count against similar items; items you ack
+          or finish count for them (last {GUIDE_FACTS.feedbackDays} days, picked up once a day).
+        </p>
+        <p>
           Each item gets one owner; a P0 can also get a backup who is a clear match. The item drawer shows why it
-          picked you, e.g. <Code>relevance:high (like #61343)</Code>.
+          picked you, e.g. <Code>relevance:high (like #61343)</Code>. Routing waits up to{" "}
+          {GUIDE_FACTS.relevanceGraceHours} hours for Claude&apos;s judgements, then goes ahead. Items assigned on
+          GitHub only to people outside the maintainer list aren&apos;t routed.
         </p>
         <p>
           <b>Weekly capacity.</b> <Code>capacity_per_week</Code> caps how many items you get in 7 days. Items you
@@ -130,8 +136,9 @@ export default function TriageGuidePage() {
               <Code key="n">notes</Code>,
               <>
                 The most useful one. Plain words: what you own, what to send you, what not to. Claude reads it.
-                &ldquo;Don&apos;t send me X&rdquo; makes X a no for you; &ldquo;send me Y&rdquo; makes Y at least
-                medium.
+                &ldquo;Don&apos;t send me X&rdquo; always wins. Naming a specific component (&ldquo;HiSparse
+                bugs&rdquo;) makes it at least medium. A broad category (&ldquo;quantization crashes&rdquo;) only
+                counts for the parts you author, so say so explicitly if you want all of it.
               </>,
             ],
             [
@@ -150,6 +157,13 @@ export default function TriageGuidePage() {
               <>
                 <Code>digest</Code> (P0 right away, the rest once a day), <Code>immediate</Code> (every item right
                 away) or <Code>off</Code> (dashboard only). See Slack below.
+              </>,
+            ],
+            [
+              <Code key="t">timezone</Code>,
+              <>
+                Where you are, e.g. <Code>Europe/London</Code> (default UTC). With <Code>digest_hour</Code> (default{" "}
+                {GUIDE_FACTS.defaultDigestHour}) it sets when your daily digest arrives.
               </>,
             ],
             [
@@ -186,6 +200,10 @@ export default function TriageGuidePage() {
             ["Slop", "Same as Drop, for low-quality or spam items, and recorded as slop."],
           ]}
         />
+        <p>
+          <b>GitHub counts too.</b> If the item is closed or merged on GitHub, it&apos;s marked Done for you (and comes
+          back if it&apos;s reopened). If you comment on it on GitHub, that counts as Ack.
+        </p>
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
           Drop and Slop hide an item from everyone, so use them only when nobody should pick it up. If one person hides
           a lot of items in a day, the queue shows a warning.
@@ -195,8 +213,10 @@ export default function TriageGuidePage() {
       <Section id="slack" title="Slack">
         <p>
           When Slack is on for you, a <b>P0 is sent as a DM right away</b> and everything else comes in <b>one daily
-          digest</b>. The DMs have Ack, Not mine and Reassign buttons that do the same as here. It needs{" "}
-          <Code>slack_user_id</Code> in your file.
+          digest</b> at your local morning ({GUIDE_FACTS.defaultDigestHour}:00 in your <Code>timezone</Code> unless
+          you set <Code>digest_hour</Code>). The digest ends with a <b>Still waiting</b> list of items you haven&apos;t
+          acked after {GUIDE_FACTS.waitingAfterDays}+ days. Each item has Ack, Not mine and Reassign buttons that do
+          the same as here. It needs <Code>slack_user_id</Code> in your file.
         </p>
         <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
           <b>During the beta, Slack is off.</b> Nothing is sent to you until Kevin turns it on for you. Check{" "}
