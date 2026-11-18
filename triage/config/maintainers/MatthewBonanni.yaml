@@ -11,7 +11,11 @@ notes: |
   caches, with page residency, prefill staging and host pools, for
   GLM-5.3-Flash, Kimi K3.1 and DeepSeek models. Also attention backends: MLA,
   FlashMLA, FlashAttention (FA4, upstream syncs), FlashInfer sparse MLA and
-  FlashInfer upgrades, KV block sizes, KV connector and KV offload interactions
-  with attention, and the extensible KV cache with HiSparse.
+  FlashInfer upgrades, KV block sizes, KV layout and block-size interactions
+  between attention backends and the NIXL / offload connectors, and the
+  extensible KV cache with HiSparse.
   Send me HiSparse bugs, sparse or MLA attention backend crashes and wrong
   outputs, and FlashAttention or FlashInfer attention regressions.
+  Don't send me connector protocol, scheduling or stall bugs that don't involve
+  attention layout or HiSparse, ROCm or XPU attention backends, DSA indexer
+  top-k kernels outside HiSparse, or batch invariance.

@@ -205,3 +205,17 @@ def test_an_unjudged_maintainer_is_never_routed_by_relevance() -> None:
     # Their own explicit rules still apply, and say so.
     with_rule = [Maintainer(github_login="judged"), Maintainer(github_login="new", rules={"areas": ["kernels"]})]
     assert run_route(with_rule, row) == {"r#1": [("new", ["area:kernels"])]}
+
+
+def test_rel_v4_prompt_requires_an_authored_component_and_requeues_everyone(monkeypatch: pytest.MonkeyPatch) -> None:
+    import triage.relevance as rel
+
+    prs = [{"number": 1, "kind": "authored", "title": "t"}]
+    v4 = rel.profile_hash(prs, "notes")
+    monkeypatch.setattr(rel, "PROMPT_VERSION", "rel-v3")
+    assert rel.profile_hash(prs, "notes") != v4  # the version bump re-judges every maintainer
+    # A broad "send me" line in the notes no longer makes anything at least medium on its own.
+    assert "treat it as at least medium" not in rel.SYSTEM
+    assert "raises an item to medium only if it is also in a component they author" in rel.SYSTEM
+    assert "where the fix belongs, not where the symptom shows up" in rel.SYSTEM
+    assert "Vendor-specific backends" in rel.SYSTEM

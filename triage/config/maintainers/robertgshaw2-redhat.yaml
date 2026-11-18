@@ -16,5 +16,9 @@ notes: |
   prefill threshold, startup memory profiling, and DeepSeek-V4.1 serving.
   I review MoE refactors and DeepEP work.
   Send me API compatibility bugs (OpenAI or Anthropic clients, Claude Code),
-  chat template and reasoning or tool-call issues, and P/D or KV offload bugs.
-  Don't send me kernel numerics or quantization kernel bugs.
+  Anthropic Messages API issues, reasoning/thinking handling in the shared
+  frontend (reasoning effort, thinking budgets, stop strings), tool_choice /
+  tool_reference plumbing, DeepSeek-V4.1 rendering and tool calls, P/D with NIXL
+  and KV offload bugs, and DP supervisor startup.
+  Don't send me extensible KV cache regressions, ROCm-only problems, kernel
+  numerics or quantization kernel bugs.

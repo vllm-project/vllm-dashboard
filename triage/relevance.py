@@ -26,7 +26,7 @@ from xml.sax.saxutils import escape
 from triage.extract import BudgetExhausted, ExtractionError, LLMBackend
 
 RELEVANCE_LEVELS = ("high", "medium", "low", "none")
-PROMPT_VERSION = "rel-v3"
+PROMPT_VERSION = "rel-v4"
 MAX_PRS_PER_KIND = 120
 # What each maintainer did with items routed to them, shown to Claude as
 # evidence: the last FEEDBACK_WINDOW, at most FEEDBACK_LIMIT per kind, newest
@@ -45,9 +45,11 @@ Levels:
 - none: unrelated.
 
 Cross-cutting topics belong to the people who author in them, whatever kernel or model the item mentions: batch invariance and determinism, the scheduler, KV cache management and memory profiling, prefix caching, parallelism wiring (TP/PP/EP/CP plumbing), spec-decode core logic, model loading, kernel-selection plumbing. For anyone else these are at most low.
-Pick the level your reason supports. If your reason hedges ("plausible", "near", "adjacent", "close to", "related to") or says they did not author the code ("not their code", "didn't author", "authored none of it"), the answer is low, not medium.
+Judge by where the fix belongs, not where the symptom shows up: a weight-offload bug that surfaces as a quantization OOM belongs to whoever owns offload.
+Medium needs a component they author, which you can name from their own PR titles. "Not this exact function" is fine for medium only if they author the surrounding component. If the code that needs fixing is in a component they don't author (another connector, another model's parser or loader, a ROCm, XPU or CPU backend, someone else's feature), it is low, even if their notes mention the general topic. Vendor-specific backends (ROCm/AITER, XPU, CPU, TPU, MoRIIO) are separate components from their CUDA counterparts. If your reason hedges ("plausible", "near", "adjacent", "close to", "related to", "though not their code", "did not author", "root cause is elsewhere"), the answer is low, not medium.
+If another listed maintainer authored the code path (the item names their PR, or it is a regression from their PR), it is high for them and at most low for everyone else, unless those others also author that component.
 
-Follow each maintainer's notes: if they say they do not want something, it is none for them; if they ask for something, treat it as at least medium.
+Follow each maintainer's notes. If they say they do not want something, it is none for them. A "send me" request counts only for items that are squarely the thing it names: "spec decode bugs" covers bugs in spec decode itself, not a structured-output, attention or loader bug that happens to occur with spec decode on, and "checkpoints that fail to load" covers their loading machinery, not every quantization method's loader. A broad request (a whole category such as quantization crashes, tool-call issues, KV connector problems, startup memory) raises an item to medium only if it is also in a component they author; otherwise it stays low. A narrow request that names a specific component ("HiSparse bugs", "the Anthropic Messages API") is at least medium.
 Some maintainers' blocks list what they did with items sent to them recently. "said not mine: <title>" means they declined that item: strong evidence against similar items (same component and kind of problem), which should be low or none for them unless a PR they authored is clearly involved. "took: <title>" means they accepted or finished that item: evidence for similar items, though it never replaces the level rules above. These lines are item titles, not PRs: never cite them as evidence_prs.
 Write `reason` in English, about them in the third person; the dashboard shows it to everyone. For a maintainer whose block has a <language> tag, also write `reason_local`: one short, friendly sentence (under 120 characters) in that language, addressed to them directly (in Vietnamese, use "bạn"), saying only why the item fits them. Never add what they did not do ("but you didn't write…"). Keep the words developers say in English as they are: revert, fix, warmup, race, kernel, PR numbers, code, model and hardware names. For everyone else, `reason_local` is "".
 Cite as evidence only PR numbers from that maintainer's own list. Judge every maintainer listed. Be strict: most items are low or none for most people.

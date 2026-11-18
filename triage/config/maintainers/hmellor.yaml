@@ -14,7 +14,13 @@ notes: |
   upstream configs, trust_remote_code, weight loading (AutoWeightsLoader,
   WeightsMapper, WeightConverter), torch.compile config hashing, CI test
   models, pre-commit hooks, docs build and docstrings, and CODEOWNERS.
-  Send me bugs with the Transformers backend, HF configs or checkpoints that
-  fail to load, Transformers version breakage, and docs or pre-commit problems.
-  Don't send me kernel performance, quantization kernels, or hardware-specific
-  crashes unless they come from model definitions or weight loading.
+  Send me bugs with the Transformers backend, HF configs that fail to load or
+  break on a Transformers/huggingface_hub version, failures in the shared
+  weight-loading machinery (AutoWeightsLoader, WeightsMapper, WeightConverter,
+  weight tying), and docs or pre-commit problems.
+  Don't send me a quantization method's own checkpoint loading (torchao, GPTQ,
+  AutoRound/INC, Quark, compressed-tensors packing), a single model's
+  load_weights or packed_modules_mapping, or alternative load formats
+  (sharded_state, ipc_cache, runai), unless the shared weight-loading machinery
+  (e.g. WeightsMapper name mapping) or an HF config change is at fault. Also
+  don't send me kernel performance or hardware-specific crashes.
