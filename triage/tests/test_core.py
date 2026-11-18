@@ -382,4 +382,40 @@ def test_slack_lines_use_p_levels() -> None:
     payload = page_dm(assignment_key="k", maintainer_slack="U0000000001", entry=entry, role="primary",
                       mode=DeliveryMode.SHADOW).payload
     assert payload["blocks"][0]["text"]["text"] == "Triage: P0 item for you"
-    assert "*P0* · 94 <https://github.com/vllm-project/vllm/issues/48071|#48071 MNNVL allreduce crash>" in payload["text"]
+    assert "*P0* · 94 <https://github.com/vllm-project/vllm/issues/48071|#48071 MNNVL allreduce crash>" in payload["blocks"][1]["text"]["text"]
+
+
+def test_dm_buttons_and_digest_menus_carry_the_item() -> None:
+    from datetime import datetime, timezone
+
+    from alerting.ports import DeliveryMode
+
+    from triage.notify import describe_reason, maintainer_digest, page_dm
+    from triage.store import DigestEntry
+
+    key = "vllm-project/vllm#48071"
+    entry = DigestEntry(1, key, "crash", "https://github.com/vllm-project/vllm/issues/48071", 94, "page", "s",
+                        ["authored #61989", "relevance:medium (like #61989, #58498)"])
+    blocks = page_dm(assignment_key="k", maintainer_slack="U0000000001", entry=entry, role="primary",
+                     mode=DeliveryMode.SHADOW, reassign_to=["gau-nernst", "AndreasKaratzas"]).payload["blocks"]
+    section, actions = blocks[1], blocks[2]
+    assert section["block_id"] == f"triage:item:{key}"
+    assert "why you: you wrote <https://github.com/vllm-project/vllm/pull/61989|#61989>, which this item names" in section["text"]["text"]
+    assert actions["block_id"] == f"triage:actions:{key}"
+    ids = [e["action_id"] for e in actions["elements"]]
+    assert ids == ["triage:ack", "triage:not_mine", "triage:reassign", "triage:open"]
+    assert actions["elements"][0]["value"] == key
+    assert [o["value"] for o in actions["elements"][2]["options"]] == ["AndreasKaratzas", "gau-nernst"]
+    # No one to reassign to: no dropdown.
+    solo = page_dm(assignment_key="k", maintainer_slack="U0000000001", entry=entry, role="primary",
+                   mode=DeliveryMode.SHADOW).payload["blocks"][2]
+    assert [e["action_id"] for e in solo["elements"]] == ["triage:ack", "triage:not_mine", "triage:open"]
+
+    digest = maintainer_digest(maintainer="khluu", maintainer_slack="U0000000001", entries=[entry],
+                               day=datetime(2026, 11, 18, tzinfo=timezone.utc), mode=DeliveryMode.SHADOW).payload
+    menu = digest["blocks"][1]["accessory"]
+    assert menu["action_id"] == "triage:menu"
+    assert [o["value"] for o in menu["options"]] == [f"ack|{key}", f"not_mine|{key}", "open"]
+    assert all(len(o["value"]) <= 75 for o in menu["options"])
+    assert describe_reason("commented") == "you already commented on it"
+    assert describe_reason("relevance:high") == "judged high from your recent work"

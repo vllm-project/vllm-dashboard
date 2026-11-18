@@ -241,6 +241,7 @@ class RouteHandler:
                     assignment_key=f"{row.item_key}:{maintainer.github_login}:{role}",
                     maintainer_slack=maintainer.slack_user_id, entry=entry, role=role,
                     mode=self.delivery_mode,
+                    reassign_to=[m.github_login for m in maintainers if m.github_login != maintainer.github_login],
                 )
             assignments.append(NewAssignment(
                 maintainer=maintainer.github_login, role=role,

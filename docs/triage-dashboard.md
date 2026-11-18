@@ -135,6 +135,7 @@ rules:
 | `TRIAGE_SESSION_SECRET` | yes | At least 32 random characters; signs session cookies. Rotating it signs everyone out. Generate with `openssl rand -base64 48`. |
 | `TRIAGE_MAINTAINER_TEAM` | one of these two | `org/team-slug`, e.g. `vllm-project/committers`. |
 | `TRIAGE_ALLOWED_LOGINS` | one of these two | Comma-separated GitHub logins allowed regardless of team. |
+| `SLACK_SIGNING_SECRET` | for Slack buttons | The Slack app's signing secret (Basic Information → App Credentials). **Production only.** Without it the interactions endpoint returns 503. |
 | `TRIAGE_SUPPRESSION_ALERT` | no | Drop+slop actions per person per 24h that raise the warning (default 10). Also read by the worker. |
 | `TRIAGE_CANONICAL_ORIGIN` | no | The only origin sign-in runs on (default `https://ci.vllm.ai`). The OAuth callback is `<origin>/api/triage/auth/callback`; it is never derived from the request. |
 | `TRIAGE_DEV_LOGIN` | local only | Signs every request in as this login. Ignored when `NODE_ENV=production`. |
@@ -191,3 +192,23 @@ DATABASE_URL=postgres://... npm run dev
   triage responses are `Cache-Control: private, no-store`.
 - **Untrusted text** (GitHub titles and bodies, LLM summaries) is rendered as
   text only; links go only to `https://github.com/vllm-project/`.
+
+## Slack buttons
+
+Triage DMs carry **Ack**, **Not mine**, **Reassign to…** and **Open in
+dashboard**; digest lines have the same actions in a ⋮ menu. Slack posts each
+click to `https://ci.vllm.ai/api/triage/slack/interactions` (the app's
+Interactivity Request URL). The route:
+
+1. rejects any request not signed with `SLACK_SIGNING_SECRET` or older than
+   five minutes (no replays);
+2. maps the clicker's Slack user ID to a maintainer via `slack_user_id` in
+   `triage/config/maintainers/<login>.yaml`; unlinked people get a private
+   note and nothing changes;
+3. lets only the person the item is assigned to act on it;
+4. applies the action with the same code as the dashboard buttons, recorded
+   with `source = 'slack'`;
+5. replaces the buttons with the result ("Acked by …") via Slack's
+   `response_url` (only `https://hooks.slack.com/` is ever called).
+
+No extra Slack scopes are needed (`chat:write` covers posting and updating).

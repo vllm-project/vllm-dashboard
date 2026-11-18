@@ -30,7 +30,7 @@ GitHub ─► triage-ingest (worker, 5 min) ─► triage_items + deterministic 
 | Extract | `extract.py`, `facets.py`, `assets/extractor-system.md` | Claude Code headless, with no tools and schema-constrained JSON. Runs on a separate host: [deploy/triage-extractor](../deploy/triage-extractor/README.md). |
 | Score | `scoring.py`, `config/scoring.yaml`, `config/tiers.yaml` | Deterministic. `severity × reach (model × hardware × config) + additive factors`. The breakdown always sums to the score. |
 | Route | `routing.py`, `relevance.py`, `config/maintainers/` | Who an item is for, strongest first: a maintainer already **involved** (wrote a PR the item names, or commented), then **relevance** judged by Claude from each maintainer's last 6 months of authored/reviewed PRs plus the free-text `notes` in their own file (`vllm-triage relevance` on the extractor host), then optional rules. Profiles are rebuilt daily by the route consumer. Only new page-band items may exceed weekly capacity, so a backlog is spread out. |
-| Notify | `notify.py` | Immediate DM for page band, daily DM digest, daily team digest. **Shadow only for now.** |
+| Notify | `notify.py` | Immediate DM for P0, daily DM digest, daily team digest. DMs have Ack / Not mine / Reassign buttons handled by the dashboard (see docs/triage-dashboard.md, "Slack buttons"). **Shadow only for now.** |
 | Act | dashboard ([docs/triage-dashboard.md](../docs/triage-dashboard.md)) | ack / not mine / reassign / drop / slop / done / reopen. The router never re-routes dropped or slop items, and never routes an item back to someone who said it isn't theirs. |
 
 The data contract between all of these is [docs/data-model.md](docs/data-model.md).
