@@ -280,17 +280,30 @@ export function groupByPriority<T>(
 }
 
 /**
- * One search box for both free text and the model filter: `model:qwen3` (or
- * `model:"Qwen3 235B"`) becomes the model filter, the rest is the text query.
+ * One search box for free text plus two filters: `model:qwen3` (or
+ * `model:"Qwen3 235B"`) sets the model filter, and `owner:gau-nernst` /
+ * `owner:none` sets the owner filter; the rest is the text query. `owner`
+ * is undefined when the text doesn't mention one, so the owner picker's
+ * choice is left alone.
  */
-export function parseSearchInput(input: string): { q: string | null; model: string | null } {
+export function parseSearchInput(input: string): { q: string | null; model: string | null; owner?: string | null } {
   let model: string | null = null;
-  const rest = input.replace(/(?:^|\s)model:(?:"([^"]*)"|(\S+))/i, (_, quoted: string | undefined, bare: string | undefined) => {
+  let owner: string | null | undefined;
+  let rest = input.replace(/(?:^|\s)model:(?:"([^"]*)"|(\S+))/i, (_, quoted: string | undefined, bare: string | undefined) => {
     model = (quoted ?? bare ?? "").trim() || null;
     return " ";
   });
+  rest = rest.replace(/(?:^|\s)owner:@?(\S*)/i, (_, login: string) => {
+    const value = login.trim().toLowerCase();
+    if (value === "none" || value === "unowned" || value === "nobody") owner = "none";
+    else if (/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(login)) owner = login;
+    else if (value === "" || value === "anyone" || value === "any") owner = null;
+    return " ";
+  });
   const q = rest.replace(/\s+/g, " ").trim();
-  return { q: q || null, model };
+  const parsed: { q: string | null; model: string | null; owner?: string | null } = { q: q || null, model };
+  if (owner !== undefined) parsed.owner = owner;
+  return parsed;
 }
 
 export function formatSearchInput(q: string | null, model: string | null): string {

@@ -128,6 +128,13 @@ test("search box: model:xxx becomes the model filter", async () => {
   assert.deepEqual(parseSearchInput(""), { q: null, model: null });
   assert.equal(formatSearchInput("fp8", "Qwen3 235B"), 'fp8 model:"Qwen3 235B"');
   assert.equal(formatSearchInput(null, "kimi"), "model:kimi");
+  assert.deepEqual(parseSearchInput("mnnvl owner:gau-nernst"), { q: "mnnvl", model: null, owner: "gau-nernst" });
+  assert.deepEqual(parseSearchInput("owner:@khluu model:kimi"), { q: null, model: "kimi", owner: "khluu" });
+  assert.deepEqual(parseSearchInput("owner:none crash"), { q: "crash", model: null, owner: "none" });
+  assert.deepEqual(parseSearchInput("owner:Unowned"), { q: null, model: null, owner: "none" });
+  assert.deepEqual(parseSearchInput("owner:"), { q: null, model: null, owner: null });
+  assert.equal("owner" in parseSearchInput("no owner here"), false);
+  assert.equal("owner" in parseSearchInput("owner:bad_login!"), false);
   for (const text of ["fp8 model:kimi", 'x model:"a b"', "plain"]) {
     const parsed = parseSearchInput(text);
     assert.deepEqual(parseSearchInput(formatSearchInput(parsed.q, parsed.model)), parsed);
