@@ -26,6 +26,12 @@ Claude also learns from what you do: items you mark **Not mine** count
 against similar items, and items you ack or finish count for them (last 60
 days, picked up once a day).
 
+**Writing notes.** "Don't send me X" always wins. A "send me" line that names a
+specific component ("HiSparse bugs", "the Anthropic Messages API") makes those
+items at least medium. A broad category ("quantization crashes", "tool-call
+issues", "KV connector problems") only counts for the parts of it you author
+yourself, so if you want a whole category regardless, say so explicitly.
+
 ## Your file
 
 ```yaml

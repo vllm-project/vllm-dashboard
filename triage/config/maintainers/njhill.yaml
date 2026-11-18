@@ -12,6 +12,9 @@ notes: |
   cache, memory profiling and gpu_memory_utilization), KV connectors and NIXL
   P/D transfer, pipeline-parallel transport, spec decode on Model Runner V2,
   engine startup and shutdown, CPU overhead, and the Rust frontend (reviews).
-  Send me engine hangs and crashes, scheduler or KV cache bugs, OOMs from KV
-  cache sizing, P/D and KV connector problems, and Model Runner V2 issues.
-  Don't send me model-specific kernel bugs.
+  Send me engine hangs and crashes in the engine core, scheduler or MRV2,
+  scheduler or KV cache bugs, OOMs from KV cache sizing, NIXL P/D problems,
+  and Model Runner V2 issues.
+  Don't send me model-specific kernel bugs, platform/NUMA/process-spawn issues,
+  or bugs inside other KV connectors (Mooncake, MoRIIO, P2P offload) unless the
+  shared connector interface is at fault.

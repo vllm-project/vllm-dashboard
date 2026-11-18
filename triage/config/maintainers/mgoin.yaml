@@ -14,5 +14,10 @@ notes: |
   humming-kernels), wheel size, spec decode (DFlash, DSpark, adaptive
   verification), Model Runner V2 performance, DeepSeek-V4.1 Hopper
   performance, and new model support.
-  Send me quantization accuracy or crash bugs, quantized checkpoint loading,
-  kernel library build or version problems, and spec decode bugs.
+  Send me quantization accuracy or crash bugs in the CUDA linear and MoE
+  paths I work on (Humming, Marlin, LUT-B, MXFP4/MXFP8/NVFP4/FP8, Triton FP8
+  MoE, DeepGEMM MoE), quantized checkpoint loading for compressed-tensors and
+  ModelOpt formats, kernel library build or version problems, and spec decode
+  bugs in DFlash, DSpark, MTP drafts or adaptive verification.
+  Don't send me ROCm-, XPU- or CPU-specific kernel bugs, torchao/GPTQ/AutoRound
+  loaders, structured output, or offload bugs.
