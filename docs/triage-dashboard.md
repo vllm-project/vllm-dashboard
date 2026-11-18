@@ -28,14 +28,22 @@ a soft blue badge and P3 is grey.
 
 | Path | What |
 |---|---|
-| `/triage` | Queue. A strip on top: open items by priority (a segmented bar; each part filters), P0/P1 items with no owner (red when a P0 has none), how much the LLM has read in 7 days, and new items today. Below, one toolbar: a P0–P3 toggle with counts, kind, area, hardware, an owner picker ("Anyone", "Unowned", or a maintainer; URL `owner=<login>` or `owner=none`, and the old `assignee=<login>` still works), owner status, sort, a "Closed" switch, a "How is this scored?" link, and a search box that applies as you type (`#123`, free text, or `model:qwen3`). Sorted by priority, the list is grouped into P0 / P1 / P2 / P3 sections with sticky headers; P3 starts collapsed. Each row shows the P-badge and score, kind and number, the worst severity flag in color (others neutral), the title, one line of context (hardware, model, area; the rest in the drawer), the owner, and age. Clicking a row opens the item drawer (`?item=owner/repo#N`). On a phone each row stacks and the owner moves under the title. |
+| `/triage` | Queue. At the very top, one line of pipeline health: when Claude last labelled an item and how many open items wait for a label, when it last judged relevance and how many unowned P0/P1 wait for judgements, and labelling failures in 24 hours. Each part turns amber or red when it falls behind (work waiting more than 25 / 60 minutes with no new labels or judgements; 3 / 10 failures; anything that failed every attempt; the Claude login within 7 days of `TRIAGE_CLAUDE_LOGIN_EXPIRES`). Thresholds are in `src/lib/triage-health.ts`; hover a part for details. Then a strip: open items by priority (a segmented bar; each part filters), P0/P1 items with no owner (red when a P0 has none), how much the LLM has read in 7 days, and new items today. Below, one toolbar: a P0–P3 toggle with counts, kind, area, hardware, an owner picker ("Anyone", "Unowned", or a maintainer; URL `owner=<login>` or `owner=none`, and the old `assignee=<login>` still works), owner status, sort, a "Closed" switch, a "How is this scored?" link, and a search box that applies as you type (`#123`, free text, or `model:qwen3`). Sorted by priority, the list is grouped into P0 / P1 / P2 / P3 sections with sticky headers; P3 starts collapsed. Each row shows the P-badge and score, kind and number, the worst severity flag in color (others neutral), the title, one line of context (hardware, model, area; the rest in the drawer), the owner, and age. Clicking a row opens the item drawer (`?item=owner/repo#N`). On a phone each row stacks and the owner moves under the title. |
 | `/triage/me` | My list, grouped by priority like the queue: the signed-in maintainer's open and acked assignments, why the router picked them, and Ack / Not mine / Reassign / Drop / Slop / Done; then assignments closed in the last 14 days with Reopen. |
 | `/triage/scoring` | How scoring works: the formula in plain words (how bad × who it hits + extras − penalties), what each priority means for routing, every number in tables, the model and GPU tier lists, and two worked examples computed with the router's arithmetic. The numbers live in `src/lib/triage-scoring-config.ts`; a test loads `triage/config/scoring.yaml` and `tiers.yaml` and fails if they drift. |
 | `/triage/rules` | Draft & preview. Loads the signed-in maintainer's current rules from the database (synced from `triage/config/maintainers/<login>.yaml`) into a local draft with the same fields (areas, hardware, model globs, path globs, keywords, type filter, excludes, minimum score, weekly capacity, away dates, Slack notification mode and user ID). **Preview last 30 days** lists which recent items the draft matches. **Copy as YAML** copies the full file content. If the maintainer already has a file (their row has `updated_by = 'repo'`), **Edit your rules file on GitHub** opens it in GitHub's editor on `main`; otherwise **Create your rules file on GitHub** opens GitHub's new-file page pre-filled with `<login>.yaml` and the draft's YAML. Nothing is saved from the dashboard. |
 
 The item drawer opens with a summary: priority, score, title, every severity
 flag, the one-line summary, the owners (primary and backup, their status, and
-one line on why each was picked) and the actions. Details follow as
+one line on why each was picked) and the actions. A P0/P1 with no owner says
+why the router hasn't assigned it, worked out from the same rules as the
+router (`src/lib/triage-why-unowned.ts`, a mirror of `choose_owners` and
+`_route_one`): for example "assigned on GitHub to someone who isn't a
+triage maintainer", "Waiting for Claude to judge it for 2 of 10
+maintainers; routing goes ahead without them at 14:05 UTC" (the router's
+2-hour relevance wait), or one line per maintainer it matches with what
+stops them ("gau-nernst is a high match but already has 8 of 8 items this
+week"). Details follow as
 collapsible sections: the score breakdown (open), why these owners with
 evidence, who it's for (every maintainer's relevance), what the LLM read, the
 quick signals checked before the LLM, and the action history. Esc closes it.
@@ -146,6 +154,7 @@ rules:
 | `TRIAGE_ALLOWED_LOGINS` | one of these two | Comma-separated GitHub logins allowed regardless of team. |
 | `SLACK_SIGNING_SECRET` | for Slack buttons | The Slack app's signing secret (Basic Information → App Credentials). **Production only.** Without it the interactions endpoint returns 503. |
 | `TRIAGE_SUPPRESSION_ALERT` | no | Drop+slop actions per person per 24h that raise the warning (default 10). Also read by the worker. |
+| `TRIAGE_CLAUDE_LOGIN_EXPIRES` | no | `YYYY-MM-DD` when the extractor host's Claude login expires. The pipeline-health line warns from 7 days before. Update it after logging in again. |
 | `TRIAGE_CANONICAL_ORIGIN` | no | The only origin sign-in runs on (default `https://ci.vllm.ai`). The OAuth callback is `<origin>/api/triage/auth/callback`; it is never derived from the request. |
 | `TRIAGE_DEV_LOGIN` | local only | Signs every request in as this login. Ignored when `NODE_ENV=production`. |
 

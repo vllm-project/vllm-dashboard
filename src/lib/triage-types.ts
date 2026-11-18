@@ -1,3 +1,4 @@
+import type { WhyUnowned } from "@/lib/triage-why-unowned";
 import type {
   AssignmentStatus,
   NotifyMode,
@@ -54,6 +55,10 @@ export interface TriagePrepass {
   scope_reason?: string;
   /** GitHub logins the item is assigned to on GitHub. */
   gh_assignees?: string[];
+  /** Logins that commented (older items: derived from the stored comment text). */
+  commenters?: string[];
+  /** Authors of PRs the item names, by PR number. */
+  referenced_pr_authors?: Record<string, string>;
 }
 
 export interface TriageBreakdownEntry {
@@ -180,6 +185,8 @@ export interface TriageItemDetail {
   actions: TriageActionRecord[];
   /** Claude's relevance judgement per maintainer, strongest first. */
   relevance: TriageRelevance[];
+  /** Why it has no open owner, as the router sees it; null when someone owns it. */
+  whyUnowned: WhyUnowned | null;
 }
 
 export interface TriageRelevance {
@@ -233,4 +240,29 @@ export interface TriageStats {
    * burst can hide real problems (a compromised or careless account).
    */
   suppression: { threshold: number; actors: { actor: string; drops: number; slops: number }[] };
+  /** Raw pipeline-health signals; `pipelineHealth` in triage-health.ts grades them. */
+  health: TriagePipelineHealth;
+}
+
+export interface TriagePipelineHealth {
+  /** Newest Claude label (max triage_extractions.created_at), ISO. */
+  lastLabelledAt: string | null;
+  /** Newest relevance judgement (max triage_relevance.created_at), ISO. */
+  lastJudgedAt: string | null;
+  /** Open in-scope items waiting for (or being given) a label, retries included. */
+  waitingForLabel: number;
+  /** Oldest last-change time among items waiting for a label (they can't have waited longer). */
+  labelWaitSince: string | null;
+  /** Unowned open P0/P1 items missing a current judgement for some active maintainer. */
+  waitingForJudgement: number;
+  /** Oldest label time among those items whose label is current (ready to be judged). */
+  judgementWaitSince: string | null;
+  /** Items whose labelling failed, last touched in the past 24 hours. */
+  labelFailures24h: number;
+  /** Open in-scope items whose labelling failed on every attempt; never retried. */
+  labelGaveUp: number;
+  /** The newest labelling error text, for the tooltip. */
+  lastLabelError: string | null;
+  /** TRIAGE_CLAUDE_LOGIN_EXPIRES (YYYY-MM-DD) when set: when the extractor host's Claude login runs out. */
+  loginExpiresOn: string | null;
 }
