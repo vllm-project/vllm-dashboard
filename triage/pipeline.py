@@ -272,7 +272,8 @@ class DigestHandler:
 
     def __call__(self, command: ScheduledCommand) -> None:
         now = self.clock.now()
-        for maintainer in self.store.active_maintainers():
+        active = self.store.active_maintainers()
+        for maintainer in active:
             if maintainer.notify_mode == "off" or not maintainer.slack_user_id:
                 continue
             entries = self.store.unnotified_assignments(maintainer.github_login)
@@ -283,6 +284,7 @@ class DigestHandler:
                     maintainer=maintainer.github_login, maintainer_slack=maintainer.slack_user_id,
                     entries=entries, day=now, mode=self.delivery_mode,
                     lang=str(maintainer.rules.get("language") or "en"),
+                    reassign_to=[m.github_login for m in active if m.github_login != maintainer.github_login],
                 ),
                 [e.assignment_id for e in entries],
                 now=now,
