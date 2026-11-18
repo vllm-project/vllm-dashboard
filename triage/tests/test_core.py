@@ -412,7 +412,8 @@ def test_slack_lines_use_p_levels() -> None:
                       mode=DeliveryMode.SHADOW).payload
     assert payload["blocks"][0]["text"]["text"] == "Triage: P0 item for you"
     text = payload["blocks"][1]["text"]["text"]
-    assert "*P0* <https://github.com/vllm-project/vllm/issues/48071|#48071 MNNVL allreduce crash>" in text
+    assert "*P0* *<https://github.com/vllm-project/vllm/issues/48071|#48071 MNNVL allreduce crash>*" in text
+    assert "\n*Why you:* judged medium" in text  # bold label on its own line
     assert "94" not in text  # no score in Slack: the P-level is what people read
 
 
@@ -431,7 +432,7 @@ def test_dm_buttons_and_digest_menus_carry_the_item() -> None:
                      mode=DeliveryMode.SHADOW, reassign_to=["gau-nernst", "AndreasKaratzas"]).payload["blocks"]
     section, actions = blocks[1], blocks[2]
     assert section["block_id"] == f"triage:item:{key}"
-    assert "why you: you wrote <https://github.com/vllm-project/vllm/pull/61989|#61989>, which this item names" in section["text"]["text"]
+    assert "*Why you:* you wrote <https://github.com/vllm-project/vllm/pull/61989|#61989>, which this item names" in section["text"]["text"]
     assert actions["block_id"] == f"triage:actions:{key}"
     ids = [e["action_id"] for e in actions["elements"]]
     assert ids == ["triage:ack", "triage:not_mine", "triage:reassign", "triage:open"]
@@ -444,12 +445,12 @@ def test_dm_buttons_and_digest_menus_carry_the_item() -> None:
 
     digest = maintainer_digest(maintainer="khluu", maintainer_slack="U0000000001", entries=[entry],
                                day=datetime(2026, 11, 18, tzinfo=timezone.utc), mode=DeliveryMode.SHADOW).payload
-    # header, hello, "P0" group title, the item line, then its buttons (same as a DM)
-    assert digest["blocks"][3]["block_id"] == f"triage:item:{key}" and "accessory" not in digest["blocks"][3]
-    buttons = digest["blocks"][4]
+    # header, hello, divider, "P0" group title, the item line, then its buttons
+    assert digest["blocks"][4]["block_id"] == f"triage:item:{key}" and "accessory" not in digest["blocks"][4]
+    buttons = digest["blocks"][5]
     assert buttons["block_id"] == f"triage:actions:{key}"
-    assert [e["action_id"] for e in buttons["elements"]] == ["triage:ack", "triage:not_mine", "triage:open"]
-    assert buttons["elements"][2]["url"] == "https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2348071"
+    # The title already links to GitHub, so the digest skips the dashboard button.
+    assert [e["action_id"] for e in buttons["elements"]] == ["triage:ack", "triage:not_mine"]
     assert actions["elements"][3]["url"] == "https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2348071"
     assert describe_reason("commented") == "you already commented on it"
     assert describe_reason("relevance:high") == "judged high from your recent work"
@@ -474,7 +475,7 @@ def test_vietnamese_wording_is_a_per_maintainer_one_off() -> None:
     blocks = page_dm(assignment_key="k", maintainer_slack="U0B02RR385Q", entry=entry, role="primary",
                      mode=DeliveryMode.SHADOW, reassign_to=["khluu"], lang="vi").payload["blocks"]
     assert blocks[0]["text"]["text"] == "Triage: một P0 thuộc mảng của bạn"
-    assert "Vì sao là bạn: được đánh giá cao dựa trên công việc gần đây của bạn" in blocks[1]["text"]["text"]
+    assert "*Vì sao là bạn:* được đánh giá cao dựa trên công việc gần đây của bạn" in blocks[1]["text"]["text"]
     assert "summary stays as written" in blocks[1]["text"]["text"]
     assert [e["text"]["text"] for e in blocks[2]["elements"] if e["type"] == "button"] == [
         "Nhận việc", "Không phải của tôi", "Mở trên dashboard"]
@@ -498,21 +499,25 @@ def test_vietnamese_digest_is_friendly_grouped_and_keeps_titles() -> None:
     payload = maintainer_digest(maintainer="gau-nernst", maintainer_slack="U0B02RR385Q", entries=[p0, p1],
                                 day=datetime(2026, 11, 18, tzinfo=timezone.utc), mode=DeliveryMode.SHADOW,
                                 lang="vi").payload
-    texts = [b.get("text", {}).get("text", "") for b in payload["blocks"]]
-    assert texts[0] == "📬 Digest triage hằng ngày: 2 mục cho bạn"
-    assert texts[1].startswith("Chào <@U0B02RR385Q> 👋 Đây là digest triage hằng ngày của bạn: có 2 issue/PR")
-    assert "1 mục P0 ở trên cùng là gấp nhất" in texts[1]
-    assert texts[2] == "*🚨 P0: cần xem sớm*" and texts[5] == "*🔶 P1: xem khi rảnh*"
-    assert [e["text"]["text"] for e in payload["blocks"][4]["elements"] if e["type"] == "button"] == [
-        "Nhận việc", "Không phải của tôi", "Mở trên dashboard"]
-    # Title untouched, no score, no summary; Claude's Vietnamese reason with linked PRs.
-    assert "|#66694 [Bugfix] Restore exact division in per-token-group FP8 quantization>" in texts[3]
-    assert "99" not in texts[3] and "English summary" not in texts[3]
-    assert "Vì sao là bạn: PR này revert <https://github.com/vllm-project/vllm/pull/61343|#61343> của bạn" in texts[3]
+    blocks = payload["blocks"]
+    texts = [b.get("text", {}).get("text", "") for b in blocks]
+    assert [b["type"] for b in blocks] == ["header", "section", "divider", "section", "section", "actions",
+                                           "divider", "section", "section", "actions", "divider", "context"]
+    assert texts[0] == "📬 Digest triage hằng ngày · 18/11"
+    assert texts[1] == "Chào <@U0B02RR385Q> 👋 Hôm nay bạn có *1 P0* cần xem sớm và *1 P1* xem khi rảnh nhé."
+    assert payload["text"] == "Digest triage: 1 P0, 1 P1"  # what the phone notification shows
+    assert texts[3] == "*🚨 P0: cần xem sớm (1)*" and texts[7] == "*🔶 P1: xem khi rảnh (1)*"
+    assert [e["text"]["text"] for e in blocks[5]["elements"] if e["type"] == "button"] == [
+        "Nhận việc", "Không phải của tôi"]
+    # Bold title untouched, no P-level prefix (the group says it), no score, no summary;
+    # Claude's Vietnamese reason under a bold label, with linked PRs.
+    assert texts[4].startswith("*<https://github.com/vllm-project/vllm/pull/66694|#66694 [Bugfix] Restore exact division in per-token-group FP8 quantization>*\n")
+    assert "99" not in texts[4] and "English summary" not in texts[4] and "🚨" not in texts[4]
+    assert "\n*Vì sao là bạn:* PR này revert <https://github.com/vllm-project/vllm/pull/61343|#61343> của bạn" in texts[4]
     # No Vietnamese line from Claude: involvement in Vietnamese, then the coded reason.
-    assert "Vì sao là bạn: bạn đã bình luận trong mục này; được đánh giá cao" in texts[6]
-    footer = payload["blocks"][-1]["elements"][0]["text"]
-    assert "triage/config/maintainers/gau-nernst.yaml|file của bạn>" in footer
+    assert "*Vì sao là bạn:* bạn đã bình luận trong mục này; được đánh giá cao" in texts[8]
+    footer = blocks[-1]["elements"][0]["text"]
+    assert "triage/config/maintainers/gau-nernst.yaml|Đổi mảng nhận việc>" in footer
 
 
 def test_digest_caps_items_to_fit_slacks_block_limit() -> None:
@@ -530,8 +535,10 @@ def test_digest_caps_items_to_fit_slacks_block_limit() -> None:
                                 reassign_to=["y"]).payload
     assert len(payload["blocks"]) <= 50
     assert sum(1 for b in payload["blocks"] if b.get("type") == "actions") == DIGEST_MAX_ITEMS
-    assert payload["blocks"][0]["text"]["text"] == "📬 Daily triage digest: 30 items for you"
-    assert "…and 10 more on <https://ci.vllm.ai/triage/me|My list>." in payload["blocks"][-2]["elements"][0]["text"]
+    assert payload["blocks"][0]["text"]["text"] == "📬 Daily triage digest · Nov 18"
+    assert payload["blocks"][1]["text"]["text"] == "Hi <@U1> 👋 Today you have *30 P1* for when you have time."
+    assert payload["blocks"][-1]["type"] == "context"  # the footer survives the cap
+    assert "…and 10 more on <https://ci.vllm.ai/triage/me|My list>." in payload["blocks"][-3]["elements"][0]["text"]
 
 
 def test_relevance_reason_local_only_for_non_english_maintainers() -> None:
