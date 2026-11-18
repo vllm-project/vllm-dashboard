@@ -144,10 +144,16 @@ class ClaudeCodeBackend:
             "--no-session-persistence",
             "--output-format", "json",
             "--json-schema", json.dumps(schema),
-            "--system-prompt", system,
         ]
         started = time.monotonic()
         with tempfile.TemporaryDirectory(prefix="triage-extract-") as cwd:
+            # The system prompt goes in a file: with every maintainer's PR
+            # history it outgrows Linux's 128 KiB limit on one argument.
+            # The directory is private to this user (mode 0700).
+            system_path = os.path.join(cwd, "system-prompt.md")
+            with open(system_path, "w", encoding="utf-8") as handle:
+                handle.write(system)
+            command += ["--system-prompt-file", system_path]
             try:
                 completed = subprocess.run(
                     command,
@@ -161,6 +167,8 @@ class ClaudeCodeBackend:
                 )
             except subprocess.TimeoutExpired as exc:
                 raise ExtractionError(f"claude timed out after {self._timeout}s") from exc
+            except OSError as exc:  # e.g. the binary is missing: fail this item, not the run
+                raise ExtractionError(f"could not run claude: {exc}") from exc
         duration_ms = int((time.monotonic() - started) * 1000)
         return self._parse(completed.returncode, completed.stdout, completed.stderr, duration_ms)
 

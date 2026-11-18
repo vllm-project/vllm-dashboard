@@ -306,6 +306,26 @@ def test_prompt_escapes_untrusted_text() -> None:
     assert prompt.count("</item>") == 1
 
 
+def test_claude_gets_a_large_system_prompt_from_a_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        path = command[command.index("--system-prompt-file") + 1]
+        seen["system"] = open(path, encoding="utf-8").read()
+        seen["command"] = command
+        out = json.dumps({"is_error": False, "structured_output": {"ok": True}, "usage": {}, "modelUsage": {}})
+        return subprocess.CompletedProcess(command, 0, out, "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    big = "x" * 300_000  # well past the 128 KiB per-argument limit
+    result = ClaudeCodeBackend().complete(system=big, prompt="p", schema={"type": "object"})
+    assert result.output == {"ok": True}
+    assert seen["system"] == big
+    assert "--system-prompt" not in seen["command"] and max(len(a) for a in seen["command"]) < 10_000
+
+
 def test_claude_parse_structured_output_and_usage_limit() -> None:
     backend = ClaudeCodeBackend()
     ok = json.dumps({"is_error": False, "structured_output": {"a": 1},
