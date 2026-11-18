@@ -92,6 +92,7 @@ export const TRIAGE_SECTION = {
     { href: "/triage/me", label: "My list" },
     { href: "/triage/rules", label: "Configure rules" },
     { href: "/triage/scoring", label: "Scoring guidelines" },
+    { href: "/triage/guide", label: "How it works" },
   ],
 } as const satisfies DashboardSection;
 
