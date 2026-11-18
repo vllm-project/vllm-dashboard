@@ -21,6 +21,7 @@ import { humanizeTag } from "@/lib/triage-factors";
 import { actionText, extractionText, percentText, scopeText, sourceText, yesNo } from "@/lib/triage-words";
 import { describeReason, formatAge, triageFetcher } from "@/lib/triage-format";
 import type { TriageAssignment, TriageItemDetail, TriageRelevance } from "@/lib/triage-types";
+import type { WhyUnowned } from "@/lib/triage-why-unowned";
 
 /** A collapsible detail section; the summary at the top of the drawer stays open. */
 function Disclosure({
@@ -155,6 +156,31 @@ function OwnerSummary({ assignment, judgement }: { assignment: TriageAssignment;
         <p className="mt-0.5 line-clamp-2 text-xs text-zinc-600 dark:text-zinc-400">{oneLineWhy(assignment.reason, judgement)}</p>
       </div>
     </li>
+  );
+}
+
+/** The router's reason a P0/P1 has no owner (triage-why-unowned.ts). */
+function WhyNoOwner({ why }: { why: WhyUnowned }) {
+  return (
+    <div
+      className={`rounded-md border px-2.5 py-2 text-xs ${
+        why.pending
+          ? "border-sky-200 bg-sky-50 text-sky-900 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-100"
+          : "border-amber-200 bg-amber-50 text-amber-950 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100"
+      }`}
+    >
+      <p>
+        <span className="font-semibold">Why no owner: </span>
+        {why.summary}
+      </p>
+      {why.lines.length > 0 && (
+        <ul className="mt-1 list-disc space-y-0.5 pl-4 opacity-90">
+          {why.lines.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -300,15 +326,18 @@ export function ItemDrawer({
                 <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
                   <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.08em] text-zinc-500 dark:text-zinc-400">Owners</p>
                   {owners.length === 0 ? (
-                    <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
-                      {isUnrouted(band, 0) && <UnroutedBadge />}
-                      <span>
-                        {data.item.prepass.gh_assignees?.length
-                          ? `Assigned on GitHub to ${data.item.prepass.gh_assignees.join(", ")}, so triage leaves it with them. Take it, or reassign it, if that's wrong.`
-                          : isUnrouted(band, 0)
-                            ? `This ${priorityLabel(band)} has no owner yet. Take it, or reassign it to someone.`
-                            : "Not routed; only P0 and P1 get an owner."}
-                      </span>
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
+                        {isUnrouted(band, 0) && <UnroutedBadge />}
+                        <span>
+                          {data.item.prepass.gh_assignees?.length && !(isUnrouted(band, 0) && data.whyUnowned)
+                            ? `Assigned on GitHub to ${data.item.prepass.gh_assignees.join(", ")}, so triage leaves it with them. Take it, or reassign it, if that's wrong.`
+                            : isUnrouted(band, 0)
+                              ? `This ${priorityLabel(band)} has no owner yet. Take it, or reassign it to someone.`
+                              : "Not routed; only P0 and P1 get an owner."}
+                        </span>
+                      </div>
+                      {isUnrouted(band, 0) && data.whyUnowned && <WhyNoOwner why={data.whyUnowned} />}
                     </div>
                   ) : (
                     <ul className="space-y-2.5">

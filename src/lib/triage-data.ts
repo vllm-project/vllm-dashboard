@@ -7,6 +7,12 @@ import {
   type PlanResult,
 } from "@/lib/triage-actions";
 import { matchRules, normalizeRules } from "@/lib/triage-rules";
+import {
+  commentersFromExcerpt,
+  explainUnowned,
+  type RelevanceLevel,
+  type WhyUnowned,
+} from "@/lib/triage-why-unowned";
 import type {
   TriageRelevance,
   TriageAssignment,
@@ -16,6 +22,7 @@ import type {
   TriageItemDetail,
   TriageMaintainer,
   TriageMyPlate,
+  TriagePipelineHealth,
   TriagePrepass,
   TriageQueueItem,
   TriageQueueResponse,
@@ -277,8 +284,17 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
   if (!item) return null;
 
   const [score, extraction, assignments, actions, relevance] = await Promise.all([
-    db<{ score: number; band: string; breakdown: unknown; scoring_version: string; scored_at: Date }[]>`
-      SELECT score, band, breakdown, scoring_version, scored_at
+    db<
+      {
+        score: number;
+        band: string;
+        breakdown: unknown;
+        scoring_version: string;
+        scored_at: Date;
+        labelled: boolean;
+      }[]
+    >`
+      SELECT score, band, breakdown, scoring_version, scored_at, extraction_id IS NOT NULL AS labelled
       FROM triage_scores WHERE item_key = ${itemKey}
     `,
     db<{ id: string; facets: TriageFacets; model: string; prompt_version: string; created_at: Date }[]>`
@@ -363,8 +379,23 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
     judgedAt: r.created_at.toISOString(),
   }));
 
+  const openOwners = assignments.filter((a) => a.status === "open" || a.status === "acked");
+  const whyUnowned =
+    openOwners.length === 0
+      ? await explainItemRouting(db, {
+          itemKey,
+          item,
+          score: score[0] ?? null,
+          facets: extraction[0]?.facets ?? null,
+          relevance: relevanceRows,
+          assignments: assignments.map(toAssignment),
+          actions: actions.map((a) => ({ actor: a.actor, action: a.action })),
+        })
+      : null;
+
   return {
     relevance: relevanceRows,
+    whyUnowned,
     item: {
       itemKey: item.item_key,
       repo: item.repo,
@@ -420,6 +451,119 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
       createdAt: iso(row.created_at)!,
     })),
   };
+}
+
+/**
+ * The router's view of an unowned item: active maintainers, this week's load,
+ * who has a work profile, and commenters for items stored before
+ * `prepass.commenters` existed. The decision itself is `explainUnowned`.
+ */
+async function explainItemRouting(
+  db: Db,
+  input: {
+    itemKey: string;
+    item: {
+      state: string;
+      in_scope: boolean;
+      title: string;
+      files: unknown;
+      prepass: TriagePrepass;
+      gh_created_at: Date;
+      extraction_status: string;
+    };
+    score: { score: number; band: string; labelled: boolean } | null;
+    facets: TriageFacets | null;
+    relevance: TriageRelevance[];
+    assignments: TriageAssignment[];
+    actions: { actor: string; action: string }[];
+  },
+): Promise<WhyUnowned> {
+  const [maintainers, load, excerpt, ahead, waiting] = await Promise.all([
+    db<(MaintainerRow & { has_profile: boolean })[]>`
+      SELECT m.github_login, m.slack_user_id, m.active, m.rules, m.min_score, m.capacity_per_week,
+             m.away, m.notify_mode, m.updated_by, m.updated_at,
+             EXISTS (SELECT 1 FROM triage_maintainer_profiles p WHERE p.github_login = m.github_login) AS has_profile
+      FROM triage_maintainers m WHERE m.active
+    `,
+    // maintainer_load in triage/store.py.
+    db<{ maintainer: string; n: string }[]>`
+      SELECT maintainer, count(*) AS n FROM triage_assignments
+      WHERE assigned_at >= now() - interval '7 days' AND role = 'primary'
+        AND status NOT IN ('not_mine', 'reassigned')
+        AND NOT (status = 'done' AND reason->>'closed_by' = 'github'
+                 AND reason->>'closed_from' = 'open')
+      GROUP BY maintainer
+    `,
+    input.item.prepass && "commenters" in input.item.prepass
+      ? Promise.resolve([] as { comments_excerpt: string }[])
+      : db<{ comments_excerpt: string }[]>`
+          SELECT comments_excerpt FROM triage_items WHERE item_key = ${input.itemKey}
+        `,
+    // Router candidates (routing_candidates in triage/store.py) scoring higher.
+    input.score
+      ? db<{ n: string }[]>`
+          SELECT count(*) AS n FROM triage_items i JOIN triage_scores s ON s.item_key = i.item_key
+          WHERE i.in_scope AND i.state = 'open' AND s.band IN ('page', 'route')
+            AND s.extraction_id IS NOT NULL AND s.score > ${input.score.score}
+            AND NOT EXISTS (SELECT 1 FROM triage_assignments a WHERE a.item_key = i.item_key
+                            AND a.role = 'primary' AND a.status IN ('open', 'acked', 'done'))
+            AND NOT EXISTS (SELECT 1 FROM triage_actions a WHERE a.item_key = i.item_key
+                            AND a.action IN ('drop', 'slop'))
+        `
+      : Promise.resolve([{ n: "0" }]),
+    // RoutingRow.waiting_since: GREATEST(routable_since, first label). Read
+    // through to_jsonb so this works before migration 0043 adds the column;
+    // without it the start of the wait is unknown.
+    db<{ has_column: boolean; waiting_since: Date | null }[]>`
+      SELECT to_jsonb(s) ? 'routable_since' AS has_column,
+             GREATEST((to_jsonb(s)->>'routable_since')::timestamptz,
+                      (SELECT min(x.created_at) FROM triage_extractions x WHERE x.item_key = s.item_key))
+               AS waiting_since
+      FROM triage_scores s WHERE s.item_key = ${input.itemKey}
+    `,
+  ]);
+  const prepass: TriagePrepass = input.item.prepass ?? {};
+  const hidden = [...input.actions].reverse().find((a) => a.action === "drop" || a.action === "slop");
+  const done = input.assignments.find((a) => a.role === "primary" && a.status === "done");
+  return explainUnowned({
+    state: input.item.state,
+    inScope: input.item.in_scope,
+    band: input.score?.band ?? null,
+    score: input.score?.score ?? null,
+    labelled: input.score?.labelled ?? false,
+    extractionStatus: input.item.extraction_status,
+    createdAt: iso(input.item.gh_created_at),
+    title: input.item.title,
+    facets: input.facets,
+    prepass: "commenters" in prepass
+      ? prepass
+      : { ...prepass, commenters: commentersFromExcerpt(excerpt[0]?.comments_excerpt ?? "") },
+    files: Array.isArray(input.item.files) ? (input.item.files as { path?: string }[]) : [],
+    relevance: input.relevance.map((r) => ({
+      maintainer: r.maintainer,
+      relevance: r.relevance as RelevanceLevel,
+      current: r.current,
+    })),
+    maintainers: maintainers.map((row) => {
+      const m = toMaintainer(row);
+      return {
+        login: m.githubLogin,
+        minScore: m.minScore,
+        capacityPerWeek: m.capacityPerWeek,
+        away: m.away,
+        rules: m.rules,
+        hasProfile: row.has_profile,
+      };
+    }),
+    load: Object.fromEntries(load.map((row) => [row.maintainer, Number(row.n)])),
+    notMine: [...new Set(input.actions.filter((a) => a.action === "not_mine").map((a) => a.actor))],
+    hidden: hidden ? { action: hidden.action as "drop" | "slop", actor: hidden.actor } : null,
+    doneBy: done?.maintainer ?? null,
+    doneOnGithub: done?.reason.closed_by === "github",
+    waitingSince: waiting[0]?.has_column ? iso(waiting[0].waiting_since) : undefined,
+    queuePosition: Number(ahead[0]?.n ?? 0) + 1,
+    now: new Date(),
+  });
 }
 
 export async function getMyPlate(login: string): Promise<TriageMyPlate> {
@@ -603,7 +747,7 @@ export function suppressionThreshold(env: Record<string, string | undefined> = p
 export async function getStats(): Promise<TriageStats> {
   const db = getDb();
   const threshold = suppressionThreshold();
-  const [[row], bands, suppressors] = await Promise.all([
+  const [[row], bands, suppressors, health] = await Promise.all([
     db<
       {
         ingested_24h: string;
@@ -660,6 +804,7 @@ export async function getStats(): Promise<TriageStats> {
       HAVING count(*) >= ${threshold}
       ORDER BY count(*) DESC
     `,
+    getPipelineHealth(db),
   ]);
   const bandCounts: TriageStats["bandCounts"] = { page: 0, route: 0, watch: 0, ignore: 0, unscored: 0 };
   for (const { band, n } of bands) {
@@ -681,6 +826,87 @@ export async function getStats(): Promise<TriageStats> {
       threshold,
       actors: suppressors.map((r) => ({ actor: r.actor, drops: Number(r.drops), slops: Number(r.slops) })),
     },
+    health,
+  };
+}
+
+/** The extractor's default `max_attempts` (triage/extract.py): failed items stop being retried after this. */
+const EXTRACTION_MAX_ATTEMPTS = 3;
+
+/**
+ * Is labelling / relevance judging keeping up? Both run from cron on the
+ * extractor host and fail silently, so the queue page grades these
+ * (triage-health.ts).
+ */
+async function getPipelineHealth(db: Db): Promise<TriagePipelineHealth> {
+  const [row] = await db<
+    {
+      last_labelled_at: Date | null;
+      last_judged_at: Date | null;
+      waiting_for_label: string;
+      label_wait_since: Date | null;
+      waiting_for_judgement: string;
+      judgement_wait_since: Date | null;
+      label_failures_24h: string;
+      label_gave_up: string;
+      last_label_error: string | null;
+    }[]
+  >`
+    WITH label_wait AS (
+      SELECT updated_at FROM triage_items
+      WHERE in_scope AND state = 'open'
+        AND (extraction_status IN ('pending', 'running')
+             OR (extraction_status = 'failed' AND extraction_attempts < ${EXTRACTION_MAX_ATTEMPTS}))
+    ),
+    -- The router's candidates (routing_candidates in triage/store.py) that
+    -- still lack a current judgement for some active maintainer.
+    judgement_wait AS (
+      SELECT CASE WHEN e.content_hash = i.content_hash THEN e.created_at END AS labelled_at
+      FROM triage_items i JOIN triage_scores s ON s.item_key = i.item_key
+      JOIN triage_extractions e ON e.id = s.extraction_id
+      WHERE i.in_scope AND i.state = 'open' AND s.band IN ('page', 'route')
+          AND s.extraction_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM triage_assignments a WHERE a.item_key = i.item_key
+                          AND a.role = 'primary' AND a.status IN ('open', 'acked', 'done'))
+          AND NOT EXISTS (SELECT 1 FROM triage_actions a WHERE a.item_key = i.item_key
+                          AND a.action IN ('drop', 'slop'))
+          AND EXISTS (SELECT 1 FROM triage_maintainers m
+                      WHERE m.active AND NOT EXISTS (
+                        SELECT 1 FROM triage_relevance r
+                        WHERE r.item_key = i.item_key AND r.maintainer = m.github_login
+                          AND r.content_hash = i.content_hash))
+    )
+    SELECT
+      (SELECT max(created_at) FROM triage_extractions) AS last_labelled_at,
+      (SELECT max(created_at) FROM triage_relevance) AS last_judged_at,
+      (SELECT count(*) FROM label_wait) AS waiting_for_label,
+      (SELECT min(updated_at) FROM label_wait) AS label_wait_since,
+      (SELECT count(*) FROM judgement_wait) AS waiting_for_judgement,
+      (SELECT min(labelled_at) FROM judgement_wait) AS judgement_wait_since,
+      (SELECT count(*) FROM triage_items
+        WHERE extraction_status = 'failed' AND updated_at > now() - interval '24 hours'
+      ) AS label_failures_24h,
+      (SELECT count(*) FROM triage_items
+        WHERE in_scope AND state = 'open' AND extraction_status = 'failed'
+          AND extraction_attempts >= ${EXTRACTION_MAX_ATTEMPTS}
+      ) AS label_gave_up,
+      (SELECT extraction_error FROM triage_items
+        WHERE extraction_status = 'failed' AND extraction_error IS NOT NULL
+        ORDER BY updated_at DESC LIMIT 1
+      ) AS last_label_error
+  `;
+  const expires = process.env.TRIAGE_CLAUDE_LOGIN_EXPIRES?.trim();
+  return {
+    lastLabelledAt: iso(row.last_labelled_at),
+    lastJudgedAt: iso(row.last_judged_at),
+    waitingForLabel: Number(row.waiting_for_label),
+    labelWaitSince: iso(row.label_wait_since),
+    waitingForJudgement: Number(row.waiting_for_judgement),
+    judgementWaitSince: iso(row.judgement_wait_since),
+    labelFailures24h: Number(row.label_failures_24h),
+    labelGaveUp: Number(row.label_gave_up),
+    lastLabelError: row.last_label_error,
+    loginExpiresOn: expires && /^\d{4}-\d{2}-\d{2}$/.test(expires) ? expires : null,
   };
 }
 

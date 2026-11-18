@@ -25,6 +25,7 @@ import {
   parseSearchInput,
   type BandKey,
 } from "@/lib/triage-style";
+import { pipelineHealth, type HealthTone } from "@/lib/triage-health";
 import type { TriageQueueResponse, TriageStats } from "@/lib/triage-types";
 import { DEFAULT_QUEUE_BANDS, TRIAGE_AREAS, TRIAGE_HARDWARE } from "@/lib/triage-vocab";
 
@@ -83,6 +84,60 @@ function PriorityMix({
           Nothing open
         </div>
       )}
+    </div>
+  );
+}
+
+const HEALTH_CHIP: Record<HealthTone, string> = {
+  ok: "text-zinc-600 dark:text-zinc-300",
+  warn: "bg-amber-50 text-amber-900 ring-1 ring-inset ring-amber-300 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/40",
+  bad: "bg-red-50 text-red-800 ring-1 ring-inset ring-red-300 dark:bg-red-500/10 dark:text-red-200 dark:ring-red-500/40",
+};
+const HEALTH_DOT: Record<HealthTone, string> = {
+  ok: "bg-emerald-500",
+  warn: "bg-amber-500",
+  bad: "bg-red-600 dark:bg-red-500",
+};
+const HEALTH_WORD: Record<HealthTone, string> = { ok: "healthy", warn: "slow", bad: "stalled" };
+
+/**
+ * One compact line: is labelling and relevance judging keeping up? Both run
+ * on the extractor host and fail silently, so this turns amber/red when they
+ * fall behind (thresholds in triage-health.ts). Hover a part for details.
+ */
+function PipelineHealthStrip({ stats }: { stats: TriageStats | undefined }) {
+  // Re-grade every minute so "4m ago" and the thresholds move between refreshes.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  if (!stats?.health) {
+    return <div aria-hidden="true" className="h-7 w-full max-w-xl animate-pulse rounded-md bg-zinc-100 dark:bg-zinc-800/70" />;
+  }
+  const view = pipelineHealth(stats.health, now);
+  return (
+    <div
+      role={view.tone === "ok" ? "status" : "alert"}
+      aria-label={`Pipeline ${HEALTH_WORD[view.tone]}`}
+      className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px]"
+    >
+      <span
+        className="inline-flex items-center gap-1.5 font-medium text-zinc-500 dark:text-zinc-400"
+        title="Labelling and relevance judging run every 10 minutes on the extractor host."
+      >
+        <span aria-hidden="true" className={`h-2 w-2 rounded-full ${HEALTH_DOT[view.tone]}`} />
+        Pipeline {HEALTH_WORD[view.tone]}
+      </span>
+      {view.signals.map((signal) => (
+        <span key={signal.key} className="inline-flex items-center gap-1.5">
+          <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>
+          <span title={signal.detail} className={`rounded px-1.5 py-0.5 tabular-nums ${HEALTH_CHIP[signal.tone]}`}>
+            {signal.tone !== "ok" && <span className="sr-only">{signal.tone === "bad" ? "Problem: " : "Warning: "}</span>}
+            {signal.text}
+          </span>
+        </span>
+      ))}
     </div>
   );
 }
@@ -295,7 +350,9 @@ export default function QueueContent() {
     triageFetcher,
     { keepPreviousData: true },
   );
-  const { data: stats, mutate: mutateStats } = useSWR<TriageStats>("/api/triage/stats", triageFetcher);
+  const { data: stats, mutate: mutateStats } = useSWR<TriageStats>("/api/triage/stats", triageFetcher, {
+    refreshInterval: 120_000,
+  });
   const [search, setSearch] = useState(formatSearchInput(filters.q, filters.model));
   const [showP3, setShowP3] = useState(false);
 
@@ -350,6 +407,7 @@ export default function QueueContent() {
 
   return (
     <div className="space-y-4">
+      <PipelineHealthStrip stats={stats} />
       <SuppressionWarning stats={stats} />
       <StatStrip
         stats={stats}
