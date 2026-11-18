@@ -421,3 +421,29 @@ def test_dm_buttons_and_digest_menus_carry_the_item() -> None:
     assert actions["elements"][3]["url"] == "https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2348071"
     assert describe_reason("commented") == "you already commented on it"
     assert describe_reason("relevance:high") == "judged high from your recent work"
+
+
+def test_vietnamese_wording_is_a_per_maintainer_one_off() -> None:
+    from alerting.ports import DeliveryMode
+
+    from triage.maintainers import MaintainersFileError, parse_maintainer_files
+    from triage.notify import describe_reason, page_dm
+    from triage.store import DigestEntry
+
+    [m] = parse_maintainer_files({"x.yaml": "github_login: x\nlanguage: vi\nnotes: GDN kernels\n"})
+    assert m.rules["language"] == "vi"
+    [en] = parse_maintainer_files({"y.yaml": "github_login: y\nnotes: n\n"})
+    assert "language" not in en.rules
+    with pytest.raises(MaintainersFileError):
+        parse_maintainer_files({"z.yaml": "github_login: z\nlanguage: fr\nnotes: n\n"})
+
+    entry = DigestEntry(1, "vllm-project/vllm#65385", "GDN prefill wrong results", "https://github.com/vllm-project/vllm/issues/65385",
+                        76, "page", "summary stays as written", ["relevance:high (like #66064)"])
+    blocks = page_dm(assignment_key="k", maintainer_slack="U0B02RR385Q", entry=entry, role="primary",
+                     mode=DeliveryMode.SHADOW, reassign_to=["khluu"], lang="vi").payload["blocks"]
+    assert blocks[0]["text"]["text"] == "Triage: một P0 thuộc mảng của bạn"
+    assert "Vì sao là bạn: được đánh giá cao dựa trên công việc gần đây của bạn" in blocks[1]["text"]["text"]
+    assert "summary stays as written" in blocks[1]["text"]["text"]
+    assert [e["text"]["text"] for e in blocks[2]["elements"] if e["type"] == "button"] == [
+        "Nhận việc", "Không phải của tôi", "Mở trên dashboard"]
+    assert describe_reason("commented") == "you already commented on it"

@@ -69,6 +69,8 @@ export interface TriageRules {
   types: string[];
   exclude: { types: string[]; areas: string[]; hardware: string[] };
   natural_language: string;
+  /** "vi" makes the bot write to this person in Vietnamese (a one-off; see gau-nernst.yaml). */
+  language?: "vi";
 }
 
 export interface TriageAssignmentSummary {

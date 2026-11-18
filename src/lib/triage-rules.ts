@@ -164,6 +164,7 @@ export function normalizeRules(raw: unknown): TriageRules {
     },
     natural_language:
       typeof value.natural_language === "string" ? value.natural_language : "",
+    ...(value.language === "vi" ? { language: "vi" as const } : {}),
   };
 }
 
@@ -275,6 +276,7 @@ export function validateMaintainerSettings(
           hardware: fields.excludeHardware as string[],
         },
         natural_language: naturalLanguage.trim(),
+        ...(rulesInput.language === "vi" ? { language: "vi" as const } : {}),
       },
       minScore,
       capacityPerWeek: capacity,
@@ -340,6 +342,7 @@ export function maintainerFileYaml(login: string, settings: MaintainerSettingsIn
   lines.push(`min_score: ${settings.minScore}`);
   lines.push(`capacity_per_week: ${settings.capacityPerWeek}`);
   lines.push(`notify_mode: ${settings.notifyMode}`);
+  if (settings.rules.language === "vi") lines.push("language: vi");
   if (settings.away.length > 0) {
     lines.push("away:");
     for (const range of settings.away) {

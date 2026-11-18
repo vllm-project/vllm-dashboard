@@ -485,12 +485,15 @@ function toMaintainer(row: MaintainerRow): TriageMaintainer {
   };
 }
 
-/** The active maintainer whose file links this Slack user, if any. */
-export async function maintainerForSlackUser(slackUserId: string): Promise<string | null> {
-  const [row] = await getDb()<{ github_login: string }[]>`
-    SELECT github_login FROM triage_maintainers WHERE active AND slack_user_id = ${slackUserId} LIMIT 1
+/** The active maintainer whose file links this Slack user, and their bot language. */
+export async function maintainerForSlackUser(
+  slackUserId: string,
+): Promise<{ login: string; language: "en" | "vi" } | null> {
+  const [row] = await getDb()<{ github_login: string; language: string | null }[]>`
+    SELECT github_login, rules->>'language' AS language
+    FROM triage_maintainers WHERE active AND slack_user_id = ${slackUserId} LIMIT 1
   `;
-  return row?.github_login ?? null;
+  return row ? { login: row.github_login, language: row.language === "vi" ? "vi" : "en" } : null;
 }
 
 /** The person's open (or acked) assignment on an item, if they have one. */

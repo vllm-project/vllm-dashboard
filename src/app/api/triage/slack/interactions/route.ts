@@ -50,18 +50,23 @@ export async function POST(request: Request) {
       }
     });
 
-  const login = await maintainerForSlackUser(click.slackUserId);
-  if (!login) {
+  const who = await maintainerForSlackUser(click.slackUserId);
+  if (!who) {
     reply(ephemeral(
       "Your Slack account isn't linked to a triage maintainer. Add `slack_user_id` to your file in " +
         "triage/config/maintainers/ to act from Slack, or use https://ci.vllm.ai/triage/me.",
     ));
     return new Response(null, { status: 200 });
   }
+  const { login, language } = who;
   // Only the person an item is assigned to can act on it from Slack.
   const assignmentId = await openAssignmentFor(click.itemKey, login);
   if (assignmentId === null) {
-    reply(ephemeral(`${click.itemKey} isn't currently assigned to you, so nothing changed.`));
+    reply(ephemeral(
+      language === "vi"
+        ? `${click.itemKey} hiện không được giao cho bạn, nên không có gì thay đổi.`
+        : `${click.itemKey} isn't currently assigned to you, so nothing changed.`,
+    ));
     return new Response(null, { status: 200 });
   }
   const result = await applyTriageAction(
@@ -76,7 +81,7 @@ export async function POST(request: Request) {
   reply({
     replace_original: true,
     text: `${click.itemKey}: ${click.action.replace("_", " ")} by ${login}`,
-    blocks: blocksAfterAction(click.blocks, click.itemKey, click.action, login, click.target, new Date()),
+    blocks: blocksAfterAction(click.blocks, click.itemKey, click.action, login, click.target, new Date(), language),
   });
   return new Response(null, { status: 200 });
 }

@@ -137,3 +137,17 @@ test("digest menus: ack swaps Ack for Done, leaving ends with just Open", () => 
   assert.deepEqual((gone[0].accessory as { options: { value: string }[] }).options.map((o) => o.value), ["open"]);
   assert.equal(gone.filter((b) => b.block_id === `triage:result:${key}`).length, 1);
 });
+
+test("Vietnamese confirmation for maintainers with language: vi", () => {
+  const key = "vllm-project/vllm#65385";
+  const blocks = [
+    { type: "section", block_id: `triage:item:${key}` },
+    { type: "actions", block_id: `triage:actions:${key}`, elements: [{ type: "button", action_id: SLACK_ACTIONS.ack, value: key }] },
+  ];
+  const out = blocksAfterAction(blocks, key, "ack", "gau-nernst", null, new Date(0), "vi");
+  assert.match(JSON.stringify(out[1]), /gau-nernst\* đã nhận việc/);
+  assert.match(JSON.stringify(out[2]), /Hoàn thành/);
+  assert.match(JSON.stringify(blocksAfterAction(blocks, key, "reassign", "gau-nernst", "khluu", new Date(0), "vi")[1]), /đã chuyển cho \*khluu\*/);
+  // Everyone else stays in English.
+  assert.match(JSON.stringify(blocksAfterAction(blocks, key, "ack", "khluu", null, new Date(0))[1]), /Acked by \*khluu\*/);
+});

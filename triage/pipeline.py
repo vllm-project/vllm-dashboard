@@ -242,6 +242,7 @@ class RouteHandler:
                     maintainer_slack=maintainer.slack_user_id, entry=entry, role=role,
                     mode=self.delivery_mode,
                     reassign_to=[m.github_login for m in maintainers if m.github_login != maintainer.github_login],
+                    lang=str(maintainer.rules.get("language") or "en"),
                 )
             assignments.append(NewAssignment(
                 maintainer=maintainer.github_login, role=role,
@@ -276,6 +277,7 @@ class DigestHandler:
                 maintainer_digest(
                     maintainer=maintainer.github_login, maintainer_slack=maintainer.slack_user_id,
                     entries=entries, day=now, mode=self.delivery_mode,
+                    lang=str(maintainer.rules.get("language") or "en"),
                 ),
                 [e.assignment_id for e in entries],
                 now=now,

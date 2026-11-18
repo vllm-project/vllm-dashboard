@@ -5,6 +5,7 @@
 # you like. `rules` is optional: use it only for hard limits or "always send me".
 github_login: gau-nernst
 slack_user_id: U0B02RR385Q
+language: vi              # bot messages in Vietnamese; delete this line for English
 min_score: 40
 capacity_per_week: 8
 notify_mode: digest
