@@ -142,6 +142,10 @@ export default function ScoringGuidePage() {
           ])}
         />
         <p>Only P0 and P1 are routed to a maintainer. P2 and P3 stay on the dashboard.</p>
+        <p>
+          Only issues and PRs opened in the last {S.scope.max_age_days} days are triaged. Older ones leave the
+          queue as they age past that; anything someone already acknowledged stays in their history.
+        </p>
       </Section>
 
       <Section id="severity" step="Step 1" title="How bad is it?">

@@ -9,6 +9,12 @@
 # not urgent just because the model is popular.
 version: "2026-11-12.3"
 
+# Only issues and PRs opened within this many days are triaged (labelled,
+# scored, routed). Older ones are recorded but skipped, and items leave the
+# queue as they age past it. Not part of the score, so no version bump needed.
+scope:
+  max_age_days: 30
+
 thresholds:
   page: 70     # routed + immediate Slack DM (once Slack is enabled)
   route: 40    # routed + daily digest

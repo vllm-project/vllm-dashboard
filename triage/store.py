@@ -274,6 +274,31 @@ class PostgresTriageStore(PostgresAlertStore):
             ).fetchone()
         return int(row[0]), int(row[1])
 
+    # --- scope window --------------------------------------------------------
+
+    def expire_out_of_window(self, cutoff: datetime) -> tuple[int, int]:
+        """Take items opened before `cutoff` out of triage. Returns
+        (items expired, unacted router assignments removed)."""
+        with self._connection_factory() as c:
+            with c.transaction():
+                keys = [r[0] for r in c.execute(
+                    """UPDATE triage_items
+                       SET in_scope = false, extraction_status = 'skipped', extraction_lease_until = NULL,
+                           prepass = prepass || '{"scope_reason": "too_old"}'::jsonb
+                       WHERE in_scope AND gh_created_at < %s
+                       RETURNING item_key""",
+                    (cutoff,),
+                ).fetchall()]
+                removed = 0
+                if keys:
+                    removed = c.execute(
+                        """DELETE FROM triage_assignments a
+                           WHERE a.item_key = ANY(%s) AND a.status = 'open' AND a.assigned_by = 'router'
+                             AND NOT EXISTS (SELECT 1 FROM triage_actions x WHERE x.item_key = a.item_key)""",
+                        (keys,),
+                    ).rowcount or 0
+        return len(keys), int(removed)
+
     # --- scoring -------------------------------------------------------------
 
     def scoring_candidates(self, *, scoring_version: str, limit: int) -> list[ScoringRow]:

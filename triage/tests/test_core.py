@@ -447,3 +447,17 @@ def test_vietnamese_wording_is_a_per_maintainer_one_off() -> None:
     assert [e["text"]["text"] for e in blocks[2]["elements"] if e["type"] == "button"] == [
         "Nhận việc", "Không phải của tôi", "Mở trên dashboard"]
     assert describe_reason("commented") == "you already commented on it"
+
+
+def test_items_older_than_the_window_are_out_of_scope() -> None:
+    from datetime import timedelta
+
+    config = default_config()
+    assert config.max_age_days == 30
+    fresh = make_item(created_at=NOW - timedelta(days=29))
+    old = make_item(created_at=NOW - timedelta(days=31))
+    assert compute_prepass(fresh, config, NOW)["scope_reason"] == "issue"
+    assert compute_prepass(old, config, NOW)["scope_reason"] == "too_old"
+    assert in_scope("too_old") is False
+    # Offline (no `now`): content only.
+    assert compute_prepass(old, config)["scope_reason"] == "issue"

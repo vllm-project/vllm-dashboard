@@ -8,6 +8,7 @@
 
 export const SCORING = {
   version: "2026-11-12.3",
+  scope: { max_age_days: 30 },
   thresholds: { page: 70, route: 40, watch: 20 },
   severity: {
     serving_broken: 50,
