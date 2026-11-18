@@ -64,7 +64,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "page_backup": "Triage: you are backup on a P0 item",
         "digest_header": "📬 Daily triage digest · {date}",
         "digest_text": "Triage digest: {counts}",
-        "digest_hello": "Hi <@{slack}> 👋 Today you have {parts}.",
+        "digest_hello": "Hi <@{slack}> 👋 Today you have {parts}. <{url}|📋 Open your list>",
         "hello_page": "*{n} P0* to look at soon",
         "hello_route": "*{n} P1* for when you have time",
         "hello_join": " and ",
@@ -91,7 +91,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "page_backup": "Triage: bạn là người dự phòng cho một P0",
         "digest_header": "📬 Digest triage hằng ngày · {date}",
         "digest_text": "Digest triage: {counts}",
-        "digest_hello": "Chào <@{slack}> 👋 Hôm nay bạn có {parts} nhé.",
+        "digest_hello": "Chào <@{slack}> 👋 Hôm nay bạn có {parts} nhé. <{url}|📋 Mở danh sách của bạn>",
         "hello_page": "*{n} P0* cần xem sớm",
         "hello_route": "*{n} P1* xem khi rảnh",
         "hello_join": " và ",
@@ -279,7 +279,7 @@ def maintainer_digest(
     header = _t(lang, "digest_header", date=date)
     counts = {band: sum(1 for e in entries if e.band == band) for band in ("page", "route")}
     hello_parts = [_t(lang, f"hello_{band}", n=n) for band, n in counts.items() if n]
-    hello = _t(lang, "digest_hello", slack=maintainer_slack,
+    hello = _t(lang, "digest_hello", slack=maintainer_slack, url=f"{DASHBOARD}/me",
                parts=_t(lang, "hello_join").join(hello_parts) or str(len(entries)))
     text = _t(lang, "digest_text", counts=", ".join(f"{n} {BAND_LABELS[b]}" for b, n in counts.items() if n))
     blocks: list[dict[str, Any]] = [

@@ -504,7 +504,8 @@ def test_vietnamese_digest_is_friendly_grouped_and_keeps_titles() -> None:
     assert [b["type"] for b in blocks] == ["header", "section", "divider", "section", "section", "actions",
                                            "divider", "section", "section", "actions", "divider", "context"]
     assert texts[0] == "📬 Digest triage hằng ngày · 18/11"
-    assert texts[1] == "Chào <@U0B02RR385Q> 👋 Hôm nay bạn có *1 P0* cần xem sớm và *1 P1* xem khi rảnh nhé."
+    assert texts[1] == ("Chào <@U0B02RR385Q> 👋 Hôm nay bạn có *1 P0* cần xem sớm và *1 P1* xem khi rảnh nhé. "
+                        "<https://ci.vllm.ai/triage/me|📋 Mở danh sách của bạn>")
     assert payload["text"] == "Digest triage: 1 P0, 1 P1"  # what the phone notification shows
     assert texts[3] == "*🚨 P0: cần xem sớm (1)*" and texts[7] == "*🔶 P1: xem khi rảnh (1)*"
     assert [e["text"]["text"] for e in blocks[5]["elements"] if e["type"] == "button"] == [
@@ -536,7 +537,8 @@ def test_digest_caps_items_to_fit_slacks_block_limit() -> None:
     assert len(payload["blocks"]) <= 50
     assert sum(1 for b in payload["blocks"] if b.get("type") == "actions") == DIGEST_MAX_ITEMS
     assert payload["blocks"][0]["text"]["text"] == "📬 Daily triage digest · Nov 18"
-    assert payload["blocks"][1]["text"]["text"] == "Hi <@U1> 👋 Today you have *30 P1* for when you have time."
+    assert payload["blocks"][1]["text"]["text"] == (
+        "Hi <@U1> 👋 Today you have *30 P1* for when you have time. <https://ci.vllm.ai/triage/me|📋 Open your list>")
     assert payload["blocks"][-1]["type"] == "context"  # the footer survives the cap
     assert "…and 10 more on <https://ci.vllm.ai/triage/me|My list>." in payload["blocks"][-3]["elements"][0]["text"]
 
