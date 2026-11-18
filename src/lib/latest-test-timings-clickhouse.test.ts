@@ -74,6 +74,18 @@ test("passing builds skip a build whose test spans lost their command span", asy
   assert.deepEqual(builds.map((b) => b.build_number), ["12"]);
 });
 
+test("passing builds below a build number bind it as a filter", async (t) => {
+  const calls = fakeClickHouse(t, () => []);
+  assert.deepEqual(await clickHousePassingBuilds(false, "s", null, null, 20, {}, 97156), []);
+  assert.equal(calls[0].url.searchParams.get("param_before"), "97156");
+  assert.match(calls[0].sql, /build_number < \{before:Int64\}/);
+  assert.equal(calls[0].url.searchParams.get("param_days"), null);
+  const unbounded = fakeClickHouse(t, () => []);
+  await clickHousePassingBuilds(false, "s", 14, null, 20);
+  assert.equal(unbounded[0].url.searchParams.get("param_before"), null);
+  assert.ok(!unbounded[0].sql.includes("{before:"));
+});
+
 // 51 passing builds, newest first: "b1" (job "j1") ... "b51" (job "j51").
 function manyBuilds(t: test.TestContext, orphansOf: (job: string) => string): Call[] {
   return fakeClickHouse(t, ({ sql, url }) => {

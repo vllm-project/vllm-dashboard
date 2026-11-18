@@ -41,13 +41,15 @@ function answer(sql: string, url: URL): object[] {
   return [{ job_id: JOB, label: LABEL, duration_ms: "450000" }];
 }
 
-async function getTimings(query: string): Promise<Response> {
+async function getTimings(
+  query: string, respond: (sql: string, url: URL) => object[] = answer,
+): Promise<Response> {
   process.env.CLICKHOUSE_URL = "https://clickhouse.test";
   process.env.CLICKHOUSE_READ_USER = "reader";
   process.env.CLICKHOUSE_READ_PASSWORD = "secret";
   const original = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
-    const rows = answer(String(init?.body), new URL(String(input)));
+    const rows = respond(String(init?.body), new URL(String(input)));
     return new Response(rows.map((row) => JSON.stringify(row)).join("\n"), { status: 200 });
   }) as typeof fetch;
   try {
@@ -86,4 +88,46 @@ test("per-test timings come only for files over testsOverMs", async () => {
     { nodeid: "lora/test_a.py::test_y", observedMs: 50_000 },
   ]);
   assert.ok(!("tests" in (files.get("lora/test_b.py") as object)));
+});
+
+// Build 102, the window's only passing build, is broken: its job is shorter
+// than the test command inside it. Build 101 (answer() above) is intact but
+// only a look-back below 102 finds it; with `older` false nothing does.
+const BROKEN_JOB = "00000000-0000-0000-0000-000000000002";
+function brokenWindow(older: boolean) {
+  return (sql: string, url: URL): object[] => {
+    if (sql.includes("GROUP BY build_number")) {
+      if (url.searchParams.get("param_branch") !== "main") return [];
+      if (url.searchParams.get("param_before") === "102") return older ? answer(sql, url) : [];
+      return [{
+        build_number: "102", commit: "def456", finished_at: "2026-11-17T16:00:00.000000Z",
+        jobs: JSON.stringify([[BROKEN_JOB, 1_000]]),
+      }];
+    }
+    if (sql.includes("AS orphans")) return [{ job_id: JOB, orphans: "0" }, { job_id: BROKEN_JOB, orphans: "0" }];
+    const rows = answer(sql, url);
+    if (sql.includes("LEFT JOIN")) {
+      return [...rows, ...rows.map((row) => ({ ...row, job_id: BROKEN_JOB, command_span_id: "span-2" }))];
+    }
+    return [...rows, { job_id: BROKEN_JOB, label: LABEL, duration_ms: "450000" }];
+  };
+}
+
+test("a window of only broken builds is served from older valid builds", async () => {
+  const response = await getTimings("stepKey=lora&queue=l4-k8s", brokenWindow(true));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.buildNumber, 101);
+  assert.deepEqual(body.buildNumbers, [101]);
+  assert.equal(body.setupMs, 50_000);
+  assert.deepEqual(body.skippedBuilds, [
+    { buildNumber: 102, reason: `Job ${BROKEN_JOB} is shorter than its test commands` },
+  ]);
+  assert.deepEqual(body.files.map((file: { file: string }) => file.file), ["lora/test_a.py", "lora/test_b.py"]);
+});
+
+test("no valid build in or before the window is a 422", async () => {
+  const response = await getTimings("stepKey=lora", brokenWindow(false));
+  assert.equal(response.status, 422);
+  assert.match((await response.json()).error, /shorter than its test commands/);
 });

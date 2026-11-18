@@ -41,18 +41,21 @@ function builds(...list: [number, Job[]][]): Branch {
 }
 
 // queryLatestTestTimings against an in-memory store answering from `main` or
-// `treatment`. Each read is logged as "<op>[:<branch>][:<days|all>]", with a
-// ":t" suffix when it runs under the treatment timeout.
+// `treatment`. Each read is logged as "<op>[:<branch>][:<days|all>][:<N]"
+// (":<N" when it asks only for builds numbered below N), with a ":t" suffix
+// when it runs under the treatment timeout.
 function fakeStore(main: Branch, treatment: Branch | "fails", calls: string[], timed = false): TimingStore {
   const suffix = timed ? ":t" : "";
   const fail = () => new Error("Timeout exceeded: elapsed 3 seconds");
   return {
-    async passingBuilds(isTreatment, stepKey, days) {
+    async passingBuilds(isTreatment, stepKey, days, _queue, before) {
       assert.equal(stepKey, "step-a");
-      calls.push(`builds:${isTreatment ? "treatment" : "main"}:${days ?? "all"}${suffix}`);
+      const below = before === undefined ? "" : `:<${before}`;
+      calls.push(`builds:${isTreatment ? "treatment" : "main"}:${days ?? "all"}${below}${suffix}`);
       const source = isTreatment ? treatment : main;
       if (source === "fails") throw fail();
-      return days === null ? (source.older ?? []) : source.builds;
+      const found = days === null ? (source.older ?? []) : source.builds;
+      return found.filter((build) => before === undefined || Number(build.build_number) < before);
     },
     async spans(jobIds) {
       calls.push(`spans${suffix}`);
@@ -231,6 +234,68 @@ test("a main build with broken spans is skipped and named", async (t) => {
 test("main builds with only broken spans are an error, not empty timings", async (t) => {
   const broken = builds([100, [{ id: "broken", tests: [[null, "tests/test_a.py::one", 10]] }]]);
   await assert.rejects(query(t, broken, none), /Test span without a parent command/);
+});
+
+test("a window of only broken builds looks back past them for valid ones", async (t) => {
+  // An ingestion outage broke every build in the window; main's older builds
+  // are intact.
+  const broken = builds(
+    [102, [{ id: "broken-new", tests: [[null, "tests/test_a.py::one", 10]] }]],
+    [101, [{ id: "broken-old", tests: [["pytest old", "tests/test_a.py::one", 10], ["pytest old", "tests/test_a.py::one", 10]] }]],
+  );
+  const past = builds(
+    [99, [{ id: "past-new", tests: [["pytest old", "tests/test_a.py::one", 60_000]], setupMs: 2_000 }]],
+    [98, [{ id: "past-broken", tests: [[null, "tests/test_a.py::one", 10]] }]],
+    [97, [{ id: "past-old", tests: [["pytest old", "tests/test_a.py::one", 40_000]], setupMs: 4_000 }]],
+  );
+  const store: Branch = {
+    builds: broken.builds, rows: [...broken.rows, ...past.rows],
+    commands: [...broken.commands, ...past.commands],
+    // The unwindowed lookup also sees the window's builds; `before` drops them.
+    older: [...broken.builds, ...past.builds],
+  };
+  const { result, calls } = await query(t, store, none);
+  assert.ok(result);
+  assert.equal(result.buildNumber, 99);
+  assert.equal(result.commit, "c99");
+  assert.deepEqual(result.buildNumbers, [99, 97]);
+  assert.deepEqual(result.jobIds, ["past-new", "past-old"]);
+  assert.deepEqual(result.files.map((f) => [f.command, f.file, f.builds]), [["pytest old", "tests/test_a.py", 2]]);
+  assert.equal(result.setupMs, 3_000);
+  assert.deepEqual(result.skippedBuilds, [
+    { buildNumber: 102, reason: "Test span without a parent command" },
+    { buildNumber: 101, reason: "Repeated case: tests/test_a.py::one" },
+    { buildNumber: 98, reason: "Test span without a parent command" },
+  ]);
+  assert.deepEqual(calls, [
+    "builds:main:14", "spans", "builds:main:all:<101", "spans", "timeout", "builds:treatment:14:t",
+  ]);
+});
+
+test("broken builds in the window and none valid before it are still an error", async () => {
+  const broken = builds([100, [{ id: "broken", tests: [[null, "tests/test_a.py::one", 10]] }]]);
+  const pastBroken = builds([90, [{ id: "past-broken", tests: [[null, "tests/test_a.py::one", 10]] }]]);
+  const store: Branch = {
+    builds: broken.builds, rows: [...broken.rows, ...pastBroken.rows], commands: [],
+    older: pastBroken.builds,
+  };
+  const calls: string[] = [];
+  await assert.rejects(
+    queryLatestTestTimings("step-a", {}, fakeStore(store, none, calls)),
+    /Test span without a parent command/,
+  );
+  assert.deepEqual(calls, ["builds:main:14", "spans", "builds:main:all:<100", "spans"]);
+});
+
+test("a window with one valid build uses it without looking back", async (t) => {
+  const mixed = builds(
+    [101, [{ id: "broken", tests: [[null, "tests/test_a.py::one", 10]] }]],
+    [100, [{ id: "good", tests: [["pytest old", "tests/test_a.py::one", 10]] }]],
+  );
+  const { result, calls } = await query(t, { ...mixed, older: main.builds }, none);
+  assert.ok(result);
+  assert.deepEqual(result.buildNumbers, [100]);
+  assert.deepEqual(calls, ["builds:main:14", "spans", "timeout", "builds:treatment:14:t"]);
 });
 
 test("an unexpected error in a main build fails the request instead of skipping it", async (t) => {

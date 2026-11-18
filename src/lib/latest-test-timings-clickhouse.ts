@@ -40,7 +40,8 @@ const DEDUPE = "ORDER BY received_at DESC LIMIT 1 BY trace_id, span_id";
 /**
  * Builds of `main` (or the treatment branch) in which every script job of the
  * step finished and passed, newest first, keeping only builds with at least
- * one test span. Mirrors passingBuilds() in latest-test-timings.ts.
+ * one test span. With `before`, only builds numbered below it. Mirrors
+ * passingBuilds() in latest-test-timings.ts.
  */
 export async function clickHousePassingBuilds(
   treatment: boolean,
@@ -49,6 +50,7 @@ export async function clickHousePassingBuilds(
   queue: string | null,
   limit: number,
   options: QueryOptions = {},
+  before: number | null = null,
 ): Promise<ClickHousePassingBuild[]> {
   const params: Record<string, string | number> = {
     branch: treatment ? "khluu/otel" : "main",
@@ -62,6 +64,10 @@ export async function clickHousePassingBuilds(
   if (days !== null) {
     filters += "\n    AND start_time >= now64(6) - toIntervalDay({days:UInt32})";
     params.days = days;
+  }
+  if (before !== null) {
+    filters += "\n    AND build_number < {before:Int64}";
+    params.before = before;
   }
   const rows = await queryClickHouse<{
     build_number: string; commit: string | null; finished_at: string; jobs: string;
