@@ -1,5 +1,5 @@
 import { getDb } from "@/lib/db";
-import type { QueueFilters } from "@/lib/triage-query";
+import { OWNER_NONE, type QueueFilters } from "@/lib/triage-query";
 import {
   planTriageAction,
   type ActionRequest,
@@ -153,11 +153,14 @@ export async function listQueue(filters: QueueFilters): Promise<TriageQueueRespo
                     THEN e.facets->'models' ELSE '[]'::jsonb END) m
              WHERE m->>'name' ILIKE ${"%" + escapeLike(filters.model) + "%"})`
       : db``}
-    ${filters.assignee
-      ? db`AND EXISTS (SELECT 1 FROM triage_assignments a
-                       WHERE a.item_key = i.item_key AND a.status IN ('open', 'acked')
-                         AND lower(a.maintainer) = lower(${filters.assignee}))`
-      : db``}
+    ${filters.owner === OWNER_NONE
+      ? db`AND NOT EXISTS (SELECT 1 FROM triage_assignments a
+                           WHERE a.item_key = i.item_key AND a.status IN ('open', 'acked'))`
+      : filters.owner
+        ? db`AND EXISTS (SELECT 1 FROM triage_assignments a
+                         WHERE a.item_key = i.item_key AND a.status IN ('open', 'acked')
+                           AND lower(a.maintainer) = lower(${filters.owner}))`
+        : db``}
     ${statusFilter(db, filters.status)}
     ${filters.q
       ? db`AND (i.title ILIKE ${"%" + escapeLike(filters.q) + "%"}

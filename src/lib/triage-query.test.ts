@@ -15,7 +15,7 @@ test("defaults: page/route/watch bands, open items, score sort", () => {
 test("valid params parse; unknown values fall back", () => {
   const filters = parseQueueFilters(
     new URLSearchParams(
-      "bands=page,unscored,bogus&kind=pr&area=moe&hardware=B200&model=qwen&assignee=alice&status=acked&q=%23123&state=all&scope=all&sort=age&page=3&pageSize=999",
+      "bands=page,unscored,bogus&kind=pr&area=moe&hardware=B200&model=qwen&owner=alice&status=acked&q=%23123&state=all&scope=all&sort=age&page=3&pageSize=999",
     ),
   );
   assert.deepEqual(filters.bands, ["page", "unscored"]);
@@ -23,7 +23,7 @@ test("valid params parse; unknown values fall back", () => {
   assert.equal(filters.area, "moe");
   assert.equal(filters.hardware, "B200");
   assert.equal(filters.model, "qwen");
-  assert.equal(filters.assignee, "alice");
+  assert.equal(filters.owner, "alice");
   assert.equal(filters.status, "acked");
   assert.equal(filters.q, "#123");
   assert.equal(filters.state, "all");
@@ -33,13 +33,13 @@ test("valid params parse; unknown values fall back", () => {
   assert.equal(filters.pageSize, 200);
 
   const junk = parseQueueFilters(
-    new URLSearchParams("bands=nope&kind=x&area=zzz&hardware=H9000&assignee=bad%20login&status=x&sort=x&page=-2"),
+    new URLSearchParams("bands=nope&kind=x&area=zzz&hardware=H9000&owner=bad%20login&status=x&sort=x&page=-2"),
   );
   assert.deepEqual(junk.bands, ["page", "route", "watch"]);
   assert.equal(junk.kind, null);
   assert.equal(junk.area, null);
   assert.equal(junk.hardware, null);
-  assert.equal(junk.assignee, null);
+  assert.equal(junk.owner, null);
   assert.equal(junk.status, "any");
   assert.equal(junk.sort, "score");
   assert.equal(junk.page, 1);
@@ -60,4 +60,16 @@ test("only https vllm-project GitHub links are linkable", () => {
   assert.equal(safeGithubUrl("javascript:alert(1)"), null);
   assert.equal(safeGithubUrl("http://github.com/vllm-project/vllm"), null);
   assert.equal(safeGithubUrl("https://user:pw@github.com/vllm-project/vllm"), null);
+});
+
+test("owner filter: a login, none, or the old assignee param", () => {
+  const parse = (query: string) => parseQueueFilters(new URLSearchParams(query)).owner;
+  assert.equal(parse("owner=khluu"), "khluu");
+  assert.equal(parse("owner=none"), "none");
+  assert.equal(parse("assignee=gau-nernst"), "gau-nernst");
+  assert.equal(parse("owner=khluu&assignee=other"), "khluu");
+  assert.equal(parse("owner=bad%20login"), null);
+  assert.equal(parse(""), null);
+  assert.equal(queueFiltersToParams(parseQueueFilters(new URLSearchParams("owner=none"))).toString(), "owner=none");
+  assert.equal(queueFiltersToParams(parseQueueFilters(new URLSearchParams("assignee=khluu"))).toString(), "owner=khluu");
 });

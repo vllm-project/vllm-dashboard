@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect } from "react";
 import useSWR from "swr";
 import {
@@ -13,8 +14,11 @@ import {
   TypeLabel,
   UnroutedBadge,
 } from "@/components/triage/badges";
-import { isUnrouted, priorityLabel } from "@/lib/triage-style";
+import { isUnrouted, priorityLabel, typeLabel } from "@/lib/triage-style";
 import { ActionButtons } from "@/components/triage/action-buttons";
+import { ScoreBreakdown } from "@/components/triage/score-breakdown";
+import { humanizeTag } from "@/lib/triage-factors";
+import { actionText, extractionText, percentText, scopeText, sourceText, yesNo } from "@/lib/triage-words";
 import { describeReason, formatAge, triageFetcher } from "@/lib/triage-format";
 import type { TriageAssignment, TriageItemDetail, TriageRelevance } from "@/lib/triage-types";
 
@@ -53,9 +57,6 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-function yesNo(value: boolean | null | undefined): string {
-  return value === true ? "yes" : value === false ? "no" : "unknown";
-}
 
 /** Read-only JSON rendered as text (never HTML). */
 function JsonBlock({ value }: { value: unknown }) {
@@ -156,6 +157,41 @@ function OwnerSummary({ assignment, judgement }: { assignment: TriageAssignment;
   );
 }
 
+/** The deterministic prepass, in words, with the raw JSON one click away. */
+function QuickSignals({ prepass }: { prepass: TriageItemDetail["item"]["prepass"] }) {
+  const template = prepass.template ?? {};
+  const templateChecks = [
+    template.has_env !== undefined ? `environment ${template.has_env ? "filled in" : "missing"}` : null,
+    template.has_repro !== undefined ? `repro ${template.has_repro ? "filled in" : "missing"}` : null,
+    template.test_plan !== undefined ? `test plan ${template.test_plan ? "filled in" : "missing"}` : null,
+  ].filter(Boolean);
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+        Cheap checks run on every item before the LLM sees it: changed files, linked issues, template fields, and keywords.
+      </p>
+      <dl>
+        <Row label="Why it's triaged">{scopeText(prepass.scope_reason) ?? "—"}</Row>
+        <Row label="Code areas (from files)"><Chips kind="area" values={(prepass.areas ?? []).map(humanizeTag)} max={10} /></Row>
+        <Row label="Linked issues">{prepass.linked_issues?.length ? prepass.linked_issues.map((n) => `#${n}`).join(", ") : "none"}</Row>
+        <Row label="Hardware mentioned"><Chips kind="hardware" values={prepass.hardware_hints ?? []} max={10} /></Row>
+        <Row label="Models mentioned"><Chips kind="model" values={prepass.model_hints ?? []} max={10} /></Row>
+        <Row label="Author">
+          {prepass.is_maintainer ? "a maintainer" : prepass.first_time ? "a first-time contributor" : "a contributor"}
+        </Row>
+        <Row label="Issue template">{templateChecks.length ? templateChecks.join(" · ") : "—"}</Row>
+        <Row label="Low-quality hints">{prepass.slop_hints?.length ? prepass.slop_hints.map(humanizeTag).join(", ") : "none"}</Row>
+      </dl>
+      <details className="text-xs">
+        <summary className="cursor-pointer text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200">Raw data</summary>
+        <div className="mt-2">
+          <JsonBlock value={prepass} />
+        </div>
+      </details>
+    </div>
+  );
+}
+
 export function ItemDrawer({
   itemKey,
   viewer,
@@ -205,9 +241,13 @@ export function ItemDrawer({
         <div className="flex items-center gap-2 border-b border-zinc-200 px-5 py-2.5 dark:border-zinc-800">
           {data ? <PriorityBadge band={band} size="md" /> : <span className="h-6 w-9 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />}
           {data?.score && (
-            <span className="text-sm tabular-nums text-zinc-600 dark:text-zinc-300" title="Impact score">
+            <Link
+              href="/triage/scoring"
+              className="text-sm tabular-nums text-zinc-600 underline-offset-2 hover:underline dark:text-zinc-300"
+              title="How is this scored?"
+            >
               score <span className="font-semibold text-zinc-900 dark:text-zinc-100">{data.score.score}</span>
-            </span>
+            </Link>
           )}
           <span className="ml-1 inline-flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
             {data && <KindIcon kind={data.item.kind} draft={data.item.draft} />}
@@ -301,29 +341,22 @@ export function ItemDrawer({
                 </div>
               </div>
 
-              <Disclosure title="Score" meta={data.score ? `${data.score.score} · ${data.score.breakdown.length} factors` : "not scored"} defaultOpen>
+              <Disclosure title="Score" meta={data.score ? `${data.score.score} points · ${data.score.breakdown.length} factors` : "not scored yet"} defaultOpen>
                 {data.score ? (
-                  <table className="w-full text-xs">
-                    <tbody>
-                      {data.score.breakdown.map((entry, index) => (
-                        <tr key={`${entry.factor}-${index}`} className="border-b border-zinc-100 last:border-0 dark:border-zinc-900">
-                          <td className="py-1 pr-2 font-mono text-[11px] text-zinc-700 dark:text-zinc-300">{entry.factor}</td>
-                          <td className="py-1 pr-2 text-zinc-500">{entry.detail ?? ""}</td>
-                          <td className={`py-1 text-right tabular-nums ${entry.points < 0 ? "text-red-600 dark:text-red-400" : "text-zinc-900 dark:text-zinc-100"}`}>
-                            {entry.points > 0 ? `+${entry.points}` : entry.points}
-                          </td>
-                        </tr>
-                      ))}
-                      <tr>
-                        <td className="pt-2 font-semibold" colSpan={2}>
-                          Total <span className="font-normal text-zinc-400">({data.score.scoringVersion})</span>
-                        </td>
-                        <td className="pt-2 text-right font-semibold tabular-nums">{data.score.score}</td>
-                      </tr>
-                    </tbody>
-                  </table>
+                  <ScoreBreakdown
+                    entries={data.score.breakdown}
+                    score={data.score.score}
+                    footer={
+                      <p className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+                        <Link href="/triage/scoring" className="font-medium text-zinc-700 underline underline-offset-2 hover:text-zinc-950 dark:text-zinc-300 dark:hover:text-zinc-50">
+                          How is this scored?
+                        </Link>
+                        <span>scoring version {data.score.scoringVersion}</span>
+                      </p>
+                    }
+                  />
                 ) : (
-                  <p className="text-xs text-zinc-500">Not scored yet (extraction: {data.item.extractionStatus}).</p>
+                  <p className="text-xs text-zinc-500">Not scored yet: {extractionText(data.item.extractionStatus)}.</p>
                 )}
               </Disclosure>
 
@@ -335,7 +368,8 @@ export function ItemDrawer({
                         <p className="text-zinc-500">
                           <span className="font-medium text-zinc-800 dark:text-zinc-200">{assignment.maintainer}</span> ·{" "}
                           {assignment.role === "primary" ? "primary owner" : "backup"} · {STATUS_TEXT[assignment.status] ?? assignment.status} ·
-                          assigned by {assignment.assignedBy} {formatAge(assignment.assignedAt)} ago at score {assignment.scoreAtAssign}
+                          assigned {assignment.assignedBy === "router" ? "by the router" : `by ${assignment.assignedBy}`}{" "}
+                          {formatAge(assignment.assignedAt)} ago, when it scored {assignment.scoreAtAssign}
                         </p>
                         <WhyThisPerson
                           reason={assignment.reason}
@@ -353,8 +387,8 @@ export function ItemDrawer({
                   meta={`${data.relevance.filter((r) => r.relevance === "high" || r.relevance === "medium").length} of ${data.relevance.length} maintainers relevant`}
                 >
                   <p className="mb-2 text-xs text-zinc-500">
-                    Claude&apos;s judgement for every maintainer, from their last 6 months of PRs and their notes. Only high and
-                    medium are ever routed.
+                    How well this matches each maintainer&apos;s recent work, judged by Claude from their last 6 months of PRs
+                    and their notes. Only <b>high</b> and <b>medium</b> are routed; hover a level for what it means.
                   </p>
                   <ul className="space-y-2 text-xs">
                     {data.relevance.map((r) => (
@@ -362,7 +396,9 @@ export function ItemDrawer({
                         <div className="flex flex-wrap items-center gap-2">
                           <RelevanceBadge level={r.relevance} />
                           <span className="font-medium text-zinc-800 dark:text-zinc-200">{r.maintainer}</span>
-                          {!r.current && <span className="text-[10px] text-amber-700 dark:text-amber-400">item changed since; re-judging</span>}
+                          {!r.current && (
+                            <span className="text-[10px] text-amber-700 dark:text-amber-400">the item changed since; it will be judged again</span>
+                          )}
                         </div>
                         {r.reason && <p className="text-zinc-600 dark:text-zinc-300">{r.reason}</p>}
                         <EvidenceList evidence={r.evidence} />
@@ -374,54 +410,79 @@ export function ItemDrawer({
 
               <Disclosure
                 title="What the LLM read"
-                meta={data.extraction ? `${data.extraction.model} · ${formatAge(data.extraction.createdAt)} ago` : data.item.extractionStatus}
+                meta={data.extraction ? `${data.extraction.model} · ${formatAge(data.extraction.createdAt)} ago` : extractionText(data.item.extractionStatus)}
               >
                 {data.extraction ? (
-                  <dl>
-                    <Row label="Type">{facets.type ?? "—"}</Row>
-                    <Row label="Models"><Chips kind="model" values={(facets.models ?? []).map((m) => m?.name ?? "").filter(Boolean)} max={10} /></Row>
-                    <Row label="Model traits"><Chips values={facets.model_traits ?? []} max={10} /></Row>
-                    <Row label="Hardware"><Chips kind="hardware" values={facets.hardware ?? []} max={10} /></Row>
-                    <Row label="Serving"><Chips kind="serving" values={facets.serving ?? []} max={20} /></Row>
-                    <Row label="Areas"><Chips kind="area" values={facets.areas ?? []} max={10} /></Row>
-                    <Row label="Serving broken">{yesNo(severity.serving_broken)}</Row>
-                    <Row label="Crash / hang">{yesNo(severity.crash)} / {yesNo(severity.hang)}</Row>
-                    <Row label="Wrong output">{yesNo(severity.wrong_output)}</Row>
-                    <Row label="Perf regression">{severity.perf_regression_pct != null ? `${severity.perf_regression_pct}%` : "—"}</Row>
-                    <Row label="Default config">{yesNo(facets.default_config)}</Row>
-                    <Row label="Versions">
-                      {facets.versions?.good ?? "?"} → {facets.versions?.bad ?? "?"} · main {yesNo(facets.versions?.affects_main)} · release{" "}
-                      {yesNo(facets.versions?.affects_latest_release)}
-                    </Row>
-                    <Row label="Repro">{yesNo(facets.has_repro)}</Row>
-                    {facets.pr && <Row label="PR"><JsonBlock value={facets.pr} /></Row>}
-                    <Row label="Slop signals"><Chips values={facets.slop_signals ?? []} max={10} /></Row>
-                    <Row label="Confidence">{facets.confidence ?? "—"}</Row>
-                    {facets.notes && <Row label="Notes">{facets.notes}</Row>}
-                    <Row label="Model">{data.extraction.model} · {data.extraction.promptVersion}</Row>
-                  </dl>
+                  <>
+                    <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
+                      The facts the LLM pulled out of the text. The score is computed from these; the LLM never picks the score.
+                    </p>
+                    <dl>
+                      <Row label="Kind of item">{facets.type ? typeLabel(facets.type) : "—"}</Row>
+                      <Row label="Models"><Chips kind="model" values={(facets.models ?? []).map((m) => m?.name ?? "").filter(Boolean)} max={10} /></Row>
+                      <Row label="Model traits"><Chips values={(facets.model_traits ?? []).map(humanizeTag)} max={10} /></Row>
+                      <Row label="Hardware"><Chips kind="hardware" values={facets.hardware ?? []} max={10} /></Row>
+                      <Row label="Serving setup"><Chips kind="serving" values={(facets.serving ?? []).map(humanizeTag)} max={20} /></Row>
+                      <Row label="Code areas"><Chips kind="area" values={(facets.areas ?? []).map(humanizeTag)} max={10} /></Row>
+                      <Row label="Serving is broken">{yesNo(severity.serving_broken)}</Row>
+                      <Row label="Crashes / hangs">{yesNo(severity.crash)} / {yesNo(severity.hang)}</Row>
+                      <Row label="Wrong output">{yesNo(severity.wrong_output)}</Row>
+                      <Row label="Slowdown">{severity.perf_regression_pct != null ? `${Math.abs(severity.perf_regression_pct)}% slower` : "none reported"}</Row>
+                      <Row label="Uses more memory">{yesNo(severity.memory_regression)}</Row>
+                      <Row label="Security problem">{yesNo(severity.security)}</Row>
+                      <Row label="With default settings">{yesNo(facets.default_config)}</Row>
+                      <Row label="Versions">
+                        {facets.versions?.good || facets.versions?.bad
+                          ? `worked in ${facets.versions?.good ?? "?"}, broken in ${facets.versions?.bad ?? "?"}`
+                          : "not stated"}
+                        {" · "}main: {yesNo(facets.versions?.affects_main)} · latest release: {yesNo(facets.versions?.affects_latest_release)}
+                      </Row>
+                      <Row label="Steps to reproduce">{yesNo(facets.has_repro)}</Row>
+                      {facets.pr && (
+                        <Row label="About the PR">
+                          {[
+                            facets.pr.fixes_issues?.length ? `fixes ${facets.pr.fixes_issues.map((n) => `#${n}`).join(", ")}` : "no linked issue",
+                            facets.pr.size ? `${facets.pr.size.toUpperCase()} size` : null,
+                            facets.pr.hot_path ? "touches code on every request" : null,
+                            facets.pr.has_tests ? "has tests" : "no tests",
+                            facets.pr.low_effort ? "looks low-effort" : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </Row>
+                      )}
+                      <Row label="Low-quality signals">
+                        {(facets.slop_signals ?? []).length ? (facets.slop_signals ?? []).map(humanizeTag).join(", ") : "none"}
+                      </Row>
+                      <Row label="How sure the LLM is">{percentText(facets.confidence)}</Row>
+                      {facets.notes && <Row label="LLM notes">{facets.notes}</Row>}
+                      <Row label="Read by">{data.extraction.model} · prompt {data.extraction.promptVersion}</Row>
+                    </dl>
+                  </>
                 ) : (
                   <p className="text-xs text-zinc-500">
-                    No extraction yet ({data.item.extractionStatus}
-                    {data.item.extractionError ? `: ${data.item.extractionError}` : ""}).
+                    Not read yet: {extractionText(data.item.extractionStatus)}
+                    {data.item.extractionError ? ` (${data.item.extractionError})` : ""}.
                   </p>
                 )}
               </Disclosure>
 
-              <Disclosure title="Prepass (raw)" meta={data.item.files.length > 0 ? `${data.item.files.length} changed files` : undefined}>
-                <JsonBlock value={data.item.prepass} />
+              <Disclosure
+                title="Quick signals (before the LLM)"
+                meta={data.item.files.length > 0 ? `${data.item.files.length} changed files` : undefined}
+              >
+                <QuickSignals prepass={data.item.prepass} />
               </Disclosure>
 
-              <Disclosure title="History" meta={data.actions.length ? `${data.actions.length} actions` : "no actions yet"} defaultOpen={data.actions.length > 0}>
+              <Disclosure title="History" meta={data.actions.length ? `${data.actions.length} ${data.actions.length === 1 ? "action" : "actions"}` : "nothing yet"} defaultOpen={data.actions.length > 0}>
                 {data.actions.length === 0 ? (
-                  <p className="text-xs text-zinc-500">No actions yet.</p>
+                  <p className="text-xs text-zinc-500">Nobody has acted on this yet.</p>
                 ) : (
                   <ul className="space-y-1 text-xs">
                     {data.actions.map((action) => (
                       <li key={action.id}>
-                        <span className="font-medium">{action.actor}</span> <span>{action.action}</span>
-                        {action.target && <span> → {action.target}</span>}
-                        <span className="text-zinc-500"> · {action.source} · {formatAge(action.createdAt)} ago</span>
+                        <span className="font-medium">{action.actor}</span> <span>{actionText(action.action, action.target)}</span>
+                        <span className="text-zinc-500"> {sourceText(action.source)} · {formatAge(action.createdAt)} ago</span>
                         {action.note && <p className="text-zinc-600 dark:text-zinc-400">{action.note}</p>}
                       </li>
                     ))}
