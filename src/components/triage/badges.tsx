@@ -1,4 +1,5 @@
 import { safeGithubUrl } from "@/lib/triage-query";
+import { RELEVANCE_MEANING } from "@/lib/triage-words";
 import {
   FLAG_STYLE_QUIET,
   avatarUrl,
@@ -286,7 +287,7 @@ const RELEVANCE_STYLES: Record<string, string> = {
 /** Claude's relevance level for one maintainer. */
 export function RelevanceBadge({ level }: { level: string }) {
   return (
-    <span className={`inline-flex rounded px-1.5 py-px text-[11px] font-semibold leading-4 ${RELEVANCE_STYLES[level] ?? RELEVANCE_STYLES.none}`}>
+    <span title={RELEVANCE_MEANING[level] ?? level} className={`inline-flex rounded px-1.5 py-px text-[11px] font-semibold leading-4 ${RELEVANCE_STYLES[level] ?? RELEVANCE_STYLES.none}`}>
       {level}
     </span>
   );

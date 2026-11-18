@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ItemDrawer } from "@/components/triage/item-drawer";
+import { OwnerPicker } from "@/components/triage/owner-picker";
 import {
   EmptyState,
   ItemListHeader,
@@ -14,7 +16,7 @@ import {
 import { useTriageLogin } from "@/components/triage/use-triage-session";
 import { useLocationHash } from "@/lib/use-location-hash";
 import { itemFromLocation, percent, triageFetcher } from "@/lib/triage-format";
-import { parseQueueFilters, queueFiltersToParams, type QueueFilters } from "@/lib/triage-query";
+import { OWNER_NONE, parseQueueFilters, queueFiltersToParams, type QueueFilters } from "@/lib/triage-query";
 import {
   BAND_ORDER,
   BAND_STYLES,
@@ -269,7 +271,7 @@ function isDefaultFilters(filters: QueueFilters): boolean {
     !filters.area &&
     !filters.hardware &&
     !filters.model &&
-    !filters.assignee &&
+    !filters.owner &&
     filters.status === "any" &&
     !filters.q &&
     filters.state === "open"
@@ -352,7 +354,7 @@ export default function QueueContent() {
           if (band === "ignore") setShowP3(true);
           update({ bands: [band], status: "any" });
         }}
-        onPickUnowned={() => update({ bands: ["page", "route"], status: "unassigned" })}
+        onPickUnowned={() => update({ bands: ["page", "route"], owner: OWNER_NONE, status: "any" })}
       />
 
       {/* overflow-clip, not overflow-hidden: hidden would make this box the sticky container and stop the group headers sticking. */}
@@ -374,12 +376,17 @@ export default function QueueContent() {
             <option value="">Any hardware</option>
             {TRIAGE_HARDWARE.map((hw) => <option key={hw} value={hw}>{hw}</option>)}
           </Select>
-          <Select label="Owner" value={filters.status} onChange={(value) => update({ status: value as QueueFilters["status"] })}>
-            <option value="any">Any owner</option>
-            <option value="unassigned">No owner</option>
-            <option value="open">Owned, not acked</option>
-            <option value="acked">Acked</option>
-            <option value="closed">Closed by owner</option>
+          <OwnerPicker
+            value={filters.owner}
+            onChange={(owner) => update({ owner })}
+            className="min-w-0 flex-1 basis-[calc(50%-0.25rem)] sm:w-40 sm:flex-none sm:basis-auto"
+          />
+          <Select label="Status" value={filters.status} onChange={(value) => update({ status: value as QueueFilters["status"] })}>
+            <option value="any">Any status</option>
+            <option value="unassigned">Nobody on it</option>
+            <option value="open">Owner hasn&apos;t acked</option>
+            <option value="acked">Owner acked</option>
+            <option value="closed">Owner closed it</option>
           </Select>
           <Select label="Sort" value={filters.sort} onChange={(value) => update({ sort: value as QueueFilters["sort"] })}>
             <option value="score">By priority</option>
@@ -425,11 +432,16 @@ export default function QueueContent() {
               className={`${CONTROL} w-full pl-7`}
             />
           </form>
-          {filters.assignee && (
-            <button type="button" className={CONTROL} onClick={() => update({ assignee: null })}>
-              owner: {filters.assignee} ✕
-            </button>
-          )}
+          <Link
+            href="/triage/scoring"
+            className="dashboard-control inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-zinc-600 underline-offset-2 hover:text-zinc-950 hover:underline dark:text-zinc-300 dark:hover:text-zinc-50"
+          >
+            <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <circle cx="8" cy="8" r="6.25" />
+              <path d="M6.4 6.2a1.7 1.7 0 113.1 1c-.6.5-1.5.8-1.5 1.8M8 11.2v.1" strokeLinecap="round" />
+            </svg>
+            How is this scored?
+          </Link>
           {!isDefaultFilters(filters) && (
             <button
               type="button"

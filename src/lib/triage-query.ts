@@ -13,13 +13,21 @@ export const QUEUE_SORTS = ["score", "age", "updated"] as const;
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 200;
 
+/** `owner=none`: items with no open or acked assignment. */
+export const OWNER_NONE = "none";
+
 export interface QueueFilters {
   bands: TriageBand[];
   kind: "issue" | "pr" | null;
   area: string | null;
   hardware: string | null;
   model: string | null;
-  assignee: string | null;
+  /**
+   * Who owns it now (an open or acked assignment): a GitHub login, or
+   * OWNER_NONE for items nobody owns. URL: `owner=<login>` / `owner=none`
+   * (`assignee=<login>` is still read, for old links).
+   */
+  owner: string | null;
   status: (typeof QUEUE_STATUSES)[number];
   q: string | null;
   state: "open" | "all";
@@ -52,7 +60,7 @@ export function parseQueueFilters(params: URLSearchParams): QueueFilters {
   const kind = params.get("kind");
   const area = params.get("area");
   const hardware = params.get("hardware");
-  const assignee = text(params.get("assignee"), 40);
+  const owner = text(params.get("owner") ?? params.get("assignee"), 40);
   const status = params.get("status");
   const sort = params.get("sort");
   return {
@@ -61,7 +69,7 @@ export function parseQueueFilters(params: URLSearchParams): QueueFilters {
     area: isOneOf(TRIAGE_AREAS, area) ? area : null,
     hardware: isOneOf(TRIAGE_HARDWARE, hardware) ? hardware : null,
     model: text(params.get("model")),
-    assignee: assignee && isValidLogin(assignee) ? assignee : null,
+    owner: owner === OWNER_NONE ? OWNER_NONE : owner && isValidLogin(owner) ? owner : null,
     status: isOneOf(QUEUE_STATUSES, status) ? status : "any",
     q: text(params.get("q"), 200),
     state: params.get("state") === "all" ? "all" : "open",
@@ -85,7 +93,7 @@ export function queueFiltersToParams(filters: Partial<QueueFilters>): URLSearchP
   if (filters.area) params.set("area", filters.area);
   if (filters.hardware) params.set("hardware", filters.hardware);
   if (filters.model) params.set("model", filters.model);
-  if (filters.assignee) params.set("assignee", filters.assignee);
+  if (filters.owner) params.set("owner", filters.owner);
   if (filters.status && filters.status !== "any") params.set("status", filters.status);
   if (filters.q) params.set("q", filters.q);
   if (filters.state === "all") params.set("state", "all");
