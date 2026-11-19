@@ -739,6 +739,9 @@ def test_probe_output_without_every_target_is_no_reading(reporter_k8s):
         reporter_k8s.parse_probe_output("\n".join(
             f"{t} 127 0 sh: openssl: not found" for t, _ in
             reporter_k8s.NETWORK_PROBES))
+    # A line with no output field reports no made-up output.
+    with pytest.raises(RuntimeError, match="^probe tool missing: $"):
+        reporter_k8s.parse_probe_output("github 127 0")
 
 
 def test_read_network_probes_gives_up_after_the_probe_timeout(
