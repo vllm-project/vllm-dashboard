@@ -35,6 +35,8 @@ from alerting.full_ci import (
 )
 from alerting.infra import (
     DCGM_LIVE_WINDOW,
+    HANG_UNBROKEN,
+    READING_MAX_AGE,
     DiskMountObservation,
     GpuCountObservation,
     GpuDeadMemoryObservation,
@@ -1437,12 +1439,23 @@ class PostgresAlertStore:
                         HAVING count(DISTINCT power_draw_w) > 1
                     ) changing
                     GROUP BY hostname
+                ),
+                -- The newest answered GPU query within HANG_UNBROKEN of a
+                -- fresh reading.
+                answered AS (
+                    SELECT hostname, max(reported_at) AS last_answered_at
+                    FROM host_snapshots
+                    WHERE reported_at >= now() - %s
+                      AND gpu_query_hung IS FALSE
+                    GROUP BY hostname
                 )
-                SELECT latest.*, live.live_gpus
-                FROM latest LEFT JOIN live USING (hostname)
+                SELECT latest.*, live.live_gpus, answered.last_answered_at
+                FROM latest
+                LEFT JOIN live USING (hostname)
+                LEFT JOIN answered USING (hostname)
                 ORDER BY latest.hostname
                 """,
-                (DCGM_LIVE_WINDOW,),
+                (DCGM_LIVE_WINDOW, HANG_UNBROKEN + READING_MAX_AGE),
             ).fetchall()
         return [
             HostFaultObservation(
@@ -1458,6 +1471,7 @@ class PostgresAlertStore:
                 fabric_ok=bool(row[7]) if row[7] is not None else None,
                 fabric_error=str(row[8]) if row[8] is not None else None,
                 live_gpus=int(row[9]) if row[9] is not None else None,
+                last_answered_at=row[10],
             )
             for row in rows
         ]
