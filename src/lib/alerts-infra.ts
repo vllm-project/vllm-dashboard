@@ -20,7 +20,8 @@ export type InfraAlertType =
   | "gpu_temperature"
   | "gpu_dead_memory"
   | "gpu_count"
-  | "quarantine";
+  | "quarantine"
+  | "queue_zombie";
 
 export type InfraAlertStatus = "open" | "resolved";
 
@@ -49,6 +50,7 @@ export const INFRA_ALERT_TYPE_LABELS: Record<InfraAlertType, string> = {
   gpu_dead_memory: "GPU dead-process memory",
   gpu_count: "GPU count",
   quarantine: "Quarantine",
+  queue_zombie: "Agent-less CI instance",
 };
 
 export interface InfraAlertEpisodeView extends InfraAlertEpisode {
@@ -224,12 +226,26 @@ function summarizeQuarantine(episode: InfraAlertEpisode): string {
     .join(" ");
 }
 
+function summarizeQueueZombie(episode: InfraAlertEpisode): string {
+  const { details } = episode;
+  const instance = stringDetail(details, "instance_id") ?? episode.subjectKey;
+  if (episode.status === "resolved") {
+    return details.resolution === "agent_connected"
+      ? `Instance ${instance} connected a Buildkite agent.`
+      : `Instance ${instance} left service.`;
+  }
+  const stack = stringDetail(details, "stack") ?? "an Elastic CI Stack";
+  const since = stringDetail(details, "launched_at") ?? "?";
+  return `Instance ${instance} in ${stack} has run since ${since} with no Buildkite agent${scansSuffix(details)}.`;
+}
+
 /** The one-line reading of an episode's details, per alert type and status. */
 export function summarizeInfraEpisode(episode: InfraAlertEpisode): string {
   if (episode.alertType === "unreporting") return summarizeUnreporting(episode);
   if (episode.alertType === "disk_usage") return summarizeDiskUsage(episode);
   if (episode.alertType === "gpu_temperature") return summarizeGpuTemperature(episode);
   if (episode.alertType === "quarantine") return summarizeQuarantine(episode);
+  if (episode.alertType === "queue_zombie") return summarizeQueueZombie(episode);
   // GPU dead-process memory and GPU count: the label says what it is.
   return episode.status === "resolved" ? "Cleared." : episode.subjectKey;
 }

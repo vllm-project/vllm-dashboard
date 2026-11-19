@@ -44,6 +44,7 @@ test("every alert type has a display label", () => {
   assert.equal(INFRA_ALERT_TYPE_LABELS.unreporting, "Stopped reporting");
   assert.equal(INFRA_ALERT_TYPE_LABELS.disk_usage, "Disk");
   assert.equal(INFRA_ALERT_TYPE_LABELS.gpu_temperature, "GPU temperature");
+  assert.equal(INFRA_ALERT_TYPE_LABELS.queue_zombie, "Agent-less CI instance");
 });
 
 test("open episodes stay visible regardless of age; resolved history obeys the window", () => {
@@ -334,4 +335,64 @@ test("only open held, quarantining, quarantined or waiting episodes offer resolv
   }
   assert.equal(isResolvableQuarantine(quarantine("resolved", "resolved")), false);
   assert.equal(isResolvableQuarantine(episode()), false);
+});
+
+test("an open queue zombie episode names the instance, its stack and how long", () => {
+  const summary = summarizeInfraEpisode(
+    episode({
+      alertType: "queue_zombie",
+      subjectKey: "queue-zombie:i-0abc",
+      details: {
+        stack: "bk-image-queue",
+        region: "region-b",
+        instance_id: "i-0abc",
+        launched_at: "2026-08-28T08:00:00+00:00",
+        grace_minutes: 10,
+        consecutive_scans: 2,
+      },
+    }),
+  );
+
+  assert.equal(
+    summary,
+    "Instance i-0abc in bk-image-queue has run since 2026-08-28T08:00:00+00:00 " +
+      "with no Buildkite agent (2 consecutive scans).",
+  );
+});
+
+test("a resolved queue zombie episode says whether the agent came or the instance left", () => {
+  const resolved = (resolution: string) =>
+    summarizeInfraEpisode(
+      episode({
+        alertType: "queue_zombie",
+        subjectKey: "queue-zombie:i-0abc",
+        status: "resolved",
+        resolvedAt: "2026-08-28T11:00:00.000Z",
+        details: { instance_id: "i-0abc", resolution },
+      }),
+    );
+
+  assert.equal(resolved("agent_connected"), "Instance i-0abc connected a Buildkite agent.");
+  assert.equal(resolved("instance_gone"), "Instance i-0abc left service.");
+});
+
+test("an open queue zombie episode without details still reads", () => {
+  const summary = summarizeInfraEpisode(
+    episode({ alertType: "queue_zombie", subjectKey: "queue-zombie:i-0abc", details: {} }),
+  );
+
+  assert.equal(
+    summary,
+    "Instance queue-zombie:i-0abc in an Elastic CI Stack has run since ? with no Buildkite agent.",
+  );
+});
+
+test("GPU count and dead-memory episodes keep their plain summary", () => {
+  const open = episode({ alertType: "gpu_count", subjectKey: "gpu-count:h200-ci-1", details: {} });
+
+  assert.equal(summarizeInfraEpisode(open), "gpu-count:h200-ci-1");
+  assert.equal(
+    summarizeInfraEpisode({ ...open, alertType: "gpu_dead_memory", status: "resolved" }),
+    "Cleared.",
+  );
 });

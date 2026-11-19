@@ -2253,3 +2253,43 @@ def test_assumed_role_clients_build_clients_from_the_role_credentials(
             },
         ),
     ]
+
+
+def test_queue_zombie_counts_each_agent_poll_once() -> None:
+    # The poller missed a run: the second scan sees the same snapshot as the
+    # first. Two scans on one poll are one piece of evidence, not two.
+    snapshots, listing = zombie_setup([elastic_instance()])
+    runtime, store, outbox, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+    scan(runtime, clock.now())
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+
+    assert store.episodes() == []
+    assert outbox.count() == 0
+    state = store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}")
+    assert state is not None and state.consecutive_breaches == 1
+
+    snapshots.polled_at = clock.now()
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+
+    assert [episode.status for episode in store.episodes()] == ["open"]
+
+
+def test_queue_zombie_same_poll_skip_still_checks_the_other_instances() -> None:
+    # i-0aaa... was counted on this poll already; i-0bbb..., listed after it,
+    # is new and must still be counted on the same poll.
+    first = elastic_instance("i-0aaaaaaaaaaaaaaa0")
+    snapshots, listing = zombie_setup([first])
+    runtime, store, _, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+    scan(runtime, clock.now())
+    listing["instances"] = [first, elastic_instance("i-0bbbbbbbbbbbbbbb0")]
+    clock.advance(minutes=5)
+    scan(runtime, clock.now())
+
+    state = store.subject_state("queue_zombie", "queue-zombie:i-0bbbbbbbbbbbbbbb0")
+    assert state is not None and state.consecutive_breaches == 1

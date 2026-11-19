@@ -817,8 +817,10 @@ def _plan_queue_zombie(
     An instance breaches when it had the threshold's grace minutes before the
     newest agent poll and that poll names no agent on it. The grace counts to
     the poll, not the scan, so a poll taken before the agent could connect
-    never counts. Healthy instances write no state (busy queues launch hundreds
-    a day). An episode resolves when the agent connects or the instance is
+    never counts, and each poll counts once: a scan that sees the same poll
+    as the last counted breach leaves the count alone, so a missed poll cannot
+    turn one observation into two. Healthy instances write no state (busy
+    queues launch hundreds a day). An episode resolves when the agent connects or the instance is
     gone; `instances` is the complete listing, so absence means terminated.
     """
     kind = InfraAlertType.QUEUE_ZOMBIE.value
@@ -839,12 +841,15 @@ def _plan_queue_zombie(
             "instance_id": instance.instance_id,
             "launched_at": instance.launched_at.isoformat(),
             "grace_minutes": threshold.threshold_value,
+            "polled_at": polled_at.isoformat(),
         }
         agentless = (
             instance.instance_id not in agent_instance_ids
             and polled_at - instance.launched_at >= grace
         )
         if agentless:
+            if state is not None and state.details.get("polled_at") == details["polled_at"]:
+                continue
             previous = state or InfraSubjectState(kind, subject)
             breaches = previous.consecutive_breaches + 1
             out_states.append(
