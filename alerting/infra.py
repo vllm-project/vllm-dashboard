@@ -176,6 +176,9 @@ class HostFaultObservation:
     # Kubernetes only: how many of the host's GPUs had their DCGM power
     # reading change within DCGM_LIVE_WINDOW.
     live_gpus: int | None = None
+    # The newest reading whose GPU query answered, looked up within
+    # HANG_UNBROKEN + READING_MAX_AGE (None: no answer in that time).
+    last_answered_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -799,6 +802,13 @@ HOST_FAULT_CHECKS = 2
 # by another path, so a hang counts only when some GPU's DCGM power reading
 # has not changed in this window (healthy GPUs change every reading).
 DCGM_LIVE_WINDOW = timedelta(minutes=10)
+# The scan reads only each host's latest reading, so a stall whose readings
+# alternate hung and answered can trip two scans by sampling. A hang reading
+# counts only once no GPU query has answered for this long, whatever the
+# scans saw. Replayed over every hung stretch since 2026-10-20: the one real
+# hang went 25.8 min without an answer; every stall that cleared itself went
+# at most 9.0. A real hang trips about 20 min in (Xids catch most sooner).
+HANG_UNBROKEN = timedelta(minutes=15)
 # GPU hardware Xids from NVIDIA's Xid catalog. First-sight ones trip on one
 # event; repeat ones on XID_REPEATS of the same Xid on one GPU in XID_WINDOW.
 # 171/172 carry no catalog action (detail rows of Xid 48) and are left out.
@@ -859,7 +869,8 @@ def pilot_pools(
 def gpu_hung(
     cluster: str, reading: HostFaultObservation, baseline_gpus: int
 ) -> bool | None:
-    """The reading's GPU hang, or None while every GPU still answers DCGM.
+    """The reading's GPU hang: False if a query answered within
+    HANG_UNBROKEN of it, None while every GPU still answers DCGM.
 
     Every GPU means the GPU-count baseline (the most GPUs the host has ever
     reported), not the node's scheduler capacity: that drops when a GPU is
@@ -867,6 +878,11 @@ def gpu_hung(
     an H200 host's hang stands as reported. None neither advances nor resets
     the streak, so a hang that outlasts DCGM's answers trips on the next check.
     """
+    if (
+        reading.last_answered_at is not None
+        and reading.reported_at - reading.last_answered_at < HANG_UNBROKEN
+    ):
+        return False
     if (
         reading.gpu_query_hung
         and cluster != "h200"
