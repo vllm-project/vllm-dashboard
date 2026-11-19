@@ -1471,15 +1471,13 @@ class PostgresAlertStore:
             ).fetchone()
         return row[0] if row else None
 
-    def latest_agent_names(self) -> list[str]:
+    def agent_names_at(self, polled_at: datetime) -> list[str]:
         with self._connection_factory() as connection:
-            # The max() is one descent of idx_buildkite_agent_snapshots_polled;
-            # one poll is about a thousand rows.
+            # One poll through idx_buildkite_agent_snapshots_polled, about a
+            # thousand rows.
             rows = connection.execute(
-                """
-                SELECT agent_name FROM buildkite_agent_snapshots
-                WHERE polled_at = (SELECT max(polled_at) FROM buildkite_agent_snapshots)
-                """
+                "SELECT agent_name FROM buildkite_agent_snapshots WHERE polled_at = %s",
+                (polled_at,),
             ).fetchall()
         return [str(row[0]) for row in rows if row[0]]
 
@@ -1723,6 +1721,14 @@ class PostgresAlertStore:
                             json.dumps(state.details),
                             now,
                         ),
+                    )
+                for alert_type, subject_key in plan.deleted_states:
+                    connection.execute(
+                        """
+                        DELETE FROM alerting_infra_host_states
+                        WHERE alert_type = %s AND subject_key = %s
+                        """,
+                        (alert_type, subject_key),
                     )
                 opened: list[InfraAlertEpisode] = []
                 for episode in plan.opened:

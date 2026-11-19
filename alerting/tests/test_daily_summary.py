@@ -1159,16 +1159,15 @@ def test_postgres_reads_map_rows_and_bound_the_window() -> None:
     assert recorder.calls[0][0] == "SELECT max(polled_at) FROM buildkite_agent_snapshots"
     assert PostgresAlertStore(lambda: Recorder([])).agents_polled_at() is None
 
-    # Agent names in the newest poll only, for the queue zombie check.
+    # Agent names of one given poll, for the queue zombie check.
     recorder = Recorder([("bk-stack-i-0abc123-1",), (None,), ("h200-ci-1-1",)])
-    assert PostgresAlertStore(lambda: recorder).latest_agent_names() == [
+    assert PostgresAlertStore(lambda: recorder).agent_names_at(NOW) == [
         "bk-stack-i-0abc123-1",
         "h200-ci-1-1",
     ]
-    assert (
-        "polled_at = (SELECT max(polled_at) FROM buildkite_agent_snapshots)"
-        in recorder.calls[0][0]
-    )
+    assert recorder.calls == [
+        ("SELECT agent_name FROM buildkite_agent_snapshots WHERE polled_at = %s", (NOW,))
+    ]
 
     # The infra scan bounds the lookup to agents seen since a time.
     recorder = Recorder([])

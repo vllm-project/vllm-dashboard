@@ -274,6 +274,8 @@ class InfraScanPlan:
     opened: tuple[InfraAlertEpisode, ...] = ()
     resolved: tuple[InfraAlertEpisode, ...] = ()
     stage_changes: tuple[QuarantineStageChange, ...] = ()
+    # (alert_type, subject_key) of subject states to drop.
+    deleted_states: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -342,8 +344,8 @@ class InfraSnapshotPort(Protocol):
         snapshot), or None if never."""
         ...
 
-    def latest_agent_names(self) -> list[str]:
-        """Every agent name in the newest agent snapshot."""
+    def agent_names_at(self, polled_at: datetime) -> list[str]:
+        """Every agent name in the agent snapshot taken at `polled_at`."""
         ...
 
     def last_agent_queues(
@@ -819,13 +821,15 @@ def _plan_queue_zombie(
     the poll, not the scan, so a poll taken before the agent could connect
     never counts, and each poll counts once: a scan that sees the same poll
     as the last counted breach leaves the count alone, so a missed poll cannot
-    turn one observation into two. Healthy instances write no state (busy
-    queues launch hundreds a day). An episode resolves when the agent connects or the instance is
+    turn one observation into two. State exists only while an instance
+    breaches: it is deleted once the instance is healthy or gone, because busy
+    queues launch hundreds of instances a day. An episode resolves when the agent connects or the instance is
     gone; `instances` is the complete listing, so absence means terminated.
     """
     kind = InfraAlertType.QUEUE_ZOMBIE.value
     grace = timedelta(minutes=threshold.threshold_value)
     out_states: list[InfraSubjectState] = []
+    deleted: list[tuple[str, str]] = []
     opened: list[InfraAlertEpisode] = []
     resolved: list[InfraAlertEpisode] = []
     seen: set[str] = set()
@@ -868,8 +872,8 @@ def _plan_queue_zombie(
                     )
                 )
             continue
-        if state is not None and state.consecutive_breaches:
-            out_states.append(replace(state, consecutive_breaches=0, details=details))
+        if state is not None:
+            deleted.append(key)
         if episode is not None:
             resolved.append(
                 replace(
@@ -878,9 +882,9 @@ def _plan_queue_zombie(
                     details={**episode.details, "resolution": "agent_connected"},
                 )
             )
-    for (alert_type, subject), state in states.items():
-        if alert_type == kind and subject not in seen and state.consecutive_breaches:
-            out_states.append(replace(state, consecutive_breaches=0))
+    for alert_type, subject in states:
+        if alert_type == kind and subject not in seen:
+            deleted.append((alert_type, subject))
     for (alert_type, subject), episode in open_episodes.items():
         if alert_type == kind and subject not in seen:
             resolved.append(
@@ -891,7 +895,10 @@ def _plan_queue_zombie(
                 )
             )
     return InfraScanPlan(
-        states=tuple(out_states), opened=tuple(opened), resolved=tuple(resolved)
+        states=tuple(out_states),
+        opened=tuple(opened),
+        resolved=tuple(resolved),
+        deleted_states=tuple(deleted),
     )
 
 
@@ -2088,6 +2095,7 @@ def plan_infra_scan(
         opened=tuple(episode for plan in plans for episode in plan.opened),
         resolved=tuple(episode for plan in plans for episode in plan.resolved),
         stage_changes=tuple(change for plan in plans for change in plan.stage_changes),
+        deleted_states=tuple(key for plan in plans for key in plan.deleted_states),
     )
 
 
@@ -2590,8 +2598,11 @@ class InfraScanHandler:
                 file=sys.stderr,
             )
             return None, None
+        # Names from the poll whose timestamp the planner counts: reading "the
+        # newest" here could pick up a poll that landed after polled_at was
+        # read, and the next scan would count that evidence a second time.
         return instances, elastic_agent_instance_ids(
-            self._snapshots.latest_agent_names()
+            self._snapshots.agent_names_at(polled_at)
         )
 
     def _job_failures(

@@ -153,6 +153,10 @@ class FakePostgresConnection:
         if statement.startswith("SELECT pg_advisory_xact_lock"):
             assert self.transaction_depth == 1
             return Result()
+        if statement.startswith("DELETE FROM alerting_infra_host_states"):
+            assert self.transaction_depth == 1
+            self.state["infra_states"].pop((params[0], params[1]), None)
+            return Result(rowcount=1)
         if statement.startswith("INSERT INTO alerting_infra_host_states"):
             assert self.transaction_depth == 1
             self.state["infra_states"][(params[0], params[1])] = (
@@ -462,3 +466,34 @@ def test_host_faults_read_the_fabric_health_columns() -> None:
         # Not read is None, never a pass.
         (None, None),
     ]
+
+
+def test_postgres_scan_deletes_planned_states_in_the_scan_transaction() -> None:
+    from alerting.infra import InfraScanPlan, InfraSubjectState
+
+    connection = FakePostgresConnection()
+    store = PostgresAlertStore(lambda: connection)
+    command = ScheduledCommand(command_type="infra_scan", target_time=START)
+    later = ScheduledCommand(command_type="infra_scan", target_time=START + timedelta(minutes=5))
+    for running in (command, later):
+        connection.state["executions"][running.idempotency_key] = {
+            "status": "running",
+            "lease": START,
+            "attempts": 1,
+        }
+    keep = InfraSubjectState("queue_zombie", "queue-zombie:i-0keep", consecutive_breaches=1)
+    gone = InfraSubjectState("queue_zombie", "queue-zombie:i-0gone", consecutive_breaches=1)
+    store.commit_infra_scan(
+        command=command,
+        plan=InfraScanPlan(states=(keep, gone)),
+        now=START,
+        notification_factory=lambda applied: [],
+    )
+    store.commit_infra_scan(
+        command=later,
+        plan=InfraScanPlan(deleted_states=(("queue_zombie", "queue-zombie:i-0gone"),)),
+        now=START,
+        notification_factory=lambda applied: [],
+    )
+
+    assert set(connection.state["infra_states"]) == {("queue_zombie", "queue-zombie:i-0keep")}

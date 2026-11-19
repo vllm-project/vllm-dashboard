@@ -91,8 +91,9 @@ class FixtureSnapshots:
         self.past_agent_lookups: list[tuple[list[str], datetime | None]] = []
         # The newest agent poll; None, as if polling had never run.
         self.polled_at: datetime | None = None
-        # Agent names in the newest poll.
+        # Agent names in the newest poll, and the polls names were asked for.
         self.agent_names: list[str] = []
+        self.agent_name_requests: list[datetime] = []
 
     def infra_thresholds(self) -> list[InfraThreshold]:
         return list(self.threshold_rows)
@@ -143,7 +144,8 @@ class FixtureSnapshots:
     def agents_polled_at(self) -> datetime | None:
         return self.polled_at
 
-    def latest_agent_names(self) -> list[str]:
+    def agent_names_at(self, polled_at: datetime) -> list[str]:
+        self.agent_name_requests.append(polled_at)
         return list(self.agent_names)
 
     def last_agent_queues(
@@ -1922,8 +1924,8 @@ def test_queue_zombie_resolves_when_its_agent_connects() -> None:
     [episode] = store.episodes()
     assert episode.status == "resolved"
     assert episode.details["resolution"] == "agent_connected"
-    state = store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}")
-    assert state is not None and state.consecutive_breaches == 0
+    # A healthy instance keeps no state.
+    assert store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}") is None
 
 
 def test_queue_zombie_ignores_connected_and_young_instances() -> None:
@@ -1961,9 +1963,10 @@ def test_queue_zombie_grace_counts_to_the_poll_not_the_scan() -> None:
     assert store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}") is None
 
 
-def test_queue_zombie_single_scan_blip_resets_without_alerting() -> None:
+def test_queue_zombie_single_scan_blip_leaves_no_state_or_alert() -> None:
     # An instance seen agentless once, then gone (it finished its one job and
-    # terminated), never opens an episode and leaves its count at zero.
+    # terminated), never opens an episode and its state is deleted, so busy
+    # queues do not grow the state table.
     snapshots, listing = zombie_setup([elastic_instance()])
     runtime, store, outbox, _, clock = runtime_for(
         FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
@@ -1979,8 +1982,7 @@ def test_queue_zombie_single_scan_blip_resets_without_alerting() -> None:
 
     assert store.episodes() == []
     assert outbox.count() == 0
-    state = store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}")
-    assert state is not None and state.consecutive_breaches == 0
+    assert store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}") is None
 
 
 def test_queue_zombie_skipped_while_agent_poll_is_stale() -> None:
@@ -2293,3 +2295,19 @@ def test_queue_zombie_same_poll_skip_still_checks_the_other_instances() -> None:
 
     state = store.subject_state("queue_zombie", "queue-zombie:i-0bbbbbbbbbbbbbbb0")
     assert state is not None and state.consecutive_breaches == 1
+
+
+def test_queue_zombie_reads_agent_names_from_the_poll_it_counts() -> None:
+    # The names must belong to the poll whose timestamp the state records; "the
+    # newest poll" could be one that landed after the timestamp was read.
+    snapshots, listing = zombie_setup([elastic_instance()])
+    snapshots.polled_at = START - timedelta(minutes=2)
+    runtime, store, _, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+    scan(runtime, clock.now())
+
+    assert snapshots.agent_name_requests == [START - timedelta(minutes=2)]
+    state = store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}")
+    assert state is not None
+    assert state.details["polled_at"] == (START - timedelta(minutes=2)).isoformat()

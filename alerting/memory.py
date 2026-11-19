@@ -634,6 +634,8 @@ class InMemoryInfraStore:
         try:
             for state in plan.states:
                 self._states[(state.alert_type, state.subject_key)] = state
+            for key in plan.deleted_states:
+                self._states.pop(key, None)
             applied = InfraScanPlan(
                 states=plan.states,
                 opened=tuple(
