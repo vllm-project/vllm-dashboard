@@ -1420,7 +1420,7 @@ class PostgresAlertStore:
                     SELECT DISTINCT ON (hostname)
                            hostname, gpu_query_hung, network_probes,
                            root_owned_slots, reported_at, docker_ok,
-                           docker_error, fabric_ok, fabric_error, capacity_gpus
+                           docker_error, fabric_ok, fabric_error
                     FROM host_snapshots
                     -- Bounded for the same reason as gpu_faults.
                     WHERE reported_at >= now() - interval '10 minutes'
@@ -1457,8 +1457,7 @@ class PostgresAlertStore:
                 docker_error=str(row[6]) if row[6] is not None else None,
                 fabric_ok=bool(row[7]) if row[7] is not None else None,
                 fabric_error=str(row[8]) if row[8] is not None else None,
-                capacity_gpus=int(row[9]) if row[9] is not None else None,
-                live_gpus=int(row[10]) if row[10] is not None else None,
+                live_gpus=int(row[9]) if row[9] is not None else None,
             )
             for row in rows
         ]

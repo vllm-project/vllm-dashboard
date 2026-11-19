@@ -173,9 +173,8 @@ class HostFaultObservation:
     # healthy and the driver still reaches Fabric Manager, and why not.
     fabric_ok: bool | None = None
     fabric_error: str | None = None
-    # Kubernetes only: the GPUs the node offers, and how many of the host's
-    # GPUs had their DCGM power reading change within DCGM_LIVE_WINDOW.
-    capacity_gpus: int | None = None
+    # Kubernetes only: how many of the host's GPUs had their DCGM power
+    # reading change within DCGM_LIVE_WINDOW.
     live_gpus: int | None = None
 
 
@@ -857,19 +856,23 @@ def pilot_pools(
     return pools
 
 
-def gpu_hung(cluster: str, reading: HostFaultObservation) -> bool | None:
+def gpu_hung(
+    cluster: str, reading: HostFaultObservation, baseline_gpus: int
+) -> bool | None:
     """The reading's GPU hang, or None while every GPU still answers DCGM.
 
-    Only Kubernetes nodes read DCGM; an H200 host's hang stands as reported.
-    None neither advances nor resets the streak, so a hang that outlasts
-    DCGM's answers still trips on the next check.
+    Every GPU means the GPU-count baseline (the most GPUs the host has ever
+    reported), not the node's scheduler capacity: that drops when a GPU is
+    lost and multiplies under GPU sharing. Only Kubernetes nodes read DCGM;
+    an H200 host's hang stands as reported. None neither advances nor resets
+    the streak, so a hang that outlasts DCGM's answers trips on the next check.
     """
     if (
         reading.gpu_query_hung
         and cluster != "h200"
-        and reading.capacity_gpus
+        and baseline_gpus > 0
         and reading.live_gpus is not None
-        and reading.live_gpus >= reading.capacity_gpus
+        and reading.live_gpus >= baseline_gpus
     ):
         return None
     return reading.gpu_query_hung
@@ -1076,8 +1079,13 @@ def plan_trigger_rules(
             else f"on {HOST_FAULT_CHECKS} consecutive checks"
         )
         reading = latest.get(host)
+        counted = states.get((InfraAlertType.GPU_COUNT.value, f"gpu-count:{host}"))
+        baseline_gpus = int(counted.details.get("baseline_gpus") or 0) if counted else 0
         if reading is not None and check(
-            host, "gpu_hang", gpu_hung(cluster, reading), reading.reported_at
+            host,
+            "gpu_hang",
+            gpu_hung(cluster, reading, baseline_gpus),
+            reading.reported_at,
         ):
             decide(
                 host,

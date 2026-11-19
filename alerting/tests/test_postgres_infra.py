@@ -451,11 +451,11 @@ def test_host_faults_read_the_fabric_health_columns() -> None:
             return Result(
                 rows=[
                     ("k8s-node-1", False, None, None, START, None, None, False,
-                     error, 8, 7),
+                     error, 7),
                     ("k8s-node-2", False, None, None, START, None, None, True,
-                     None, 8, 8),
+                     None, 8),
                     ("gpu-node-7", False, None, None, START, True, None, None,
-                     None, None, None),
+                     None, None),
                 ]
             )
 
@@ -468,11 +468,7 @@ def test_host_faults_read_the_fabric_health_columns() -> None:
         # Not read is None, never a pass.
         (None, None),
     ]
-    assert [(r.capacity_gpus, r.live_gpus) for r in readings] == [
-        (8, 7),
-        (8, 8),
-        (None, None),
-    ]
+    assert [r.live_gpus for r in readings] == [7, 8, None]
     [(sql, params)] = seen
     assert params == (DCGM_LIVE_WINDOW,)
     assert "count(DISTINCT power_draw_w) > 1" in sql
