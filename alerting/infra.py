@@ -72,6 +72,7 @@ class InfraAlertType(StrEnum):
     GPU_DEAD_MEMORY = "gpu_dead_memory"
     GPU_COUNT = "gpu_count"
     QUARANTINE = "quarantine"
+    QUEUE_ZOMBIE = "queue_zombie"
 
 
 @dataclass(frozen=True)
@@ -183,6 +184,16 @@ class XidEvent:
     bus_id: str
     xid: int
     at: datetime
+
+
+@dataclass(frozen=True)
+class ElasticInstanceObservation:
+    """One InService instance of an Elastic CI Stack agent Auto Scaling group."""
+
+    stack: str
+    region: str
+    instance_id: str
+    launched_at: datetime
 
 
 @dataclass(frozen=True)
@@ -329,6 +340,10 @@ class InfraSnapshotPort(Protocol):
     def agents_polled_at(self) -> datetime | None:
         """When Buildkite's agents were last polled (the newest agent
         snapshot), or None if never."""
+        ...
+
+    def latest_agent_names(self) -> list[str]:
+        """Every agent name in the newest agent snapshot."""
         ...
 
     def last_agent_queues(
@@ -765,6 +780,109 @@ def _plan_gpu_count(
                         "observed_gpus": reading.observed_gpus,
                         "baseline_gpus": baseline,
                     },
+                )
+            )
+    return InfraScanPlan(
+        states=tuple(out_states), opened=tuple(opened), resolved=tuple(resolved)
+    )
+
+
+# Elastic CI Stack agents are named <stack>-<instance id>-<spawn index>.
+ELASTIC_AGENT_NAME = re.compile(r"-(i-[0-9a-f]+)-\d+$")
+
+
+def elastic_agent_instance_ids(agent_names: Iterable[str]) -> frozenset[str]:
+    """The EC2 instance ids named by Elastic CI Stack agents."""
+    instance_ids = set()
+    for name in agent_names:
+        match = ELASTIC_AGENT_NAME.search(name)
+        if match:
+            instance_ids.add(match.group(1))
+    return frozenset(instance_ids)
+
+
+def _plan_queue_zombie(
+    *,
+    now: datetime,
+    threshold: InfraThreshold,
+    instances: list[ElasticInstanceObservation],
+    agent_instance_ids: frozenset[str],
+    polled_at: datetime,
+    states: Mapping[tuple[str, str], InfraSubjectState],
+    open_episodes: Mapping[tuple[str, str], InfraAlertEpisode],
+) -> InfraScanPlan:
+    """An InService instance whose agent never connected holds a desired
+    capacity slot forever: it never runs a job, so it never terminates itself.
+
+    An instance breaches when it had the threshold's grace minutes before the
+    newest agent poll and that poll names no agent on it. The grace counts to
+    the poll, not the scan, so a poll taken before the agent could connect
+    never counts. Healthy instances write no state (busy queues launch hundreds
+    a day). An episode resolves when the agent connects or the instance is
+    gone; `instances` is the complete listing, so absence means terminated.
+    """
+    kind = InfraAlertType.QUEUE_ZOMBIE.value
+    grace = timedelta(minutes=threshold.threshold_value)
+    out_states: list[InfraSubjectState] = []
+    opened: list[InfraAlertEpisode] = []
+    resolved: list[InfraAlertEpisode] = []
+    seen: set[str] = set()
+    for instance in sorted(instances, key=lambda item: item.instance_id):
+        subject = f"queue-zombie:{instance.instance_id}"
+        seen.add(subject)
+        key = (kind, subject)
+        state = states.get(key)
+        episode = open_episodes.get(key)
+        details = {
+            "stack": instance.stack,
+            "region": instance.region,
+            "instance_id": instance.instance_id,
+            "launched_at": instance.launched_at.isoformat(),
+            "grace_minutes": threshold.threshold_value,
+        }
+        agentless = (
+            instance.instance_id not in agent_instance_ids
+            and polled_at - instance.launched_at >= grace
+        )
+        if agentless:
+            previous = state or InfraSubjectState(kind, subject)
+            breaches = previous.consecutive_breaches + 1
+            out_states.append(
+                replace(previous, consecutive_breaches=breaches, details=details)
+            )
+            if breaches >= threshold.consecutive_scans and episode is None:
+                opened.append(
+                    InfraAlertEpisode(
+                        alert_type=kind,
+                        subject_key=subject,
+                        opened_at=now,
+                        details={
+                            **details,
+                            "consecutive_scans": threshold.consecutive_scans,
+                        },
+                    )
+                )
+            continue
+        if state is not None and state.consecutive_breaches:
+            out_states.append(replace(state, consecutive_breaches=0, details=details))
+        if episode is not None:
+            resolved.append(
+                replace(
+                    episode,
+                    resolved_at=now,
+                    details={**episode.details, "resolution": "agent_connected"},
+                )
+            )
+    for (alert_type, subject), state in states.items():
+        if alert_type == kind and subject not in seen and state.consecutive_breaches:
+            out_states.append(replace(state, consecutive_breaches=0))
+    for (alert_type, subject), episode in open_episodes.items():
+        if alert_type == kind and subject not in seen:
+            resolved.append(
+                replace(
+                    episode,
+                    resolved_at=now,
+                    details={**episode.details, "resolution": "instance_gone"},
                 )
             )
     return InfraScanPlan(
@@ -1719,6 +1837,9 @@ def plan_infra_scan(
     gpu_faults: list[GpuFaultObservation] | None = None,
     host_faults: list[HostFaultObservation] | None = None,
     xid_events: list[XidEvent] | None = None,
+    elastic_instances: list[ElasticInstanceObservation] | None = None,
+    agent_instance_ids: frozenset[str] | None = None,
+    agents_polled_at: datetime | None = None,
 ) -> InfraScanPlan:
     """Decide state upserts and episode transitions for one scan.
 
@@ -1932,6 +2053,27 @@ def plan_infra_scan(
                 now=now,
                 threshold=gpu_count,
                 gpu_counts=gpu_counts,
+                states=states,
+                open_episodes=open_episodes,
+            )
+        )
+    # Without a complete instance listing and a fresh agent poll the queue
+    # zombie check is skipped whole: its open episodes neither open nor resolve.
+    queue_zombie = thresholds.get(InfraAlertType.QUEUE_ZOMBIE.value)
+    if (
+        queue_zombie is not None
+        and queue_zombie.enabled
+        and elastic_instances is not None
+        and agent_instance_ids is not None
+        and agents_polled_at is not None
+    ):
+        plans.append(
+            _plan_queue_zombie(
+                now=now,
+                threshold=queue_zombie,
+                instances=elastic_instances,
+                agent_instance_ids=agent_instance_ids,
+                polled_at=agents_polled_at,
                 states=states,
                 open_episodes=open_episodes,
             )
@@ -2160,6 +2302,28 @@ def _render_open(episode: InfraAlertEpisode) -> str:
                 ),
             ]
         )
+    if episode.alert_type == InfraAlertType.QUEUE_ZOMBIE:
+        instance = _code(episode.details.get("instance_id"))
+        stack = _code(episode.details.get("stack"))
+        region = _escape(episode.details.get("region"))
+        launched = _escape(episode.details.get("launched_at"))
+        grace = _escape(episode.details.get("grace_minutes"))
+        queue = _code(
+            str(episode.details.get("stack", "")).removeprefix("bk-").replace("-", "_")
+        )
+        return "\n".join(
+            [
+                f":rotating_light: *Infra alert* — instance {instance} in {stack} "
+                f"({region}) has run since {launched} with no Buildkite agent "
+                f"(more than {grace} min)",
+                (
+                    "It still counts as capacity, so the queue launches one "
+                    "instance fewer than it needs, and it never takes a job. "
+                    f"Confirm with `fleet-investigate queue-zombie` for {queue}, "
+                    "then terminate it."
+                ),
+            ]
+        )
     raise ValueError(f"no open renderer for alert type: {episode.alert_type}")
 
 
@@ -2206,6 +2370,17 @@ def _render_resolve(episode: InfraAlertEpisode) -> str:
         return (
             f":white_check_mark: *Infra resolved* — {hostname} is reporting "
             f"all {observed} GPUs again"
+        )
+    if episode.alert_type == InfraAlertType.QUEUE_ZOMBIE:
+        instance = _code(episode.details.get("instance_id"))
+        if episode.details.get("resolution") == "agent_connected":
+            return (
+                f":white_check_mark: *Infra resolved* — instance {instance} "
+                "connected a Buildkite agent"
+            )
+        return (
+            f":white_check_mark: *Infra resolved* — instance {instance} "
+            "is no longer in service"
         )
     raise ValueError(f"no resolve renderer for alert type: {episode.alert_type}")
 
@@ -2371,6 +2546,9 @@ class InfraScanHandler:
         ) = None,
         quarantine_live_clusters: frozenset[str] = frozenset(),
         operator_destination: str | None = None,
+        elastic_instances: (
+            Callable[[], Iterable[ElasticInstanceObservation]] | None
+        ) = None,
     ) -> None:
         self._hosts = hosts
         self._snapshots = snapshots
@@ -2384,6 +2562,32 @@ class InfraScanHandler:
         self._job_failure_decisions = job_failure_decisions
         self._quarantine_live_clusters = quarantine_live_clusters
         self._operator_destination = operator_destination
+        # Lists Elastic CI Stack instances for the queue zombie check; None
+        # skips the check.
+        self._elastic_instances = elastic_instances
+
+    def _queue_zombie_inputs(
+        self, polled_at: datetime | None, now: datetime
+    ) -> tuple[list[ElasticInstanceObservation] | None, frozenset[str] | None]:
+        """The instance listing and connected agents' instance ids, or Nones to
+        skip the check. It needs a fresh agent poll: a stalled poller would make
+        every instance look agentless. A failed listing skips the check and
+        never fails the scan."""
+        if self._elastic_instances is None:
+            return None, None
+        if polled_at is None or now - polled_at > AGENT_FRESHNESS:
+            return None, None
+        try:
+            instances = list(self._elastic_instances())
+        except Exception as exc:
+            print(
+                f"queue zombie check skipped: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return None, None
+        return instances, elastic_agent_instance_ids(
+            self._snapshots.latest_agent_names()
+        )
 
     def _job_failures(
         self, now: datetime, states: Mapping[tuple[str, str], InfraSubjectState]
@@ -2464,6 +2668,9 @@ class InfraScanHandler:
                 if host not in pools:
                     out_of_ci[host] = pool
         job_failures, cache = self._job_failures(now, states)
+        elastic_instances, agent_instance_ids = self._queue_zombie_inputs(
+            polled_at, now
+        )
         plan = plan_infra_scan(
             now=now,
             thresholds={
@@ -2493,6 +2700,9 @@ class InfraScanHandler:
             xid_events=self._snapshots.xid_events(
                 hostnames=sorted(pools.keys() | out_of_ci.keys()), since=now - XID_WINDOW
             ),
+            elastic_instances=elastic_instances,
+            agent_instance_ids=agent_instance_ids,
+            agents_polled_at=polled_at,
         )
         plan = replace(plan, states=plan.states + cache)
         self._store.commit_infra_scan(
@@ -2567,3 +2777,76 @@ class KubectlNodesSource:
             for name in [str(item["metadata"].get("name") or "").strip().lower()]
             if name
         )
+
+
+class ElasticStackInstancesSource:
+    """InService instances of every Elastic CI Stack agent Auto Scaling group
+    (CloudFormation logical id AgentAutoScaleGroup) in the given regions.
+
+    All or nothing: any failed call raises, because the planner reads a missing
+    instance as terminated and would resolve a real zombie's episode.
+    """
+
+    def __init__(
+        self, *, regions: Iterable[str], client: Callable[[str, str], Any]
+    ) -> None:
+        self._regions = tuple(regions)
+        self._client = client
+
+    def __call__(self) -> list[ElasticInstanceObservation]:
+        observations: list[ElasticInstanceObservation] = []
+        for region in self._regions:
+            stack_by_instance: dict[str, str] = {}
+            groups = self._client("autoscaling", region).get_paginator(
+                "describe_auto_scaling_groups"
+            )
+            for page in groups.paginate():
+                for group in page["AutoScalingGroups"]:
+                    tags = {tag["Key"]: tag["Value"] for tag in group.get("Tags", [])}
+                    if tags.get("aws:cloudformation:logical-id") != "AgentAutoScaleGroup":
+                        continue
+                    for instance in group["Instances"]:
+                        if instance["LifecycleState"] == "InService":
+                            stack_by_instance[instance["InstanceId"]] = tags[
+                                "aws:cloudformation:stack-name"
+                            ]
+            if not stack_by_instance:
+                continue
+            reservations = self._client("ec2", region).get_paginator(
+                "describe_instances"
+            )
+            for page in reservations.paginate(InstanceIds=sorted(stack_by_instance)):
+                for reservation in page["Reservations"]:
+                    for instance in reservation["Instances"]:
+                        observations.append(
+                            ElasticInstanceObservation(
+                                stack=stack_by_instance[instance["InstanceId"]],
+                                region=region,
+                                instance_id=instance["InstanceId"],
+                                launched_at=instance["LaunchTime"],
+                            )
+                        )
+        return sorted(observations, key=lambda item: (item.region, item.instance_id))
+
+
+def assumed_role_clients(role_arn: str) -> Callable[[str, str], Any]:
+    """boto3 clients in another account through a read-only role.
+
+    The role is assumed on each call, so expired credentials never outlive a
+    scan (each scan is its own process anyway).
+    """
+    import boto3  # type: ignore[import-untyped]  # optional, production-only
+
+    def client(service: str, region: str) -> Any:
+        credentials = boto3.client("sts").assume_role(
+            RoleArn=role_arn, RoleSessionName="alerting-queue-zombie"
+        )["Credentials"]
+        return boto3.client(
+            service,
+            region_name=region,
+            aws_access_key_id=credentials["AccessKeyId"],
+            aws_secret_access_key=credentials["SecretAccessKey"],
+            aws_session_token=credentials["SessionToken"],
+        )
+
+    return client

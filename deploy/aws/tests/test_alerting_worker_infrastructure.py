@@ -42,6 +42,20 @@ def test_instance_role_is_scoped_to_checkpoint_bucket_and_named_secrets() -> Non
     assert "Resource: '*'" not in template
 
 
+def test_instance_role_assumes_only_the_named_queue_zombie_role_when_set() -> None:
+    template = read("alerting-worker.yaml")
+
+    assert "QueueZombieRoleArn:" in template
+    assert "Default: ''" in template.split("QueueZombieRoleArn:", 1)[1].split("\n\n", 1)[0]
+    assert "HasQueueZombieRole:" in template
+    policy = template.split("PolicyName: AlertingWorkerQueueZombieRead", 1)[1].split(
+        "Ref: AWS::NoValue", 1
+    )[0]
+    assert "- sts:AssumeRole" in policy
+    assert "Ref: QueueZombieRoleArn" in policy
+    assert "Fn::If:" in template.split("PolicyName: AlertingWorkerQueueZombieRead", 1)[0][-200:]
+
+
 def test_instance_role_is_ssm_managed_for_in_place_ops() -> None:
     template = read("alerting-worker.yaml")
 

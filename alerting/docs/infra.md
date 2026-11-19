@@ -21,6 +21,15 @@ Three fleet-health signals, reconciled by one five-minute scan
   never alert.
 - **GPU temperature** — any GPU at ≥ the threshold in °C, keyed per
   hostname and GPU index.
+- **Queue zombie** — an InService instance of an Elastic CI Stack agent
+  Auto Scaling group that had the threshold's grace minutes before the
+  newest Buildkite agent poll and that poll names no agent on it (agents
+  are named `<stack>-<instance id>-<n>`). It counts as capacity but never
+  takes a job or terminates, so the queue runs one instance short until
+  someone kills it (2026-11-13: one EC2 metadata 503 at boot left one on the
+  CUDA image build queue for days). Keyed per instance; resolves when its agent
+  connects or the instance leaves service. Skipped whole while the agent
+  poll is older than 15 minutes or the instance listing fails.
 
 RAM, load, and network are display-only and never alert. Every episode
 opens only after the breach sustains across `consecutive_scans` and
@@ -45,7 +54,14 @@ the resolve edits the bot's own open alert in place (chat.update) into a
 - `alert_thresholds` Postgres table (fleet-wide, operator-tunable;
   `enabled = false` suppresses that alert type). Seeded defaults:
   `unreporting` 10 minutes / 2 scans, `disk_usage` 90% / 2 scans,
-  `gpu_temperature` 85°C / 2 scans.
+  `gpu_temperature` 85°C / 2 scans, `queue_zombie` 10 minutes / 2 scans.
+- Queue zombie: `QUEUE_ZOMBIE_ROLE_ARN` and `QUEUE_ZOMBIE_REGIONS`
+  (**optional**; either unset skips the check). The role is a read-only role
+  in the CI AWS account (`autoscaling:DescribeAutoScalingGroups`,
+  `ec2:DescribeInstances`) that the worker's instance role may assume (stack
+  parameter `QueueZombieRoleArn`); the regions are comma-separated. Agent names come from `buildkite_agent_snapshots`, which the
+  dashboard's `poll-metrics` cron fills every 5 minutes, so it needs no
+  Buildkite token.
 - The expected-host set is the union of: Kubernetes node names from both
   clusters (`GPU_REPORTER_KUBECONFIG_H100`, `GPU_REPORTER_KUBECONFIG_DGX` —
   **optional**; unset means the kubectl source is skipped, set-but-failing

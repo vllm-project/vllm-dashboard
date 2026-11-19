@@ -13,7 +13,15 @@ from typing import Any
 import pytest
 
 from alerting.commands import ScheduledCommand
+import dataclasses
+import sys
+import types
+
 from alerting.infra import (
+    _render_resolve,
+    assumed_role_clients,
+    ElasticInstanceObservation,
+    ElasticStackInstancesSource,
     InfraAlertEpisode,
     _render_quarantine,
     AGENT_FRESHNESS,
@@ -83,6 +91,8 @@ class FixtureSnapshots:
         self.past_agent_lookups: list[tuple[list[str], datetime | None]] = []
         # The newest agent poll; None, as if polling had never run.
         self.polled_at: datetime | None = None
+        # Agent names in the newest poll.
+        self.agent_names: list[str] = []
 
     def infra_thresholds(self) -> list[InfraThreshold]:
         return list(self.threshold_rows)
@@ -132,6 +142,9 @@ class FixtureSnapshots:
 
     def agents_polled_at(self) -> datetime | None:
         return self.polled_at
+
+    def latest_agent_names(self) -> list[str]:
+        return list(self.agent_names)
 
     def last_agent_queues(
         self, hostnames: Iterable[str], *, since: datetime | None = None
@@ -193,6 +206,7 @@ def runtime_for(
     snapshots: FixtureSnapshots,
     *,
     delivery_mode: DeliveryMode = DeliveryMode.LIVE,
+    elastic_instances: Any = None,
 ) -> tuple[
     AlertingRuntime, InMemoryInfraStore, InMemoryOutboxStore, RecordingSlackPort, FixedClock
 ]:
@@ -213,6 +227,7 @@ def runtime_for(
                 store=store,
                 clock=clock,
                 delivery_mode=delivery_mode,
+                elastic_instances=elastic_instances,
             )
         },
         alert_path=None,
@@ -1819,3 +1834,422 @@ def test_a_host_fault_reading_opens_a_dry_run_quarantine_on_its_second_check() -
         "the GPU query hung on 2 consecutive checks "
         "(would be held: last serving host in its pool)"
     )
+
+
+# --- Queue zombies: Elastic CI Stack instances that never connected an agent.
+
+STACK = "bk-image-queue"
+ZOMBIE_ID = "i-0f34cf657351cf698"
+
+
+def elastic_instance(
+    instance_id: str = ZOMBIE_ID, *, launched_at: datetime = START - timedelta(hours=2)
+) -> ElasticInstanceObservation:
+    return ElasticInstanceObservation(
+        stack=STACK, region="region-b", instance_id=instance_id, launched_at=launched_at
+    )
+
+
+def zombie_setup(
+    instances: list[ElasticInstanceObservation],
+) -> tuple[FixtureSnapshots, dict[str, list[ElasticInstanceObservation]]]:
+    snapshots = FixtureSnapshots()
+    snapshots.threshold_rows.append(
+        threshold(InfraAlertType.QUEUE_ZOMBIE, 10, "minutes")
+    )
+    snapshots.polled_at = START
+    listing = {"instances": instances}
+    return snapshots, listing
+
+
+def test_queue_zombie_opens_on_second_scan_and_resolves_when_instance_is_gone() -> None:
+    snapshots, listing = zombie_setup([elastic_instance()])
+    runtime, store, outbox, slack, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+
+    scan(runtime, clock.now())
+    assert store.episodes() == []
+    clock.advance(minutes=5)
+    snapshots.polled_at = clock.now()
+    scan(runtime, clock.now())
+    runtime.dispatch_due_notifications()
+
+    [episode] = store.episodes()
+    assert episode.alert_type == "queue_zombie"
+    assert episode.subject_key == f"queue-zombie:{ZOMBIE_ID}"
+    assert episode.details["consecutive_scans"] == 2
+    text = slack.deliveries[0].payload["text"]
+    assert text.split("\n")[-2:] == [
+        f":rotating_light: *Infra alert* — instance `{ZOMBIE_ID}` in `{STACK}` "
+        "(region-b) has run since 2026-09-02T08:00:00+00:00 with no Buildkite "
+        "agent (more than 10 min)",
+        "It still counts as capacity, so the queue launches one instance fewer "
+        "than it needs, and it never takes a job. Confirm with "
+        "`fleet-investigate queue-zombie` for `image_queue`, "
+        "then terminate it.",
+    ]
+
+    listing["instances"] = []
+    clock.advance(minutes=5)
+    snapshots.polled_at = clock.now()
+    scan(runtime, clock.now())
+    runtime.dispatch_due_notifications()
+
+    [episode] = store.episodes()
+    assert episode.status == "resolved"
+    assert episode.details["resolution"] == "instance_gone"
+    assert outbox.count() == 2
+    assert slack.updates[0]["payload"]["text"].endswith("~")
+
+
+def test_queue_zombie_resolves_when_its_agent_connects() -> None:
+    snapshots, listing = zombie_setup([elastic_instance()])
+    runtime, store, _, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+    scan(runtime, clock.now())
+    clock.advance(minutes=5)
+    snapshots.polled_at = clock.now()
+    scan(runtime, clock.now())
+    assert [episode.status for episode in store.episodes()] == ["open"]
+
+    snapshots.agent_names = [f"{STACK}-{ZOMBIE_ID}-1"]
+    clock.advance(minutes=5)
+    snapshots.polled_at = clock.now()
+    scan(runtime, clock.now())
+
+    [episode] = store.episodes()
+    assert episode.status == "resolved"
+    assert episode.details["resolution"] == "agent_connected"
+    state = store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}")
+    assert state is not None and state.consecutive_breaches == 0
+
+
+def test_queue_zombie_ignores_connected_and_young_instances() -> None:
+    connected = elastic_instance("i-0aaaaaaaaaaaaaaaa")
+    # Launched 5 minutes before the newest poll: still inside its 10-minute grace.
+    young = elastic_instance("i-0bbbbbbbbbbbbbbbb", launched_at=START - timedelta(minutes=5))
+    snapshots, listing = zombie_setup([connected, young])
+    snapshots.agent_names = [f"{STACK}-i-0aaaaaaaaaaaaaaaa-1", "h200-ci-1-agent-1"]
+    runtime, store, outbox, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+
+    for _ in range(3):
+        scan(runtime, clock.now())
+        clock.advance(minutes=5)
+
+    assert store.episodes() == []
+    assert outbox.count() == 0
+    assert store.subject_state("queue_zombie", "queue-zombie:i-0aaaaaaaaaaaaaaaa") is None
+    assert store.subject_state("queue_zombie", "queue-zombie:i-0bbbbbbbbbbbbbbbb") is None
+
+
+def test_queue_zombie_grace_counts_to_the_poll_not_the_scan() -> None:
+    # The scan runs 12 minutes after the instance launched, but the newest poll
+    # was taken 3 minutes after launch: the agent had no chance to show up yet.
+    instance = elastic_instance(launched_at=START - timedelta(minutes=12))
+    snapshots, listing = zombie_setup([instance])
+    snapshots.polled_at = START - timedelta(minutes=9)
+    runtime, store, _, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+
+    scan(runtime, clock.now())
+
+    assert store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}") is None
+
+
+def test_queue_zombie_single_scan_blip_resets_without_alerting() -> None:
+    # An instance seen agentless once, then gone (it finished its one job and
+    # terminated), never opens an episode and leaves its count at zero.
+    snapshots, listing = zombie_setup([elastic_instance()])
+    runtime, store, outbox, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+    scan(runtime, clock.now())
+    state = store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}")
+    assert state is not None and state.consecutive_breaches == 1
+
+    listing["instances"] = []
+    clock.advance(minutes=5)
+    snapshots.polled_at = clock.now()
+    scan(runtime, clock.now())
+
+    assert store.episodes() == []
+    assert outbox.count() == 0
+    state = store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}")
+    assert state is not None and state.consecutive_breaches == 0
+
+
+def test_queue_zombie_skipped_while_agent_poll_is_stale() -> None:
+    # A stalled poller makes every instance look agentless; the check must
+    # pause, not page about the whole fleet.
+    snapshots, listing = zombie_setup([elastic_instance()])
+    snapshots.polled_at = START - AGENT_FRESHNESS - timedelta(minutes=1)
+    calls: list[int] = []
+
+    def listing_source() -> list[ElasticInstanceObservation]:
+        calls.append(1)
+        return listing["instances"]
+
+    runtime, store, outbox, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=listing_source
+    )
+    for _ in range(3):
+        scan(runtime, clock.now())
+        clock.advance(minutes=5)
+
+    assert store.episodes() == []
+    assert outbox.count() == 0
+    assert calls == []
+
+
+def test_queue_zombie_listing_failure_skips_the_check_not_the_scan(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    snapshots, _ = zombie_setup([])
+    snapshots.disks = [mount("h200-ci-1", "/dev/nvme0n1", fstype="xfs", used_percent=99.0)]
+    snapshots.threshold_rows.append(threshold(InfraAlertType.DISK_USAGE, 90, "percent", scans=1))
+
+    def failing() -> list[ElasticInstanceObservation]:
+        raise RuntimeError("AccessDenied")
+
+    runtime, store, _, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=failing
+    )
+    scan(runtime, clock.now())
+
+    assert [episode.alert_type for episode in store.episodes()] == ["disk_usage"]
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        "queue zombie check skipped: RuntimeError: AccessDenied"
+    )
+
+
+def test_queue_zombie_needs_its_threshold_row() -> None:
+    snapshots, listing = zombie_setup([elastic_instance()])
+    snapshots.threshold_rows = [
+        row for row in snapshots.threshold_rows if row.alert_type != "queue_zombie"
+    ]
+    runtime, store, _, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+    for _ in range(3):
+        scan(runtime, clock.now())
+        clock.advance(minutes=5)
+        snapshots.polled_at = clock.now()
+
+    assert store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}") is None
+
+
+class FakeAwsClient:
+    """Stands in for one boto3 client; returns canned pages per call."""
+
+    def __init__(self, pages: dict[str, list[dict[str, Any]]]) -> None:
+        self.pages = pages
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def get_paginator(self, operation: str) -> Any:
+        client = self
+
+        class Paginator:
+            def paginate(self, **kwargs: Any) -> list[dict[str, Any]]:
+                client.calls.append((operation, kwargs))
+                return client.pages[operation]
+
+        return Paginator()
+
+
+def asg_page(groups: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"AutoScalingGroups": groups}
+
+
+def agent_group(stack: str, instances: list[tuple[str, str]]) -> dict[str, Any]:
+    # The shape of a real describe-auto-scaling-groups entry (2026-11-13 capture,
+    # identifiers replaced).
+    return {
+        "AutoScalingGroupName": f"{stack}-AgentAutoScaleGroup-ABC123",
+        "Instances": [
+            {"InstanceId": instance_id, "LifecycleState": state}
+            for instance_id, state in instances
+        ],
+        "Tags": [
+            {"Key": "aws:cloudformation:logical-id", "Value": "AgentAutoScaleGroup"},
+            {"Key": "aws:cloudformation:stack-name", "Value": stack},
+        ],
+    }
+
+
+def test_elastic_stack_source_lists_in_service_agent_instances_per_region() -> None:
+    launched = START - timedelta(hours=2)
+    east_asg = FakeAwsClient(
+        {
+            "describe_auto_scaling_groups": [
+                asg_page(
+                    [
+                        # Not an Elastic CI agent group: ignored, and the
+                        # groups after it are still read.
+                        {"AutoScalingGroupName": "eks-nodes", "Instances": [{"InstanceId": "i-0ddddddddddddddd0", "LifecycleState": "InService"}], "Tags": []},
+                        agent_group(STACK, [(ZOMBIE_ID, "InService"), ("i-0ccccccccccccccc0", "Terminating"), ("i-0aaaaaaaaaaaaaaa0", "InService")]),
+                    ]
+                )
+            ]
+        }
+    )
+    east_ec2 = FakeAwsClient(
+        {"describe_instances": [{"Reservations": [{"Instances": [{"InstanceId": ZOMBIE_ID, "LaunchTime": launched}, {"InstanceId": "i-0aaaaaaaaaaaaaaa0", "LaunchTime": launched}]}]}]}
+    )
+    west_asg = FakeAwsClient({"describe_auto_scaling_groups": [asg_page([])]})
+    clients = {
+        ("autoscaling", "region-b"): east_asg,
+        ("ec2", "region-b"): east_ec2,
+        ("autoscaling", "region-a"): west_asg,
+    }
+    source = ElasticStackInstancesSource(
+        regions=("region-a", "region-b"),
+        client=lambda service, region: clients[(service, region)],
+    )
+
+    assert source() == [
+        ElasticInstanceObservation(
+            stack=STACK, region="region-b", instance_id="i-0aaaaaaaaaaaaaaa0", launched_at=launched
+        ),
+        ElasticInstanceObservation(
+            stack=STACK, region="region-b", instance_id=ZOMBIE_ID, launched_at=launched
+        ),
+    ]
+    assert east_ec2.calls == [
+        ("describe_instances", {"InstanceIds": ["i-0aaaaaaaaaaaaaaa0", ZOMBIE_ID]})
+    ]
+
+
+def test_queue_zombie_resolve_messages_name_the_instance_and_why() -> None:
+    def resolved(resolution: str) -> InfraAlertEpisode:
+        return InfraAlertEpisode(
+            alert_type="queue_zombie",
+            subject_key=f"queue-zombie:{ZOMBIE_ID}",
+            opened_at=START,
+            resolved_at=START,
+            details={"instance_id": ZOMBIE_ID, "resolution": resolution},
+        )
+
+    assert _render_resolve(resolved("agent_connected")) == (
+        f":white_check_mark: *Infra resolved* — instance `{ZOMBIE_ID}` "
+        "connected a Buildkite agent"
+    )
+    assert _render_resolve(resolved("instance_gone")) == (
+        f":white_check_mark: *Infra resolved* — instance `{ZOMBIE_ID}` "
+        "is no longer in service"
+    )
+
+
+def test_queue_zombie_breaches_at_exactly_the_grace() -> None:
+    snapshots, listing = zombie_setup(
+        [elastic_instance(launched_at=START - timedelta(minutes=10))]
+    )
+    runtime, store, _, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+    scan(runtime, clock.now())
+
+    state = store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}")
+    assert state is not None and state.consecutive_breaches == 1
+
+
+def test_queue_zombie_runs_with_a_poll_exactly_at_the_freshness_limit() -> None:
+    snapshots, listing = zombie_setup([elastic_instance()])
+    snapshots.polled_at = START - AGENT_FRESHNESS
+    runtime, store, _, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+    scan(runtime, clock.now())
+
+    assert store.subject_state("queue_zombie", f"queue-zombie:{ZOMBIE_ID}") is not None
+
+
+def test_queue_zombie_opens_one_episode_per_zombie() -> None:
+    snapshots, listing = zombie_setup(
+        [elastic_instance("i-0aaaaaaaaaaaaaaa0"), elastic_instance("i-0bbbbbbbbbbbbbbb0")]
+    )
+    runtime, store, _, _, clock = runtime_for(
+        FixtureHosts(), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+    scan(runtime, clock.now())
+    clock.advance(minutes=5)
+    snapshots.polled_at = clock.now()
+    scan(runtime, clock.now())
+
+    assert sorted(episode.subject_key for episode in store.episodes()) == [
+        "queue-zombie:i-0aaaaaaaaaaaaaaa0",
+        "queue-zombie:i-0bbbbbbbbbbbbbbb0",
+    ]
+
+
+def test_queue_zombie_leaves_other_alert_types_alone() -> None:
+    # The zombie check resets and resolves only its own subjects: a silent
+    # host's unreporting count and episode must survive it.
+    snapshots, listing = zombie_setup([])
+    # Three scans to open, so a stray reset of its count would keep it shut.
+    snapshots.threshold_rows[0] = threshold(InfraAlertType.UNREPORTING, 10, "minutes", scans=3)
+    runtime, store, _, _, clock = runtime_for(
+        FixtureHosts({"gpu-h100-01"}), snapshots, elastic_instances=lambda: listing["instances"]
+    )
+    for _ in range(4):
+        scan(runtime, clock.now())
+        clock.advance(minutes=5)
+        snapshots.polled_at = clock.now()
+
+    [episode] = store.episodes()
+    assert episode.alert_type == "unreporting"
+    assert episode.status == "open"
+
+
+def test_elastic_instance_observation_is_immutable() -> None:
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        elastic_instance().stack = "other"  # type: ignore[misc]
+
+
+def test_assumed_role_clients_build_clients_from_the_role_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeSts:
+        def assume_role(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(("assume_role", kwargs))
+            return {
+                "Credentials": {
+                    "AccessKeyId": "AKIDEXAMPLE",
+                    "SecretAccessKey": "secret",
+                    "SessionToken": "token",
+                }
+            }
+
+    def fake_client(service: str, **kwargs: Any) -> Any:
+        calls.append((service, kwargs))
+        return FakeSts() if service == "sts" else object()
+
+    monkeypatch.setitem(sys.modules, "boto3", types.SimpleNamespace(client=fake_client))
+    client = assumed_role_clients("arn:aws:iam::123456789012:role/queue-zombie-read")("ec2", "region-b")
+
+    assert client is not None
+    assert calls == [
+        ("sts", {}),
+        (
+            "assume_role",
+            {
+                "RoleArn": "arn:aws:iam::123456789012:role/queue-zombie-read",
+                "RoleSessionName": "alerting-queue-zombie",
+            },
+        ),
+        (
+            "ec2",
+            {
+                "region_name": "region-b",
+                "aws_access_key_id": "AKIDEXAMPLE",
+                "aws_secret_access_key": "secret",
+                "aws_session_token": "token",
+            },
+        ),
+    ]

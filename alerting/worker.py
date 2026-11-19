@@ -173,6 +173,16 @@ def _runtime(
             # Quarantine events that need a person go here too: the same DM
             # the worker-failure alert uses.
             operator_destination=os.environ.get("ALERTING_FAILURE_SLACK_DESTINATION"),
+            # Optional: a read-only role in the CI AWS account and the
+            # comma-separated regions it lists, for the queue zombie check.
+            # Either unset skips the check; a failing listing skips it for that
+            # scan and never fails the scan.
+            queue_zombie_role_arn=os.environ.get("QUEUE_ZOMBIE_ROLE_ARN"),
+            queue_zombie_regions=tuple(
+                region.strip()
+                for region in os.environ.get("QUEUE_ZOMBIE_REGIONS", "").split(",")
+                if region.strip()
+            ),
         )
     if consumer == "daily-summary":
         # The infra alert channel; a DM to the worker-failure destination if unset.

@@ -28,6 +28,13 @@ Parameters:
     Description: Full ARN of a JSON secret containing a read-only GITHUB_TOKEN
     AllowedPattern: 'arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+-[A-Za-z0-9]{6}'
     ConstraintDescription: Must be a full Secrets Manager ARN including its six-character suffix; use describe-secret --query ARN.
+  QueueZombieRoleArn:
+    Type: String
+    Description: Optional read-only role in the CI AWS account that the infra scan assumes to list Elastic CI Stack instances; empty grants nothing
+    Default: ''
+    AllowedPattern: '^$|^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$'
+    ConstraintDescription: Must be empty or a full IAM role ARN.
+
   KimiReasoningEffort:
     Type: String
     Description: Thinking effort for the Full CI Kimi analyzer
@@ -46,6 +53,13 @@ Parameters:
       - low
       - high
       - max
+
+Conditions:
+  HasQueueZombieRole:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: QueueZombieRoleArn
+          - ''
 
 Resources:
   CheckpointBucket:
@@ -109,6 +123,18 @@ Resources:
                 Resource:
                   - Ref: WorkerSecretArn
                   - Ref: GitHubReadOnlySecretArn
+        - Fn::If:
+            - HasQueueZombieRole
+            - PolicyName: AlertingWorkerQueueZombieRead
+              PolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                  - Effect: Allow
+                    Action:
+                      - sts:AssumeRole
+                    Resource:
+                      Ref: QueueZombieRoleArn
+            - Ref: AWS::NoValue
 
   WorkerInstanceProfile:
     Type: AWS::IAM::InstanceProfile

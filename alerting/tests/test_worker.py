@@ -172,10 +172,14 @@ def test_infra_runtime_passes_kubeconfigs_and_delivery_mode(
     monkeypatch.setenv("GPU_REPORTER_KUBECONFIG_DGX", "/run/alerting/dgx.conf")
     monkeypatch.setenv("BUILDKITE_TOKEN", "bk-token")
     monkeypatch.setenv("ALERTING_FAILURE_SLACK_DESTINATION", "UOPS")
+    monkeypatch.setenv("QUEUE_ZOMBIE_ROLE_ARN", "arn:aws:iam::123456789012:role/read")
+    monkeypatch.setenv("QUEUE_ZOMBIE_REGIONS", " region-a, ,region-b ")
     monkeypatch.setattr(worker, "build_infra_runtime", fake_build)
 
     worker._runtime("infra", worker.SystemClock(), DeliveryMode.SHADOW)
 
+    assert captured["queue_zombie_role_arn"] == "arn:aws:iam::123456789012:role/read"
+    assert captured["queue_zombie_regions"] == ("region-a", "region-b")
     assert captured["operator_destination"] == "UOPS"
     assert captured["kubeconfigs"] == [
         "/run/alerting/h100.conf",
@@ -198,10 +202,15 @@ def test_infra_runtime_skips_kubectl_sources_without_kubeconfigs(
     monkeypatch.delenv("GPU_REPORTER_KUBECONFIG_H100", raising=False)
     monkeypatch.delenv("GPU_REPORTER_KUBECONFIG_DGX", raising=False)
     monkeypatch.delenv("BUILDKITE_TOKEN", raising=False)
+    monkeypatch.delenv("QUEUE_ZOMBIE_ROLE_ARN", raising=False)
+    monkeypatch.delenv("QUEUE_ZOMBIE_REGIONS", raising=False)
     monkeypatch.setattr(worker, "build_infra_runtime", fake_build)
 
     worker._runtime("infra", worker.SystemClock(), DeliveryMode.SHADOW)
 
+    # No queue zombie check without its role and regions.
+    assert captured["queue_zombie_role_arn"] is None
+    assert captured["queue_zombie_regions"] == ()
     # No kubectl sources: the worker's egress SG cannot reach the cluster
     # API servers, so kubeconfigs are optional and unset means "skip".
     assert captured["kubeconfigs"] == []
@@ -413,3 +422,33 @@ def test_fast_ci_requires_clickhouse_read_credentials(
 
     with pytest.raises(RuntimeError, match=missing):
         worker._runtime("fast-ci", worker.SystemClock(), DeliveryMode.SHADOW)
+
+
+@pytest.mark.parametrize(
+    ("role_arn", "regions", "checks"),
+    [
+        ("arn:aws:iam::123456789012:role/read", ("region-a",), True),
+        ("arn:aws:iam::123456789012:role/read", (), False),
+        (None, ("region-a",), False),
+    ],
+)
+def test_infra_runtime_builds_the_queue_zombie_source_only_with_role_and_regions(
+    role_arn: str | None, regions: tuple[str, ...], checks: bool
+) -> None:
+    from alerting.memory import FixedClock, RecordingSlackPort
+    from alerting.postgres import build_infra_runtime
+
+    runtime = build_infra_runtime(
+        database_url="postgresql://example.invalid/alerting",
+        kubeconfigs=[],
+        slack=RecordingSlackPort(),
+        clock=FixedClock(datetime(2026, 11, 19, tzinfo=timezone.utc)),
+        queue_zombie_role_arn=role_arn,
+        queue_zombie_regions=regions,
+    )
+
+    from alerting.infra import InfraScanHandler
+
+    handler = runtime._handlers["infra_scan"]
+    assert isinstance(handler, InfraScanHandler)
+    assert (handler._elastic_instances is not None) is checks

@@ -1471,6 +1471,18 @@ class PostgresAlertStore:
             ).fetchone()
         return row[0] if row else None
 
+    def latest_agent_names(self) -> list[str]:
+        with self._connection_factory() as connection:
+            # The max() is one descent of idx_buildkite_agent_snapshots_polled;
+            # one poll is about a thousand rows.
+            rows = connection.execute(
+                """
+                SELECT agent_name FROM buildkite_agent_snapshots
+                WHERE polled_at = (SELECT max(polled_at) FROM buildkite_agent_snapshots)
+                """
+            ).fetchall()
+        return [str(row[0]) for row in rows if row[0]]
+
     def agent_queues(self) -> list[tuple[str, str]]:
         with self._connection_factory() as connection:
             rows = connection.execute(
@@ -2732,9 +2744,13 @@ def build_infra_runtime(
     quarantine_live_clusters: frozenset[str] = frozenset(),
     buildkite_token: str | None = None,
     operator_destination: str | None = None,
+    queue_zombie_role_arn: str | None = None,
+    queue_zombie_regions: tuple[str, ...] = (),
 ) -> AlertingRuntime:
-    """Wire the infra health scan: optional kubectl nodes + Postgres, and the
-    job-failure quarantine trigger when a Buildkite token is set.
+    """Wire the infra health scan: optional kubectl nodes + Postgres, the
+    job-failure quarantine trigger when a Buildkite token is set, and the
+    queue zombie check when a role into the CI AWS account and its regions
+    are set.
 
     The expected-hosts roster is reporter-derived (see InfraScanHandler):
     the Buildkite gpu-queue agents list was dropped because the fleet's
@@ -2742,9 +2758,11 @@ def build_infra_runtime(
     reporters, so it only produced never-reported noise.
     """
     from alerting.infra import (
+        ElasticStackInstancesSource,
         InfraScanHandler,
         KubectlNodesSource,
         UnionExpectedHostSource,
+        assumed_role_clients,
     )
 
     store = PostgresAlertStore.from_database_url(database_url)
@@ -2761,6 +2779,12 @@ def build_infra_runtime(
         def job_failure_decisions(now: datetime) -> list[QuarantineDecision]:
             return dry_run_decisions(buildkite, now=now)
 
+    elastic_instances = None
+    if queue_zombie_role_arn and queue_zombie_regions:
+        elastic_instances = ElasticStackInstancesSource(
+            regions=queue_zombie_regions,
+            client=assumed_role_clients(queue_zombie_role_arn),
+        )
     handler = InfraScanHandler(
         hosts=hosts,
         snapshots=store,
@@ -2770,6 +2794,7 @@ def build_infra_runtime(
         job_failure_decisions=job_failure_decisions,
         quarantine_live_clusters=quarantine_live_clusters,
         operator_destination=operator_destination,
+        elastic_instances=elastic_instances,
     )
     return AlertingRuntime(
         executions=store,
