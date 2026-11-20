@@ -9,6 +9,7 @@ non-vLLM links.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import datetime
 from urllib.parse import quote
 from typing import Any
@@ -502,8 +503,8 @@ def maintainer_digest(
     waiting: list[DigestEntry] | None = None, waiting_total: int = 0,
 ) -> NotificationIntent:
     """A compact, priority-grouped digest. Titles open triage, numbers open
-    GitHub, and one menu acts on each issue/fix group. At most five groups
-    (three per band) are shown; overflow always links to the full list.
+    GitHub, and one menu acts on each issue/fix group. All P0 groups are
+    shown; lower priorities retain the compact budget and overflow links.
     New assignments and overdue unacked reminders share the same layout.
     Context-only fixes never become notifications or change a group's band.
     """
@@ -528,9 +529,9 @@ def maintainer_digest(
         label = BAND_LABELS[band]
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text":
                        "*" + " ".join(p for p in (_BAND_ICON.get(band, ""), label) if p) + "*"}})
-        shown = in_band[:min(remaining, DIGEST_MAX_PER_BAND)]
+        shown = in_band if band == "page" else in_band[:min(remaining, DIGEST_MAX_PER_BAND)]
         blocks.extend(_digest_section(m, f, day, lang) for m, f in shown)
-        remaining -= len(shown)
+        remaining -= min(len(shown), DIGEST_MAX_PER_BAND)
         if len(shown) < len(in_band):
             blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text":
                 _t(lang, "more_band", n=len(in_band) - len(shown), band=label, url=me)}]})
@@ -548,6 +549,31 @@ def maintainer_digest(
         payload={"text": _t(lang, "digest_text", counts=summary), "blocks": blocks,
                  "unfurl_links": False, "unfurl_media": False},
     )
+
+
+def split_digest(notification: NotificationIntent) -> list[NotificationIntent]:
+    """Keep every P0 when a digest outgrows Slack. Reserve room for the
+    confirmation block each item can gain after a menu action."""
+    blocks = notification.payload["blocks"]
+    limit = SLACK_MAX_BLOCKS // 2
+    if len(blocks) <= limit:
+        return [notification]
+    pages: list[list[dict[str, Any]]] = []
+    page = list(blocks[:2])
+    heading: dict[str, Any] | None = None
+    for block in blocks[2:]:
+        is_heading = block.get("type") == "section" and "block_id" not in block
+        if len(page) >= limit:
+            pages.append(page)
+            page = list(blocks[:2])
+            if heading is not None and not is_heading:
+                page.append(heading)
+        page.append(block)
+        if is_heading:
+            heading = block
+    pages.append(page)
+    return [replace(notification, delivery_id=notification.delivery_id + (f":part:{i + 1}" if i else ""),
+                    payload={**notification.payload, "blocks": page}) for i, page in enumerate(pages)]
 
 
 def team_digest(

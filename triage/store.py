@@ -1164,7 +1164,8 @@ class PostgresTriageStore(PostgresAlertStore):
         return [(r[0], int(r[1]), int(r[2])) for r in rows]
 
     def commit_digest(
-        self, notification: NotificationIntent, assignment_ids: list[int], *, now: datetime
+        self, notification: NotificationIntent, assignment_ids: list[int], *, now: datetime,
+        continuations: list[NotificationIntent] | None = None,
     ) -> bool:
         """Queue a digest and mark `assignment_ids` notified, once per
         delivery_id. If that digest is already in the outbox (the hourly
@@ -1180,6 +1181,8 @@ class PostgresTriageStore(PostgresAlertStore):
                 ).fetchone():
                     return False
                 self._enqueue(c, notification, next_attempt_at=now)
+                for part in continuations or []:
+                    self._enqueue(c, part, next_attempt_at=now)
                 if assignment_ids:
                     c.execute(
                         "UPDATE triage_assignments SET notified_at = %s WHERE id = ANY(%s)",

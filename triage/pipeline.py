@@ -31,7 +31,7 @@ from triage.github import GitHubClient, GitHubError, IngestClient
 from triage.groups import Member, group_reason, number_of, partner_map
 from triage.model import Item, Score
 from triage.maintainers import parse_maintainer_files_partial
-from triage.notify import WAITING_AFTER_DAYS, WAITING_MAX_ITEMS, maintainer_digest, page_dm, team_digest
+from triage.notify import WAITING_AFTER_DAYS, WAITING_MAX_ITEMS, maintainer_digest, page_dm, split_digest, team_digest
 from triage.prepass import (
     COMMENTS_LIMIT,
     LOGIN,
@@ -833,17 +833,14 @@ class DigestHandler:
             enriched = self.store.digest_context(entries + waiting)
             entries, waiting = enriched[:len(entries)], enriched[len(entries):]
             # Reminders are not re-marked: notified_at stays the first send.
-            self.store.commit_digest(
-                maintainer_digest(
-                    maintainer=maintainer.github_login, maintainer_slack=maintainer.slack_user_id,
-                    entries=entries, day=local, mode=self.delivery_mode,
-                    lang=str(maintainer.rules.get("language") or "en"),
-                    reassign_to=[m.github_login for m in active if m.github_login != maintainer.github_login],
-                    waiting=waiting, waiting_total=waiting_total,
-                ),
-                [e.assignment_id for e in entries],
-                now=now,
-            )
+            parts = split_digest(maintainer_digest(
+                maintainer=maintainer.github_login, maintainer_slack=maintainer.slack_user_id,
+                entries=entries, day=local, mode=self.delivery_mode,
+                lang=str(maintainer.rules.get("language") or "en"),
+                waiting=waiting, waiting_total=waiting_total,
+            ))
+            self.store.commit_digest(parts[0], [e.assignment_id for e in entries], now=now,
+                                     continuations=parts[1:])
         if now.astimezone(timezone.utc).hour != self.team_digest_hour_utc:
             return
         suppression = self.store.suppression_since(now - timedelta(days=1), threshold=self.suppression_threshold)

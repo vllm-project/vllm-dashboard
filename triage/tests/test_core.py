@@ -795,7 +795,7 @@ def test_still_waiting_section_fits_slacks_block_limit() -> None:
 
     from alerting.ports import DeliveryMode
 
-    from triage.notify import DIGEST_MAX_ITEMS, DIGEST_MAX_PER_BAND, SLACK_MAX_BLOCKS, maintainer_digest
+    from triage.notify import DIGEST_MAX_PER_BAND, SLACK_MAX_BLOCKS, maintainer_digest
 
     day = datetime(2026, 11, 18, 9, tzinfo=timezone.utc)
     # Worst case: new items in all four bands, a full reminder list and more waiting.
@@ -809,9 +809,9 @@ def test_still_waiting_section_fits_slacks_block_limit() -> None:
     assert len(blocks) <= SLACK_MAX_BLOCKS
     ids = [b["block_id"] for b in blocks if "block_id" in b]
     assert len(ids) == len(set(ids))
-    assert sum("accessory" in b for b in blocks) == DIGEST_MAX_ITEMS
+    assert sum("accessory" in b for b in blocks) == 12
     contexts = [b["elements"][0]["text"] for b in blocks if b["type"] == "context"]
-    assert any("7 more P0" in t for t in contexts)
+    assert not any("more P0" in t for t in contexts)
     assert any("16 more P1" in t for t in contexts)
     assert any("4 more overdue items" in t for t in contexts)
     assert "Preferences" in contexts[-1]

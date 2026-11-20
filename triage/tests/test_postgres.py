@@ -1640,3 +1640,17 @@ def test_digest_context_loads_unassigned_fixes_without_notifying_them(store: Pos
     assert total == 1 and waiting[0].severity == entry.severity
     assert waiting[0].created_at == entry.created_at and waiting[0].prepass == entry.prepass
     assert len(store.digest_context(waiting)[0].related_fixes) == 2
+
+
+def test_digest_continuations_are_queued_once_together(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.notify import maintainer_digest, split_digest
+    from triage.store import DigestEntry
+
+    entries = [DigestEntry(n, f"vllm-project/vllm#{n}", f"Issue {n}",
+                           f"https://github.com/vllm-project/vllm/issues/{n}", 90, "page", "", []) for n in range(60)]
+    parts = split_digest(maintainer_digest(maintainer="r", maintainer_slack="U1", entries=entries,
+                                          day=NOW, mode=DeliveryMode.SHADOW))
+    assert store.commit_digest(parts[0], [], now=NOW, continuations=parts[1:])
+    assert {row[0] for row in outbox(database_url)} == {p.delivery_id for p in parts}
+    assert not store.commit_digest(parts[0], [], now=NOW, continuations=parts[1:])
+    assert len(outbox(database_url)) == len(parts)

@@ -336,8 +336,9 @@ Every route run, before routing (`store.follow_github`):
 - Nothing is sent for `notify_mode: "off"` or without `slack_user_id`. A
   day with nothing new and nothing waiting sends no digest.
 - **Compact digests.** New assignments and overdue reminders share priority
-  sections. At most five groups are shown, with at most three per priority;
-  overflow counts link to the full list, also linked at the top. Item titles
+  sections. Every P0 group is shown. Lower priorities retain a compact budget
+  (at most three per priority), with overflow links to the full list. Large
+  digests continue in additional messages, queued together atomically. Item titles
   open triage; `#number` opens GitHub. A quiet line shows the extracted symptom,
   item age (not assignment age), and colored symptom cues. A short italic line
   uses the extracted summary, capped at 180 characters, without a label or icon;

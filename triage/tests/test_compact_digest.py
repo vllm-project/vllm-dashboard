@@ -84,3 +84,24 @@ def test_impact_is_short_single_line_and_cannot_ping() -> None:
     assert line.endswith("…_") and len(line) <= 205
     assert "<!channel>" not in text
     assert len(next(b for b in render([ISSUE]) if "accessory" in b)["text"]["text"].split("\n")) == 2
+
+
+def test_all_p0_groups_are_visible_and_large_digests_continue() -> None:
+    from triage.notify import split_digest
+
+    entries = [replace(ISSUE, item_key=f"vllm-project/vllm#{n}") for n in range(60)]
+    entries += [replace(ISSUE, item_key=f"vllm-project/vllm#{n}", score=50, band="route") for n in range(60, 70)]
+    notification = maintainer_digest(maintainer="r", maintainer_slack="U1", entries=entries,
+                                    day=NOW, mode=DeliveryMode.SHADOW)
+    parts = split_digest(notification)
+    assert len(parts) > 1 and parts[0].delivery_id == notification.delivery_id
+    assert len({p.delivery_id for p in parts}) == len(parts)
+    items = [b["block_id"] for p in parts for b in p.payload["blocks"] if "accessory" in b]
+    assert set(items) == {f"triage:item:vllm-project/vllm#{n}" for n in range(62)}
+    assert len(items) == len(set(items))
+    assert "more P0" not in str([p.payload for p in parts])
+    assert "8 more P1" in str([p.payload for p in parts])
+    for part in parts:
+        blocks = part.payload["blocks"]
+        assert len(blocks) + sum("accessory" in b for b in blocks) <= 50
+        assert "Open full list" in blocks[1]["text"]["text"]
