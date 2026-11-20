@@ -578,6 +578,9 @@ export function fixtureMyPlate(login: string): TriageMyPlate {
       const a = item.assignments[0] ?? { id: 900 + idx, maintainer: login, role: "primary" as const, status: "open" as const };
       return {
         ...item,
+        reviewDecision: APPROVED_FIXTURE_KEYS.has(item.itemKey) ? "APPROVED" : null,
+        mergeReady: APPROVED_FIXTURE_KEYS.has(item.itemKey) && item.ci?.state === "passed",
+        mergeCheckedAt: new Date().toISOString(),
         assignment: {
           id: a.id,
           itemKey: item.itemKey,

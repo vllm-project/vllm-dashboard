@@ -31,6 +31,9 @@ interface Props {
   onActed?: (action: TriageAction, alsoApplied: readonly string[]) => void;
   /** Single-key shortcuts (a / d / n / r) and their hints: the drawer's buttons only. */
   keyboard?: boolean;
+  /** Compact My list actions; other actions remain available under More. */
+  compact?: boolean;
+  onOpen?: () => void;
 }
 
 /** Actions that close the viewer's assignment (or move it away): they get the Undo toast. */
@@ -61,8 +64,12 @@ function toastMessage(action: TriageAction, target?: string): string {
 
 const HIDE_TITLE = "Hides this from every maintainer";
 
-/** "Hide ▾": Drop and Slop, which stop the item from ever being routed again. */
-function HideMenu({ disabled, onPick }: { disabled: boolean; onPick: (action: "drop" | "slop") => void }) {
+/** Hide actions, plus less common assignment actions under More on compact rows. */
+function HideMenu({ disabled, onPick, extra = [] }: {
+  disabled: boolean;
+  onPick: (action: "drop" | "slop") => void;
+  extra?: { label: string; run: () => void }[];
+}) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const first = useRef<HTMLButtonElement>(null);
@@ -94,10 +101,10 @@ function HideMenu({ disabled, onPick }: { disabled: boolean; onPick: (action: "d
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        title={HIDE_TITLE}
+        title={extra.length ? "More actions" : HIDE_TITLE}
         onClick={() => setOpen((value) => !value)}
       >
-        Hide
+        {extra.length ? "More" : "Hide"}
         <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3 w-3" fill="currentColor">
           <path d="M4 6l4 4 4-4z" />
         </svg>
@@ -106,7 +113,7 @@ function HideMenu({ disabled, onPick }: { disabled: boolean; onPick: (action: "d
         <div
           id={menuId}
           role="menu"
-          aria-label="Hide this item"
+          aria-label={extra.length ? "More actions" : "Hide this item"}
           onKeyDown={(event) => {
             const items = [...(root.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? [])];
             const index = items.indexOf(document.activeElement as HTMLButtonElement);
@@ -122,8 +129,15 @@ function HideMenu({ disabled, onPick }: { disabled: boolean; onPick: (action: "d
               setOpen(false);
             }
           }}
-          className="absolute left-0 z-30 mt-1 w-64 rounded-lg border border-zinc-200 bg-white p-1 text-xs shadow-lg shadow-black/10 dark:border-zinc-700 dark:bg-zinc-900 dark:shadow-black/40"
+          className={`${extra.length ? "relative w-56 max-w-full" : "absolute w-64"} left-0 z-30 mt-1 rounded-lg border border-zinc-200 bg-white p-1 text-xs shadow-lg shadow-black/10 dark:border-zinc-700 dark:bg-zinc-900 dark:shadow-black/40`}
         >
+          {extra.map((option, index) => (
+            <button key={option.label} ref={index === 0 ? first : undefined} type="button" role="menuitem"
+              onClick={() => { close(); option.run(); }}
+              className="dashboard-control block w-full rounded-md px-2 py-1.5 text-left font-medium hover:bg-zinc-100 focus:bg-zinc-100 dark:hover:bg-zinc-800 dark:focus:bg-zinc-800">
+              {option.label}
+            </button>
+          ))}
           <p className="px-2 pb-1 pt-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">{HIDE_TITLE}; it is never routed again.</p>
           {(
             [
@@ -133,7 +147,7 @@ function HideMenu({ disabled, onPick }: { disabled: boolean; onPick: (action: "d
           ).map(([action, label, detail], index) => (
             <button
               key={action}
-              ref={index === 0 ? first : undefined}
+              ref={index === 0 && extra.length === 0 ? first : undefined}
               type="button"
               role="menuitem"
               onClick={() => {
@@ -152,7 +166,7 @@ function HideMenu({ disabled, onPick }: { disabled: boolean; onPick: (action: "d
   );
 }
 
-export function ActionButtons({ itemKey, assignmentId, mode, onDone, relevance = [], owners = [], onActed, keyboard = false }: Props) {
+export function ActionButtons({ itemKey, assignmentId, mode, onDone, relevance = [], owners = [], onActed, keyboard = false, compact = false, onOpen }: Props) {
   const [busy, setBusy] = useState(false);
   const select = useRef<HTMLSelectElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -239,17 +253,20 @@ export function ActionButtons({ itemKey, assignmentId, mode, onDone, relevance =
             Take it{hint("a")}
           </button>
         )}
+        {compact && mode === "acked" && onOpen && (
+          <button type="button" className={PRIMARY} onClick={onOpen}>Open</button>
+        )}
         {working && (
           <>
-            <button type="button" className={SECONDARY} disabled={busy} onClick={() => act("done")} title={titled("You've dealt with it", "d")}>
+            {(!compact || mode === "acked") && <button type="button" className={SECONDARY} disabled={busy} onClick={() => act("done")} title={titled("You've dealt with it", "d")}>
               Done{hint("d")}
-            </button>
-            <button type="button" className={SECONDARY} disabled={busy} onClick={() => act("not_mine")} title={titled("Send it to someone else", "n")}>
+            </button>}
+            {(!compact || mode === "open") && <button type="button" className={SECONDARY} disabled={busy} onClick={() => act("not_mine")} title={titled("Send it to someone else", "n")}>
               Not mine{hint("n")}
-            </button>
+            </button>}
           </>
         )}
-        {mode !== "closed" && (
+        {mode !== "closed" && !compact && (
           <button
             type="button"
             className={SECONDARY}
@@ -261,7 +278,10 @@ export function ActionButtons({ itemKey, assignmentId, mode, onDone, relevance =
             Reassign…{hint("r")}
           </button>
         )}
-        {working && <HideMenu disabled={busy} onPick={(action) => void act(action)} />}
+        {working && <HideMenu disabled={busy} onPick={(action) => void act(action)} extra={compact ? [
+          ...(mode === "open" ? [{ label: "Done", run: () => void act("done") }] : [{ label: "Not mine", run: () => void act("not_mine") }]),
+          { label: "Reassign…", run: () => { setReassigning(true); window.requestAnimationFrame(() => select.current?.focus()); } },
+        ] : []} />}
         {mode === "closed" && (
           <button type="button" className={SECONDARY} disabled={busy} onClick={() => act("reopen")}>
             Reopen

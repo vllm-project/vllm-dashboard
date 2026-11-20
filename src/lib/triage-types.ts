@@ -151,6 +151,10 @@ export interface TriageQueueItem {
   assignments: TriageAssignmentSummary[];
   /** Open PRs: whose move it is (`prepass.waiting_on`); null for issues or when unknown. */
   waitingOn?: "author" | "reviewer" | null;
+  /** Current stored GitHub review decision and conservative merge-readiness snapshot. */
+  reviewDecision?: string | null;
+  mergeReady?: boolean;
+  mergeCheckedAt?: string | null;
   /** PRs: the issues it fixes. */
   fixes: TriageLinkedItem[];
   /** Issues: the PRs that fix it. */
