@@ -29,6 +29,7 @@ import { llmFacts, visibleFacts, type LlmFact } from "@/lib/triage-facts";
 import { fileDiffAnchor, prFilesUrl, summarizeFiles } from "@/lib/triage-files";
 import { describeReason, formatAge, triageFetcher } from "@/lib/triage-format";
 import { linkLabel } from "@/lib/triage-groups";
+import { kindHeading } from "@/lib/triage-rows";
 import type { TriageAssignment, TriageFacets, TriageItemDetail, TriageLinkedItem, TriageRelevance } from "@/lib/triage-types";
 import { waitingReasonsText, type WhyUnowned } from "@/lib/triage-why-unowned";
 
@@ -546,8 +547,9 @@ export function ItemDrawer({
               score <span className="font-semibold text-zinc-900 dark:text-zinc-100">{data.score.score}</span>
             </button>
           )}
-          <span className="ml-1 hidden items-center gap-1.5 text-xs text-zinc-500 sm:inline-flex dark:text-zinc-400">
-            {data && <KindIcon kind={data.item.kind} draft={data.item.draft} state={data.item.state} />}#{number}
+          <span className="ml-1 hidden items-center gap-1.5 text-xs font-medium text-zinc-600 sm:inline-flex dark:text-zinc-300">
+            {data && <KindIcon kind={data.item.kind} draft={data.item.draft} state={data.item.state} />}
+            {data ? kindHeading(data.item.kind, number) : `#${number}`}
           </span>
           <div className="ml-auto flex items-center gap-1">
             {nav && (

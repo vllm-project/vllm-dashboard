@@ -127,10 +127,30 @@ export function contextText(
 
 // --- line 1 -----------------------------------------------------------------
 
-/** The kind label before the title: "Issue", "PR", or "Fix PR" (drawn "↳ Fix PR") under its issue. */
-export function kindLabel(item: Pick<TriageQueueItem, "kind">, nested: boolean): "Issue" | "PR" | "Fix PR" {
-  if (item.kind === "issue") return "Issue";
-  return nested ? "Fix PR" : "PR";
+/**
+ * The kind tag at the start of every row's title line, same width and place
+ * on every row so it reads as a column: "ISSUE" (plain) or "PR" (outlined),
+ * each with its shape icon, never colour alone. A fix PR in a group card
+ * adds "· fix for #65364".
+ */
+export interface KindTag {
+  word: "Issue" | "PR";
+  style: "issue" | "pr";
+  /** "fix for #65364" / "fix for #1, #2" on a fix PR in a card; else null. */
+  fixFor: string | null;
+  /** For screen readers: "Issue", "Pull request", "Pull request, fix for #65364". */
+  label: string;
+}
+
+export function kindTag(item: Pick<TriageQueueItem, "kind">, fixFor?: readonly { number: number }[] | null): KindTag {
+  if (item.kind === "issue") return { word: "Issue", style: "issue", fixFor: null, label: "Issue" };
+  const text = fixFor && fixFor.length ? `fix for ${fixFor.map((target) => `#${target.number}`).join(", ")}` : null;
+  return { word: "PR", style: "pr", fixFor: text, label: text ? `Pull request, ${text}` : "Pull request" };
+}
+
+/** The drawer header: "Issue #65364" / "Pull request #65365". */
+export function kindHeading(kind: "issue" | "pr", number: number | string): string {
+  return `${kind === "pr" ? "Pull request" : "Issue"} #${number}`;
 }
 
 // --- score --------------------------------------------------------------------
@@ -246,7 +266,60 @@ export function fixTargets(item: Pick<TriageQueueItem, "fixes">, leadKey: string
   return targets;
 }
 
-/** The label text, e.g. "Fix PR for #65364" or "Fix PR for #1, #2". */
+/** The label text, e.g. "PR · fix for #65364" (tests, aria). */
 export function fixLabelText(targets: readonly FixTarget[]): string {
-  return `Fix PR for ${targets.map((target) => `#${target.number}`).join(", ")}`;
+  return `PR · ${kindTag({ kind: "pr" }, targets).fixFor}`;
+}
+
+// --- one score per card -----------------------------------------------------------
+
+export interface PriorityCellView {
+  /** False for a fix PR inside a card: the card's issue row carries the score. */
+  show: boolean;
+  band: string | null;
+  score: number | null;
+  /** Set when the pill is the group's band rather than the row's own. */
+  tooltip: string | null;
+}
+
+/**
+ * What a row's Priority · Score cell shows. Standalone rows: their own band
+ * and score. In a group card only the issue row shows one: the card's band
+ * (the most urgent member's) and the issue's own score; when a fix PR is more
+ * urgent the tooltip says so ("Group priority; this issue scores 55, its fix
+ * PR 75"). Fix PR rows in a card show nothing (their score is in the drawer).
+ */
+export function priorityCell(
+  item: Pick<TriageQueueItem, "band" | "score">,
+  card?: { band: string | null; lead: boolean; memberScores: readonly (number | null)[] } | null,
+): PriorityCellView {
+  if (!card) return { show: true, band: item.band, score: item.score, tooltip: null };
+  if (!card.lead) return { show: false, band: null, score: null, tooltip: null };
+  if (card.band === item.band) return { show: true, band: item.band, score: item.score, tooltip: null };
+  const scores = card.memberScores.map((score) => (score === null ? "—" : String(Math.round(score))));
+  const own = item.score === null ? "isn't scored yet" : `scores ${Math.round(item.score)}`;
+  const theirs = scores.length === 1 ? `its fix PR ${scores[0]}` : `its fix PRs ${scores.join(", ")}`;
+  return { show: true, band: card.band, score: item.score, tooltip: `Group priority; this issue ${own}, ${theirs}` };
+}
+
+// --- fix PR status ------------------------------------------------------------------
+
+/**
+ * Line 2 of a fix PR inside a card: what's actionable for the PR. CI when it
+ * says something (rowCiChip) and whose move it is.
+ */
+export function fixPrStatus(item: Pick<TriageQueueItem, "ci" | "waitingOn" | "draft" | "state">): {
+  ci: RowCiChip | null;
+  move: { text: string; tone: "ready" | "muted" } | null;
+} {
+  const ci = rowCiChip(item.ci);
+  let move: { text: string; tone: "ready" | "muted" } | null = null;
+  if (item.state === "open") {
+    if (item.draft) move = { text: "draft", tone: "muted" };
+    else if (item.waitingOn === "author") move = { text: "waiting on author", tone: "muted" };
+    else if (item.waitingOn === "reviewer") move = { text: "ready for review", tone: "ready" };
+  } else {
+    move = { text: item.state === "merged" ? "merged" : "closed", tone: "muted" };
+  }
+  return { ci, move };
 }
