@@ -213,6 +213,28 @@ def test_a_pr_is_rescored_when_the_issue_it_fixes_is(store: PostgresTriageStore,
     assert store.scoring_candidates(scoring_version=version, limit=10) == []
 
 
+def test_needs_relevance_handles_items_without_gh_assignees(store: PostgresTriageStore, database_url: str) -> None:
+    # Items ingested before prepass.gh_assignees existed have no such key; the
+    # sync must treat that as "no assignees", not write NULL (NOT NULL column).
+    ingest(store, issue(900, "DeepSeek startup crash old"))
+    ingest(store, issue(901, "DeepSeek startup crash assigned", assignees=["outsider"]) if "assignees" in Item.__dataclass_fields__
+           else issue(901, "DeepSeek startup crash assigned"))
+    run_extraction(store, FakeBackend({"DeepSeek startup crash old": SEVERE, "DeepSeek startup crash assigned": SEVERE}),
+                   budget=Budget(), now=NOW, workers=1)
+    RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
+                 delivery_mode=DeliveryMode.SHADOW)._rescore(NOW)
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_items SET prepass = prepass - 'gh_assignees' WHERE item_key = 'vllm-project/vllm#900'")
+        c.execute("UPDATE triage_items SET prepass = prepass || '{\"gh_assignees\": [\"outsider\"]}'::jsonb "
+                  "WHERE item_key = 'vllm-project/vllm#901'")
+        c.execute("UPDATE triage_scores SET band = 'page', needs_relevance = false")
+    store.sync_needs_relevance(active_maintainers=["someone"])
+    with psycopg.connect(database_url) as c:
+        got = dict(c.execute("SELECT item_key, needs_relevance FROM triage_scores").fetchall())
+    assert got["vllm-project/vllm#900"] is True    # no assignee key: still needs judging
+    assert got["vllm-project/vllm#901"] is False   # assigned only to an outsider: left alone
+
+
 def test_not_mine_reroutes_and_drop_stops_routing(store: PostgresTriageStore, database_url: str) -> None:
     ingest(store, issue(10, "DeepSeek startup crash"))
     seed(store, [
