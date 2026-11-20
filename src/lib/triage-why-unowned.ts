@@ -22,7 +22,7 @@ import type { TriageFacets, TriagePrepass, TriageRules } from "@/lib/triage-type
  *   - `choose_owners` / `_excluded` / `involvement` / `assigned_elsewhere` in
  *     triage/routing.py (not_mine, min_score, away, capacity with the fresh /
  *     clear-match P0 exception, then involvement (GitHub assignee > authored
- *     > commented) > high/medium relevance > rules);
+ *     > commented) > high relevance > rules);
  *   - `group_owner` / `can_follow` in triage/routing.py: an item whose issue
  *     or fix PR (triage/groups.py) already has an owner goes to that owner,
  *     before any wait for judgements and without a capacity slot, unless they
@@ -237,10 +237,12 @@ interface Assessment {
 
 function assess(input: WhyUnownedInput, m: RoutingMaintainer, relevance: Map<string, RelevanceLevel>): Assessment {
   const score = input.score ?? 0;
-  const involvement = involvementOf(m.login, input.prepass);
+  const rawInvolvement = involvementOf(m.login, input.prepass);
   const level = relevance.get(m.login) ?? null;
   const excluded = excludedFor(m.rules, input.facets, input.prepass);
-  const relevant = (level === "high" || level === "medium") && !excluded;
+  const involvement = level === "medium" && !rawInvolvement.some((signal) => signal !== "commented")
+    ? [] : rawInvolvement;
+  const relevant = level === "high" && !excluded;
   const matched =
     matchRules(m.rules, { title: input.title, facets: input.facets, prepass: input.prepass, files: input.files })
       ?.matched ?? [];
@@ -313,6 +315,8 @@ export function groupOwner(input: WhyUnownedInput): { owner: string; via: Linked
     const login = via.owner!;
     const m = input.maintainers.find((x) => x.login === login);
     const away = m ? awayWindow(m, input.now) : null;
+    const medium = input.relevance.some((r) => r.maintainer === login && r.current && r.relevance === "medium");
+    const strongInvolvement = involvementOf(login, input.prepass).some((signal) => signal !== "commented");
     const why = !m
       ? "isn't an active maintainer"
       : input.notMine.includes(login)
@@ -321,9 +325,11 @@ export function groupOwner(input: WhyUnownedInput): { owner: string; via: Linked
           ? `only takes items scoring ${m.minScore}+`
           : away
             ? `is away until ${away.end}`
-            : excludedFor(m.rules, input.facets, input.prepass)
-              ? "excludes items like this in their file"
-              : null;
+            : medium && !strongInvolvement
+              ? "has only medium relevance (high required)"
+              : excludedFor(m.rules, input.facets, input.prepass)
+                ? "excludes items like this in their file"
+                : null;
     if (why === null) return { owner: login, via };
     blocked.push(`${groupPhrase(via)}, which ${login} owns, but ${login} ${why}, so it's routed on its own.`);
   }
@@ -499,11 +505,13 @@ function explainMatches(input: WhyUnownedInput, current: Map<string, RelevanceLe
   // One line per maintainer it matches (strongest first), then anyone Claude
   // rated relevant whose own `exclude` rules it out.
   const excludedRelevant = assessed.filter(
-    (a) => !a.isMatch && a.excluded && (a.level === "high" || a.level === "medium"),
+    (a) => !a.isMatch && a.excluded && a.level === "high",
   );
+  const medium = assessed.filter((a) => !a.isMatch && a.level === "medium");
   const personLines = [
     ...matches.map((a) => `${a.login} ${matchPhrase(a)} but ${a.blocker}.`),
     ...excludedRelevant.map((a) => `${a.login} is a ${a.level} match but their file excludes items like this.`),
+    ...medium.map((a) => `${a.login} was judged medium; automatic relevance routing requires high.`),
   ];
   const lines =
     personLines.length <= MAX_LINES
@@ -514,7 +522,7 @@ function explainMatches(input: WhyUnownedInput, current: Map<string, RelevanceLe
   }
   // Everyone left was judged low or none, or (when someone involved let it
   // skip the wait for judgements) not judged yet.
-  const others = assessed.filter((a) => !a.isMatch && !excludedRelevant.includes(a));
+  const others = assessed.filter((a) => !a.isMatch && !excludedRelevant.includes(a) && !medium.includes(a));
   if (others.length > 0 && personLines.length > 0) {
     lines.push(others.some((a) => a.level === null) ? "Everyone else is low, none, or not judged yet." : "Everyone else is low or none.");
   }
@@ -526,7 +534,7 @@ function explainMatches(input: WhyUnownedInput, current: Map<string, RelevanceLe
         : "Nobody is a match: everyone is low or none, and no one's rules match it.",
     );
   }
-  if (matches.length === 0) return done("Nobody is a match.", lines);
+  if (matches.length === 0) return done(medium.length ? "No high-confidence match or explicit routing signal." : "Nobody is a match.", lines);
   return done(
     matches.length === 1
       ? "Its only match can't take it right now."

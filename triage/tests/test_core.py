@@ -315,12 +315,12 @@ def test_a_clear_match_p0_is_not_blocked_by_capacity() -> None:
         return [o.maintainer.github_login for o in choose_owners(
             c, [full], load={"full": 2}, excluded=set(), today=date(2026, 11, 12))]
     assert owners("high") == ["full"]                    # old P0, clear match: still theirs
-    assert owners("medium") == []                        # weaker match waits for capacity
+    assert owners("medium") == []                        # medium does not qualify
     assert owners("high", band="route", score=60) == []  # P1s always respect capacity
     # Strong involvement overrides capacity, even when relevance is low; a passing comment does not.
     assert owners("low", prepass={"referenced_pr_authors": {"61343": "full"}}) == ["full"]
     assert owners("low", prepass={"commenters": ["full"]}) == []
-    assert owners("medium", prepass={"commenters": ["full"]}) == ["full"]
+    assert owners("medium", prepass={"commenters": ["full"]}) == []
 
 
 def test_self_authored_pr_is_never_routed_to_author() -> None:
@@ -334,7 +334,7 @@ def test_self_authored_pr_is_never_routed_to_author() -> None:
         facets=facets(areas=["frontend_api"]),
         prepass={"commenters": ["alice"], "gh_assignees": ["alice"]},
         files=[],
-        relevance={"alice": {"relevance": "high", "evidence_prs": [100]}, "bob": {"relevance": "medium"}},
+        relevance={"alice": {"relevance": "high", "evidence_prs": [100]}, "bob": {"relevance": "high"}},
         author="Alice",
     )
     owners = choose_owners(ctx, [alice, bob], load={}, excluded=set(), today=date(2026, 11, 20))
@@ -369,7 +369,7 @@ def test_commented_alone_does_not_override_low_or_exclude() -> None:
         item_key="r#200", kind="pr", title="Fix b12x scale", score=63, band="route",
         facets=facets(areas=["moe"], hardware=["RTX"]),
         prepass={"commenters": ["alice"]}, files=[],
-        relevance={"alice": {"relevance": "low"}, "bob": {"relevance": "medium"}},
+        relevance={"alice": {"relevance": "low"}, "bob": {"relevance": "high"}},
         author="contrib",
     )
     owners = choose_owners(ctx_low, [alice, bob], load={}, excluded=set(), today=date(2026, 11, 20))

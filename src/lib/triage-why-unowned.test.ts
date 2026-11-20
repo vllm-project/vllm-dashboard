@@ -140,18 +140,18 @@ test("a P0 goes over the cap when it is fresh or a clear match, not otherwise", 
   const high = explainUnowned(input({ ...base, relevance: allLow({ "gau-nernst": "high" }) }));
   assert.equal(high.pending, true);
   assert.match(high.summary, /^gau-nernst is a high match, and a P0 like this may go over their weekly cap/);
-  // Medium on an old P0: capped, with the P0 rule spelled out.
+  // Medium never qualifies, regardless of age or spare capacity.
   const medium = explainUnowned(input({ ...base, relevance: allLow({ "gau-nernst": "medium" }) }));
   assert.equal(medium.pending, false);
-  assert.equal(medium.lines[0], "gau-nernst is a medium match but already has 8 of 8 items this week.");
-  assert.match(medium.lines[1], /A P0 only goes over someone's weekly cap/);
-  // Medium on a fresh P0: goes over.
+  assert.equal(medium.lines[0], "gau-nernst was judged medium; automatic relevance routing requires high.");
+  assert.match(medium.summary, /No high-confidence match/);
+  // A fresh P0 does not override the confidence threshold.
   const fresh = explainUnowned(input({ ...base, createdAt: NEW, relevance: allLow({ "gau-nernst": "medium" }) }));
-  assert.equal(fresh.pending, true);
+  assert.equal(fresh.pending, false);
 });
 
 test("min_score, away and not_mine block a match, in the router's order", () => {
-  const relevance = allLow({ a1: "high", a2: "high", a3: "medium" });
+  const relevance = allLow({ a1: "high", a2: "high", a3: "high" });
   const maintainers = [
     person("a1", { minScore: 100 }),
     person("a2", { away: [{ start: "2026-11-10", end: "2026-12-03" }] }),
@@ -163,7 +163,7 @@ test("min_score, away and not_mine block a match, in the router's order", () => 
   assert.deepEqual(why.lines, [
     "a1 is a high match but only takes items scoring 100+ (this is 99).",
     "a2 is a high match but is away until 2026-12-03.",
-    "a3 is a medium match but said it's not theirs.",
+    "a3 is a high match but said it's not theirs.",
     "Everyone else is low or none.",
   ]);
 });
@@ -189,10 +189,10 @@ test("strongest first: authored beats commented beats high beats rules", () => {
 test("the free match the router would pick is named", () => {
   const maintainers = [person("busy", { capacityPerWeek: 2 }), person("idle"), ...TEN.slice(2)];
   const why = explainUnowned(
-    input({ band: "route", score: 50, maintainers, relevance: allLow({ busy: "high", idle: "medium" }, maintainers), load: { busy: 2 } }),
+    input({ band: "route", score: 50, maintainers, relevance: allLow({ busy: "high", idle: "high" }, maintainers), load: { busy: 2 } }),
   );
   assert.equal(why.pending, true);
-  assert.equal(why.summary, "idle is a medium match and has room, so the router should assign it on its next run (every 5 minutes).");
+  assert.equal(why.summary, "idle is a high match and has room, so the router should assign it on its next run (every 5 minutes).");
 });
 
 test("relevance ruled out by the person's own exclude is mentioned", () => {
@@ -381,9 +381,10 @@ test("nobody owns the group: routed with its most urgent member's band", () => {
   // A P1 PR (old, so no fresh-P0 exception) whose only match is at capacity: blocked on its own...
   const base = { band: "route", score: 50, relevance: allLow({ a1: "medium" }), load: { a1: 10 } };
   assert.equal(explainUnowned(input(base)).pending, false);
-  // ...but it fixes an unowned P0 issue, so it's routed as a P0 (still capped: a medium match on an old P0).
+  // Linking a P0 issue cannot turn medium confidence into an assignment.
   const why = explainUnowned(input({ ...base, linked: [linked(2, "issue", null, { score: 90, band: "page" })] }));
-  assert.ok(why.lines.some((l) => /over someone's weekly cap/.test(l)));
+  assert.equal(why.pending, false);
+  assert.ok(why.lines.some((l) => /automatic relevance routing requires high/.test(l)));
 });
 
 test("an issue whose fix is merged says it's waiting for GitHub to close it", () => {
@@ -419,4 +420,16 @@ test("a fix PR whose CI fails only on this PR waits on its author even when its 
   const fixed = explainUnowned(input({ band: "route", score: 52, relevance: [], prepass: { commenters: [], waiting_on: "reviewer", waiting_reasons: [] },
     linked: [linked(65385, "issue", "gau-nernst")] }));
   assert.match(fixed.summary, /^It fixes #65385, which gau-nernst owns/);
+});
+
+test("medium confidence cannot route through a comment or an owned group", () => {
+  const base = { relevance: allLow({ a1: "medium" }), prepass: { commenters: ["a1"] } };
+  const plain = explainUnowned(input(base));
+  assert.equal(plain.pending, false);
+  assert.match(plain.lines.join(" "), /a1 was judged medium; automatic relevance routing requires high/);
+  const grouped = explainUnowned(input({ ...base, linked: [linked(1, "issue", "a1")] }));
+  assert.equal(grouped.pending, false);
+  assert.match(grouped.lines.join(" "), /has only medium relevance/);
+  const assigned = explainUnowned(input({ ...base, prepass: { gh_assignees: ["a1"] } }));
+  assert.equal(assigned.pending, true);
 });

@@ -126,12 +126,12 @@ def _effective_involvement(
     """Involvement signals that still apply after checking relevance and hard
     exclusions. Explicit GitHub assignment and authoring a referenced PR always
     count (and keep any accompanying `"commented"` badge); a passing `"commented"`
-    alone never overrides a `low`/`none` judgement or a hard `exclude` rule."""
+    alone never overrides a `medium`/`low`/`none` judgement or a hard `exclude` rule."""
     raw = involvement(login, ctx)
     strong = [reason for reason in raw if reason != "commented"]
     if strong:
         return raw
-    if is_excluded or level in ("low", "none"):
+    if is_excluded or level in ("medium", "low", "none"):
         return []
     return raw
 
@@ -209,9 +209,9 @@ def choose_owners(
     Who qualifies, strongest first:
       1. involvement: assigned on GitHub, wrote a PR the item names, or
          already commented;
-      2. relevance judged high or medium from their recent work and notes;
+      2. relevance judged high from their recent work and notes;
       3. an explicit rule in their file (an "always send me" override).
-    Relevance "low"/"none" alone never routes. A maintainer's `exclude`
+    Relevance "medium"/"low"/"none" alone never routes. A maintainer's `exclude`
     applies to relevance and rules but not to involvement. min_score, time
     away and not_mine always apply. Capacity applies too, except to page-band
     items that are fresh (opened in the last few days) or a clear match for
@@ -231,7 +231,7 @@ def choose_owners(
         level = judged.get("relevance")
         is_excluded = _excluded(maintainer.rules, ctx)
         involved = _effective_involvement(maintainer.github_login, ctx, level=level, is_excluded=is_excluded)
-        relevant = level in ("high", "medium") and not is_excluded
+        relevant = level == "high" and not is_excluded
         matched = match_rules(maintainer.rules, ctx)
         current = load.get(maintainer.github_login, 0)
         clear_match = bool(involved) or (relevant and level == "high")
@@ -280,7 +280,7 @@ def can_follow(maintainer: Maintainer, ctx: RoutingContext, *, excluded: set[str
                score: int) -> bool:
     """May this item follow its issue/fix-PR group to `maintainer`
     (triage/groups.py)? Not if it is their own PR, they said "not mine" to it,
-    their file excludes it, their relevance on it is judged low/none (unless
+    their file excludes it, their relevance on it is judged medium/low/none (unless
     strongly involved), they are away or inactive, or the group's highest score
     (`score`) is under their min_score. Capacity doesn't apply: the group
     already has its slot."""
@@ -289,7 +289,7 @@ def can_follow(maintainer: Maintainer, ctx: RoutingContext, *, excluded: set[str
     judged = ctx.relevance.get(maintainer.github_login) or {}
     level = judged.get("relevance")
     strong_involved = [i for i in involvement(maintainer.github_login, ctx) if i != "commented"]
-    if level in ("low", "none") and not strong_involved:
+    if level in ("medium", "low", "none") and not strong_involved:
         return False
     return (
         maintainer.active
@@ -379,10 +379,12 @@ def explain_unowned(
         level = judged.get("relevance")
         is_excluded = _excluded(m.rules, ctx)
         involved = _effective_involvement(m.github_login, ctx, level=level, is_excluded=is_excluded)
-        relevant = level in ("high", "medium") and not is_excluded
+        relevant = level == "high" and not is_excluded
         matched = match_rules(m.rules, ctx)
         if not (involved or relevant or matched):
-            if is_excluded and level in ("high", "medium"):
+            if level == "medium":
+                lines.append(f"{m.github_login} was judged medium; automatic relevance routing requires high.")
+            elif is_excluded and level == "high":
                 lines.append(f"{m.github_login} is a {level} match but their file excludes items like this.")
             continue
         match_count += 1
@@ -402,7 +404,9 @@ def explain_unowned(
     if missing and grace_over:
         lines.append(f"Not judged yet for {', '.join(missing[:6])} (past 2-hour grace window).")
     if match_count == 0:
-        summary = "Nobody is a match: everyone judged is low or none, and no one's rules match it."
+        summary = ("No high-confidence match or explicit routing signal."
+                   if any((ctx.relevance.get(m.github_login) or {}).get("relevance") == "medium" for m in active)
+                   else "Nobody is a match: everyone judged is low or none, and no one's rules match it.")
     elif match_count == 1:
         summary = "Its only match can't take it right now."
     else:
