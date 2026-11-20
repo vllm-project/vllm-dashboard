@@ -1,21 +1,28 @@
 # Nick Hill. Beta tester; drafted 2026-11-18 from their vLLM history (209 PRs
 # authored, 194 reviewed since May). Edit freely; see README.md in this folder.
 github_login: njhill
-# slack_user_id: U07V7KVR47J   # found in vllm-dev Slack; Kevin to confirm before it's used
+slack_user_id: U07V7KVR47J
 min_score: 40
-capacity_per_week: 10
-notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+capacity_per_week: 25
+notify_mode: immediate
+max_notifications_per_day: 5
 timezone: America/Los_Angeles
 
 notes: |
-  I work on the engine core: the scheduler and async scheduling, Model Runner
-  V2, KV cache management (block allocation, prefix caching, the extensible KV
-  cache, memory profiling and gpu_memory_utilization), KV connectors and NIXL
-  P/D transfer, pipeline-parallel transport, spec decode on Model Runner V2,
-  engine startup and shutdown, CPU overhead, and the Rust frontend (reviews).
+  I work on the engine core: the scheduler and async scheduling (including
+  async KV load admission and parked loads), Model Runner V2 (including UVA
+  staged buffers, pinned memory handling, and chunked prompt logprobs), KV
+  cache management (block allocation, prefix caching, the extensible KV cache
+  and its headroom/fragmentation margin, memory profiling and
+  gpu_memory_utilization), KV connectors and NIXL P/D transfer, pipeline-
+  parallel transport, spec decode on Model Runner V2, engine startup and
+  shutdown, and CPU overhead.
   Send me engine hangs and crashes in the engine core, scheduler or MRV2,
-  scheduler or KV cache bugs, OOMs from KV cache sizing, NIXL P/D problems,
-  and Model Runner V2 issues.
-  Don't send me model-specific kernel bugs, platform/NUMA/process-spawn issues,
-  or bugs inside other KV connectors (Mooncake, MoRIIO, P2P offload) unless the
-  shared connector interface is at fault.
+  scheduler or KV cache bugs, OOMs from KV cache sizing or extensible KV cache
+  headroom, NIXL P/D problems, and Model Runner V2 issues.
+  Don't send me model-specific kernel bugs, Mamba/SSM state cache dtype
+  defaults or model-specific SWA replay numerics (e.g. swa_bounded_replay),
+  detokenizer or stop-string output buffering, frontend/API bugs,
+  platform/NUMA/process-spawn issues, or bugs inside other KV connectors
+  (Mooncake, MoRIIO, P2P offload) unless the shared connector interface is at
+  fault.

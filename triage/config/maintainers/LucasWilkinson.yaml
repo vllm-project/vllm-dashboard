@@ -1,10 +1,11 @@
 # Lucas Wilkinson. Beta tester; drafted 2026-11-19 from their vLLM history (134 PRs
 # authored, 192 reviewed since May). Edit freely; see README.md in this folder.
 github_login: LucasWilkinson
-# slack_user_id: U07QLKR3146   # found in vllm-dev Slack; Kevin to confirm before it's used
+slack_user_id: U07QLKR3146
 min_score: 40
-capacity_per_week: 10
-notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+capacity_per_week: 25
+notify_mode: immediate
+max_notifications_per_day: 5
 timezone: America/New_York
 
 notes: |
@@ -12,11 +13,21 @@ notes: |
   sizes, allocation policy, packed and block-outermost layouts, prefix-cache
   retention), context parallelism (prefill context parallel PCP and decode
   context parallel DCP, including DCP for MLA and sparse MLA), MLA and sparse
-  MLA attention backends (FlashMLA, FlashMLA sparse, DSA indexer, DeepSeek-V3.2,
-  GLM-5.x and Kimi K3.1 attention), NIXL KV transfer slicing for P/D with TP,
-  PCP and DCP, HiSparse KV residency with MatthewBonanni, CUDA graphs in Model
-  Runner V2 and DBO, spec decode under context parallelism, and FlashAttention
-  builds.
-  Send me bugs in PCP/DCP, MLA or sparse MLA attention, KV cache layout and
-  sizing, and NIXL transfers that involve CP or sliced KV.
-  Don't send me tokenizer, frontend/API, or quantization kernel bugs.
+  MLA attention backends (FlashMLA, FlashMLA sparse, DSA indexer and DSA
+  indexer top-k kernels, DeepSeek-V3.2, GLM-5.x and Kimi K3.1 attention), NIXL
+  KV transfer slicing for P/D with TP, PCP and DCP, HiSparse host-pool and
+  residency architecture (send GLM-5.3-Flash / Kimi K3.1 HiSparse prefill
+  staging bugs to MatthewBonanni first), CUDA graphs in Model Runner V2 and
+  DBO, spec decode under context parallelism and MRV2 CUDA-graph profiling
+  (general DSpark/DFlash/adaptive-verification bugs go to mgoin), and
+  FlashAttention builds and arch gating.
+  Send me bugs in PCP/DCP, MLA or sparse MLA attention, DSA indexer top-k
+  kernels, KV cache layout and sizing, NIXL transfers that involve CP or sliced
+  KV, and FlashAttention build/arch gating.
+  Don't send me tokenizer, frontend/API, quantization kernel bugs, batch
+  invariance (VLLM_BATCH_INVARIANT), standalone CPU model runner bugs, or
+  ROCm/XPU/TPU backends.
+
+rules:
+  exclude:
+    hardware: [MI300X, MI325X, MI355X, other_amd, TPU, Gaudi, XPU, CPU_x86, CPU_arm, Apple]

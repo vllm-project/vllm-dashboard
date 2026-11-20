@@ -1,16 +1,19 @@
 # Harry Mellor. Beta tester; drafted 2026-11-18 from their vLLM history (188 PRs
 # authored, 190 reviewed since May). Edit freely; see README.md in this folder.
 github_login: hmellor
-# slack_user_id: U07RKL31UDD   # found in vllm-dev Slack; Kevin to confirm before it's used
+slack_user_id: U07RKL31UDD
 min_score: 40
-capacity_per_week: 10
-notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+capacity_per_week: 25
+notify_mode: immediate
+max_notifications_per_day: 5
 timezone: Europe/London
 
 notes: |
   I maintain the Transformers modeling backend (serving models through
   Transformers' own modeling code: Llama, Qwen2, Gemma, Phi3, MoE and VLMs, M-RoPE,
-  EAGLE3 aux hidden states, LoRA, pooling) and model onboarding and removal.
+  EAGLE3 aux hidden states, LoRA, pooling), model onboarding infrastructure, and
+  model removal (not per-model bugfixes for specific models like DeepSeek-V4 or
+  Mistral).
   Also Hugging Face integration: Transformers and huggingface_hub version bumps,
   upstream configs, trust_remote_code, weight loading (AutoWeightsLoader,
   WeightsMapper, WeightConverter), torch.compile config hashing, CI test
@@ -21,7 +24,8 @@ notes: |
   weight tying), and docs or pre-commit problems.
   Don't send me a quantization method's own checkpoint loading (torchao, GPTQ,
   AutoRound/INC, Quark, compressed-tensors packing), a single model's
-  load_weights or packed_modules_mapping, or alternative load formats
+  load_weights or packed_modules_mapping, EPLB/RoutedExperts expert-weight
+  loading, model-specific chat templates, or alternative load formats
   (sharded_state, ipc_cache, runai), unless the shared weight-loading machinery
   (e.g. WeightsMapper name mapping) or an HF config change is at fault. Also
   don't send me kernel performance or hardware-specific crashes.

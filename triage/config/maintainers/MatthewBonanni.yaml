@@ -1,22 +1,31 @@
 # Matthew Bonanni. Beta tester; drafted 2026-11-18 from their vLLM history (98 PRs
 # authored, 147 reviewed since May). Edit freely; see README.md in this folder.
 github_login: MatthewBonanni
-# slack_user_id: U096X84UJLV   # found in vllm-dev Slack; Kevin to confirm before it's used
+slack_user_id: U096X84UJLV
 min_score: 40
-capacity_per_week: 10
-notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+capacity_per_week: 25
+notify_mode: immediate
+max_notifications_per_day: 5
 timezone: America/New_York
 
 notes: |
   I lead HiSparse: the host-memory tier for sparse-attention (DSA/QSA) KV
   caches, with page residency, prefill staging and host pools, for
   GLM-5.3-Flash, Kimi K3.1 and DeepSeek models. Also attention backends: MLA,
-  FlashMLA, FlashAttention (FA4, upstream syncs), FlashInfer sparse MLA and
-  FlashInfer upgrades, KV block sizes, KV layout and block-size interactions
-  between attention backends and the NIXL / offload connectors, and the
-  extensible KV cache with HiSparse.
+  FlashMLA, FlashAttention (FA4, upstream syncs), FlashInfer sparse MLA,
+  FlashInfer upgrades and FP8 query quantization, KV block sizes, KV layout and
+  block-size interactions between attention backends and the NIXL / offload
+  connectors, and the extensible KV cache with HiSparse.
   Send me HiSparse bugs, sparse or MLA attention backend crashes and wrong
-  outputs, and FlashAttention or FlashInfer attention regressions.
+  outputs, FlashAttention or FlashInfer attention regressions, and NIXL or
+  offload KV-layout/block-size mismatches.
   Don't send me connector protocol, scheduling or stall bugs that don't involve
   attention layout or HiSparse, ROCm or XPU attention backends, DSA indexer
-  top-k kernels outside HiSparse, or batch invariance.
+  top-k kernels outside HiSparse, batch invariance, model-specific KV cache
+  spec porting for newly onboarded models, or unattributed end-to-end model
+  repetition-loop reports where switching attention backends doesn't change the
+  symptom.
+
+rules:
+  exclude:
+    hardware: [MI300X, MI325X, MI355X, other_amd, TPU, Gaudi, XPU, CPU_x86, CPU_arm, Apple]
