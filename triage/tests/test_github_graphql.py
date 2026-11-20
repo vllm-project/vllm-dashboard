@@ -422,3 +422,28 @@ def test_prefetch_asks_only_for_what_is_not_cached(fake: Any) -> None:
     assert "files(first" not in transport.queries[1][0]
     assert client.pull_files(REPO, 11) == [FileChange("a.py", 1, 0)]
     assert [t for _, _, t in client.comment_records(REPO, 11)] == ["[mgoin (MEMBER)]: hi"]
+
+
+def test_ingest_keeps_the_ci_verdict_only_for_the_same_head_commit(fake: Any) -> None:
+    ci = {"head_sha": "abc", "state": "failed", "main_known": True, "jobs_failed_pr_only": 1,
+          "failed_jobs": [{"name": "LoRA", "on_main": False, "infra": False}]}
+
+    def run(oid: str) -> dict[str, Any]:
+        node = pr_node(310, 5, commits={"nodes": [{"commit": {
+            "oid": oid, "status": {"contexts": []},
+            "statusCheckRollup": {"state": "SUCCESS", "contexts": {"nodes": []}}}}]})
+        fake(lambda q, v: {"repository": {"issues": {"pageInfo": {}, "nodes": []},
+                                          "pullRequests": {"pageInfo": {}, "nodes": [node]}}}
+             if "filterBy" in q else {"repository": {"n310": {"__typename": "PullRequest",
+                                                              "files": {"pageInfo": {}, "nodes": []}}}})
+        store = MemoryStore()
+        store.item_state = lambda key: StoredItemState("h", 2, NOW, [], "", {}, ci)  # type: ignore[method-assign]
+        IngestHandler(store=store, github=GraphQLGitHubClient("t"), config=default_config(),  # type: ignore[arg-type]
+                      clock=Clock())(ScheduledCommand("triage_ingest", NOW))
+        return dict(store.rows[f"{REPO}#310"]["prepass"])
+
+    same = run("abc")
+    assert (same["waiting_on"], same["waiting_reasons"], same["ci_pr_only_jobs"]) == ("author", ["ci_pr_failures"], ["LoRA"])
+    pushed = run("def")  # a new commit: its CI isn't known yet
+    assert (pushed["waiting_on"], pushed["waiting_reasons"]) == ("reviewer", [])
+    assert "ci_pr_only_jobs" not in pushed

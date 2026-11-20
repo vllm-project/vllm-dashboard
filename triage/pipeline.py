@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from alerting.commands import ScheduledCommand
 from alerting.ports import Clock, DeliveryMode
 
+from triage.ci import BuildkiteBuildPort, next_summary
 from triage.config import TriageConfig
 from triage.github import GitHubClient, GitHubError, IngestClient
 from triage.groups import Member, group_reason, number_of, partner_map
@@ -111,6 +112,12 @@ class IngestHandler:
     batch_size: int = 25
     # PRs whose "waiting on the author" state is re-read each run.
     status_refresh_limit: int = 50
+    # PR CI status (triage/ci.py): Buildkite client (None: off), open P0-P2
+    # PRs whose GitHub status is re-read per run (store.CI_REFRESH sets how
+    # often each is due), and Buildkite builds fetched per run at most.
+    buildkite: BuildkiteBuildPort | None = None
+    ci_refresh_limit: int = 150
+    ci_build_fetch_limit: int = 15
 
     def __call__(self, command: ScheduledCommand) -> None:
         name = f"github:{self.repo}"
@@ -129,7 +136,7 @@ class IngestHandler:
             self.store.set_cursor(name, newest)
         if self.github.reads_pr_status:
             try:
-                self._refresh_pr_status()
+                self._refresh_pr_status(now)
             except GitHubError as exc:
                 log.warning("triage: PR status not refreshed: %s", exc)
         log.info("triage ingest: %d items; GitHub calls so far %s, GraphQL points %s",
@@ -186,7 +193,9 @@ class IngestHandler:
             # with a blank line, the fresh list with a newline).
             if comments_excerpt:
                 item.comments = comments_excerpt.split("\n\n")
-        prepass = compute_prepass(item, self.config, now) if scoped else light
+        # The PR's CI summary counts toward whose move while it is for this head commit.
+        ci = stored.ci if stored and stored.ci and item.head_sha and stored.ci.get("head_sha") == item.head_sha else None
+        prepass = compute_prepass(item, self.config, now, ci=ci) if scoped else light
         if commenters is not None:
             prepass["commenters"] = commenters
         if scoped and commented_at:
@@ -212,23 +221,55 @@ class IngestHandler:
             known.update({str(n): login for n, login in self.github.pull_authors(self.repo, missing).items()})
         return {str(n): known[str(n)] for n in numbers if str(n) in known}
 
-    def _refresh_pr_status(self) -> None:
+    def _refresh_pr_status(self, now: datetime) -> None:
         """Re-read PRs held back from routing because they wait on their
-        author. A check finishing or a conflict appearing doesn't bump a PR's
+        author, and open P0-P2 PRs whose CI is due a check (store.ci_due).
+        A check finishing or a conflict appearing doesn't bump a PR's
         updatedAt, so the cursor wouldn't see the PR become the reviewers'
         move. Writes only what changed."""
         rows = self.store.waiting_prs(self.repo, limit=self.status_refresh_limit)
-        if not rows:
+        due = self.store.ci_due(self.repo, now=now, limit=self.ci_refresh_limit) if self.buildkite else []
+        if not rows and not due:
             return
-        statuses = self.github.pr_statuses(self.repo, [number for _, number, _ in rows])
-        for item_key, number, prepass in rows:
+        prs = {number: (item_key, prepass) for item_key, number, prepass in [*rows, *due]}
+        statuses = self.github.pr_statuses(self.repo, sorted(prs))
+        ci_due = {item_key for item_key, _, _ in due}
+        stored_ci = self.store.pr_ci(key for key, _ in prs.values()) if self.buildkite else {}
+        main = self.store.main_ci_jobs(now=now) if ci_due else None
+        fetched = 0
+
+        def fetch(number: int) -> dict[str, Any]:
+            nonlocal fetched
+            fetched += 1
+            assert self.buildkite is not None
+            return self.buildkite.get_build(number)
+
+        for number, (item_key, prepass) in prs.items():
             status = statuses.get(number)
             if status is None or status.state != "open":
                 continue  # closed or merged: the next ingest sees that
+            ci = stored_ci.get(item_key)
+            if item_key in ci_due and status.head_sha:
+                try:
+                    summary = next_summary(
+                        head_sha=status.head_sha, build_url=status.ci_build_url, stored=ci,
+                        main=main, fetch=fetch if fetched < self.ci_build_fetch_limit else None,
+                    )
+                except (RuntimeError, OSError, ValueError, KeyError) as exc:
+                    log.warning("triage: CI of %s not refreshed: %s", item_key, exc)
+                    summary = None
+                if summary is not None:
+                    ci = summary.as_json()
+                    self.store.save_pr_ci(item_key, ci, now=now)
+            if ci is not None and ci.get("head_sha") != status.head_sha:
+                ci = None  # a newer commit: its CI isn't known yet
             fields = whose_move(draft=status.draft, review_decision=status.review_decision,
-                                mergeable=status.mergeable, failing_checks=status.failing_checks)
+                                mergeable=status.mergeable, failing_checks=status.failing_checks, ci=ci)
             if any(prepass.get(k) != v for k, v in fields.items()):
                 self.store.update_prepass(item_key, fields)
+        if ci_due:
+            log.info("triage: CI checked for %d PRs (%d Buildkite builds fetched; main CI %s)",
+                     len(ci_due), fetched, "known" if main is not None else "unknown")
 
 
 def rereads_comments(item: Item, stored: StoredItemState | None) -> bool:
@@ -477,6 +518,9 @@ class RouteHandler:
                 if role == "primary":
                     entries += [self._entry(f, self._follower_reasons(f, m, maintainer, now), maintainer)
                                 for f, m in followers]
+                # PRs carry their CI (triage_pr_ci) into the DM line.
+                cis = self.store.pr_ci([e.item_key for e in entries if e.kind == "pr"])
+                entries = [replace(e, ci=cis.get(e.item_key)) for e in entries]
                 main, fixes = _group_main(entries)
                 notification = page_dm(
                     assignment_key=f"{row.item_key}:{maintainer.github_login}:{role}",

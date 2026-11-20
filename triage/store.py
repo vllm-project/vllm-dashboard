@@ -18,6 +18,7 @@ from typing import Any
 from alerting.ports import NotificationIntent
 from alerting.postgres import PostgresAlertStore
 
+from triage.ci import MAIN_RECENT_DAYS, MainJobs
 from triage.extract import ExtractionTask, LLMResult
 from triage.groups import Member
 from triage.relevance import (
@@ -60,6 +61,17 @@ def _fixed_by_merged(item: str) -> str:
             f"AND {item}.number::text IN {_fix_numbers('p', 'pe.facets')})")
 
 
+# The item's triage_pr_ci row as JSON (NULL when none), for item queries
+# aliased `i`. Keys as triage.ci.CiSummary.as_json().
+_CI_JSON = """(SELECT to_jsonb(c) - 'item_key' - 'checked_at' - 'changed_at'
+           FROM triage_pr_ci c WHERE c.item_key = i.item_key)"""
+# How often an open PR's CI is re-checked, by band (P0/P1 more often).
+CI_REFRESH = {"page": timedelta(minutes=10), "route": timedelta(minutes=10), "watch": timedelta(minutes=60)}
+# Main CI's two-minute poller scans through about now; older than this, its
+# job states are too stale to say a job "is failing on main".
+MAIN_CI_MAX_LAG = timedelta(hours=1)
+
+
 @dataclass(frozen=True)
 class StoredItemState:
     content_hash: str
@@ -68,6 +80,8 @@ class StoredItemState:
     files: list[dict[str, Any]]
     comments_excerpt: str
     prepass: dict[str, Any]
+    # The PR's stored CI summary (triage_pr_ci, see triage/ci.py), if any.
+    ci: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +151,8 @@ class DigestEntry:
     # For a PR: the issue keys it fixes (triage/groups.py), so a digest can
     # show it under its issue.
     fixes: tuple[str, ...] = ()
+    # PRs: the head commit's CI summary (triage_pr_ci row), if known.
+    ci: dict[str, Any] | None = None
 
 
 class PostgresTriageStore(PostgresAlertStore):
@@ -172,11 +188,12 @@ class PostgresTriageStore(PostgresAlertStore):
     def item_state(self, item_key: str) -> StoredItemState | None:
         with self._connection_factory() as c:
             row = c.execute(
-                """SELECT content_hash, comment_count, gh_updated_at, files, comments_excerpt, prepass
-                   FROM triage_items WHERE item_key = %s""",
+                f"""SELECT content_hash, comment_count, gh_updated_at, files, comments_excerpt, prepass,
+                          {_CI_JSON}
+                   FROM triage_items i WHERE item_key = %s""",
                 (item_key,),
             ).fetchone()
-        return StoredItemState(row[0], row[1], row[2], list(row[3]), row[4], dict(row[5])) if row else None
+        return StoredItemState(row[0], row[1], row[2], list(row[3]), row[4], dict(row[5]), row[6]) if row else None
 
     def upsert_item(
         self,
@@ -647,6 +664,93 @@ class PostgresTriageStore(PostgresAlertStore):
             ).fetchall()
         return [(r[0], int(r[1]), dict(r[2])) for r in rows]
 
+    # --- PR CI status (triage/ci.py) ------------------------------------------
+
+    def ci_due(self, repo: str, *, now: datetime, limit: int) -> list[tuple[str, int, dict[str, Any]]]:
+        """(item_key, number, prepass) of open in-scope P0-P2 PRs whose CI
+        is unknown or older than CI_REFRESH for their band; never checked
+        first, then P0, P1, P2, highest score first."""
+        with self._connection_factory() as c:
+            rows = c.execute(
+                """
+                SELECT i.item_key, i.number, i.prepass
+                FROM triage_items i JOIN triage_scores s ON s.item_key = i.item_key
+                LEFT JOIN triage_pr_ci c ON c.item_key = i.item_key
+                WHERE i.repo = %s AND i.kind = 'pr' AND i.in_scope AND i.state = 'open'
+                  AND s.band IN ('page', 'route', 'watch')
+                  AND (c.item_key IS NULL OR c.checked_at <= %s - CASE s.band
+                       WHEN 'watch' THEN %s::interval ELSE %s::interval END)
+                ORDER BY (c.item_key IS NULL) DESC,
+                         CASE s.band WHEN 'page' THEN 0 WHEN 'route' THEN 1 ELSE 2 END,
+                         s.score DESC
+                LIMIT %s
+                """,
+                (repo, now, CI_REFRESH["watch"], CI_REFRESH["route"], limit),
+            ).fetchall()
+        return [(r[0], int(r[1]), dict(r[2])) for r in rows]
+
+    def pr_ci(self, item_keys: Iterable[str]) -> dict[str, dict[str, Any]]:
+        keys = list(item_keys)
+        if not keys:
+            return {}
+        with self._connection_factory() as c:
+            rows = c.execute(
+                f"SELECT i.item_key, {_CI_JSON} FROM triage_items i WHERE i.item_key = ANY(%s)", (keys,)
+            ).fetchall()
+        return {r[0]: r[1] for r in rows if r[1] is not None}
+
+    def save_pr_ci(self, item_key: str, ci: dict[str, Any], *, now: datetime) -> None:
+        """Upsert the PR's CI summary; changed_at moves only when it changed."""
+        columns = (
+            "head_sha", "state", "build_number", "build_url", "build_state", "jobs_total", "jobs_passed",
+            "jobs_running", "jobs_failed", "jobs_failed_on_main", "jobs_failed_recent_on_main",
+            "jobs_failed_pr_only", "main_known",
+        )
+        values = [ci.get(k) for k in columns]
+        with self._connection_factory() as c:
+            c.execute(
+                f"""
+                INSERT INTO triage_pr_ci (item_key, {", ".join(columns)}, failed_jobs, checked_at, changed_at)
+                VALUES (%s, {", ".join(["%s"] * len(columns))}, %s::jsonb, %s, %s)
+                ON CONFLICT (item_key) DO UPDATE SET
+                    {", ".join(f"{k} = EXCLUDED.{k}" for k in columns)},
+                    failed_jobs = EXCLUDED.failed_jobs,
+                    checked_at = EXCLUDED.checked_at,
+                    changed_at = CASE WHEN
+                        ({", ".join(f"triage_pr_ci.{k}" for k in columns)}, triage_pr_ci.failed_jobs)
+                        IS DISTINCT FROM
+                        ({", ".join(f"EXCLUDED.{k}" for k in columns)}, EXCLUDED.failed_jobs)
+                        THEN EXCLUDED.changed_at ELSE triage_pr_ci.changed_at END
+                """,
+                (item_key, *values, json.dumps(ci.get("failed_jobs") or []), now, now),
+            )
+
+    def main_ci_jobs(self, *, now: datetime) -> MainJobs | None:
+        """Main CI job keys failing right now (latest main outcome a failure,
+        or an open Main CI alert; alerting/main_ci.py), and those that failed
+        on main in the last MAIN_RECENT_DAYS. None when those tables can't be
+        read, or Main CI hasn't scanned for over MAIN_CI_MAX_LAG: then nobody
+        can say what fails on main."""
+        from psycopg import errors
+
+        try:
+            with self._connection_factory() as c:
+                scanned = c.execute(
+                    "SELECT max(scanned_through) FROM alerting_main_ci_scan_cursors"
+                ).fetchone()
+                if not scanned or scanned[0] is None or scanned[0] < now - MAIN_CI_MAX_LAG:
+                    return None
+                rows = c.execute(
+                    """SELECT job_key, true FROM alerting_main_ci_job_states WHERE latest_job_state <> 'passed'
+                       UNION
+                       SELECT job_key, status = 'open' FROM alerting_main_ci_job_alerts
+                       WHERE status = 'open' OR last_failed_at >= %s""",
+                    (now - timedelta(days=MAIN_RECENT_DAYS),),
+                ).fetchall()
+        except (errors.UndefinedTable, errors.InsufficientPrivilege):
+            return None  # no Main CI tables here, or no grant: main is unknown
+        return MainJobs(failing=frozenset(r[0] for r in rows if r[1]), recent=frozenset(r[0] for r in rows))
+
     def update_prepass(self, item_key: str, fields: dict[str, Any]) -> None:
         """Merge `fields` into an item's prepass (content hash untouched)."""
         with self._connection_factory() as c:
@@ -687,7 +791,7 @@ class PostgresTriageStore(PostgresAlertStore):
             rows = c.execute(
                 f"""SELECT a.id, i.item_key, i.title, i.html_url, s.score, s.band,
                           COALESCE(e.facets->>'summary', ''), a.reason, COALESCE(r.reason_local, ''),
-                          i.kind, {_fixes_of('i', 'e.facets')}
+                          i.kind, {_fixes_of('i', 'e.facets')}, {_CI_JSON}
                    FROM triage_assignments a
                    JOIN triage_items i USING (item_key)
                    JOIN triage_scores s USING (item_key)
@@ -700,7 +804,7 @@ class PostgresTriageStore(PostgresAlertStore):
             ).fetchall()
         return [
             DigestEntry(r[0], r[1], r[2], r[3], r[4], r[5], r[6], list((r[7] or {}).get("matched", [])), r[8],
-                        kind=r[9], fixes=tuple(r[10]))
+                        kind=r[9], fixes=tuple(r[10]), ci=r[11])
             for r in rows
         ]
 
@@ -717,7 +821,7 @@ class PostgresTriageStore(PostgresAlertStore):
             rows = c.execute(
                 f"""SELECT a.id, i.item_key, i.title, i.html_url, s.score, s.band,
                           COALESCE(e.facets->>'summary', ''), a.reason, COALESCE(r.reason_local, ''),
-                          a.assigned_at, count(*) OVER (), i.kind, {_fixes_of('i', 'e.facets')}
+                          a.assigned_at, count(*) OVER (), i.kind, {_fixes_of('i', 'e.facets')}, {_CI_JSON}
                    FROM triage_assignments a
                    JOIN triage_items i USING (item_key)
                    JOIN triage_scores s USING (item_key)
@@ -736,7 +840,7 @@ class PostgresTriageStore(PostgresAlertStore):
             ).fetchall()
         entries = [
             DigestEntry(r[0], r[1], r[2], r[3], r[4], r[5], r[6], list((r[7] or {}).get("matched", [])), r[8],
-                        assigned_at=r[9], kind=r[11], fixes=tuple(r[12]))
+                        assigned_at=r[9], kind=r[11], fixes=tuple(r[12]), ci=r[13])
             for r in rows
         ]
         return entries, int(rows[0][10]) if rows else 0
@@ -748,14 +852,16 @@ class PostgresTriageStore(PostgresAlertStore):
                           COALESCE(e.facets->>'summary', ''), i.kind, {_fixes_of('i', 'e.facets')},
                           COALESCE((SELECT array_agg(a.maintainer ORDER BY a.role DESC)
                                     FROM triage_assignments a
-                                    WHERE a.item_key = i.item_key AND a.status IN ('open','acked')), '{{}}')
+                                    WHERE a.item_key = i.item_key AND a.status IN ('open','acked')), '{{}}'),
+                          {_CI_JSON}
                    FROM triage_items i JOIN triage_scores s USING (item_key)
                    LEFT JOIN triage_extractions e ON e.id = s.extraction_id
                    WHERE i.first_seen_at >= %s AND i.state = 'open' AND s.band IN ('page', 'route')
                    ORDER BY s.score DESC LIMIT %s""",
                 (since, limit),
             ).fetchall()
-        return [(DigestEntry(0, r[0], r[1], r[2], r[3], r[4], r[5], [], kind=r[6], fixes=tuple(r[7])), list(r[8]))
+        return [(DigestEntry(0, r[0], r[1], r[2], r[3], r[4], r[5], [], kind=r[6], fixes=tuple(r[7]), ci=r[9]),
+                 list(r[8]))
                 for r in rows]
 
     def suppression_since(self, since: datetime, *, threshold: int) -> list[tuple[str, int, int]]:

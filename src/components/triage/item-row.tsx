@@ -13,6 +13,7 @@ import {
   TypeLabel,
   UnroutedBadge,
 } from "@/components/triage/badges";
+import { CiBadge } from "@/components/triage/ci-status";
 import { formatAge } from "@/lib/triage-format";
 import { bandStyle, isUnrouted, type BandKey } from "@/lib/triage-style";
 import type { NestedRow } from "@/lib/triage-groups";
@@ -91,6 +92,7 @@ export function ItemRow({
             <span className="text-xs tabular-nums text-zinc-400 dark:text-zinc-500">#{item.number}</span>
             <TypeLabel type={item.type} />
             <SeverityFlags facets={facets} max={2} />
+            <CiBadge ci={item.ci} />
           </div>
           <div className="mt-0.5 line-clamp-2 text-sm font-medium leading-snug" onClick={(event) => event.stopPropagation()}>
             <GithubLink href={item.htmlUrl} title={item.title}>

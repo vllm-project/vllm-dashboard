@@ -1072,3 +1072,83 @@ def test_reminders_skip_an_issue_whose_fix_is_merged(store: PostgresTriageStore,
     with psycopg.connect(database_url, autocommit=True) as c:
         c.execute("UPDATE triage_items SET state = 'merged' WHERE number = 841")
     assert store.waiting_assignments("r", assigned_before=NOW - timedelta(days=3), limit=5) == ([], 0)
+
+
+def test_pr_ci_status_is_stored_refreshed_and_read_back(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.ci import CiSummary, FailedJob
+
+    repo = "vllm-project/vllm"
+    for number in (1601, 1602, 1603, 1604):
+        ingest(store, issue(number, f"PR {number}", kind="pr", files=[FileChange("vllm/x.py")], failing_checks=[]))
+    with psycopg.connect(database_url, autocommit=True) as c:
+        for number, band, score in ((1601, "route", 70), (1602, "watch", 30), (1603, "ignore", 5), (1604, "page", 95)):
+            c.execute("INSERT INTO triage_scores (item_key, score, band, breakdown, scoring_version, scored_at) "
+                      "VALUES (%s, %s, %s, '[]', 'v', %s)", (f"{repo}#{number}", score, band, NOW))
+    # Never checked first, then P0, P1, P2; P3 never.
+    assert [n for _, n, _ in store.ci_due(repo, now=NOW, limit=10)] == [1604, 1601, 1602]
+
+    summary = CiSummary(head_sha="a" * 40, state="failed", build_number=104553,
+                        build_url="https://buildkite.com/vllm/ci/builds/104553", build_state="failed",
+                        jobs_total=99, jobs_passed=97, jobs_failed=2, jobs_failed_on_main=1, jobs_failed_pr_only=1,
+                        main_known=True, failed_jobs=[FailedJob("A", "step:a|name:A", "u", on_main=True),
+                                                      FailedJob("B", "step:b|name:B", "u", on_main=False)]).as_json()
+    for number in (1601, 1602, 1604):
+        store.save_pr_ci(f"{repo}#{number}", summary, now=NOW)
+    # P0/P1 are due again after 10 minutes, P2 after an hour.
+    assert store.ci_due(repo, now=NOW + timedelta(minutes=5), limit=10) == []
+    assert [n for _, n, _ in store.ci_due(repo, now=NOW + timedelta(minutes=10), limit=10)] == [1604, 1601]
+    assert [n for _, n, _ in store.ci_due(repo, now=NOW + timedelta(hours=1), limit=10)] == [1604, 1601, 1602]
+
+    # A re-check that finds nothing new moves checked_at, not changed_at.
+    store.save_pr_ci(f"{repo}#1601", summary, now=NOW + timedelta(minutes=10))
+    store.save_pr_ci(f"{repo}#1602", {**summary, "jobs_failed_on_main": 2}, now=NOW + timedelta(minutes=10))
+    with psycopg.connect(database_url, autocommit=True) as c:
+        times = dict((r[0][-4:], (r[1], r[2])) for r in c.execute(
+            "SELECT item_key, checked_at, changed_at FROM triage_pr_ci").fetchall())
+    assert times["1601"] == (NOW + timedelta(minutes=10), NOW)
+    assert times["1602"] == (NOW + timedelta(minutes=10), NOW + timedelta(minutes=10))
+
+    assert store.pr_ci([f"{repo}#1601", f"{repo}#1603"]) == {f"{repo}#1601": summary}
+    state = store.item_state(f"{repo}#1601")
+    assert state is not None and state.ci == summary
+    no_ci = store.item_state(f"{repo}#1603")
+    assert no_ci is not None and no_ci.ci is None
+
+
+def test_main_ci_jobs(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.ci import MainJobs
+
+    with psycopg.connect(database_url, autocommit=True) as c:
+        if c.execute("SELECT to_regclass('alerting_main_ci_job_states')").fetchone()[0] is None:
+            pytest.skip("0014 did not apply on a fresh database")
+        c.execute("TRUNCATE alerting_main_ci_job_states, alerting_main_ci_job_alerts, alerting_main_ci_scan_cursors CASCADE")
+    assert store.main_ci_jobs(now=NOW) is None  # never scanned: unknown
+
+    def state_row(key: str, state: str, n: int) -> tuple[Any, ...]:
+        return (key, key, f"job-{n}", state, NOW, "b", n, "u", "u", "sha", NOW)
+
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("INSERT INTO alerting_main_ci_scan_cursors VALUES ('main_ci', %s, %s)", (NOW - timedelta(minutes=3), NOW))
+        for row in (state_row("step:a|name:A", "failed", 1), state_row("step:b|name:B", "passed", 2)):
+            c.execute("INSERT INTO alerting_main_ci_job_states VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", row)
+        # Alerts: c failed 3 days ago (resolved since), d is still open, e is a month old.
+        for n, (key, status, failed_days_ago) in enumerate(
+                (("step:c|name:C", "resolved", 3), ("step:d|name:D", "open", 0), ("step:e|name:E", "resolved", 30))):
+            failed = NOW - timedelta(days=failed_days_ago)
+            res = (failed + timedelta(hours=1), f"r{n}", "b", 9, "u", "u", "sha") if status == "resolved" else (None,) * 7
+            c.execute(
+                "INSERT INTO alerting_main_ci_job_alerts (job_key, job_name, status, opened_at, "
+                "first_failure_job_id, first_failure_state, first_failure_build_id, first_failure_build_number, "
+                "first_failure_build_url, first_failure_job_url, first_failure_commit_sha, last_failed_at, "
+                "last_failure_job_id, last_failure_state, last_failure_build_id, last_failure_build_number, "
+                "last_failure_build_url, last_failure_job_url, last_failure_commit_sha, failure_count, "
+                "resolved_at, resolution_job_id, resolution_build_id, resolution_build_number, "
+                "resolution_build_url, resolution_job_url, resolution_commit_sha, created_at, updated_at) "
+                "VALUES (%s, %s, %s, %s, %s, 'failed', 'b', 1, 'u', 'u', 'sha', %s, %s, 'failed', 'b', 1, 'u', 'u', "
+                "'sha', 1, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (key, key, status, failed, f"f{n}", failed, f"l{n}", *res, NOW, NOW))
+    assert store.main_ci_jobs(now=NOW) == MainJobs(
+        failing=frozenset({"step:a|name:A", "step:d|name:D"}),
+        recent=frozenset({"step:a|name:A", "step:c|name:C", "step:d|name:D"}))
+    # Main CI stopped scanning over an hour ago: too stale to say.
+    assert store.main_ci_jobs(now=NOW + timedelta(hours=2)) is None
