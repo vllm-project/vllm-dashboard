@@ -15,7 +15,8 @@ import { PLATE_VIEWS, matchesPlateFilters, parsePlateFilters, plateFilterParams,
 import type { TriageAction } from "@/lib/triage-vocab";
 import { useLocationHash } from "@/lib/use-location-hash";
 import { describeReason, formatAge, itemFromLocation, triageFetcher } from "@/lib/triage-format";
-import { BAND_STYLES, groupByPriority } from "@/lib/triage-style";
+import { BAND_ORDER, BAND_STYLES, groupByPriority } from "@/lib/triage-style";
+import { useCollapsedBands } from "@/lib/use-collapsed-bands";
 import type { TriageMyPlate } from "@/lib/triage-types";
 
 type Entry = TriageMyPlate["open"][number];
@@ -130,8 +131,9 @@ function MyPlate() {
   const grouped = nestGroups(shown);
   const groups = groupByPriority(grouped, groupBand);
   const closedRows = data ? nestGroups(data.recentlyClosed) : [];
-  // Keyboard navigation only includes visible rows.
-  const openOrder = groups.flatMap((group) => rowOrder(group.items));
+  const { collapsed: collapsedBands, toggle: toggleGroup } = useCollapsedBands("triage.me.collapsed", BAND_ORDER);
+  // Keyboard navigation skips collapsed priority groups and closed history.
+  const openOrder = groups.filter((group) => !collapsedBands.includes(group.band)).flatMap((group) => rowOrder(group.items));
   const order = [...openOrder, ...(historyOpen ? rowOrder(closedRows).filter((key) => !openOrder.includes(key)) : [])];
   const position = listPosition(order, openItem);
   const prev = openItem ? stepItem(order, openItem, -1) : null;
@@ -223,7 +225,13 @@ function MyPlate() {
         {groups.length > 0 && <KindLegend />}
         {groups.map((group) => (
           <section key={group.band} aria-label={`${BAND_STYLES[group.band].label} items`}>
-            <PriorityGroupHeader band={group.band} count={group.items.reduce((n, row) => n + 1 + row.members.length, 0)} />
+            <PriorityGroupHeader
+              band={group.band}
+              count={group.items.reduce((n, row) => n + 1 + row.members.length, 0)}
+              collapsed={collapsedBands.includes(group.band)}
+              onToggle={() => toggleGroup(group.band)}
+            />
+            {!collapsedBands.includes(group.band) && (
             <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
               <GroupedRows
                 rows={group.items}
@@ -243,6 +251,7 @@ function MyPlate() {
                 footer={(entry) => <PlateFooter entry={entry} closed={false} now={now} onOpen={() => setItem(entry.itemKey)} onChanged={() => void mutate()} />}
               />
             </ul>
+            )}
           </section>
         ))}
       </div>

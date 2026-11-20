@@ -507,7 +507,9 @@ export function PriorityGroupHeader({
           aria-expanded={!collapsed}
           className="dashboard-control ml-auto shrink-0 rounded-md px-2 py-0.5 text-xs font-medium text-zinc-600 hover:bg-zinc-200/70 hover:text-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-zinc-50"
         >
+          <span aria-hidden="true" className="mr-1 inline-block transition-transform" style={{ transform: collapsed ? "rotate(-90deg)" : "none" }}>▾</span>
           {collapsed ? `Show ${count}` : "Hide"}
+          <span className="sr-only"> {style.label} items</span>
         </button>
       )}
     </div>
