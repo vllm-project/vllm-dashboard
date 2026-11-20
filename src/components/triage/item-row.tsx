@@ -99,7 +99,7 @@ export function ItemRow({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             {nested && <span className="text-xs text-zinc-400 dark:text-zinc-500" aria-label="fix PR">↳ fix</span>}
-            <KindIcon kind={item.kind} draft={item.draft} />
+            <KindIcon kind={item.kind} draft={item.draft} state={item.state} />
             <TypeLabel type={item.type} />
             <SeverityFlags facets={facets} max={2} />
             <CiBadge ci={item.ci} />
