@@ -1296,3 +1296,53 @@ def test_comment_churn_cooldown_and_semantic_facet_gate(
                  github=FakeProfiles())(ScheduledCommand("triage_route", clock.value))  # type: ignore[arg-type]
     assert run_relevance(store, Judge(), now=clock.value, min_score=40).judged == 1
     assert Judge.calls == 2
+
+
+def test_pr_diff_excerpt_cached_by_head_sha_and_leased_to_extractor(
+    store: PostgresTriageStore, database_url: str
+) -> None:
+    from triage.pipeline import IngestHandler
+
+    class DiffGitHub(FakeGitHub):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.diff_calls = 0
+            self.diff_body = (
+                "diff --git a/vllm/core.py b/vllm/core.py\n"
+                "--- a/vllm/core.py\n+++ b/vllm/core.py\n@@ -1 +1 @@\n-old\n+new_v1\n"
+            )
+
+        def pull_files(self, repo: str, number: int) -> list[FileChange]:
+            return [FileChange("vllm/core.py", 1, 1)]
+
+        def pull_diff(self, repo: str, number: int) -> str:
+            self.diff_calls += 1
+            return self.diff_body
+
+    gh = DiffGitHub()
+    handler = IngestHandler(store=store, github=gh, config=default_config(), clock=FixedClock(NOW))  # type: ignore[arg-type]
+    pr = issue(1901, "Fix core bug", kind="pr", head_sha="sha-1")
+    handler._ingest(pr)
+    assert gh.diff_calls == 1
+    state = store.item_state("vllm-project/vllm#1901")
+    assert state is not None and "+new_v1" in state.diff_excerpt and state.diff_head_sha == "sha-1"
+
+    # Re-ingest at the same head_sha reuses cached diff without calling GitHub again.
+    handler._ingest(issue(1901, "Fix core bug", kind="pr", head_sha="sha-1"))
+    assert gh.diff_calls == 1
+
+    # New commit SHA re-fetches diff and updates content_hash.
+    old_hash = state.content_hash
+    gh.diff_body = (
+        "diff --git a/vllm/core.py b/vllm/core.py\n"
+        "--- a/vllm/core.py\n+++ b/vllm/core.py\n@@ -1 +1 @@\n-old\n+new_v2\n"
+    )
+    handler._ingest(issue(1901, "Fix core bug", kind="pr", head_sha="sha-2"))
+    assert gh.diff_calls == 2
+    state2 = store.item_state("vllm-project/vllm#1901")
+    assert state2 is not None and "+new_v2" in state2.diff_excerpt and state2.content_hash != old_hash
+
+    # Restricted triage_extractor role can lease and read diff_excerpt.
+    restricted = PostgresTriageStore(extractor_role_url(database_url))
+    tasks = restricted.lease_extraction_batch(limit=5, now=NOW, lease_until=NOW + timedelta(minutes=30), max_attempts=3)
+    assert len(tasks) == 1 and "+new_v2" in tasks[0].diff_excerpt

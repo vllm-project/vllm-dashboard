@@ -46,6 +46,7 @@ from triage.github import (
     GitHubError,
     PrStatus,
     _parse_time,
+    fetch_pull_diff,
 )
 from triage.ci import BUILDKITE_CONTEXT, build_number_from_url
 from triage.model import FileChange, Item
@@ -443,6 +444,12 @@ class GraphQLGitHubClient:
                         head_sha=head_sha, ci_build_url=build_url,
                     )
         return out
+
+    def pull_diff(self, repo: str, number: int) -> str:
+        """Fetch a PR's unified diff via REST (GraphQL does not expose patches)."""
+        return fetch_pull_diff(
+            repo, number, token=self._token, timeout=self._timeout, min_remaining=self._min_remaining
+        )
 
 
 def _file(node: dict[str, Any]) -> FileChange:

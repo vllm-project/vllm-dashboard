@@ -26,6 +26,7 @@ from alerting.ports import Clock, DeliveryMode
 
 from triage.ci import BuildkiteBuildPort, next_summary
 from triage.config import TriageConfig
+from triage.diff import format_diff_excerpt
 from triage.github import GitHubClient, GitHubError, IngestClient
 from triage.groups import Member, group_reason, number_of, partner_map
 from triage.model import Item, Score
@@ -124,8 +125,12 @@ class IngestHandler:
     # Comment-only updates on an already-extracted item wait this long before
     # re-queueing extraction (0 disables cooldown).
     reextract_cooldown: timedelta = DEFAULT_REEXTRACT_COOLDOWN
+    # Max PR unified diffs fetched via REST per ingest run (cached per head_sha).
+    diff_fetch_limit: int = 40
+    _diffs_fetched: int = field(default=0, init=False, repr=False)
 
     def __call__(self, command: ScheduledCommand) -> None:
+        self._diffs_fetched = 0
         name = f"github:{self.repo}"
         now = self.clock.now()
         since = (self.store.cursor(name) or now - FIRST_RUN_LOOKBACK) - CURSOR_OVERLAP
@@ -173,12 +178,30 @@ class IngestHandler:
         if stored is _UNREAD:
             stored = self.store.item_state(item.key)
         comments_excerpt = stored.comments_excerpt if stored else ""
+        diff_excerpt = stored.diff_excerpt if stored else ""
+        diff_head_sha = stored.diff_head_sha if stored else None
         # {login (lower case): latest comment time}; kept until comments are re-read.
         commented_at: dict[str, str] = dict((stored.prepass if stored else {}).get("commented_at") or {})
         commenters: list[str] | None = None
         if scoped:
             if item.kind == "pr":
                 item.files = self.github.pull_files(self.repo, item.number)
+                needs_diff = (
+                    item.state == "open"
+                    and (
+                        (item.head_sha is not None and diff_head_sha != item.head_sha)
+                        or (item.head_sha is None and not diff_excerpt)
+                    )
+                )
+                if needs_diff and self._diffs_fetched < self.diff_fetch_limit and hasattr(self.github, "pull_diff"):
+                    try:
+                        raw_diff = self.github.pull_diff(self.repo, item.number)
+                        self._diffs_fetched += 1
+                        diff_excerpt = format_diff_excerpt(raw_diff)
+                        diff_head_sha = item.head_sha
+                    except GitHubError as exc:
+                        log.warning("triage: diff for %s not fetched: %s", item.key, exc)
+                item.diff_excerpt = diff_excerpt
             if rereads_comments(item, stored):
                 records = self.github.comment_records(self.repo, item.number)
                 substantive = filter_comment_records(records)
@@ -222,6 +245,8 @@ class IngestHandler:
             comments_excerpt=comments_excerpt,
             now=now,
             reextract_cooldown=self.reextract_cooldown,
+            diff_excerpt=diff_excerpt,
+            diff_head_sha=diff_head_sha,
         )
 
     def _pr_authors(self, numbers: list[int], previous: dict[str, Any]) -> dict[str, str]:
