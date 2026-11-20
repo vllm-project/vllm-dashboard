@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import useSWR from "swr";
 import {
   Avatar,
@@ -14,16 +14,18 @@ import {
   TypeLabel,
   UnroutedBadge,
 } from "@/components/triage/badges";
-import { isUnrouted, priorityLabel, typeLabel } from "@/lib/triage-style";
+import { isUnrouted, priorityLabel } from "@/lib/triage-style";
 import { ActionButtons } from "@/components/triage/action-buttons";
 import { CiSection } from "@/components/triage/ci-status";
 import { ciLine } from "@/lib/triage-ci";
 import { ScoreBreakdown } from "@/components/triage/score-breakdown";
 import { humanizeTag } from "@/lib/triage-factors";
-import { actionText, extractionText, percentText, scopeText, sourceText, yesNo } from "@/lib/triage-words";
+import { actionText, extractionText, percentText, scopeText, sourceText } from "@/lib/triage-words";
+import { llmFacts, visibleFacts, type LlmFact } from "@/lib/triage-facts";
+import { fileDiffAnchor, prFilesUrl, summarizeFiles } from "@/lib/triage-files";
 import { describeReason, formatAge, triageFetcher } from "@/lib/triage-format";
 import { linkLabel } from "@/lib/triage-groups";
-import type { TriageAssignment, TriageItemDetail, TriageLinkedItem, TriageRelevance } from "@/lib/triage-types";
+import type { TriageAssignment, TriageFacets, TriageItemDetail, TriageLinkedItem, TriageRelevance } from "@/lib/triage-types";
 import { waitingReasonsText, type WhyUnowned } from "@/lib/triage-why-unowned";
 
 /** A collapsible detail section; the summary at the top of the drawer stays open. */
@@ -31,15 +33,27 @@ function Disclosure({
   title,
   meta,
   defaultOpen = false,
+  open,
+  onToggle,
+  id,
   children,
 }: {
   title: string;
   meta?: string;
   defaultOpen?: boolean;
+  /** Controlled open state (with onToggle); otherwise `defaultOpen`. */
+  open?: boolean;
+  onToggle?: (open: boolean) => void;
+  id?: string;
   children: React.ReactNode;
 }) {
   return (
-    <details open={defaultOpen} className="group border-t border-zinc-200 dark:border-zinc-800">
+    <details
+      id={id}
+      open={open ?? defaultOpen}
+      onToggle={onToggle ? (event) => onToggle(event.currentTarget.open) : undefined}
+      className="group scroll-mt-2 border-t border-zinc-200 dark:border-zinc-800"
+    >
       <summary className="dashboard-control flex cursor-pointer list-none items-center gap-2 py-3 text-[11px] font-bold uppercase tracking-[0.08em] text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 [&::-webkit-details-marker]:hidden">
         <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3 w-3 transition-transform group-open:rotate-90" fill="currentColor">
           <path d="M6 3.5l5 4.5-5 4.5z" />
@@ -255,6 +269,155 @@ function QuickSignals({ prepass }: { prepass: TriageItemDetail["item"]["prepass"
   );
 }
 
+/** "4 files · +18 −4" and the first paths, each linking into the PR's diff. */
+function ChangedFiles({ files, htmlUrl }: { files: unknown; htmlUrl: string }) {
+  const summary = summarizeFiles(files);
+  const filesUrl = prFilesUrl(htmlUrl);
+  const [anchors, setAnchors] = useState<Record<string, string>>({});
+  const paths = summary.shown.map((file) => file.path).join("\n");
+  useEffect(() => {
+    if (!filesUrl) return;
+    let cancelled = false;
+    void Promise.all(paths.split("\n").map(async (path) => [path, await fileDiffAnchor(path)] as const)).then((pairs) => {
+      if (cancelled) return;
+      setAnchors(Object.fromEntries(pairs.filter((pair): pair is readonly [string, string] => pair[1] !== null)));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [paths, filesUrl]);
+  if (summary.count === 0) return null;
+  return (
+    <div className="border-t border-zinc-200 py-3 dark:border-zinc-800">
+      <p className="mb-1.5 flex items-baseline gap-2 text-[11px] font-bold uppercase tracking-[0.08em] text-zinc-500 dark:text-zinc-400">
+        Files
+        {filesUrl ? (
+          <a
+            href={filesUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium normal-case tracking-normal text-zinc-500 underline-offset-2 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            {summary.line} ↗
+          </a>
+        ) : (
+          <span className="font-medium normal-case tracking-normal">{summary.line}</span>
+        )}
+      </p>
+      <ul className="space-y-px" aria-label="Changed files">
+        {summary.shown.map((file) => {
+          const href = filesUrl ? `${filesUrl}${anchors[file.path] ? `#${anchors[file.path]}` : ""}` : null;
+          return (
+            <li key={file.path} className="flex min-w-0 items-baseline gap-2 text-xs">
+              {href ? (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={file.path}
+                  className="min-w-0 truncate font-mono text-[11px] text-zinc-700 underline-offset-2 hover:text-zinc-950 hover:underline dark:text-zinc-300 dark:hover:text-zinc-50"
+                >
+                  {file.path}
+                </a>
+              ) : (
+                <span title={file.path} className="min-w-0 truncate font-mono text-[11px] text-zinc-700 dark:text-zinc-300">
+                  {file.path}
+                </span>
+              )}
+              {(file.additions !== null || file.deletions !== null) && (
+                <span className="ml-auto shrink-0 font-mono text-[11px] tabular-nums text-zinc-400 dark:text-zinc-500">
+                  +{file.additions ?? 0} −{file.deletions ?? 0}
+                </span>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {summary.more > 0 && (
+        <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+          {filesUrl ? (
+            <a href={filesUrl} target="_blank" rel="noopener noreferrer" className="underline-offset-2 hover:underline">
+              +{summary.more}{summary.capped ? "+" : ""} more on GitHub
+            </a>
+          ) : (
+            `+${summary.more} more`
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function FactValue({ fact, full }: { fact: LlmFact; full: boolean }) {
+  if (fact.chips) return <Chips kind={fact.chips.kind} values={fact.chips.values} max={fact.chips.kind === "serving" ? 20 : 10} />;
+  return <>{full ? (fact.fullText ?? fact.text) : fact.text}</>;
+}
+
+/** The LLM's facts: only what it found (a crash, a model…); every field one click away. */
+function LlmFactsList({ facets, readBy }: { facets: TriageFacets; readBy: string }) {
+  const [showAll, setShowAll] = useState(false);
+  const facts = llmFacts(facets);
+  const shown = visibleFacts(facts, showAll);
+  const hidden = facts.length - facts.filter((fact) => fact.present).length;
+  return (
+    <>
+      <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
+        The facts the LLM pulled out of the text. The score is computed from these; the LLM never picks the score.
+      </p>
+      {shown.length === 0 ? (
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">Nothing notable: no crash, slowdown, models or hardware reported.</p>
+      ) : (
+        <dl>
+          {shown.map((fact) => (
+            <Row key={fact.key} label={fact.label}>
+              <span className={fact.present ? "" : "text-zinc-400 dark:text-zinc-500"}>
+                <FactValue fact={fact} full={showAll} />
+              </span>
+            </Row>
+          ))}
+        </dl>
+      )}
+      <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+        <span>Read by {readBy}</span>
+        {hidden > 0 && (
+          <button
+            type="button"
+            aria-pressed={showAll}
+            onClick={() => setShowAll((value) => !value)}
+            className="dashboard-control rounded font-medium text-zinc-600 underline underline-offset-2 hover:text-zinc-950 dark:text-zinc-300 dark:hover:text-zinc-50"
+          >
+            {showAll ? "Show only what was found" : `Show all fields (${hidden} empty)`}
+          </button>
+        )}
+      </p>
+    </>
+  );
+}
+
+const SCORE_OPEN_KEY = "triage.drawer.scoreOpen";
+
+/** The Score section's open state, remembered in this browser (closed by default). */
+function useRememberedOpen(key: string): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- read once after mount; storage isn't available during SSR
+      setOpen(window.localStorage.getItem(key) === "1");
+    } catch {
+      // storage blocked: stay closed
+    }
+  }, [key]);
+  const set = (next: boolean) => {
+    setOpen(next);
+    try {
+      window.localStorage.setItem(key, next ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  };
+  return [open, set];
+}
+
 export function ItemDrawer({
   itemKey,
   viewer,
@@ -270,6 +433,12 @@ export function ItemDrawer({
     `/api/triage/items/detail?key=${encodeURIComponent(itemKey)}`,
     triageFetcher,
   );
+  const [scoreOpen, setScoreOpen] = useRememberedOpen(SCORE_OPEN_KEY);
+
+  function showScore() {
+    setScoreOpen(true);
+    window.requestAnimationFrame(() => document.getElementById("triage-drawer-score")?.scrollIntoView({ block: "start", behavior: "smooth" }));
+  }
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -280,7 +449,6 @@ export function ItemDrawer({
   }, [onClose]);
 
   const facets = data?.extraction?.facets ?? {};
-  const severity = facets.severity ?? {};
   const openAssignments = data?.assignments.filter((a) => a.status === "open" || a.status === "acked") ?? [];
   const owners = [...openAssignments].sort((a, b) => (a.role === b.role ? 0 : a.role === "primary" ? -1 : 1));
   const mine = viewer
@@ -304,13 +472,15 @@ export function ItemDrawer({
         <div className="flex items-center gap-2 border-b border-zinc-200 px-5 py-2.5 dark:border-zinc-800">
           {data ? <PriorityBadge band={band} size="md" /> : <span className="h-6 w-9 animate-pulse rounded bg-zinc-200 dark:bg-zinc-800" />}
           {data?.score && (
-            <Link
-              href="/triage/scoring"
-              className="text-sm tabular-nums text-zinc-600 underline-offset-2 hover:underline dark:text-zinc-300"
-              title="How is this scored?"
+            <button
+              type="button"
+              onClick={showScore}
+              aria-controls="triage-drawer-score"
+              className="dashboard-control rounded text-sm tabular-nums text-zinc-600 underline-offset-2 hover:underline dark:text-zinc-300"
+              title="Show the score breakdown"
             >
               score <span className="font-semibold text-zinc-900 dark:text-zinc-100">{data.score.score}</span>
-            </Link>
+            </button>
           )}
           <span className="ml-1 inline-flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
             {data && <KindIcon kind={data.item.kind} draft={data.item.draft} />}
@@ -402,6 +572,8 @@ export function ItemDrawer({
                             : "others"
                       }
                       onDone={refresh}
+                      relevance={data.relevance}
+                      owners={openAssignments.map((assignment) => assignment.maintainer)}
                     />
                     {!mineOpen && openAssignments.length > 0 && (
                       <p className="mt-1.5 text-[11px] text-zinc-500">You can reassign it; the other actions are for the owner.</p>
@@ -421,7 +593,15 @@ export function ItemDrawer({
                 </Disclosure>
               )}
 
-              <Disclosure title="Score" meta={data.score ? `${data.score.score} points · ${data.score.breakdown.length} factors` : "not scored yet"} defaultOpen>
+              <ChangedFiles files={data.item.files} htmlUrl={data.item.htmlUrl} />
+
+              <Disclosure
+                id="triage-drawer-score"
+                title="Score"
+                meta={data.score ? `${data.score.score} points · ${data.score.breakdown.length} factors` : "not scored yet"}
+                open={scoreOpen}
+                onToggle={setScoreOpen}
+              >
                 {data.score ? (
                   <ScoreBreakdown
                     entries={data.score.breakdown}
@@ -493,52 +673,12 @@ export function ItemDrawer({
                 meta={data.extraction ? `${data.extraction.model} · ${formatAge(data.extraction.createdAt)} ago` : extractionText(data.item.extractionStatus)}
               >
                 {data.extraction ? (
-                  <>
-                    <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">
-                      The facts the LLM pulled out of the text. The score is computed from these; the LLM never picks the score.
-                    </p>
-                    <dl>
-                      <Row label="Kind of item">{facets.type ? typeLabel(facets.type) : "—"}</Row>
-                      <Row label="Models"><Chips kind="model" values={(facets.models ?? []).map((m) => m?.name ?? "").filter(Boolean)} max={10} /></Row>
-                      <Row label="Model traits"><Chips values={(facets.model_traits ?? []).map(humanizeTag)} max={10} /></Row>
-                      <Row label="Hardware"><Chips kind="hardware" values={facets.hardware ?? []} max={10} /></Row>
-                      <Row label="Serving setup"><Chips kind="serving" values={(facets.serving ?? []).map(humanizeTag)} max={20} /></Row>
-                      <Row label="Code areas"><Chips kind="area" values={(facets.areas ?? []).map(humanizeTag)} max={10} /></Row>
-                      <Row label="Serving is broken">{yesNo(severity.serving_broken)}</Row>
-                      <Row label="Crashes / hangs">{yesNo(severity.crash)} / {yesNo(severity.hang)}</Row>
-                      <Row label="Wrong output">{yesNo(severity.wrong_output)}</Row>
-                      <Row label="Slowdown">{severity.perf_regression_pct != null ? `${Math.abs(severity.perf_regression_pct)}% slower` : "none reported"}</Row>
-                      <Row label="Uses more memory">{yesNo(severity.memory_regression)}</Row>
-                      <Row label="Security problem">{yesNo(severity.security)}</Row>
-                      <Row label="With default settings">{yesNo(facets.default_config)}</Row>
-                      <Row label="Versions">
-                        {facets.versions?.good || facets.versions?.bad
-                          ? `worked in ${facets.versions?.good ?? "?"}, broken in ${facets.versions?.bad ?? "?"}`
-                          : "not stated"}
-                        {" · "}main: {yesNo(facets.versions?.affects_main)} · latest release: {yesNo(facets.versions?.affects_latest_release)}
-                      </Row>
-                      <Row label="Steps to reproduce">{yesNo(facets.has_repro)}</Row>
-                      {facets.pr && (
-                        <Row label="About the PR">
-                          {[
-                            facets.pr.fixes_issues?.length ? `fixes ${facets.pr.fixes_issues.map((n) => `#${n}`).join(", ")}` : "no linked issue",
-                            facets.pr.size ? `${facets.pr.size.toUpperCase()} size` : null,
-                            facets.pr.hot_path ? "touches code on every request" : null,
-                            facets.pr.has_tests ? "has tests" : "no tests",
-                            facets.pr.low_effort ? "looks low-effort" : null,
-                          ]
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </Row>
-                      )}
-                      <Row label="Low-quality signals">
-                        {(facets.slop_signals ?? []).length ? (facets.slop_signals ?? []).map(humanizeTag).join(", ") : "none"}
-                      </Row>
-                      <Row label="How sure the LLM is">{percentText(facets.confidence)}</Row>
-                      {facets.notes && <Row label="LLM notes">{facets.notes}</Row>}
-                      <Row label="Read by">{data.extraction.model} · prompt {data.extraction.promptVersion}</Row>
-                    </dl>
-                  </>
+                  <LlmFactsList
+                    facets={facets}
+                    readBy={`${data.extraction.model} · prompt ${data.extraction.promptVersion}${
+                      typeof facets.confidence === "number" ? ` · ${percentText(facets.confidence)} sure` : ""
+                    }`}
+                  />
                 ) : (
                   <p className="text-xs text-zinc-500">
                     Not read yet: {extractionText(data.item.extractionStatus)}

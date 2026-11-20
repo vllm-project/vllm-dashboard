@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ActionButtons } from "@/components/triage/action-buttons";
 import { ItemDrawer } from "@/components/triage/item-drawer";
+import { UndoToastProvider } from "@/components/triage/undo-toast";
 import { EmptyState, GroupedRows, PriorityGroupHeader, RowSkeleton } from "@/components/triage/item-row";
 import { groupBand, nestGroups } from "@/lib/triage-groups";
 import { useLocationHash } from "@/lib/use-location-hash";
@@ -45,12 +46,22 @@ function PlateFooter({ entry, closed, onChanged }: { entry: Entry; closed: boole
         assignmentId={entry.assignment.id}
         mode={closed ? "closed" : entry.assignment.status === "acked" ? "acked" : "open"}
         onDone={onChanged}
+        relevance={entry.relevanceMatches}
+        owners={[entry.assignment.maintainer]}
       />
     </div>
   );
 }
 
 export default function MyPlateContent() {
+  return (
+    <UndoToastProvider>
+      <MyPlate />
+    </UndoToastProvider>
+  );
+}
+
+function MyPlate() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();

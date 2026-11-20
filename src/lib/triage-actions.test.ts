@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  UNDO_WINDOW_SECONDS,
+  checkUndo,
   memberRequest,
   parseActionRequest,
+  parseUndoRequest,
   planTriageAction,
+  planUndo,
   type ActionRequest,
   type AssignmentState,
+  type UndoActionRow,
+  type UndoAssignmentState,
 } from "./triage-actions";
 
 const ACTIVE = new Set(["alice", "bob", "carol"]);
@@ -163,4 +169,102 @@ test("group follow-up skips what doesn't apply", () => {
   for (const action of ["drop", "slop", "reopen"] as const) {
     assert.equal(memberRequest(req({ itemKey: issue, action }), "alice", pr, [assignment({})]), null);
   }
+});
+
+// --- undo --------------------------------------------------------------------
+
+const undoRow = (overrides: Partial<UndoActionRow> = {}): UndoActionRow => ({
+  id: 10,
+  itemKey: "vllm-project/vllm#1",
+  assignmentId: 1,
+  actor: "Alice",
+  action: "drop",
+  target: null,
+  source: "dashboard",
+  ageSeconds: 3,
+  ...overrides,
+});
+
+const undoAssignment = (overrides: Partial<UndoAssignmentState> = {}): UndoAssignmentState => ({
+  id: 1,
+  maintainer: "alice",
+  role: "primary",
+  status: "dropped",
+  closedAt: "2026-11-20T00:00:00Z",
+  assignedAt: "2026-11-19T00:00:00Z",
+  assignedBy: "router",
+  createdByAction: false,
+  notifiedAt: null,
+  wasAcked: false,
+  ...overrides,
+});
+
+test("parseUndoRequest needs a positive integer actionId", () => {
+  assert.deepEqual(parseUndoRequest({ actionId: 5 }), { ok: true, actionId: 5 });
+  assert.deepEqual(parseUndoRequest({ actionId: "7" }), { ok: true, actionId: 7 });
+  for (const body of [undefined, null, {}, { actionId: 0 }, { actionId: 1.5 }, { actionId: "x" }]) {
+    assert.equal(parseUndoRequest(body).ok, false);
+  }
+});
+
+test("checkUndo: own dashboard terminal action, within the window", () => {
+  assert.ok(checkUndo("alice", undoRow()).ok);
+  const fail = (row: UndoActionRow | undefined, login = "alice") => {
+    const result = checkUndo(login, row);
+    assert.equal(result.ok, false);
+    return result.ok ? 0 : result.status;
+  };
+  assert.equal(fail(undefined), 404);
+  assert.equal(fail(undoRow(), "mallory"), 403);
+  assert.equal(fail(undoRow({ source: "slack" })), 403);
+  assert.equal(fail(undoRow({ action: "ack" })), 400);
+  assert.equal(fail(undoRow({ action: "reopen" })), 400);
+  assert.equal(fail(undoRow({ ageSeconds: UNDO_WINDOW_SECONDS + 1 })), 409);
+  assert.equal(fail(undoRow({ ageSeconds: Number.NaN })), 409);
+  for (const action of ["not_mine", "drop", "slop", "done", "reassign"] as const) {
+    assert.ok(checkUndo("ALICE", undoRow({ action })).ok, action);
+  }
+});
+
+test("planUndo: drop/slop/done/not_mine reopen the assignment as it was", () => {
+  assert.deepEqual(planUndo(undoRow(), [undoAssignment()], 0), {
+    ok: true,
+    value: [{ kind: "restore", assignmentId: 1, status: "open" }],
+  });
+  assert.deepEqual(
+    planUndo(undoRow({ action: "done" }), [undoAssignment({ status: "done", wasAcked: true })], 0),
+    { ok: true, value: [{ kind: "restore", assignmentId: 1, status: "acked" }] },
+  );
+  // Status moved on, someone acted since, or the role was refilled: refuse.
+  assert.equal(planUndo(undoRow({ action: "slop" }), [undoAssignment()], 0).ok, false);
+  assert.equal(planUndo(undoRow(), [undoAssignment()], 1).ok, false);
+  const rerouted = planUndo(
+    undoRow({ action: "not_mine" }),
+    [undoAssignment({ status: "not_mine" }), undoAssignment({ id: 2, maintainer: "bob", status: "open" })],
+    0,
+  );
+  assert.equal(rerouted.ok, false);
+  assert.equal(planUndo(undoRow({ assignmentId: 99 }), [undoAssignment()], 0).ok, false);
+});
+
+test("planUndo: reassign deletes the new row and restores the old one", () => {
+  const row = undoRow({ action: "reassign", target: "bob" });
+  const old = undoAssignment({ status: "reassigned", wasAcked: true });
+  const created = undoAssignment({ id: 2, maintainer: "bob", status: "open", assignedBy: "Alice", createdByAction: true, closedAt: null });
+  assert.deepEqual(planUndo(row, [old, created], 0), {
+    ok: true,
+    value: [
+      { kind: "delete", assignmentId: 2 },
+      { kind: "restore", assignmentId: 1, status: "acked" },
+    ],
+  });
+  assert.equal(planUndo(row, [old, { ...created, status: "acked" }], 0).ok, false);
+  assert.equal(planUndo(row, [old, { ...created, notifiedAt: "2026-11-20T00:00:01Z" }], 0).ok, false);
+  assert.equal(planUndo(row, [old], 0).ok, false);
+});
+
+test("planUndo: reassign of an unowned item just deletes the new row", () => {
+  const row = undoRow({ action: "reassign", target: "bob", assignmentId: 2 });
+  const created = undoAssignment({ id: 2, maintainer: "bob", status: "open", assignedBy: "Alice", createdByAction: true, closedAt: null });
+  assert.deepEqual(planUndo(row, [created], 0), { ok: true, value: [{ kind: "delete", assignmentId: 2 }] });
 });

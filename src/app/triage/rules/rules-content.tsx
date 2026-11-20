@@ -11,6 +11,8 @@ import {
   maintainerFileEditUrl,
   maintainerFilePath,
   maintainerFileYaml,
+  isValidTimeZone,
+  DEFAULT_DIGEST_HOUR,
   validateMaintainerSettings,
 } from "@/lib/triage-rules";
 import type { TriageMaintainer, TriageRules } from "@/lib/triage-types";
@@ -61,6 +63,33 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
+/** IANA zones the browser knows, for the timezone select (empty when Intl can't list them). */
+function timeZoneOptions(current: string): string[] {
+  let zones: string[] = [];
+  try {
+    const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] };
+    zones = intl.supportedValuesOf?.("timeZone") ?? [];
+  } catch {
+    zones = [];
+  }
+  const all = new Set(["UTC", ...zones]);
+  if (current) all.add(current);
+  return [...all].sort((a, b) => (a === "UTC" ? -1 : b === "UTC" ? 1 : a.localeCompare(b)));
+}
+
+function browserTimeZone(): string | null {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return zone && isValidTimeZone(zone) ? zone : null;
+  } catch {
+    return null;
+  }
+}
+
+function hourLabel(hour: number): string {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
 interface FormState {
   areas: Set<string>;
   hardware: Set<string>;
@@ -72,7 +101,11 @@ interface FormState {
   paths: string;
   keywords: string;
   naturalLanguage: string;
-  keep: Pick<TriageRules, "language" | "timezone" | "digest_hour">;
+  /** "" = not set (UTC). */
+  timezone: string;
+  /** "" = not set (09:00). */
+  digestHour: string;
+  keep: Pick<TriageRules, "language">;
   minScore: number;
   capacityPerWeek: number;
   notifyMode: NotifyMode;
@@ -92,12 +125,10 @@ function toForm(maintainer: TriageMaintainer): FormState {
     paths: maintainer.rules.paths.join("\n"),
     keywords: maintainer.rules.keywords.join("\n"),
     naturalLanguage: maintainer.rules.natural_language,
+    timezone: maintainer.rules.timezone ?? "",
+    digestHour: maintainer.rules.digest_hour !== undefined ? String(maintainer.rules.digest_hour) : "",
     // Not editable here, but must survive a save (e.g. language: vi).
-    keep: {
-      ...(maintainer.rules.language ? { language: maintainer.rules.language } : {}),
-      ...(maintainer.rules.timezone ? { timezone: maintainer.rules.timezone } : {}),
-      ...(maintainer.rules.digest_hour !== undefined ? { digest_hour: maintainer.rules.digest_hour } : {}),
-    },
+    keep: maintainer.rules.language ? { language: maintainer.rules.language } : {},
     minScore: maintainer.minScore,
     capacityPerWeek: maintainer.capacityPerWeek,
     notifyMode: maintainer.notifyMode,
@@ -122,6 +153,8 @@ function toBody(form: FormState) {
       },
       natural_language: form.naturalLanguage,
       ...form.keep,
+      ...(form.timezone ? { timezone: form.timezone } : {}),
+      ...(form.digestHour !== "" ? { digest_hour: Number(form.digestHour) } : {}),
     },
     minScore: form.minScore,
     capacityPerWeek: form.capacityPerWeek,
@@ -129,6 +162,21 @@ function toBody(form: FormState) {
     slackUserId: form.slackUserId.trim() || null,
     away: form.away.filter((range) => range.start && range.end),
   };
+}
+
+/** How many explicit rules the draft sets, for the collapsed Advanced summary. */
+function explicitRuleCount(form: FormState): number {
+  return (
+    form.areas.size +
+    form.hardware.size +
+    form.types.size +
+    form.excludeTypes.size +
+    form.excludeAreas.size +
+    form.excludeHardware.size +
+    splitLines(form.models).length +
+    splitLines(form.paths).length +
+    splitLines(form.keywords).length
+  );
 }
 
 export default function RulesContent() {
@@ -199,47 +247,83 @@ function RulesDraft({ data }: { data: RulesResponse }) {
         }}
       >
         <div className="rounded-md border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200">
-          Your rules live in <code className="font-mono">{maintainerFilePath(login)}</code>. Changes take effect about 5 minutes after the PR merges.
+          Your settings live in <code className="font-mono">{maintainerFilePath(login)}</code>. Changes take effect about 5 minutes after the PR merges.
           Edits here are a draft only: preview them, then open a pull request with the YAML below.
         </div>
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Rules decide which items the router sends to <span className="font-medium">{data.maintainer.githubLogin}</span>.
-          An item matches when any area, hardware, model, path or keyword matches, it passes the type filter, and nothing in Exclude matches.{" "}
+          Claude (Opus) decides which items go to <span className="font-medium">{login}</span> by reading your notes
+          together with the vLLM PRs you wrote and reviewed in the last 6 months.{" "}
           {data.exists
-            ? `Loaded your current rules${data.maintainer.updatedAt ? ` (last synced ${new Date(data.maintainer.updatedAt).toLocaleString()}${data.maintainer.updatedBy ? ` by ${data.maintainer.updatedBy}` : ""})` : ""}.`
-            : "You have no rules file yet; this draft starts empty."}
+            ? `Loaded your current settings${data.maintainer.updatedAt ? ` (last synced ${new Date(data.maintainer.updatedAt).toLocaleString()}${data.maintainer.updatedBy ? ` by ${data.maintainer.updatedBy}` : ""})` : ""}.`
+            : "You have no file yet; this draft starts empty."}
         </p>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <MultiSelect label="Areas" options={[...TRIAGE_AREAS]} selected={form.areas} onChange={(value) => set("areas", value)} placeholder="None" />
-          <MultiSelect label="Hardware" options={[...TRIAGE_HARDWARE]} selected={form.hardware} onChange={(value) => set("hardware", value)} placeholder="None" />
-          <MultiSelect label="Only types" options={[...TRIAGE_TYPES]} selected={form.types} onChange={(value) => set("types", value)} placeholder="Any type" />
+
+        <div className="rounded-lg border border-zinc-300 p-3 dark:border-zinc-700">
+          <label htmlFor="triage-notes" className="block text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+            Notes for Claude <span className="font-normal text-zinc-500">(in your words)</span>
+          </label>
+          <p id="triage-notes-hint" className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+            This is the main input for routing: Claude reads it on every important item to judge whether it&apos;s
+            relevant to you. Say what you own, what to send you, and what not to. &ldquo;Don&apos;t send me&rdquo; always
+            wins; naming a specific component works better than a broad category.
+          </p>
+          <textarea
+            id="triage-notes"
+            aria-describedby="triage-notes-hint triage-notes-example"
+            className={`${INPUT} mt-2 h-36 py-1.5 text-sm leading-relaxed`}
+            value={form.naturalLanguage}
+            onChange={(e) => set("naturalLanguage", e.target.value)}
+            placeholder="What you own, what to send you, what not to send you…"
+          />
+          <p id="triage-notes-example" className="mt-1 text-[11px] text-zinc-500">
+            Example: &ldquo;Send me HiSparse bugs and anything about the Anthropic Messages API. Send me every
+            quantization crash, even in code I didn&apos;t write. Don&apos;t send me ROCm-only issues.&rdquo;
+          </p>
         </div>
-        <Field label="Models" hint="one glob per line, e.g. DeepSeek-*, case-insensitive">
-          <textarea className={`${INPUT} h-20 py-1 font-mono text-xs`} value={form.models} onChange={(e) => set("models", e.target.value)} />
-        </Field>
-        <Field label="Paths" hint="one glob per line, e.g. vllm/model_executor/layers/fused_moe/**">
-          <textarea className={`${INPUT} h-20 py-1 font-mono text-xs`} value={form.paths} onChange={(e) => set("paths", e.target.value)} />
-        </Field>
-        <Field label="Keywords" hint="one per line, matched in title and summary">
-          <textarea className={`${INPUT} h-16 py-1 text-xs`} value={form.keywords} onChange={(e) => set("keywords", e.target.value)} />
-        </Field>
+
         <fieldset className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
-          <legend className="px-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">Exclude</legend>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <MultiSelect label="Types" options={[...TRIAGE_TYPES]} selected={form.excludeTypes} onChange={(value) => set("excludeTypes", value)} placeholder="None" />
-            <MultiSelect label="Areas" options={[...TRIAGE_AREAS]} selected={form.excludeAreas} onChange={(value) => set("excludeAreas", value)} placeholder="None" />
-            <MultiSelect label="Hardware" options={[...TRIAGE_HARDWARE]} selected={form.excludeHardware} onChange={(value) => set("excludeHardware", value)} placeholder="None" />
+          <legend className="px-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">Daily digest</legend>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Time zone" hint="IANA name; default UTC">
+              <div className="flex gap-2">
+                <select className={INPUT} value={form.timezone} onChange={(e) => set("timezone", e.target.value)}>
+                  <option value="">UTC (default)</option>
+                  {timeZoneOptions(form.timezone).map((zone) => (
+                    <option key={zone} value={zone}>{zone}</option>
+                  ))}
+                </select>
+                {(() => {
+                  const mine = browserTimeZone();
+                  return mine && mine !== form.timezone ? (
+                    <button
+                      type="button"
+                      onClick={() => set("timezone", mine)}
+                      title={`Use ${mine}`}
+                      className="dashboard-control shrink-0 rounded-md border border-zinc-200 px-2 text-xs text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    >
+                      Use mine
+                    </button>
+                  ) : null;
+                })()}
+              </div>
+            </Field>
+            <Field label="Digest hour" hint="local time, 0–23">
+              <select className={INPUT} value={form.digestHour} onChange={(e) => set("digestHour", e.target.value)}>
+                <option value="">{hourLabel(DEFAULT_DIGEST_HOUR)} (default)</option>
+                {Array.from({ length: 24 }, (_, hour) => (
+                  <option key={hour} value={String(hour)}>{hourLabel(hour)}</option>
+                ))}
+              </select>
+            </Field>
           </div>
         </fieldset>
-        <Field label="In your words" hint="kept for reference; not used for matching yet">
-          <textarea className={`${INPUT} h-16 py-1 text-xs`} value={form.naturalLanguage} onChange={(e) => set("naturalLanguage", e.target.value)} />
-        </Field>
+
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Minimum score">
-            <input type="number" min={0} max={1000} className={INPUT} value={form.minScore} onChange={(e) => set("minScore", Number(e.target.value))} />
-          </Field>
           <Field label="Capacity per week" hint="New P0s, and P0s clearly yours, ignore this">
             <input type="number" min={0} max={200} className={INPUT} value={form.capacityPerWeek} onChange={(e) => set("capacityPerWeek", Number(e.target.value))} />
+          </Field>
+          <Field label="Minimum score" hint="40 = P1 and up, 70 = P0 only">
+            <input type="number" min={0} max={1000} className={INPUT} value={form.minScore} onChange={(e) => set("minScore", Number(e.target.value))} />
           </Field>
           <Field label="Slack notifications">
             <select className={INPUT} value={form.notifyMode} onChange={(e) => set("notifyMode", e.target.value as NotifyMode)}>
@@ -254,9 +338,9 @@ function RulesDraft({ data }: { data: RulesResponse }) {
           <div className="space-y-2">
             {form.away.map((range, index) => (
               <div key={index} className="flex items-center gap-2">
-                <input type="date" className={INPUT} value={range.start} onChange={(e) => set("away", form.away.map((r, i) => (i === index ? { ...r, start: e.target.value } : r)))} />
+                <input type="date" aria-label="Away from" className={INPUT} value={range.start} onChange={(e) => set("away", form.away.map((r, i) => (i === index ? { ...r, start: e.target.value } : r)))} />
                 <span className="text-xs text-zinc-500">to</span>
-                <input type="date" className={INPUT} value={range.end} onChange={(e) => set("away", form.away.map((r, i) => (i === index ? { ...r, end: e.target.value } : r)))} />
+                <input type="date" aria-label="Away until" className={INPUT} value={range.end} onChange={(e) => set("away", form.away.map((r, i) => (i === index ? { ...r, end: e.target.value } : r)))} />
                 <button type="button" className="text-xs text-zinc-500 hover:text-red-600" onClick={() => set("away", form.away.filter((_, i) => i !== index))}>Remove</button>
               </div>
             ))}
@@ -265,9 +349,50 @@ function RulesDraft({ data }: { data: RulesResponse }) {
             </button>
           </div>
         </Field>
+
+        <details className="group rounded-md border border-zinc-200 dark:border-zinc-800">
+          <summary className="dashboard-control flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-xs font-semibold text-zinc-700 hover:text-zinc-950 dark:text-zinc-300 dark:hover:text-zinc-50 [&::-webkit-details-marker]:hidden">
+            <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3 w-3 transition-transform group-open:rotate-90" fill="currentColor">
+              <path d="M6 3.5l5 4.5-5 4.5z" />
+            </svg>
+            Advanced: explicit rules (optional)
+            {explicitRuleCount(form) > 0 && (
+              <span className="font-normal text-zinc-500">{explicitRuleCount(form)} set</span>
+            )}
+          </summary>
+          <div className="space-y-4 px-3 pb-3">
+            <p className="text-xs text-zinc-600 dark:text-zinc-400">
+              Most people don&apos;t need these: your notes and recent PRs already route work to you. Use them only for
+              hard limits. An item matching any area, hardware, model, path or keyword is always sent to you (if it
+              passes the type filter); anything matching Exclude never is.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <MultiSelect label="Areas" options={[...TRIAGE_AREAS]} selected={form.areas} onChange={(value) => set("areas", value)} placeholder="None" />
+              <MultiSelect label="Hardware" options={[...TRIAGE_HARDWARE]} selected={form.hardware} onChange={(value) => set("hardware", value)} placeholder="None" />
+              <MultiSelect label="Only types" options={[...TRIAGE_TYPES]} selected={form.types} onChange={(value) => set("types", value)} placeholder="Any type" />
+            </div>
+            <Field label="Models" hint="one glob per line, e.g. DeepSeek-*, case-insensitive">
+              <textarea className={`${INPUT} h-20 py-1 font-mono text-xs`} value={form.models} onChange={(e) => set("models", e.target.value)} />
+            </Field>
+            <Field label="Paths" hint="one glob per line, e.g. vllm/model_executor/layers/fused_moe/**">
+              <textarea className={`${INPUT} h-20 py-1 font-mono text-xs`} value={form.paths} onChange={(e) => set("paths", e.target.value)} />
+            </Field>
+            <Field label="Keywords" hint="one per line, matched in title and summary">
+              <textarea className={`${INPUT} h-16 py-1 text-xs`} value={form.keywords} onChange={(e) => set("keywords", e.target.value)} />
+            </Field>
+            <fieldset className="rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+              <legend className="px-1 text-xs font-semibold text-zinc-700 dark:text-zinc-300">Exclude</legend>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <MultiSelect label="Types" options={[...TRIAGE_TYPES]} selected={form.excludeTypes} onChange={(value) => set("excludeTypes", value)} placeholder="None" />
+                <MultiSelect label="Areas" options={[...TRIAGE_AREAS]} selected={form.excludeAreas} onChange={(value) => set("excludeAreas", value)} placeholder="None" />
+                <MultiSelect label="Hardware" options={[...TRIAGE_HARDWARE]} selected={form.excludeHardware} onChange={(value) => set("excludeHardware", value)} placeholder="None" />
+              </div>
+            </fieldset>
+          </div>
+        </details>
         <div className="flex flex-wrap items-center gap-2">
           <button type="submit" disabled={busy} className="dashboard-control min-h-9 rounded-md bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900">
-            Preview last 30 days
+            Preview rules on last 30 days
           </button>
           <button type="button" disabled={!yaml} onClick={() => void copyYaml()} className="dashboard-control min-h-9 rounded-md border border-zinc-200 px-4 text-sm font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800">
             Copy as YAML
@@ -306,7 +431,7 @@ function RulesDraft({ data }: { data: RulesResponse }) {
       <section>
         <h2 className="mb-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">Preview</h2>
         {!preview ? (
-          <p className="text-sm text-zinc-500">Preview shows which items from the last 30 days this draft would have matched.</p>
+          <p className="text-sm text-zinc-500">Preview shows which items from the last 30 days your explicit rules (under Advanced) would have matched. Matches from your notes are judged by Claude on new items and aren&apos;t previewed here.</p>
         ) : (
           <>
             <p className="mb-3 text-xs text-zinc-500">

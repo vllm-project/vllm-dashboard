@@ -240,7 +240,11 @@ export interface TriageRelevance {
 
 export interface TriageMyPlate {
   login: string;
-  open: (TriageQueueItem & { assignment: TriageAssignment })[];
+  /** `relevanceMatches`: Claude's high/medium judgements for active maintainers (orders "Reassign…"). */
+  open: (TriageQueueItem & {
+    assignment: TriageAssignment;
+    relevanceMatches?: { maintainer: string; relevance: "high" | "medium" }[];
+  })[];
   recentlyClosed: (TriageQueueItem & { assignment: TriageAssignment })[];
 }
 
