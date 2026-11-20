@@ -18,7 +18,12 @@ import type { TriageFacets, TriagePrepass, TriageRules } from "@/lib/triage-type
  *   - `choose_owners` / `_excluded` / `involvement` / `assigned_elsewhere` in
  *     triage/routing.py (not_mine, min_score, away, capacity with the fresh /
  *     clear-match P0 exception, then involvement (GitHub assignee > authored
- *     > commented) > high/medium relevance > rules).
+ *     > commented) > high/medium relevance > rules);
+ *   - `group_owner` / `can_follow` in triage/routing.py: an item whose issue
+ *     or fix PR (triage/groups.py) already has an owner goes to that owner,
+ *     before any wait for judgements and without a capacity slot, unless they
+ *     said not mine, exclude it, are away, or the group's highest score is
+ *     under their min_score.
  * Rule matching itself is `matchRules` (the mirror of `match_rules`).
  */
 
@@ -71,11 +76,26 @@ export interface WhyUnownedInput {
    */
   waitingSince?: string | null;
   /**
+   * The items it is linked to as issue + fix PR (triage/groups.py): the
+   * issues a PR fixes, or the PRs fixing an issue, with their open/acked
+   * primary owner.
+   */
+  linked?: LinkedForRouting[];
+  /**
    * This item's place among the router's candidates (unowned, labelled P0/P1,
    * highest score first); the router reads only the first `ROUTE_LIMIT`.
    */
   queuePosition?: number;
   now: Date;
+}
+
+export interface LinkedForRouting {
+  number: number;
+  kind: "issue" | "pr";
+  state: string;
+  score: number | null;
+  band: string | null;
+  owner: string | null;
 }
 
 export interface WhyUnowned {
@@ -266,8 +286,63 @@ function listNames(names: string[], max = 4): string {
   return names.length <= max ? names.join(", ") : `${names.slice(0, max).join(", ")} and ${names.length - max} more`;
 }
 
-/** Why this item has no owner, mirroring the router (see the module comment). */
+/** `group_reason` in triage/groups.py, in words: "fixes #65385" / "is fixed by #66694". */
+function groupPhrase(linked: LinkedForRouting): string {
+  return linked.kind === "issue" ? `It fixes #${linked.number}` : `It's fixed by #${linked.number}`;
+}
+
+/**
+ * `group_owner` in triage/routing.py: the owner of the highest-scored linked
+ * item who may take this one too, or why each owner can't.
+ */
+export function groupOwner(input: WhyUnownedInput): { owner: string; via: LinkedForRouting } | { blocked: string[] } {
+  const linked = input.linked ?? [];
+  const owned = linked
+    .filter((l) => l.owner)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.number - b.number);
+  const groupScore = Math.max(input.score ?? 0, ...linked.filter((l) => l.state === "open").map((l) => l.score ?? 0));
+  const blocked: string[] = [];
+  for (const via of owned) {
+    const login = via.owner!;
+    const m = input.maintainers.find((x) => x.login === login);
+    const away = m ? awayWindow(m, input.now) : null;
+    const why = !m
+      ? "isn't an active maintainer"
+      : input.notMine.includes(login)
+        ? "said it's not theirs"
+        : groupScore < m.minScore
+          ? `only takes items scoring ${m.minScore}+`
+          : away
+            ? `is away until ${away.end}`
+            : excludedFor(m.rules, input.facets, input.prepass)
+              ? "excludes items like this in their file"
+              : null;
+    if (why === null) return { owner: login, via };
+    blocked.push(`${groupPhrase(via)}, which ${login} owns, but ${login} ${why}, so it's routed on its own.`);
+  }
+  return { blocked };
+}
+
+/**
+ * Why this item has no owner, mirroring the router (see the module comment).
+ * An open issue whose fix PR already merged says so first: it is waiting for
+ * GitHub to close it, not abandoned.
+ */
 export function explainUnowned(input: WhyUnownedInput): WhyUnowned {
+  const result = explainUnownedCore(input);
+  const merged = (input.linked ?? []).filter((l) => l.kind === "pr" && l.state === "merged");
+  if (input.state !== "open" || merged.length === 0) return result;
+  const which = merged.map((l) => `#${l.number}`).join(", ");
+  return {
+    ...result,
+    lines: [
+      `Its fix ${which} is merged, so it should close once GitHub closes it (or someone checks and closes it).`,
+      ...result.lines,
+    ],
+  };
+}
+
+function explainUnownedCore(input: WhyUnownedInput): WhyUnowned {
   const done = (summary: string, lines: string[] = [], pending = false): WhyUnowned => ({ summary, lines, pending });
 
   if (input.state !== "open") return done("It's closed on GitHub, so the router leaves it alone.");
@@ -320,6 +395,29 @@ function explainCandidate(input: WhyUnownedInput): WhyUnowned {
       }, so the router leaves it with them.`,
     );
   }
+  // group_owner: its issue / fix PR has an owner who can take it too.
+  const group = groupOwner(input);
+  if ("owner" in group) {
+    return done(
+      `${groupPhrase(group.via)}, which ${group.owner} owns, so the router should give it to ${group.owner} too on its next run (every 5 minutes); a group takes one slot of their weekly capacity.`,
+      [],
+      true,
+    );
+  }
+  const inner = explainUngrouped(input);
+  return group.blocked.length ? { ...inner, lines: [...group.blocked, ...inner.lines].slice(0, MAX_LINES + 1) } : inner;
+}
+
+/** The relevance wait and choose_owners, for a candidate not taken by its group. */
+function explainUngrouped(original: WhyUnownedInput): WhyUnowned {
+  const done = (summary: string, lines: string[] = [], pending = false): WhyUnowned => ({ summary, lines, pending });
+  // Nobody owns the group: it's routed with its highest score and band
+  // (_route_one), so a P1 PR fixing a P0 issue is routed as a P0.
+  const top = (original.linked ?? [])
+    .filter((l) => !l.owner && l.state === "open" && l.score !== null && (l.band === "page" || l.band === "route"))
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
+  const input =
+    top && (top.score ?? 0) > (original.score ?? 0) ? { ...original, score: top.score, band: top.band } : original;
 
   // _route_one: wait for every active maintainer's judgement unless someone
   // is involved, but only for RELEVANCE_GRACE; then route among those judged.

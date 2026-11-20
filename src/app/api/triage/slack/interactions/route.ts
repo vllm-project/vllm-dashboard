@@ -81,7 +81,10 @@ export async function POST(request: Request) {
   reply({
     replace_original: true,
     text: `${click.itemKey}: ${click.action.replace("_", " ")} by ${login}`,
-    blocks: blocksAfterAction(click.blocks, click.itemKey, click.action, login, click.target, new Date(), language),
+    blocks: blocksAfterAction(
+      click.blocks, click.itemKey, click.action, login, click.target, new Date(), language,
+      "alsoApplied" in result ? result.alsoApplied : [],
+    ),
   });
   return new Response(null, { status: 200 });
 }

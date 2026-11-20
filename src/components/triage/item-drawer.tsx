@@ -20,7 +20,8 @@ import { ScoreBreakdown } from "@/components/triage/score-breakdown";
 import { humanizeTag } from "@/lib/triage-factors";
 import { actionText, extractionText, percentText, scopeText, sourceText, yesNo } from "@/lib/triage-words";
 import { describeReason, formatAge, triageFetcher } from "@/lib/triage-format";
-import type { TriageAssignment, TriageItemDetail, TriageRelevance } from "@/lib/triage-types";
+import { linkLabel } from "@/lib/triage-groups";
+import type { TriageAssignment, TriageItemDetail, TriageLinkedItem, TriageRelevance } from "@/lib/triage-types";
 import { waitingReasonsText, type WhyUnowned } from "@/lib/triage-why-unowned";
 
 /** A collapsible detail section; the summary at the top of the drawer stays open. */
@@ -185,6 +186,31 @@ function WhyNoOwner({ why }: { why: WhyUnowned }) {
 }
 
 /** The deterministic prepass, in words, with the raw JSON one click away. */
+/**
+ * Its issue + fix PR group (triage/groups.py): "Fixes #65385" on a PR,
+ * "Fixed by #67812 (merged)" on an issue, each with its title and owner.
+ */
+function GroupPanel({ kind, links }: { kind: "issue" | "pr"; links: TriageLinkedItem[] }) {
+  if (links.length === 0) return null;
+  const verb = kind === "pr" ? "Fixes" : "Fixed by";
+  return (
+    <ul className="space-y-1 rounded-lg border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800" aria-label={verb}>
+      {links.map((link) => (
+        <li key={link.itemKey} className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+          <span className="shrink-0 font-medium text-zinc-700 dark:text-zinc-200">
+            {verb}{" "}
+            <GithubLink href={link.htmlUrl} title={link.title}>
+              {linkLabel(link)}
+            </GithubLink>
+          </span>
+          <span className="min-w-0 truncate text-xs text-zinc-500 dark:text-zinc-400">{link.title}</span>
+          {link.owner && <span className="text-xs text-zinc-500 dark:text-zinc-400">· {link.owner}</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function QuickSignals({ prepass }: { prepass: TriageItemDetail["item"]["prepass"] }) {
   const template = prepass.template ?? {};
   const templateChecks = [
@@ -329,6 +355,7 @@ export function ItemDrawer({
                   </div>
                 )}
                 {facets.summary && <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">{facets.summary}</p>}
+                <GroupPanel kind={data.item.kind} links={data.item.kind === "pr" ? data.fixes : data.fixedBy} />
 
                 <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
                   <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.08em] text-zinc-500 dark:text-zinc-400">Owners</p>
@@ -376,6 +403,11 @@ export function ItemDrawer({
                     />
                     {!mineOpen && openAssignments.length > 0 && (
                       <p className="mt-1.5 text-[11px] text-zinc-500">You can reassign it; the other actions are for the owner.</p>
+                    )}
+                    {data.item.kind === "issue" && data.fixedBy.some((link) => link.state === "open") && (
+                      <p className="mt-1.5 text-[11px] text-zinc-500">
+                        Ack, Not mine, Done and Reassign here also apply to its fix PRs held by the same person.
+                      </p>
                     )}
                   </div>
                 </div>

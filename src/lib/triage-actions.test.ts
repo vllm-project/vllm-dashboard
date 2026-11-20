@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  memberRequest,
   parseActionRequest,
   planTriageAction,
   type ActionRequest,
@@ -128,5 +129,38 @@ test("parseActionRequest validates shape", () => {
     null,
   ]) {
     assert.equal(parseActionRequest(bad).ok, false, JSON.stringify(bad));
+  }
+});
+
+test("group follow-up: the same action on a fix PR held by the same person", () => {
+  const issue = "vllm-project/vllm#65385";
+  const pr = "vllm-project/vllm#67812";
+  const prOpen = [assignment({ id: 7, maintainer: "Alice" })];
+  for (const action of ["ack", "not_mine", "done"] as const) {
+    const follow = memberRequest(req({ itemKey: issue, action }), "alice", pr, prOpen);
+    assert.deepEqual(follow, { itemKey: pr, action, assignmentId: 7, target: null, note: "with #65385" });
+    assert.equal(planTriageAction(follow!, "alice", prOpen, ACTIVE).ok, true);
+  }
+  // Reassign follows the person it was taken from to the same target.
+  const moved = memberRequest(req({ itemKey: issue, action: "reassign", target: "bob", note: "on leave" }), "alice", pr, prOpen);
+  assert.deepEqual(moved, { itemKey: pr, action: "reassign", assignmentId: 7, target: "bob", note: "with #65385: on leave" });
+  assert.equal(planTriageAction(moved!, "carol", prOpen, ACTIVE).ok, true);
+});
+
+test("group follow-up skips what doesn't apply", () => {
+  const issue = "vllm-project/vllm#65385";
+  const pr = "vllm-project/vllm#67812";
+  // Someone else holds the PR, it's closed, or already in that state.
+  assert.equal(memberRequest(req({ itemKey: issue }), "alice", pr, [assignment({ maintainer: "bob" })]), null);
+  assert.equal(memberRequest(req({ itemKey: issue }), "alice", pr, [assignment({ status: "done" })]), null);
+  assert.equal(memberRequest(req({ itemKey: issue }), "alice", pr, [assignment({ status: "acked" })]), null);
+  assert.equal(
+    memberRequest(req({ itemKey: issue, action: "reassign", target: "bob" }), "alice", pr,
+      [assignment({}), assignment({ id: 2, maintainer: "bob", role: "backup" })]),
+    null,
+  );
+  // Drop, slop and reopen stay on the item clicked.
+  for (const action of ["drop", "slop", "reopen"] as const) {
+    assert.equal(memberRequest(req({ itemKey: issue, action }), "alice", pr, [assignment({})]), null);
   }
 });

@@ -924,3 +924,151 @@ def test_prs_waiting_on_their_author_are_held_back_unless_p0(store: PostgresTria
     assert store.waiting_prs("vllm-project/vllm", limit=10) == []
     route._route(NOW)
     assert {n for n, _ in assignments(database_url)} == {"1501", "1502", "1503"}
+
+
+# --- issue + fix PR groups (triage/groups.py) ---------------------------------
+
+PR_FACETS: dict[str, Any] = {**SEVERE, "type": "bug", "pr": {"fixes_issues": [], "hot_path": False, "size": "s",
+                                                            "has_tests": True, "low_effort": False}}
+
+
+def group_items(store: PostgresTriageStore, database_url: str, items: list[tuple[int, str, str, int, str]],
+                facets: dict[str, dict[str, Any]] | None = None) -> RouteHandler:
+    """Ingest and label (number, kind, body, score, band) items, then pin
+    their scores; returns a route handler (not yet run)."""
+    for number, kind, body, _, _ in items:
+        extra: dict[str, Any] = {"kind": "pr", "files": [FileChange("vllm/x.py")]} if kind == "pr" else {}
+        ingest(store, issue(number, f"DeepSeek item {number}", body=body + "\n" + "x" * 200, **extra))
+    by_title = {f"DeepSeek item {n}": (facets or {}).get(str(n), PR_FACETS if kind == "pr" else SEVERE)
+                for n, kind, *_ in items}
+    run_extraction(store, FakeBackend(by_title), budget=Budget(), now=NOW, workers=1)
+    route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
+                         delivery_mode=DeliveryMode.SHADOW)
+    route._rescore(NOW)
+    with psycopg.connect(database_url, autocommit=True) as c:
+        for number, _, _, score, band in items:
+            c.execute("UPDATE triage_scores SET score = %s, band = %s WHERE item_key = %s",
+                      (score, band, f"vllm-project/vllm#{number}"))
+    return route
+
+
+def test_fix_links_pair_only_real_fixes(store: PostgresTriageStore, database_url: str) -> None:
+    group_items(store, database_url, [
+        (800, "issue", "", 90, "page"),
+        (801, "pr", "Fixes #800", 60, "route"),
+        (802, "pr", "Related to #800, see #800", 55, "route"),     # a mention, not a fix
+        (803, "pr", "Speeds up the kernel", 50, "route"),          # Claude says it fixes #800
+        (804, "pr", "Closes #801", 50, "route"),                   # #801 is a PR, not an issue
+        (805, "pr", "Fixes #99999", 50, "route"),                  # not in triage_items
+    ], facets={"803": {**PR_FACETS, "pr": {**PR_FACETS["pr"], "fixes_issues": [800]}}})
+    assert store.fix_links() == [("vllm-project/vllm#801", "vllm-project/vllm#800"),
+                                 ("vllm-project/vllm#803", "vllm-project/vllm#800")]
+    # PRs stored before prepass.fixes_issues existed get it from their text.
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_items SET prepass = prepass - 'fixes_issues'")
+    assert store.fix_links() == [("vllm-project/vllm#803", "vllm-project/vllm#800")]
+    assert store.backfill_fixes_issues() == 5  # the PRs
+    assert store.backfill_fixes_issues() == 0
+    assert len(store.fix_links()) == 2
+    # Both closed: still a group for the dashboard, not for routing.
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_items SET state = 'closed' WHERE number = 800")
+        c.execute("UPDATE triage_items SET state = 'merged' WHERE number IN (801, 803)")
+    assert len(store.fix_links()) == 2 and store.fix_links(open_only=True) == []
+
+
+def test_a_fix_pr_follows_its_issue_to_the_owner(store: PostgresTriageStore, database_url: str) -> None:
+    seed(store, [{"github_login": "m1", "rules": {"areas": ["moe"]}, "notify_mode": "digest"},
+                 {"github_login": "m2", "rules": {"areas": ["moe"]}, "notify_mode": "digest"}])
+    route = group_items(store, database_url, [
+        (810, "issue", "", 90, "page"),
+        (811, "pr", "Fixes #810", 60, "route"),
+        (812, "pr", "Related to #810", 55, "route"),
+    ])
+    # m2 owns the issue (the router would otherwise pick m1: same match, login order).
+    assign(database_url, 810, "m2", assigned_at=NOW - timedelta(hours=1), notified_at=NOW - timedelta(hours=1))
+    route._route(NOW)
+    got = assignments(database_url)
+    assert got[("811", "m2")][0] == "open"
+    assert got[("811", "m2")][2]["matched"][0] == "fixes #810"
+    assert got[("811", "m2")][2]["grouped_with"] == "vllm-project/vllm#810"
+    assert ("812", "m1") in got and "grouped_with" not in got[("812", "m1")][2]   # a mention: routed on its own
+    # The group takes one slot: the issue counts, the PR that followed it doesn't.
+    assert store.maintainer_load(since=NOW - timedelta(days=7)) == {"m1": 1, "m2": 1}
+    # In m2's digest the PR stands alone (its issue went out earlier) and says why.
+    [entry] = store.unnotified_assignments("m2")
+    assert entry.kind == "pr" and entry.fixes == ("vllm-project/vllm#810",)
+
+
+def test_the_issue_owner_saying_not_mine_to_the_pr_is_respected(
+    store: PostgresTriageStore, database_url: str,
+) -> None:
+    seed(store, [{"github_login": "m1", "rules": {"areas": ["moe"]}, "notify_mode": "digest"},
+                 {"github_login": "m2", "rules": {"areas": ["moe"]}, "notify_mode": "digest"}])
+    route = group_items(store, database_url, [(820, "issue", "", 90, "page"), (821, "pr", "Fixes #820", 60, "route")])
+    assign(database_url, 820, "m1", assigned_at=NOW - timedelta(hours=1))
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("INSERT INTO triage_actions (item_key, actor, action, source) "
+                  "VALUES ('vllm-project/vllm#821', 'm1', 'not_mine', 'dashboard')")
+    route._route(NOW)
+    got = assignments(database_url)
+    assert ("821", "m1") not in got and "grouped_with" not in got[("821", "m2")][2]
+
+
+def test_an_unowned_group_is_routed_together_with_one_dm(store: PostgresTriageStore, database_url: str) -> None:
+    seed(store, [{"github_login": "gau-nernst", "slack_user_id": "U0000000031", "rules": {"areas": ["moe"]},
+                  "language": "vi", "capacity_per_week": 1},
+                 {"github_login": "other", "rules": {"hardware": ["H100"]}}])
+    # Kevin's example: the fix PR outscores its issue, and a second, P1 fix PR.
+    route = group_items(store, database_url, [
+        (65906, "issue", "", 79, "page"),
+        (66694, "pr", "Fixes #65906", 99, "page"),
+        (66700, "pr", "Closes #65906", 50, "route"),
+    ])
+    route._route(NOW)
+    got = assignments(database_url)
+    assert {k for k in got} == {("65906", "gau-nernst"), ("66694", "gau-nernst"), ("66700", "gau-nernst")}
+    assert "grouped_with" not in got[("66694", "gau-nernst")][2]          # the lead, routed on its merits
+    assert got[("65906", "gau-nernst")][2]["grouped_with"] == "vllm-project/vllm#66694"
+    assert got[("65906", "gau-nernst")][2]["matched"][0] == "fixed by #66694"
+    assert got[("66700", "gau-nernst")][2]["matched"][0] == "fixes #65906"
+    # One slot (capacity 1 is not exceeded) and one DM, for the whole group,
+    # under the issue; the followers count as notified.
+    assert store.maintainer_load(since=NOW - timedelta(days=7)) == {"gau-nernst": 1}
+    assert store.unnotified_assignments("gau-nernst") == []
+    [(delivery_id, _, _, payload)] = outbox(database_url)
+    assert delivery_id == "triage:page:vllm-project/vllm#66694:gau-nernst:primary"
+    section, actions = payload["blocks"][1], payload["blocks"][2]
+    text = section["text"]["text"]
+    assert section["block_id"] == "triage:item:vllm-project/vllm#65906"
+    assert text.index("#65906 DeepSeek item 65906") < text.index("↳ bản sửa: <https://github.com/vllm-project/vllm/issues/66694|#66694")
+    assert "↳ bản sửa: <https://github.com/vllm-project/vllm/issues/66700|#66700" in text
+    assert text.count("Vì sao là bạn") == 1 and "PR bạn đang phụ trách" not in text
+    assert {e.get("value") for e in actions["elements"] if e["type"] == "button"} - {None} == {"vllm-project/vllm#65906"}
+
+
+def test_the_digest_shows_a_group_as_one_item(store: PostgresTriageStore, database_url: str) -> None:
+    seed(store, [{"github_login": "d", "slack_user_id": "U0000000041", "rules": {"areas": ["moe"]},
+                  "notify_mode": "digest", "digest_hour": NOW.hour}])
+    route = group_items(store, database_url, [(830, "issue", "", 60, "route"), (831, "pr", "Fixes #830", 55, "route"),
+                                              (832, "issue", "", 50, "route")])
+    route._route(NOW)
+    DigestHandler(store=store, clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW,
+                  team_channel=None)(ScheduledCommand("triage_digest", NOW))
+    [(_, _, _, payload)] = outbox(database_url)
+    items = [b for b in payload["blocks"] if str(b.get("block_id", "")).startswith("triage:item:")]
+    assert [b["block_id"] for b in items] == ["triage:item:vllm-project/vllm#830", "triage:item:vllm-project/vllm#832"]
+    assert "↳ fix: <https://github.com/vllm-project/vllm/issues/831|#831 DeepSeek item 831>" in items[0]["text"]["text"]
+    assert payload["text"] == "Triage digest: 2 P1"
+    assert store.unnotified_assignments("d") == []
+
+
+def test_reminders_skip_an_issue_whose_fix_is_merged(store: PostgresTriageStore, database_url: str) -> None:
+    group_items(store, database_url, [(840, "issue", "", 60, "route"), (841, "pr", "Fixes #840", 55, "route")])
+    seed(store, [{"github_login": "r", "rules": {"areas": ["tpu"]}}])
+    assign(database_url, 840, "r", assigned_at=NOW - timedelta(days=5), notified_at=NOW - timedelta(days=5))
+    waiting = store.waiting_assignments("r", assigned_before=NOW - timedelta(days=3), limit=5)[0]
+    assert [e.item_key for e in waiting] == ["vllm-project/vllm#840"]
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_items SET state = 'merged' WHERE number = 841")
+    assert store.waiting_assignments("r", assigned_before=NOW - timedelta(days=3), limit=5) == ([], 0)

@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -26,6 +26,7 @@ from alerting.ports import Clock, DeliveryMode
 
 from triage.config import TriageConfig
 from triage.github import GitHubClient, GitHubError, IngestClient
+from triage.groups import Member, group_reason, number_of, partner_map
 from triage.model import Item, Score
 from triage.maintainers import MaintainersFileError, parse_maintainer_files
 from triage.notify import WAITING_AFTER_DAYS, WAITING_MAX_ITEMS, maintainer_digest, page_dm, team_digest
@@ -39,7 +40,17 @@ from triage.prepass import (
     whose_move,
 )
 from triage.relevance import profile_is_stale
-from triage.routing import RoutingContext, assigned_elsewhere, choose_owners, gh_assignees, waiting_on_author
+from triage.routing import (
+    Candidate,
+    RoutingContext,
+    assigned_elsewhere,
+    can_follow,
+    choose_owners,
+    gh_assignees,
+    group_owner,
+    involvement,
+    waiting_on_author,
+)
 from triage.scoring import score_item
 from triage.model import Maintainer
 from triage.store import DigestEntry, NewAssignment, PostgresTriageStore, RoutingRow, StoredItemState, week_ago
@@ -62,6 +73,29 @@ RELEVANCE_GRACE = timedelta(hours=2)
 
 
 _UNREAD: Any = object()
+
+
+@dataclass
+class _Groups:
+    """Issue + fix PR links for one routing run (triage/groups.py)."""
+
+    partners: dict[str, set[str]] = field(default_factory=dict)
+    members: dict[str, Member] = field(default_factory=dict)
+    # This run's routing candidates, by key.
+    candidates: dict[str, RoutingRow] = field(default_factory=dict)
+
+    def linked(self, key: str) -> list[Member]:
+        return [self.members[k] for k in sorted(self.partners.get(key, ())) if k in self.members]
+
+    def member(self, row: RoutingRow) -> Member:
+        return self.members.get(row.item_key) or Member(
+            row.item_key, number_of(row.item_key), row.kind, "open", row.score, row.band, None)
+
+    def owned(self, keys: set[str], login: str) -> None:
+        """Record owners given in this run, so later items in it see them."""
+        for key in keys:
+            if key in self.members:
+                self.members[key] = replace(self.members[key], owner=login)
 
 
 @dataclass
@@ -234,6 +268,7 @@ class RouteHandler:
         if closed or reopened or acked:
             log.info("triage: from GitHub, %d assignments closed, %d reopened, %d acked", closed, reopened, acked)
         self._refresh_profiles(now)
+        self.store.backfill_fixes_issues()
         self._rescore(now)
         self._route(now)
 
@@ -296,16 +331,19 @@ class RouteHandler:
         load = self.store.maintainer_load(since=week_ago(now))
         judged_by = {m.github_login for m in maintainers}
         rows = self.store.routing_candidates(limit=self.route_limit)
+        partners = partner_map(self.store.fix_links(open_only=True))
+        groups = _Groups(partners, self.store.group_members(partners), {r.item_key: r for r in rows})
         routed: set[str] = set()
         partial: dict[str, set[str]] = {}  # item -> maintainers still unjudged, past the grace
         # Pass 1 gives every clear match (involved / high) its slot across the
         # whole queue; pass 2 lets "medium" and rule matches use what is left.
         for strong_only in (True, False):
             for row in rows:
-                if row.item_key not in routed and self._route_one(
-                    row, maintainers, by_login, load, judged_by, now, strong_only=strong_only, partial=partial
-                ):
-                    routed.add(row.item_key)
+                if row.item_key not in routed:
+                    routed |= self._route_one(
+                        row, maintainers, by_login, load, judged_by, now, strong_only=strong_only,
+                        partial=partial, groups=groups, routed=routed,
+                    )
         if partial:
             missing = Counter(login for logins in partial.values() for login in logins)
             log.warning(
@@ -318,17 +356,32 @@ class RouteHandler:
     def _route_one(
         self, row: RoutingRow, maintainers: list[Maintainer], by_login: dict[str, Maintainer],
         load: dict[str, int], judged_by: set[str], now: datetime, *, strong_only: bool,
-        partial: dict[str, set[str]] | None = None,
-    ) -> bool:
+        partial: dict[str, set[str]] | None = None, groups: _Groups | None = None,
+        routed: set[str] | None = None,
+    ) -> set[str]:
+        """Route one item (and the members of its issue/fix-PR group that
+        follow it); returns the keys routed."""
+        groups = groups or _Groups()
         # A PR waiting on its author (draft, failing pre-commit/DCO, merge
         # conflict, changes requested) isn't routed: there's nothing for a
         # reviewer to do yet. It stays on the dashboard, and is routed once
         # it's the reviewers' move. P0 PRs are routed anyway.
         if waiting_on_author(row.prepass, row.band):
-            return False
+            return set()
         # Assigned on GitHub to someone outside triage: they are handling it.
         if assigned_elsewhere(row.prepass, judged_by):
-            return False
+            return set()
+        ctx = self._context(row, now)
+        excluded = set(row.excluded)
+        linked = groups.linked(row.item_key)
+        # Part of a group someone already owns: it goes to them, without a
+        # new capacity slot (triage/groups.py).
+        follow = group_owner(ctx, linked, by_login, load=load, excluded=excluded, today=now.date())
+        if follow is not None:
+            candidate, member = follow
+            self._commit(row, [candidate], [], by_login, maintainers, now, grouped_with=member.item_key)
+            groups.owned({row.item_key}, candidate.maintainer.github_login)
+            return {row.item_key}
         # Wait for relevance judgements unless someone is already involved,
         # so an early rule match doesn't pre-empt the right person. Wait only
         # for RELEVANCE_GRACE, though: after that, route among those judged.
@@ -343,51 +396,138 @@ class RouteHandler:
         missing = judged_by - set(row.relevance)
         if self.github is not None and missing and not involved:
             if not relevance_grace_over(row, now):
-                return False
+                return set()
             if partial is not None:
                 partial[row.item_key] = missing
-        ctx = RoutingContext(
+        # Nobody owns the group yet: route it with its highest score and
+        # band, so a P1 PR fixing a P0 issue is routed as a P0.
+        top = max((m for m in linked if m.owner is None and m.state == "open" and m.score is not None
+                   and m.band in ("page", "route")), key=lambda m: m.score or 0, default=None)
+        if top is not None and top.score is not None and top.score > ctx.score:
+            ctx = replace(ctx, score=top.score, band=top.band)  # type: ignore[arg-type]
+        owners = choose_owners(ctx, maintainers, load=load, excluded=excluded,
+                               today=now.date(), strong_only=strong_only)
+        if not owners:
+            return set()
+        primary = by_login[owners[0].maintainer.github_login]
+        followers = self._followers(row, primary, groups, judged_by, now, routed or set(), ctx.score)
+        self._commit(row, owners, followers, by_login, maintainers, now, band=ctx.band)
+        # One slot for the whole group: followers don't count (store.maintainer_load).
+        load[primary.github_login] = load.get(primary.github_login, 0) + 1
+        keys = {row.item_key, *(f.item_key for f, _ in followers)}
+        groups.owned(keys, primary.github_login)
+        return keys
+
+    @staticmethod
+    def _context(row: RoutingRow, now: datetime) -> RoutingContext:
+        return RoutingContext(
             item_key=row.item_key, kind=row.kind, title=row.title, score=row.score,
             band=row.band,  # type: ignore[arg-type]
             facets=row.facets, prepass=row.prepass, files=row.files,
             relevance=row.relevance,
             fresh=row.created_at is None or now - row.created_at <= FRESH_WINDOW,
         )
-        owners = choose_owners(ctx, maintainers, load=load, excluded=set(row.excluded),
-                               today=now.date(), strong_only=strong_only)
-        if not owners:
-            return False
+
+    def _followers(
+        self, row: RoutingRow, owner: Maintainer, groups: _Groups, judged_by: set[str], now: datetime,
+        routed: set[str], score: int,
+    ) -> list[tuple[RoutingRow, Member]]:
+        """The unowned members of `row`'s group that go to `owner` with it,
+        each with the member it is linked to (for its reason). Only this
+        run's routing candidates, and only those `owner` may take
+        (routing.can_follow)."""
+        out: list[tuple[RoutingRow, Member]] = []
+        seen = {row.item_key}
+        queue = [row]
+        while queue:
+            current = queue.pop(0)
+            for key in sorted(groups.partners.get(current.item_key, ())):
+                other = groups.candidates.get(key)
+                if key in seen or key in routed or other is None:
+                    continue
+                seen.add(key)
+                if waiting_on_author(other.prepass, other.band) or assigned_elsewhere(other.prepass, judged_by):
+                    continue
+                if not can_follow(owner, self._context(other, now), excluded=set(other.excluded),
+                                  today=now.date(), score=max(score, other.score)):
+                    continue
+                out.append((other, groups.member(current)))
+                queue.append(other)
+        return out
+
+    def _commit(
+        self, row: RoutingRow, owners: list[Candidate], followers: list[tuple[RoutingRow, Member]],
+        by_login: dict[str, Maintainer], maintainers: list[Maintainer], now: datetime, *,
+        band: str | None = None, grouped_with: str | None = None,
+    ) -> None:
+        """Store the assignments for `row` (and its followers, primary only)
+        and queue the immediate DM: one per owner, showing the whole group
+        when followers come along (the issue first, its fix PRs under it)."""
+        band = band or row.band
         assignments: list[NewAssignment] = []
+        follower_notified = False
         for index, candidate in enumerate(owners):
             role = "primary" if index == 0 else "backup"
             maintainer = by_login[candidate.maintainer.github_login]
             notification = None
-            wants_now = row.band == "page" or maintainer.notify_mode == "immediate"
+            wants_now = band == "page" or maintainer.notify_mode == "immediate"
             if wants_now and maintainer.notify_mode != "off" and maintainer.slack_user_id:
-                entry = DigestEntry(
-                    0, row.item_key, row.title, row.html_url, row.score, row.band,
-                    str(row.facets.get("summary") or ""),
-                    candidate.reasons,
-                    str((row.relevance.get(maintainer.github_login) or {}).get("reason_local") or ""),
-                )
+                lang = str(maintainer.rules.get("language") or "en")
+                entries = [self._entry(row, candidate.reasons, maintainer)]
+                if role == "primary":
+                    entries += [self._entry(f, self._follower_reasons(f, m, maintainer, now), maintainer)
+                                for f, m in followers]
+                main, fixes = _group_main(entries)
                 notification = page_dm(
                     assignment_key=f"{row.item_key}:{maintainer.github_login}:{role}",
-                    maintainer_slack=maintainer.slack_user_id, entry=entry, role=role,
+                    maintainer_slack=maintainer.slack_user_id, entry=main, role=role,
                     mode=self.delivery_mode,
                     reassign_to=[m.github_login for m in maintainers if m.github_login != maintainer.github_login],
-                    lang=str(maintainer.rules.get("language") or "en"),
+                    lang=lang, fixes=fixes,
                 )
-            assignments.append(NewAssignment(
-                maintainer=maintainer.github_login, role=role,
-                reason={"matched": candidate.reasons,
-                        "why": str((row.relevance.get(maintainer.github_login) or {}).get("reason") or ""),
-                        "load": candidate.load, "capacity": maintainer.capacity_per_week},
-                notification=notification,
-            ))
-            if role == "primary":
-                load[maintainer.github_login] = load.get(maintainer.github_login, 0) + 1
-        self.store.commit_assignments(row.item_key, row.score, assignments, now=now)
-        return True
+                follower_notified = follower_notified or role == "primary"
+            reason: dict[str, Any] = {
+                "matched": candidate.reasons,
+                "why": str((row.relevance.get(maintainer.github_login) or {}).get("reason") or ""),
+                "load": candidate.load, "capacity": maintainer.capacity_per_week,
+            }
+            if grouped_with and role == "primary":
+                reason["grouped_with"] = grouped_with
+            assignments.append(NewAssignment(maintainer=maintainer.github_login, role=role, reason=reason,
+                                             notification=notification))
+        routes: list[tuple[str, int, list[NewAssignment]]] = [(row.item_key, row.score, assignments)]
+        if followers:
+            owner = by_login[owners[0].maintainer.github_login]
+            for other, member in followers:
+                routes.append((other.item_key, other.score, [NewAssignment(
+                    maintainer=owner.github_login, role="primary",
+                    reason={"matched": self._follower_reasons(other, member, owner, now),
+                            "why": str((other.relevance.get(owner.github_login) or {}).get("reason") or ""),
+                            "grouped_with": member.item_key,
+                            "load": owners[0].load, "capacity": owner.capacity_per_week},
+                    notification=None, notified=follower_notified,
+                )]))
+        self.store.commit_routes(routes, now=now)
+
+    def _follower_reasons(self, row: RoutingRow, member: Member, owner: Maintainer, now: datetime) -> list[str]:
+        return [group_reason(member), *involvement(owner.github_login, self._context(row, now))]
+
+    @staticmethod
+    def _entry(row: RoutingRow, reasons: list[str], maintainer: Maintainer) -> DigestEntry:
+        return DigestEntry(
+            0, row.item_key, row.title, row.html_url, row.score, row.band,
+            str(row.facets.get("summary") or ""), reasons,
+            str((row.relevance.get(maintainer.github_login) or {}).get("reason_local") or ""),
+            kind=row.kind,
+        )
+
+
+def _group_main(entries: list[DigestEntry]) -> tuple[DigestEntry, list[DigestEntry]]:
+    """The entry a group is shown under (its highest-scored issue, else the
+    first entry) and the rest, highest score first."""
+    issues = [e for e in entries if e.kind == "issue"]
+    main = max(issues, key=lambda e: e.score) if issues else entries[0]
+    return main, sorted((e for e in entries if e is not main), key=lambda e: -e.score)
 
 
 def relevance_grace_over(row: RoutingRow, now: datetime) -> bool:

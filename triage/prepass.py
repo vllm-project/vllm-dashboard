@@ -23,6 +23,14 @@ _LINKED_ISSUE = re.compile(
     r"(?i)\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?|related(?: to)?|addresses)"
     r"\s*:?\s+(?:https://github\.com/vllm-project/vllm/issues/|#)(\d+)"
 )
+# Only GitHub's closing keywords: a PR "fixes" an issue when it says
+# "Fixes #N" / "Closes #N" / "Resolves #N" (or the issue URL). "Related to
+# #N" or a bare mention is a link (linked_issues) but not a fix, so it never
+# couples the two items (triage/groups.py).
+_FIXES_ISSUE = re.compile(
+    r"(?i)\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s*:?\s*"
+    r"(?:https://github\.com/vllm-project/vllm/issues/|vllm-project/vllm#|#)(\d+)\b"
+)
 _ISSUE_URL = re.compile(r"https://github\.com/vllm-project/vllm/issues/(\d+)")
 # PRs an item points at: pull URLs, "PR #123", and commit subjects "... (#123)".
 _PR_REFS = (
@@ -95,6 +103,11 @@ def linked_issues(text: str) -> list[int]:
     found = {int(n) for n in _LINKED_ISSUE.findall(text)}
     found.update(int(n) for n in _ISSUE_URL.findall(text))
     return sorted(found)
+
+
+def fixes_issues(text: str) -> list[int]:
+    """Issues the text closes with a GitHub closing keyword ("Fixes #N")."""
+    return sorted({int(n) for n in _FIXES_ISSUE.findall(text)})
 
 
 def referenced_prs(text: str, *, exclude: set[int] | None = None) -> list[int]:
@@ -224,6 +237,9 @@ def compute_prepass(item: Item, config: TriageConfig, now: datetime | None = Non
     return {
         "areas": sorted(areas),
         "linked_issues": links,
+        # What the PR fixes: closing keywords plus its closing references.
+        # Plain mentions don't count (see triage/groups.py).
+        "fixes_issues": sorted(set(fixes_issues(text)) | set(item.closing_issues)) if item.kind == "pr" else [],
         "hardware_hints": hardware_hints(text),
         "model_hints": model_hints(text),
         "is_maintainer": item.author_association in MAINTAINER_ASSOCIATIONS,
