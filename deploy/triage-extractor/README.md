@@ -8,10 +8,11 @@ does not install Claude Code (see vllm-project/vllm-dashboard#83 and
 | Where | Does | Credentials it holds |
 |---|---|---|
 | AWS alerting worker | GitHub ingest, scoring, routing, digests (`triage-*` timers) | worker secret (unchanged) |
-| Extractor host | `vllm-triage extract` every 10 min | Claude Code login + `triage_extractor` DB role |
+| Extractor host | `vllm-triage extract`, then `vllm-triage relevance`, every 10 min | Claude Code login + `triage_extractor` DB role |
 
 The plan login never leaves the extractor host, and the database role can
-only read items and write extractions (tested in
+only read items, scores and maintainer profiles and write extractions and
+relevance judgements (tested in
 `triage/tests/test_postgres.py::test_extractor_role_can_extract_and_nothing_else`).
 
 ## What the model can and cannot do
@@ -49,7 +50,7 @@ two weeks before that.
 
 ## Setup
 
-1. Apply migration `0038_triage.sql` (see `migrations/README.md`).
+1. Apply the triage migrations (`0038`, `0039`, `0042`, `0043`; see `migrations/README.md`).
 2. As the database owner, create the role:
    `psql "$OWNER_DATABASE_URL" -v pw="'<password>'" -f extractor-role.sql`
 3. On the extractor host:
