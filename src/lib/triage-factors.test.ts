@@ -129,3 +129,10 @@ test("helpers", () => {
   });
   assert.deepEqual(parseSeverityDetail(null), { slower: null, base: null, multiplier: 1, words: [] });
 });
+
+test("P0 eligibility caps have a visible explanation", () => {
+  const reason = "CPU-backend-only defects are P1/P2 by default";
+  assert.deepEqual(describeFactor("policy.p0_cap", reason, -9), {
+    category: "penalty", title: "Below P0: incident criteria not met", detail: reason,
+  });
+});

@@ -1,5 +1,6 @@
 "use client";
 
+import { IncidentAssessment } from "@/components/triage/incident-assessment";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
@@ -685,6 +686,9 @@ export function ItemDrawer({
                   </div>
                 )}
                 {facets.summary && <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">{facets.summary}</p>}
+                {data.score?.breakdown.some((entry) => entry.factor === "pr.fixes_issue") ? (
+                  <p className="text-xs text-zinc-500">Priority follows the linked incident. Draft state and CI do not lower incident urgency.</p>
+                ) : <IncidentAssessment incident={facets.incident} type={facets.type ?? ""} />}
                 <GroupPanel kind={data.item.kind} links={data.item.kind === "pr" ? data.fixes : data.fixedBy} />
 
                 <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">

@@ -1,3 +1,5 @@
+import { p0Ineligibility, needsIncidentVerification, type TriageIncident } from "./triage-incidents";
+
 /**
  * The scoring numbers the "Scoring guidelines" page shows, mirrored from
  * triage/config/scoring.yaml and triage/config/tiers.yaml (the router's
@@ -7,7 +9,7 @@
  */
 
 export const SCORING = {
-  version: "2026-11-18.1",
+  version: "2026-11-20.2",
   scope: { max_age_days: 30 },
   thresholds: { page: 70, route: 40, watch: 20 },
   severity: {
@@ -36,12 +38,12 @@ export const SCORING = {
   evidence: { has_repro: 4, low_confidence: -6 },
   social: { per_reaction: 0.5, per_comment: 0.4, cap: 15 },
   pr: {
-    fixes_issue_fraction: 0.6,
-    hot_path: 6,
-    has_tests: 2,
+    fixes_issue_fraction: 1.0,
+    hot_path: 0,
+    has_tests: 0,
     low_effort: -25,
     draft: -15,
-    size: { xs: 2, s: 2, m: 0, l: -2, xl: -4 },
+    size: { xs: 0, s: 0, m: 0, l: -2, xl: -4 },
   },
   slop: { per_signal: -10, cap: -40 },
 } as const;
@@ -104,6 +106,9 @@ export interface ExampleInput {
   latestRelease?: string;
   affectsMain?: boolean;
   hasRepro?: boolean;
+  confidence?: number;
+  areas?: string[];
+  incident?: TriageIncident;
   reactions?: number;
   comments?: number;
 }
@@ -164,6 +169,16 @@ export function scoreExample(input: ExampleInput): { score: number; band: "page"
   const social = reactions * SCORING.social.per_reaction + comments * SCORING.social.per_comment;
   if (social >= 1) add("social", Math.min(SCORING.social.cap, social), `${reactions} reactions, ${comments} comments`);
 
+  const reason = p0Ineligibility(input.type, input.incident);
+  const beforePolicy = factors.reduce((sum, f) => sum + f.points, 0);
+  if (reason === null) {
+    const detail = input.incident?.reason || "Critical active incident supported by impact, exposure and mitigation evidence";
+    factors.push({ factor: "policy.p0_incident", points: Math.max(0, SCORING.thresholds.page - beforePolicy), detail });
+  } else if (beforePolicy >= SCORING.thresholds.page) {
+    add("policy.p0_cap", SCORING.thresholds.page - 1 - beforePolicy, reason);
+  } else if (needsIncidentVerification(input.type, input.incident, input.severity === "security")) {
+    factors.push({ factor: "policy.needs_verification", points: Math.max(0, SCORING.thresholds.route - beforePolicy), detail: reason });
+  }
   const raw = factors.reduce((sum, factor) => sum + factor.points, 0);
   if (raw < 0) factors.push({ factor: "floor", points: -raw });
   const score = Math.max(0, raw);
@@ -183,6 +198,17 @@ export const WORKED_EXAMPLE: ExampleInput = {
   config: "default",
   latestRelease: "0.27.1",
   hasRepro: true,
+  incident: {
+    impact: "outage", exposure: "broad_supported", affected_context: "supported_release",
+    verification: "reproduced", mitigation: "none", status: "active",
+    reason: "Normal traffic fails across supported deployments; tested recovery options have failed.",
+    evidence: {
+      impact: "All normal requests fail.", exposure: "Multiple supported deployments are affected.",
+      current: "The supported release is failing in production today.",
+      verification: "We reproduced the failure and captured server errors.",
+      mitigation: "Rollback and fallback configurations failed to restore service.",
+    },
+  },
 };
 
 /** The contrast example: the same symptom on a niche setup with unusual flags. */

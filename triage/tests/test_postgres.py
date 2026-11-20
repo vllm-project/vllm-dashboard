@@ -145,7 +145,9 @@ def outbox(database_url: str) -> list[tuple[str, str, str, dict[str, Any]]]:
 
 
 def test_full_pipeline_extract_score_route_notify(store: PostgresTriageStore, database_url: str) -> None:
-    ingest(store, issue(1, "DeepSeek startup crash"))
+    from triage.tests.incident_fixture import INCIDENT, REPORT
+
+    ingest(store, issue(1, "DeepSeek startup crash", body=REPORT))
     ingest(store, issue(2, "max_model_len question"))
     ingest(store, issue(3, "refactor", kind="pr", author_association="MEMBER",
                         files=[FileChange("vllm/x.py")]))  # out of scope: maintainer, unlinked
@@ -155,7 +157,7 @@ def test_full_pipeline_extract_score_route_notify(store: PostgresTriageStore, da
         {"github_login": "frontend-person", "slack_user_id": "U0000000003", "rules": {"areas": ["frontend_api"]}},
     ])
 
-    backend = FakeBackend({"DeepSeek startup crash": SEVERE, "max_model_len question": MINOR})
+    backend = FakeBackend({"DeepSeek startup crash": {**SEVERE, "incident": INCIDENT}, "max_model_len question": MINOR})
     result = run_extraction(store, backend, budget=Budget(), now=NOW, workers=1)
     assert (result.extracted, result.failed, backend.calls) == (2, 0, 2)
     assert store.extraction_usage_since(NOW - timedelta(days=1)) == (2, 2200)
@@ -398,7 +400,7 @@ def test_still_waiting_reminders_in_the_digest(store: PostgresTriageStore, datab
     assert "#608" in "".join(texts[:title]) and "#608" not in "".join(texts[title:])
     assert "#601" in texts[title + 1] and "assigned 6 days ago" in texts[title + 1]
     assert "#602" in texts[title + 3] and payload["blocks"][title + 4]["type"] == "actions"
-    assert payload["text"] == "Triage digest: 1 P0, 2 still waiting"
+    assert payload["text"] == "Triage digest: 1 P1, 2 still waiting"
     # The new item is marked notified; reminders keep their first notified_at.
     assert notified_at(database_url, fresh) == NOW
     assert notified_at(database_url, oldest) == ago(6) and notified_at(database_url, older) == ago(4)
@@ -1645,3 +1647,72 @@ def test_medium_reconciliation_preserves_ack_manual_and_direct_signals(store: Po
         rows = c.execute("SELECT item_key, status, reason->>'revoked_reason' FROM triage_assignments ORDER BY item_key").fetchall()
     assert [row[1] for row in rows] == ["reassigned", "reassigned", "acked", "open", "open", "open", "open", "open"]
     assert all(row[2] == "relevance below high: medium" for row in rows[:2])
+
+
+def test_fix_inheritance_requires_current_open_in_scope_incident(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.scoring import score_item
+
+    config = default_config()
+    for n in range(910, 914):
+        ingest(store, issue(n, "DeepSeek startup crash"))
+    result = score_item(kind="issue", draft=False, reactions=0, comment_count=0,
+                        prepass={}, facets=SEVERE, config=config)
+    store.save_scores([(f"vllm-project/vllm#{n}", None, result) for n in range(910, 914)], now=NOW)
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_scores SET scoring_version='old' WHERE item_key='vllm-project/vllm#911'")
+        c.execute("UPDATE triage_items SET state='closed' WHERE number=912")
+        c.execute("UPDATE triage_items SET in_scope=false WHERE number=913")
+    assert store.issue_scores("vllm-project/vllm", range(910, 914), scoring_version=config.version) == {910: result.score}
+
+
+def test_p0_survives_scope_expiration_and_ingest_but_closed_and_p1_do_not(store, database_url):
+    from triage.pipeline import IngestHandler
+
+    group_items(store, database_url, [(5001, "issue", "", 80, "page"), (5002, "issue", "", 60, "route"),
+                                     (5003, "pr", "Fixes #5001", 80, "page")])
+    seed(store, [{"github_login": "a", "rules": {"areas": ["moe"]}}])
+    assign(database_url, 5001, "a", assigned_at=NOW, status="acked")
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_items SET gh_created_at = %s", (NOW - timedelta(days=40),))
+    assert store.expire_out_of_window(NOW - timedelta(days=30))[0] == 1
+    assert store.item_state("vllm-project/vllm#5001").active_incident
+    assert store.item_state("vllm-project/vllm#5003").active_incident
+    with psycopg.connect(database_url) as c:
+        assert c.execute("SELECT in_scope FROM triage_items WHERE number=5003").fetchone() == (True,)
+        assert c.execute("SELECT status FROM triage_assignments WHERE item_key='vllm-project/vllm#5001'").fetchone() == ("acked",)
+
+    class Github:
+        def prefetch(self, *args, **kwargs):
+            pass
+
+    old = issue(5001, "critical incident")
+    old.created_at = NOW - timedelta(days=40)
+    handler = IngestHandler(store=store, config=default_config(), github=Github(), clock=FixedClock(NOW))
+    handler._prefetch([old], {old.key: store.item_state(old.key)}, NOW)
+    handler._ingest(old)
+    with psycopg.connect(database_url) as c:
+        assert c.execute("SELECT in_scope, prepass->>'scope_reason' FROM triage_items WHERE number=5001").fetchone() == (True, "active_incident")
+    old.state = "closed"
+    handler._ingest(old)
+    with psycopg.connect(database_url) as c:
+        assert c.execute("SELECT in_scope FROM triage_items WHERE number=5001").fetchone() == (False,)
+
+
+def test_prompt_upgrade_requeues_completed_reports_with_bounded_retries(store, database_url):
+    from triage.facets import PROMPT_VERSION
+
+    for n in (5010, 5011):
+        ingest(store, issue(n, "DeepSeek legacy report"))
+    run_extraction(store, FakeBackend({"DeepSeek": SEVERE}), budget=Budget(), now=NOW, workers=1)
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_extractions SET prompt_version = 'v1'")
+        c.execute("UPDATE triage_items SET extraction_attempts = 3")
+    tasks = store.lease_extraction_batch(limit=1, now=NOW, lease_until=NOW + timedelta(minutes=30), max_attempts=3)
+    assert len(tasks) == 1
+    store.mark_extraction_failed(tasks[0].item_key, error="failed", now=NOW)
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_items SET extraction_attempts=3 WHERE item_key=%s", (tasks[0].item_key,))
+    next_tasks = store.lease_extraction_batch(limit=2, now=NOW, lease_until=NOW + timedelta(minutes=30), max_attempts=3)
+    assert len(next_tasks) == 1 and next_tasks[0].item_key != tasks[0].item_key
+    store.save_extraction(next_tasks[0], facets=SEVERE, result=LLMResult(SEVERE, "fake"), prompt_version=PROMPT_VERSION, now=NOW)
+    assert not store.lease_extraction_batch(limit=2, now=NOW, lease_until=NOW + timedelta(minutes=30), max_attempts=3)

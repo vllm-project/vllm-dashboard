@@ -143,8 +143,21 @@ export default function ScoringGuidePage() {
         />
         <p>Only P0 and P1 are routed to a maintainer. P2 and P3 stay on the dashboard.</p>
         <p>
-          Only issues and PRs opened in the last {S.scope.max_age_days} days are triaged. Older ones leave the
-          queue as they age past that; anything someone already acknowledged stays in their history.
+          P0 means interrupt normal work to contain a critical active incident: a service outage, material wrong
+          results, serious security exposure, an unusable service, or broken release distribution. Evidence must
+          establish significant supported-path exposure or an identified critical deployment, affected users on a
+          supported release or production deployment, concrete failure evidence, and no safe practical mitigation.
+          A public exploit script is not required for a credible security advisory.
+        </p>
+        <p>
+          Hardware, model popularity, default settings, reactions, and an LLM&apos;s confidence cannot establish P0.
+          Every backend uses the same incident criteria. A main-only problem may block a release without being P0.
+          Missing evidence keeps a potentially critical report in P1 for verification. Other items are ranked by the
+          formula below and capped at {S.thresholds.page - 1}; qualifying incidents receive at least {S.thresholds.page}.
+        </p>
+        <p>
+          The normal intake window is {S.scope.max_age_days} days. Open P0 incidents and their P0 fix PRs remain
+          visible beyond it. Ownership acknowledgment does not mean mitigation or resolution.
         </p>
       </Section>
 
@@ -167,16 +180,15 @@ export default function ScoringGuidePage() {
           ]}
         />
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          A PR isn&apos;t the incident itself, so it gets {fmt(S.severity.pr_fraction * 100)}% of these points (plus credit for the
-          issue it fixes, below).
+          A standalone PR gets {fmt(S.severity.pr_fraction * 100)}% of these points. A linked fix instead inherits
+          its issue&apos;s impact unchanged by draft state, CI, size or quality penalties; the two scores are never added together.
         </p>
       </Section>
 
       <Section id="reach" step="Step 2" title="Who does it hit?">
         <p>
-          The symptom&apos;s points are multiplied by three numbers. A crash on a popular model, on a top-tier GPU, with default
-          settings hits the most people. The same crash on a fine-tune, on a rare card, with unusual flags hits very few. The
-          combined multiplier ranges from <b>×{fmt(best)}</b> down to <b>×{fmt(worst)}</b>.
+          For ordinary queue ranking, model, hardware and settings provide rough reach estimates. They do not prove
+          how many users are affected and never determine P0 eligibility. The combined multiplier ranges from <b>×{fmt(best)}</b> down to <b>×{fmt(worst)}</b>.
         </p>
         <Table
           head={["Model", "Examples", "×"]}
@@ -228,10 +240,11 @@ export default function ScoringGuidePage() {
           ]}
         />
         <p className="font-medium text-zinc-900 dark:text-zinc-100">For PRs</p>
+        <p>Tests, small size, and hot-path labels do not increase incident priority. Use the review views and CI status to decide what is ready.</p>
         <Table
           head={["PR signal", "When", "Points"]}
           rows={[
-            ["Fixes a scored issue", `${fmt(S.pr.fixes_issue_fraction * 100)}% of the best open issue it fixes`, "varies"],
+            ["Fixes a scored issue", `${fmt(S.pr.fixes_issue_fraction * 100)}% of the best current, in-scope open issue; replaces its own score`, "varies"],
             ["Touches code on every request", "the hot path", signed(S.pr.hot_path)],
             ["Includes tests", "", signed(S.pr.has_tests)],
             ["Tiny or small change", "", signed(S.pr.size.s)],
@@ -240,6 +253,7 @@ export default function ScoringGuidePage() {
       </Section>
 
       <Section id="penalties" step="Step 4" title="Penalties">
+        <p>These rank ordinary work. Linked fixes retain their incident&apos;s priority; readiness and CI are shown separately.</p>
         <Table
           head={["Penalty", "When", "Points"]}
           rows={[
@@ -255,13 +269,13 @@ export default function ScoringGuidePage() {
 
       <Section id="examples" title="Worked examples">
         <Example
-          title="Serving broken on DeepSeek, H100, default flags"
-          sentence="A bug report: the server won't start for DeepSeek-V3 on H100 with default settings, in the latest release (0.27.1), with steps to reproduce."
+          title="Critical outage with impact and mitigation evidence"
+          sentence="Illustrative report: normal traffic fails across supported production deployments; the failure is reproduced and recovery options have failed."
           input={WORKED_EXAMPLE}
         />
         <Example
           title="The same outage on a niche setup"
-          sentence="The same symptom on an unlisted fine-tune, on a consumer card, with unusual flags and no repro: it hits far fewer people."
+          sentence="A report with unknown exposure and no incident evidence. Its hardware does not rule out P0; critical impact has not been established."
           input={NICHE_EXAMPLE}
         />
         <p className="text-xs text-zinc-500 dark:text-zinc-400">

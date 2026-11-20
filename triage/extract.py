@@ -223,7 +223,10 @@ def extract_one(task: ExtractionTask, backend: LLMBackend, *, system: str | None
         system=system or system_prompt(), prompt=render_prompt(task), schema=FACETS_SCHEMA
     )
     try:
-        facets = normalize_facets(result.output, kind=task.kind)
+        facets = normalize_facets(
+            result.output, kind=task.kind,
+            source="\n".join((task.title, task.body, task.comments, task.diff_excerpt)),
+        )
     except FacetsError as exc:
         raise ExtractionError(f"invalid facets: {exc}") from exc
     return facets, result
