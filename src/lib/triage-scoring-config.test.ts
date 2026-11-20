@@ -114,3 +114,20 @@ test("thresholds give the P-levels in order", () => {
   const { page, route, watch } = SCORING.thresholds;
   assert.ok(page > route && route > watch && watch > 0);
 });
+
+test("CPU backend example is P1, while shared CPU reproductions retain their reach", () => {
+  const cpu = scoreExample({ ...WORKED_EXAMPLE, type: "regression", hardwareTier: "cpu", hardware: "CPU_x86" });
+  assert.equal(cpu.score, 52);
+  assert.equal(cpu.band, "route");
+  const shared = scoreExample({ ...WORKED_EXAMPLE, type: "regression", hardwareTier: "tier2",
+    hardware: "CPU_x86", areas: ["frontend_api"] });
+  assert.equal(shared.band, "page");
+});
+
+test("the guide explains the P0 cap when reproduction evidence is missing", () => {
+  const result = scoreExample({ ...WORKED_EXAMPLE, hasRepro: false, reactions: 1000 });
+  assert.equal(result.score, 69);
+  assert.equal(result.band, "route");
+  assert.equal(result.factors.at(-1)?.factor, "policy.p0_cap");
+  assert.equal(result.factors.reduce((sum, f) => sum + f.points, 0), result.score);
+});

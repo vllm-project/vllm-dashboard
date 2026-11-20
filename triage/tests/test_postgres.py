@@ -1645,3 +1645,19 @@ def test_medium_reconciliation_preserves_ack_manual_and_direct_signals(store: Po
         rows = c.execute("SELECT item_key, status, reason->>'revoked_reason' FROM triage_assignments ORDER BY item_key").fetchall()
     assert [row[1] for row in rows] == ["reassigned", "reassigned", "acked", "open", "open", "open", "open", "open"]
     assert all(row[2] == "relevance below high: medium" for row in rows[:2])
+
+
+def test_fix_inheritance_requires_current_open_in_scope_incident(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.scoring import score_item
+
+    config = default_config()
+    for n in range(910, 914):
+        ingest(store, issue(n, "DeepSeek startup crash"))
+    result = score_item(kind="issue", draft=False, reactions=0, comment_count=0,
+                        prepass={}, facets=SEVERE, config=config)
+    store.save_scores([(f"vllm-project/vllm#{n}", None, result) for n in range(910, 914)], now=NOW)
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_scores SET scoring_version='old' WHERE item_key='vllm-project/vllm#911'")
+        c.execute("UPDATE triage_items SET state='closed' WHERE number=912")
+        c.execute("UPDATE triage_items SET in_scope=false WHERE number=913")
+    assert store.issue_scores("vllm-project/vllm", range(910, 914), scoring_version=config.version) == {910: result.score}

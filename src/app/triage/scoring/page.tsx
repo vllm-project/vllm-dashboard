@@ -143,6 +143,13 @@ export default function ScoringGuidePage() {
         />
         <p>Only P0 and P1 are routed to a maintainer. P2 and P3 stay on the dashboard.</p>
         <p>
+          P0 also requires a reproduction, confidence of at least {fmt(S.p0.min_confidence)}, and evidence that main or
+          the latest release is affected by serving failure, wrong output, or a security defect. Non-security defects
+          must affect default configurations on a top-tier model/GPU path or shared API/tokenizer code.
+          CPU-backend-only defects stay below P0; reproducing a shared API bug on CPU does not make it CPU-only.
+          Items that fail this gate are capped at {S.thresholds.page - 1}, with the reason in their score breakdown.
+        </p>
+        <p>
           Only issues and PRs opened in the last {S.scope.max_age_days} days are triaged. Older ones leave the
           queue as they age past that; anything someone already acknowledged stays in their history.
         </p>
@@ -167,8 +174,8 @@ export default function ScoringGuidePage() {
           ]}
         />
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          A PR isn&apos;t the incident itself, so it gets {fmt(S.severity.pr_fraction * 100)}% of these points (plus credit for the
-          issue it fixes, below).
+          A standalone PR gets {fmt(S.severity.pr_fraction * 100)}% of these points. A linked fix instead inherits
+          its issue&apos;s impact before draft and quality penalties; the two scores are never added together.
         </p>
       </Section>
 
@@ -192,6 +199,7 @@ export default function ScoringGuidePage() {
           rows={[
             ["Top tier", TIERS.hardware.tier1.join(", "), `×${fmt(S.reach.hardware.tier1)}`],
             ["Common", TIERS.hardware.tier2.join(", "), `×${fmt(S.reach.hardware.tier2)}`],
+            ["CPU backend only", "CPU inference defect, not just a CPU reproduction", `×${fmt(S.reach.hardware.cpu)}`],
             ["Not stated", "", `×${fmt(S.reach.hardware.unknown)}`],
             ["Anything else", "consumer and older cards", `×${fmt(S.reach.hardware.other)}`],
           ]}
@@ -228,10 +236,11 @@ export default function ScoringGuidePage() {
           ]}
         />
         <p className="font-medium text-zinc-900 dark:text-zinc-100">For PRs</p>
+        <p>Tests, small size, and hot-path labels do not increase incident priority. Use the review views and CI status to decide what is ready.</p>
         <Table
           head={["PR signal", "When", "Points"]}
           rows={[
-            ["Fixes a scored issue", `${fmt(S.pr.fixes_issue_fraction * 100)}% of the best open issue it fixes`, "varies"],
+            ["Fixes a scored issue", `${fmt(S.pr.fixes_issue_fraction * 100)}% of the best current, in-scope open issue; replaces its own score`, "varies"],
             ["Touches code on every request", "the hot path", signed(S.pr.hot_path)],
             ["Includes tests", "", signed(S.pr.has_tests)],
             ["Tiny or small change", "", signed(S.pr.size.s)],

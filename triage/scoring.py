@@ -51,6 +51,41 @@ def band_for(score: int, thresholds: Mapping[str, int]) -> Band:
     return "ignore"
 
 
+def cpu_backend_only(facets: Mapping[str, Any], config: TriageConfig) -> bool:
+    """CPU in a reproduction alone is not proof of a CPU-backend defect."""
+    hardware = set(facets.get("hardware") or [])
+    return ("cpu" in (facets.get("areas") or []) and bool(hardware)
+            and hardware <= set(config.scoring["p0"]["cpu_hardware"]))
+
+
+def p0_ineligibility(facets: Mapping[str, Any], config: TriageConfig) -> str | None:
+    """Conservative incident eligibility from extracted facts, never social points."""
+    policy = config.scoring["p0"]
+    severity = facets.get("severity") or {}
+    if facets.get("type") not in config.scoring["severity"]["defect_types"]:
+        return "P0 requires a defect, not a feature or question"
+    if float(facets.get("confidence") or 0) < policy["min_confidence"] or not facets.get("has_repro"):
+        return "P0 requires a reproduction and confident evidence"
+    if not any(severity.get(flag) for flag in policy["symptoms"]):
+        return "P0 requires serving failure, wrong output, or a security defect"
+    versions = facets.get("versions") or {}
+    if not (versions.get("affects_main") or versions.get("affects_latest_release")):
+        return "P0 requires evidence that main or the latest release is affected"
+    if severity.get("security"):
+        return None  # Security is not discounted by backend reach or configuration.
+    if cpu_backend_only(facets, config):
+        return "CPU-backend-only defects are P1/P2 by default"
+    if facets.get("default_config") is not True:
+        return "P0 requires impact on a default serving configuration"
+    if set(facets.get("areas") or []) & set(policy["shared_areas"]):
+        return None  # A CPU reproduction can expose a shared API/tokenizer defect.
+    model, _ = model_tier(facets, config.tiers)
+    hardware, _ = hardware_tier(list(facets.get("hardware") or []), config.tiers)
+    if model != "tier1" or hardware != "tier1":
+        return "P0 requires a primary model/GPU serving path or a shared API/tokenizer defect"
+    return None
+
+
 def score_item(
     *,
     kind: str,
@@ -97,6 +132,8 @@ def score_item(
     tier, model = model_tier(facets, config.tiers)
     hw = list(facets.get("hardware") or []) or list(prepass.get("hardware_hints") or [])
     hw_tier, hw_name = hardware_tier(hw, config.tiers) if hw else ("unknown", None)
+    if cpu_backend_only(facets, config):
+        hw_tier = "cpu"
     default_config = facets.get("default_config")
     config_key = "default" if default_config is True else "exotic" if default_config is False else "unknown"
 
@@ -147,6 +184,7 @@ def score_item(
 
     _social(add, reactions, comment_count, weights["social"])
 
+    inherited = False
     if kind == "pr":
         pr_w = weights["pr"]
         pr = facets.get("pr") or {}
@@ -157,6 +195,8 @@ def score_item(
             default=None,
         )
         if best is not None:
+            inherited = True
+            factors.clear()  # The incident score replaces the PR score, not another bonus.
             add("pr.fixes_issue", best[1] * pr_w["fixes_issue_fraction"], f"#{best[0]} scored {best[1]}")
         if pr.get("hot_path"):
             add("pr.hot_path", pr_w["hot_path"])
@@ -174,6 +214,11 @@ def score_item(
         slop_w = weights["slop"]
         add("slop", max(slop_w["cap"], slop_w["per_signal"] * len(signals)), ", ".join(signals[:4]))
 
+    reason = None if inherited else p0_ineligibility(facets, config)
+    total = sum(f.points for f in factors)
+    ceiling = weights["thresholds"]["page"] - 1
+    if reason and total > ceiling:
+        add("policy.p0_cap", ceiling - total, reason)
     return _finish(factors, config)
 
 

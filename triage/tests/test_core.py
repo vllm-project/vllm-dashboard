@@ -154,7 +154,7 @@ def test_serving_broken_popular_model_pages() -> None:
     s = _score(facets(
         type="regression", severity={"serving_broken": True, "crash": True},
         models=[{"name": "Qwen3-235B-A22B", "family": "qwen3"}], hardware=["B200"],
-        default_config=True, versions={"affects_latest_release": True},
+        default_config=True, has_repro=True, versions={"affects_latest_release": True},
     ))
     assert s.band == "page"
     factors = [f.factor for f in s.breakdown]
@@ -248,11 +248,12 @@ def test_perf_regression_scales_and_caps() -> None:
     assert pts(small) == 10 and pts(huge) == 46  # 9 and the 40 cap, x1.15
 
 
-def test_pr_inherits_part_of_fixed_issue_score() -> None:
+def test_pr_inherits_fixed_issue_score_without_adding_its_own() -> None:
     pr = facets(type="bug", pr={"fixes_issues": [42], "hot_path": False, "size": "s",
                                 "has_tests": True, "low_effort": False})
     s = _score(pr, kind="pr", linked={42: 100})
-    assert any(f.factor == "pr.fixes_issue" and f.points == 60 for f in s.breakdown)
+    assert s.score == 100
+    assert [(f.factor, f.points) for f in s.breakdown] == [("pr.fixes_issue", 100)]
 
 
 def test_spam_is_always_ignore() -> None:

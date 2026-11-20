@@ -179,18 +179,21 @@ reach = model tier × hardware tier × config      # e.g. 1.0 × 1.0 × 1.15
   scaled by reach), wrong output 42, crash 36, hang 32, memory regression 18,
   perf regression 9 per 10 % (cap 40). For issues it only counts if the type
   is a defect (bug, regression, perf_regression, performance, ci). A PR gets
-  half (`pr_fraction: 0.5`).
+  half for standalone PRs (`pr_fraction: 0.5`).
 - **Reach**: model tier1/tier2/other/unknown ×1.0/0.8/0.6/0.75; hardware
   ×1.0/0.8/0.55/0.85; default config ×1.15, exotic ×0.55, unknown ×0.9. Tier
-  lists are in `config/tiers.yaml`.
+  lists are in `config/tiers.yaml`. CPU-backend-only defects instead use
+  hardware ×0.35 and no hardware popularity bonus. This requires a `cpu`
+  area and an exclusively CPU/Apple hardware list; a CPU reproduction alone
+  does not establish CPU-backend-only impact.
 - **Additive**: type (regression +12, perf_regression +10, ci +4, bug +3,
   spam −100 and band P3), popularity (model +6/+3, hardware +3/+1), affects
   the latest release +10 (or main +4), has a repro +4, low extraction
   confidence −6, social 0.5 per reaction + 0.4 per comment (cap 15).
-- **PRs**: fixes an open issue in the queue = 0.6 × that issue's score
-  ("linked-issue credit", from the regex, the sidebar link or the facets'
-  `fixes_issues`), hot path +6, tests +2, size xs/s +2 … xl −4, low effort
-  −25, draft −15.
+- **PRs**: a fix inherits 100% of the best open, in-scope issue scored with
+  the current policy, replacing its own score rather than adding to it.
+  Tests, small size and hot-path labels add no impact points. Draft −15,
+  low effort −25, and large/extra-large size −2/−4 still apply.
 - **Slop**: −10 per LLM-reported signal, at most −40.
 
 | Band (stored) | Shown as | Score | What happens |
@@ -199,6 +202,17 @@ reach = model tier × hardware tier × config      # e.g. 1.0 × 1.0 × 1.15
 | `route` | **P1** | 40–69 | routed, daily digest |
 | `watch` | **P2** | 20–39 | dashboard only |
 | `ignore` | **P3** | < 20, or spam | dashboard only, collapsed |
+
+**P0 eligibility.** Reaching 70 points is necessary but not sufficient.
+A defect needs a reproduction, extraction confidence ≥0.7, evidence it
+still affects main or the latest release, and serving failure, wrong output
+or security impact. Except for security, it must affect a default setup on
+a tier-1 model and GPU or shared API/tokenizer code. CPU-backend-only defects
+are P1/P2 by default; security remains eligible regardless of hardware.
+Unknown impact/configuration does not establish a release blocker. Items
+failing the gate are capped at 69 with a `policy.p0_cap` explanation. Linked
+fixes inherit the incident's already-gated score before quality penalties.
+These are conservative automated criteria, not proof of fleet-wide impact.
 
 **Re-scoring.** `triage-route` re-scores an in-scope item when it has no score,
 has a new extraction, changed on GitHub, the config version changed, or (for a

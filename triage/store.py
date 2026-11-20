@@ -536,15 +536,16 @@ class PostgresTriageStore(PostgresAlertStore):
             for r in rows
         ]
 
-    def issue_scores(self, repo: str, numbers: Iterable[int]) -> dict[int, int]:
+    def issue_scores(self, repo: str, numbers: Iterable[int], *, scoring_version: str) -> dict[int, int]:
         keys = [f"{repo}#{n}" for n in set(numbers)]
         if not keys:
             return {}
         with self._connection_factory() as c:
             rows = c.execute(
                 """SELECT i.number, s.score FROM triage_scores s JOIN triage_items i USING (item_key)
-                   WHERE s.item_key = ANY(%s) AND i.kind = 'issue' AND i.state = 'open'""",
-                (keys,),
+                   WHERE s.item_key = ANY(%s) AND i.kind = 'issue' AND i.state = 'open'
+                     AND i.in_scope AND s.scoring_version = %s""",
+                (keys, scoring_version),
             ).fetchall()
         return {int(n): int(s) for n, s in rows}
 

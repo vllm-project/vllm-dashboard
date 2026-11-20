@@ -437,7 +437,7 @@ class RouteHandler:
     def _rescore(self, now: datetime) -> int:
         rows = self.store.scoring_candidates(scoring_version=self.config.version, limit=self.score_limit)
         linked = {n for r in rows if r.kind == "pr" for n in self._fixes(r.prepass, r.facets)}
-        issue_scores = self.store.issue_scores(self.repo, linked)
+        issue_scores = self.store.issue_scores(self.repo, linked, scoring_version=self.config.version)
         results: list[tuple[str, int | None, Score]] = []
         for row in rows:  # issues come first, so PRs see fresh issue scores
             score = score_item(
