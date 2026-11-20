@@ -17,11 +17,11 @@ import {
 } from "@/components/triage/item-row";
 import { groupBand, nestGroups, rowOrder } from "@/lib/triage-groups";
 import { listPosition, stepItem } from "@/lib/triage-keys";
-import { QUEUE_PRESETS, activeFilterCount, activePreset, presetFilters, type QueuePresetId } from "@/lib/triage-presets";
+import { QUEUE_PRESETS, activeFilterCount, activePreset, parseQueueLocation, presetFilters, type QueuePresetId } from "@/lib/triage-presets";
 import { useTriageLogin } from "@/components/triage/use-triage-session";
 import { useLocationHash } from "@/lib/use-location-hash";
 import { itemFromLocation, percent, triageFetcher } from "@/lib/triage-format";
-import { OWNER_NONE, parseQueueFilters, queueFiltersToParams, type QueueFilters } from "@/lib/triage-query";
+import { OWNER_NONE, queueFiltersToParams, type QueueFilters } from "@/lib/triage-query";
 import {
   BAND_ORDER,
   BAND_STYLES,
@@ -32,7 +32,7 @@ import {
 } from "@/lib/triage-style";
 import { pipelineHealth, type HealthTone } from "@/lib/triage-health";
 import type { TriageQueueResponse, TriageStats } from "@/lib/triage-types";
-import { DEFAULT_QUEUE_BANDS, TRIAGE_AREAS, TRIAGE_HARDWARE } from "@/lib/triage-vocab";
+import { TRIAGE_AREAS, TRIAGE_HARDWARE } from "@/lib/triage-vocab";
 
 const CONTROL =
   "h-8 rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-700 shadow-sm shadow-black/[0.02] hover:border-zinc-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-zinc-600";
@@ -122,9 +122,8 @@ function useMinuteClock(): number {
 
 function PipelineHealthStrip({ stats }: { stats: TriageStats | undefined }) {
   const now = useMinuteClock();
-  if (!stats?.health) {
-    return <div aria-hidden="true" className="h-7 w-full max-w-xl animate-pulse rounded-md bg-zinc-100 dark:bg-zinc-800/70" />;
-  }
+  // Nothing until there's something to show: no placeholder bar that may never fill.
+  if (!stats?.health) return null;
   const view = pipelineHealth(stats.health, now);
   return (
     <div
@@ -347,27 +346,18 @@ function Toggle({ on, label, onClick }: { on: boolean; label: string; onClick: (
   );
 }
 
+/** The landing view ("Needs triage", no search): what Reset goes back to. */
 function isDefaultFilters(filters: QueueFilters): boolean {
-  return (
-    filters.bands.length === DEFAULT_QUEUE_BANDS.length &&
-    DEFAULT_QUEUE_BANDS.every((band) => filters.bands.includes(band)) &&
-    !filters.kind &&
-    !filters.area &&
-    !filters.hardware &&
-    !filters.model &&
-    !filters.owner &&
-    filters.status === "any" &&
-    !filters.review &&
-    !filters.q &&
-    filters.state === "open"
-  );
+  return activePreset(filters) === "needs-triage" && !filters.q;
 }
 
 /**
  * One slim line over the queue: pipeline health, open items per priority
  * (each a filter shortcut), unowned P0/P1, new today. When labelling or
  * judging falls behind, the full health strip opens under it by itself;
- * the operator panels sit behind "System stats".
+ * the operator panels sit behind "System stats". Rendered only once stats
+ * have loaded and only when there's something to say: never a grey
+ * placeholder that might not fill (e.g. when /api/triage/stats fails).
  */
 function StatusLine({
   stats,
@@ -383,23 +373,26 @@ function StatusLine({
   onPickUnowned: () => void;
 }) {
   const now = useMinuteClock();
-  if (!stats?.health) {
-    return <div aria-hidden="true" className="h-6 w-full max-w-2xl animate-pulse rounded-md bg-zinc-100 dark:bg-zinc-800/70" />;
-  }
-  const view = pipelineHealth(stats.health, now);
-  const unowned = stats.unowned;
-  const hasP0Unowned = stats.unownedPage > 0;
-  const bands = BAND_ORDER.filter((band) => stats.bandCounts[band] > 0);
+  if (!stats) return null;
+  const view = stats.health ? pipelineHealth(stats.health, now) : null;
+  const unowned = stats.unowned ?? 0;
+  const hasP0Unowned = (stats.unownedPage ?? 0) > 0;
+  const bands = BAND_ORDER.filter((band) => (stats.bandCounts?.[band] ?? 0) > 0);
+  if (!view && bands.length === 0 && unowned === 0 && !stats.newToday) return null;
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
-      <span
-        className={`inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-medium ${HEALTH_CHIP[view.tone]}`}
-        title="Labelling and relevance judging run every 10 minutes on the extractor host."
-      >
-        <span aria-hidden="true" className={`h-2 w-2 rounded-full ${HEALTH_DOT[view.tone]}`} />
-        Pipeline {HEALTH_WORD[view.tone]}
-      </span>
-      <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>
+      {view && (
+        <>
+          <span
+            className={`inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-medium ${HEALTH_CHIP[view.tone]}`}
+            title="Labelling and relevance judging run every 10 minutes on the extractor host."
+          >
+            <span aria-hidden="true" className={`h-2 w-2 rounded-full ${HEALTH_DOT[view.tone]}`} />
+            Pipeline {HEALTH_WORD[view.tone]}
+          </span>
+          <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>
+        </>
+      )}
       <span className="inline-flex flex-wrap items-center gap-x-1.5" role="group" aria-label="Open items by priority">
         {bands.map((band) => (
           <button
@@ -632,7 +625,7 @@ function Queue() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const viewer = useTriageLogin();
-  const filters = parseQueueFilters(new URLSearchParams(searchParams.toString()));
+  const filters = parseQueueLocation(new URLSearchParams(searchParams.toString()));
   const hash = useLocationHash();
   const openItem = itemFromLocation(searchParams.get("item"), hash);
   const grouped = filters.sort === "score";
@@ -755,7 +748,7 @@ function Queue() {
       />
       {(needsAttention || statsOpen) && <PipelineHealthStrip stats={stats} />}
       <SuppressionWarning stats={stats} />
-      {statsOpen && (
+      {statsOpen && stats && (
         <div id="triage-system-stats">
           <StatStrip
             stats={stats}

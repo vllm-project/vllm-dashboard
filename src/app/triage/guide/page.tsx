@@ -207,6 +207,14 @@ export default function TriageGuidePage() {
           5 seconds and puts the item back exactly as it was.
         </p>
         <p>
+          <b>Reading the queue.</b> It opens on <b>Needs triage</b>: open P0/P1 items nobody owns yet. <b>Not acked
+          yet</b> shows items whose owner hasn&apos;t acked them, <b>PRs ready to review</b> open PRs waiting on a
+          reviewer, and <b>All</b> everything open, P3 included. Each row shows its priority and impact score in
+          points, whether it&apos;s an Issue or a PR (a fix PR sits under its issue as <b>↳ Fix PR</b>), the single
+          worst symptom, CI when it needs a look, and the hardware, model and area in plain text. Everything else is in
+          the item panel.
+        </p>
+        <p>
           <b>Keyboard.</b> Click a title to open its panel; there, <b>j</b> / <b>k</b> move to the next / previous
           item, <b>a</b> acks, <b>d</b> is Done, <b>n</b> Not mine, <b>r</b> Reassign, <b>o</b> opens it on GitHub
           and <b>?</b> lists them all. On My list, Done, Not mine, Reassign, Drop and Slop move straight on to the
