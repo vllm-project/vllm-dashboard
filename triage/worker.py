@@ -18,17 +18,22 @@ from alerting.ports import AlertPath, DeliveryMode
 from alerting.runtime import AlertingRuntime, ProcessStatus
 from alerting.worker import SystemClock, _delivery_mode, _record_failure, _required_environment, _slack
 
+from triage.backends import build_backend
 from triage.config import default_config
+from triage.extract import Budget, ClaudeCodeBackend, run_extraction
 from triage.github import GitHubClient, IngestClient
 from triage.github_graphql import GraphQLGitHubClient
 from triage.maintainers import fetch_main_files
 from triage.pipeline import DigestHandler, IngestHandler, RouteHandler
+from triage.relevance import run_relevance
 from triage.store import PostgresTriageStore
 
 CONSUMERS = {
     "triage-ingest": "triage_ingest",
     "triage-route": "triage_route",
     "triage-digest": "triage_digest",
+    "triage-extract": "triage_extract",
+    "triage-relevance": "triage_relevance",
 }
 
 
@@ -80,6 +85,39 @@ def build_runtime(consumer: str) -> tuple[AlertingRuntime, ScheduledCommand]:
             maintainers_source=lambda: fetch_main_files(token),
             github=GitHubClient(token, min_remaining=1) if token else None,
         )
+    elif consumer == "triage-extract":
+        backend = build_backend(role="extract")
+        if isinstance(backend, ClaudeCodeBackend):
+            raise ValueError(
+                "triage-extract on the worker requires a direct API backend (TRIAGE_BACKEND=openai or anthropic); "
+                "Claude Code CLI runs on the extractor host instead"
+            )
+        budget = Budget(
+            max_items_per_run=int(os.environ.get("TRIAGE_MAX_ITEMS_PER_RUN", "40")),
+            max_items_per_day=int(os.environ.get("TRIAGE_MAX_ITEMS_PER_DAY", "0")),
+            max_tokens_per_day=int(os.environ.get("TRIAGE_MAX_TOKENS_PER_DAY", "0")),
+        )
+        workers = int(os.environ.get("TRIAGE_WORKERS", "4"))
+
+        def _run_extract(_: ScheduledCommand) -> None:
+            run_extraction(store, backend, budget=budget, now=clock.now(), workers=workers)
+
+        handler = _run_extract  # type: ignore[assignment]
+    elif consumer == "triage-relevance":
+        backend = build_backend(role="relevance")
+        if isinstance(backend, ClaudeCodeBackend):
+            raise ValueError(
+                "triage-relevance on the worker requires a direct API backend "
+                "(TRIAGE_RELEVANCE_BACKEND=openai or anthropic); Claude Code CLI runs on the extractor host instead"
+            )
+        min_score = int(os.environ.get("TRIAGE_RELEVANCE_MIN_SCORE", "40"))
+        limit = int(os.environ.get("TRIAGE_RELEVANCE_PER_RUN", "40"))
+        workers = int(os.environ.get("TRIAGE_RELEVANCE_WORKERS", "4"))
+
+        def _run_relevance(_: ScheduledCommand) -> None:
+            run_relevance(store, backend, now=clock.now(), min_score=min_score, limit=limit, workers=workers)
+
+        handler = _run_relevance  # type: ignore[assignment]
     else:
         handler = DigestHandler(  # type: ignore[assignment]
             store=store, clock=clock, delivery_mode=mode,

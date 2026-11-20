@@ -39,7 +39,6 @@ def _github_token() -> str:
 
 def _backtest(args: argparse.Namespace) -> int:
     from triage import backtest
-    from triage.extract import ClaudeCodeBackend
     from triage.github import GitHubClient
 
     out_dir = Path(args.dir)
@@ -49,9 +48,11 @@ def _backtest(args: argparse.Namespace) -> int:
         n = backtest.fetch(GitHubClient(_github_token()), out_dir, start=start, end=end, config=config)
         print(json.dumps({"fetched": n, "start": start.isoformat(), "end": end.isoformat()}))
     elif args.action == "extract":
+        from triage.backends import build_backend
+
         stats = backtest.extract(
             out_dir,
-            ClaudeCodeBackend(model=args.model),
+            build_backend(role="extract", backend=args.backend, model=args.model, base_url=args.base_url),
             GitHubClient(_github_token()),
             limit=args.limit,
             workers=args.workers,
@@ -88,7 +89,8 @@ def _github_check(args: argparse.Namespace) -> int:
 
 
 def _extract(args: argparse.Namespace) -> int:
-    from triage.extract import Budget, ClaudeCodeBackend, run_extraction
+    from triage.backends import build_backend
+    from triage.extract import Budget, run_extraction
     from triage.store import PostgresTriageStore
 
     store = PostgresTriageStore(os.environ["DATABASE_URL"])
@@ -97,9 +99,10 @@ def _extract(args: argparse.Namespace) -> int:
         max_items_per_day=args.max_items_per_day,
         max_tokens_per_day=args.max_tokens_per_day,
     )
+    backend = build_backend(role="extract", backend=args.backend, model=args.model, base_url=args.base_url)
     result = run_extraction(
         store,
-        ClaudeCodeBackend(model=args.model),
+        backend,
         budget=budget,
         now=datetime.now(timezone.utc),
         workers=args.workers,
@@ -110,13 +113,14 @@ def _extract(args: argparse.Namespace) -> int:
 
 
 def _relevance(args: argparse.Namespace) -> int:
-    from triage.extract import ClaudeCodeBackend
+    from triage.backends import build_backend
     from triage.relevance import run_relevance
     from triage.store import PostgresTriageStore
 
     store = PostgresTriageStore(os.environ["DATABASE_URL"])
+    backend = build_backend(role="relevance", backend=args.backend, model=args.model, base_url=args.base_url)
     result = run_relevance(
-        store, ClaudeCodeBackend(model=args.model), now=datetime.now(timezone.utc),
+        store, backend, now=datetime.now(timezone.utc),
         min_score=args.min_score, limit=args.limit, workers=args.workers,
         shortlist_min=args.shortlist_min,
     )
@@ -148,11 +152,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     bt.add_argument("--limit", type=int, default=100)
     bt.add_argument("--workers", type=int, default=4)
     bt.add_argument("--pr-share", type=float, default=0.4)
-    bt.add_argument("--model", default=os.environ.get("TRIAGE_MODEL", "sonnet"))
+    bt.add_argument("--backend", choices=["claude", "openai", "anthropic"], default=None)
+    bt.add_argument("--base-url", default=None)
+    bt.add_argument("--model", default=None)
 
     ex = sub.add_parser("extract")
-    ex.add_argument("--model", default=os.environ.get("TRIAGE_MODEL", "sonnet"))
-    ex.add_argument("--workers", type=int, default=2)
+    ex.add_argument("--backend", choices=["claude", "openai", "anthropic"], default=None)
+    ex.add_argument("--base-url", default=None)
+    ex.add_argument("--model", default=None)
+    ex.add_argument("--workers", type=int, default=int(os.environ.get("TRIAGE_WORKERS", "2")))
     ex.add_argument("--max-items-per-run", type=int, default=int(os.environ.get("TRIAGE_MAX_ITEMS_PER_RUN", "40")))
     ex.add_argument("--max-items-per-day", type=int, default=int(os.environ.get("TRIAGE_MAX_ITEMS_PER_DAY", "150")))
     ex.add_argument("--max-tokens-per-day", type=int, default=int(os.environ.get("TRIAGE_MAX_TOKENS_PER_DAY", "2000000")))
@@ -160,10 +168,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     rel = sub.add_parser("relevance")
     # Opus: in a review of 44 items it followed the "medium means the same
     # component" rule far better than Sonnet (fewer weak matches routed).
-    rel.add_argument("--model", default=os.environ.get("TRIAGE_RELEVANCE_MODEL", "opus"))
+    rel.add_argument("--backend", choices=["claude", "openai", "anthropic"], default=None)
+    rel.add_argument("--base-url", default=None)
+    rel.add_argument("--model", default=None)
     rel.add_argument("--min-score", type=int, default=int(os.environ.get("TRIAGE_RELEVANCE_MIN_SCORE", "40")))
     rel.add_argument("--limit", type=int, default=int(os.environ.get("TRIAGE_RELEVANCE_PER_RUN", "40")))
-    rel.add_argument("--workers", type=int, default=2)
+    rel.add_argument("--workers", type=int, default=int(os.environ.get("TRIAGE_RELEVANCE_WORKERS", "2")))
     rel.add_argument(
         "--shortlist-min", type=int, default=int(os.environ.get("TRIAGE_RELEVANCE_SHORTLIST_MIN", "8")),
         help="Pre-shortlist maintainers when roster exceeds this size (0 disables).",
