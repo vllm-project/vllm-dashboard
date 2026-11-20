@@ -1,0 +1,91 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  QUEUE_PRESETS,
+  activeFilterCount,
+  activePreset,
+  inPlateView,
+  parsePlateView,
+  presetFilters,
+  presetQuery,
+} from "./triage-presets";
+import { parseQueueFilters } from "./triage-query";
+
+const parse = (query: string) => parseQueueFilters(new URLSearchParams(query));
+
+test("each preset maps to its query string", () => {
+  assert.equal(presetQuery("needs-triage"), "");
+  assert.equal(presetQuery("unowned"), "bands=page%2Croute&owner=none");
+  assert.equal(presetQuery("review"), "kind=pr&review=ready");
+  assert.equal(presetQuery("all"), "bands=page%2Croute%2Cwatch%2Cignore%2Cunscored");
+});
+
+test("every preset round-trips through the URL and is recognised", () => {
+  for (const preset of QUEUE_PRESETS) {
+    assert.equal(activePreset(parse(presetQuery(preset.id))), preset.id, preset.id);
+  }
+});
+
+test("existing links keep landing on their preset", () => {
+  assert.equal(activePreset(parse("bands=page,route&owner=none")), "unowned");
+  assert.equal(activePreset(parse("owner=none&bands=route,page")), "unowned");
+  assert.equal(activePreset(parse("")), "needs-triage");
+  // Search, sort and paging don't change which preset is active.
+  assert.equal(activePreset(parse("bands=page,route&owner=none&q=moe&sort=age&page=2")), "unowned");
+  // Anything else is a custom view.
+  assert.equal(activePreset(parse("bands=page,route&owner=none&area=moe")), null);
+  assert.equal(activePreset(parse("owner=alice")), null);
+  assert.equal(activePreset(parse("state=all")), null);
+});
+
+test("switching preset keeps search and sort, resets the rest", () => {
+  const current = parse("area=moe&owner=bob&q=deepseek&sort=updated&page=4");
+  const next = presetFilters("unowned", current);
+  assert.equal(next.area, null);
+  assert.equal(next.owner, "none");
+  assert.equal(next.q, "deepseek");
+  assert.equal(next.sort, "updated");
+  assert.equal(next.page, 1);
+  assert.equal(presetQuery("needs-triage", current), "q=deepseek&sort=updated");
+});
+
+test("review=ready parses and serialises", () => {
+  assert.equal(parse("review=ready").review, "ready");
+  assert.equal(parse("review=bogus").review, null);
+});
+
+test("filter badge counts what differs from the default view", () => {
+  assert.equal(activeFilterCount(parse("")), 0);
+  assert.equal(activeFilterCount(parse("q=moe")), 0);
+  assert.equal(activeFilterCount(parse("area=moe&hardware=B200")), 2);
+  // On a preset, only what goes beyond it counts.
+  assert.equal(activeFilterCount(parse("bands=page,route&owner=none")), 0);
+  assert.equal(activeFilterCount(parse("bands=page,route&owner=none&sort=age")), 1);
+  assert.equal(activeFilterCount(parse("bands=page,route&owner=none&area=moe")), 3);
+  assert.equal(activeFilterCount(parse("sort=age&state=all")), 2);
+});
+
+test("My list quick filters", () => {
+  const entry = (overrides: Record<string, unknown> = {}) => ({
+    kind: "pr" as const,
+    state: "open",
+    draft: false,
+    waitingOn: "reviewer" as const,
+    assignment: { status: "open" },
+    ...overrides,
+  });
+  assert.equal(parsePlateView("needs-ack"), "needs-ack");
+  assert.equal(parsePlateView("bogus"), "all");
+  assert.equal(parsePlateView(null), "all");
+  assert.ok(inPlateView(entry(), "all"));
+  assert.ok(inPlateView(entry(), "needs-ack"));
+  assert.ok(!inPlateView(entry(), "acked"));
+  assert.ok(inPlateView(entry({ assignment: { status: "acked" } }), "acked"));
+  assert.ok(inPlateView(entry(), "review"));
+  assert.ok(!inPlateView(entry({ waitingOn: "author" }), "review"));
+  assert.ok(!inPlateView(entry({ draft: true }), "review"));
+  assert.ok(!inPlateView(entry({ state: "merged" }), "review"));
+  assert.ok(!inPlateView(entry({ kind: "issue", waitingOn: null }), "review"));
+  assert.ok(inPlateView(entry({ kind: "issue" }), "issues"));
+  assert.ok(!inPlateView(entry(), "issues"));
+});

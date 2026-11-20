@@ -141,6 +141,8 @@ export interface TriageQueueItem {
   /** facets.severity, for the scan-for flags (serving broken, crash, …). */
   severity: NonNullable<TriageFacets["severity"]> | null;
   assignments: TriageAssignmentSummary[];
+  /** Open PRs: whose move it is (`prepass.waiting_on`); null for issues or when unknown. */
+  waitingOn?: "author" | "reviewer" | null;
   /** PRs: the issues it fixes. */
   fixes: TriageLinkedItem[];
   /** Issues: the PRs that fix it. */

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import {
   Avatar,
@@ -16,6 +16,10 @@ import {
 } from "@/components/triage/badges";
 import { isUnrouted, priorityLabel } from "@/lib/triage-style";
 import { ActionButtons } from "@/components/triage/action-buttons";
+import { Kbd, ShortcutHelp } from "@/components/triage/keyboard-help";
+import { drawerCommand } from "@/lib/triage-keys";
+import { safeGithubUrl } from "@/lib/triage-query";
+import type { TriageAction } from "@/lib/triage-vocab";
 import { CiSection } from "@/components/triage/ci-status";
 import { ciLine } from "@/lib/triage-ci";
 import { ScoreBreakdown } from "@/components/triage/score-breakdown";
@@ -418,35 +422,96 @@ function useRememberedOpen(key: string): [boolean, (open: boolean) => void] {
   return [open, set];
 }
 
+/** Previous / next in the list behind the drawer (j / k). */
+export interface DrawerNav {
+  /** Zero-based position in the list, or null when the item isn't in it. */
+  position: { index: number; total: number } | null;
+  onPrev: (() => void) | null;
+  onNext: (() => void) | null;
+}
+
+const HEADER_BUTTON =
+  "dashboard-control inline-flex h-8 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 disabled:opacity-40 disabled:hover:bg-transparent dark:hover:bg-zinc-800 dark:hover:text-zinc-100";
+
 export function ItemDrawer({
   itemKey,
   viewer,
   onClose,
   onChanged,
+  nav,
+  onActed,
 }: {
   itemKey: string;
   viewer: string | null;
   onClose: () => void;
   onChanged?: () => void;
+  nav?: DrawerNav;
+  /** After an action from the drawer succeeds (My list moves on to the next item). */
+  onActed?: (action: TriageAction, alsoApplied: readonly string[]) => void;
 }) {
   const { data, error, mutate } = useSWR<TriageItemDetail>(
     `/api/triage/items/detail?key=${encodeURIComponent(itemKey)}`,
     triageFetcher,
   );
   const [scoreOpen, setScoreOpen] = useRememberedOpen(SCORE_OPEN_KEY);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const closeHelp = useCallback(() => setHelpOpen(false), []);
+  const scroller = useRef<HTMLDivElement>(null);
+  const [repo, number] = itemKey.split("#");
+  const githubUrl = safeGithubUrl(data?.item.htmlUrl ?? `https://github.com/${repo}/issues/${number}`);
 
   function showScore() {
     setScoreOpen(true);
     window.requestAnimationFrame(() => document.getElementById("triage-drawer-score")?.scrollIntoView({ block: "start", behavior: "smooth" }));
   }
 
+  // A new item starts at the top.
+  useEffect(() => {
+    scroller.current?.scrollTo({ top: 0 });
+  }, [itemKey]);
+
+  // Latest handlers for the key listener without re-subscribing every render.
+  const keyState = useRef({ onClose, nav, githubUrl, helpOpen });
+  useEffect(() => {
+    keyState.current = { onClose, nav, githubUrl, helpOpen };
+  });
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      const { onClose: close, nav: current, githubUrl: url, helpOpen: help } = keyState.current;
+      if (help) return; // the overlay handles its own keys
+      switch (drawerCommand(event)) {
+        case "close":
+          close();
+          break;
+        case "next":
+          if (current?.onNext) {
+            event.preventDefault();
+            current.onNext();
+          }
+          break;
+        case "prev":
+          if (current?.onPrev) {
+            event.preventDefault();
+            current.onPrev();
+          }
+          break;
+        case "github":
+          if (url) {
+            event.preventDefault();
+            window.open(url, "_blank", "noopener,noreferrer");
+          }
+          break;
+        case "help":
+          event.preventDefault();
+          setHelpOpen(true);
+          break;
+        default:
+          break;
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
 
   const facets = data?.extraction?.facets ?? {};
   const openAssignments = data?.assignments.filter((a) => a.status === "open" || a.status === "acked") ?? [];
@@ -458,7 +523,6 @@ export function ItemDrawer({
     : undefined;
   const mineOpen = mine && (mine.status === "open" || mine.status === "acked") ? mine : undefined;
   const band = data?.score?.band ?? null;
-  const number = itemKey.split("#")[1];
 
   function refresh() {
     void mutate();
@@ -482,14 +546,69 @@ export function ItemDrawer({
               score <span className="font-semibold text-zinc-900 dark:text-zinc-100">{data.score.score}</span>
             </button>
           )}
-          <span className="ml-1 inline-flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
-            {data && <KindIcon kind={data.item.kind} draft={data.item.draft} />}
-            {itemKey}
+          <span className="ml-1 hidden items-center gap-1.5 text-xs text-zinc-500 sm:inline-flex dark:text-zinc-400">
+            {data && <KindIcon kind={data.item.kind} draft={data.item.draft} />}#{number}
           </span>
+          <div className="ml-auto flex items-center gap-1">
+            {nav && (
+              <div className="flex items-center" role="group" aria-label="Move through the list">
+                <button
+                  type="button"
+                  onClick={() => nav.onPrev?.()}
+                  disabled={!nav.onPrev}
+                  className={`${HEADER_BUTTON} w-8`}
+                  aria-label="Previous item (k)"
+                  title="Previous item (k)"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M10 3.5L5.5 8l4.5 4.5" />
+                  </svg>
+                </button>
+                {nav.position && (
+                  <span className="min-w-[3.5rem] text-center text-[11px] tabular-nums text-zinc-500 dark:text-zinc-400" aria-live="polite">
+                    {nav.position.index + 1} / {nav.position.total}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => nav.onNext?.()}
+                  disabled={!nav.onNext}
+                  className={`${HEADER_BUTTON} w-8`}
+                  aria-label="Next item (j)"
+                  title="Next item (j)"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M6 3.5L10.5 8 6 12.5" />
+                  </svg>
+                </button>
+              </div>
+            )}
+            {githubUrl && (
+              <a
+                href={githubUrl}
+                target="_blank"
+                rel="noopener noreferrer nofollow"
+                title="Open on GitHub (o)"
+                className="dashboard-control inline-flex h-8 items-center gap-1.5 rounded-md border border-zinc-300 px-2.5 text-xs font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-100 dark:hover:bg-zinc-800"
+              >
+                Open on GitHub <span aria-hidden="true">↗</span>
+                <Kbd className="hidden sm:inline-flex">o</Kbd>
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={() => setHelpOpen(true)}
+              className={`${HEADER_BUTTON} w-8 text-sm font-semibold`}
+              aria-label="Keyboard shortcuts (?)"
+              title="Keyboard shortcuts (?)"
+            >
+              ?
+            </button>
+          </div>
           <button
             type="button"
             onClick={onClose}
-            className="dashboard-control ml-auto inline-flex h-8 w-8 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+            className="dashboard-control inline-flex h-8 w-8 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
             aria-label="Close (Esc)"
             title="Close (Esc)"
           >
@@ -499,7 +618,7 @@ export function ItemDrawer({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-5">
+        <div ref={scroller} className="flex-1 overflow-y-auto px-5">
           {error && <p className="py-4 text-sm text-red-600 dark:text-red-400">{error.message}</p>}
           {!data && !error && (
             <div aria-hidden="true" className="animate-pulse space-y-3 py-5">
@@ -558,6 +677,9 @@ export function ItemDrawer({
                   )}
                   <div className="mt-3 border-t border-zinc-100 pt-3 dark:border-zinc-800">
                     <ActionButtons
+                      key={itemKey}
+                      keyboard={!helpOpen}
+                      onActed={onActed}
                       itemKey={itemKey}
                       assignmentId={mineOpen?.id ?? (mine && openAssignments.length === 0 ? mine.id : null)}
                       mode={
@@ -714,6 +836,7 @@ export function ItemDrawer({
           )}
         </div>
       </div>
+      {helpOpen && <ShortcutHelp onClose={closeHelp} />}
     </div>
   );
 }

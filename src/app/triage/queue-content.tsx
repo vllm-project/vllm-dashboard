@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ItemDrawer } from "@/components/triage/item-drawer";
+import { ListShortcuts } from "@/components/triage/list-shortcuts";
 import { UndoToastProvider } from "@/components/triage/undo-toast";
 import { OwnerPicker } from "@/components/triage/owner-picker";
 import {
@@ -14,7 +15,9 @@ import {
   PriorityGroupHeader,
   RowSkeleton,
 } from "@/components/triage/item-row";
-import { groupBand, nestGroups } from "@/lib/triage-groups";
+import { groupBand, nestGroups, rowOrder } from "@/lib/triage-groups";
+import { listPosition, stepItem } from "@/lib/triage-keys";
+import { QUEUE_PRESETS, activeFilterCount, activePreset, presetFilters, type QueuePresetId } from "@/lib/triage-presets";
 import { useTriageLogin } from "@/components/triage/use-triage-session";
 import { useLocationHash } from "@/lib/use-location-hash";
 import { itemFromLocation, percent, triageFetcher } from "@/lib/triage-format";
@@ -107,13 +110,18 @@ const HEALTH_WORD: Record<HealthTone, string> = { ok: "healthy", warn: "slow", b
  * on the extractor host and fail silently, so this turns amber/red when they
  * fall behind (thresholds in triage-health.ts). Hover a part for details.
  */
-function PipelineHealthStrip({ stats }: { stats: TriageStats | undefined }) {
-  // Re-grade every minute so "4m ago" and the thresholds move between refreshes.
+/** Now, re-read every minute so "4m ago" and the health thresholds move between refreshes. */
+function useMinuteClock(): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
+  return now;
+}
+
+function PipelineHealthStrip({ stats }: { stats: TriageStats | undefined }) {
+  const now = useMinuteClock();
   if (!stats?.health) {
     return <div aria-hidden="true" className="h-7 w-full max-w-xl animate-pulse rounded-md bg-zinc-100 dark:bg-zinc-800/70" />;
   }
@@ -297,7 +305,7 @@ function PriorityToggle({
   );
 }
 
-function Select({
+function FieldSelect({
   label,
   value,
   onChange,
@@ -309,14 +317,33 @@ function Select({
   children: React.ReactNode;
 }) {
   return (
-    <select
-      aria-label={label}
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      className={`${CONTROL} min-w-0 flex-1 basis-[calc(50%-0.25rem)] pr-6 sm:w-36 sm:flex-none sm:basis-auto`}
+    <label className="flex flex-col gap-1">
+      <span className={PANEL_LABEL}>{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)} className={`${CONTROL} w-full pr-6`}>
+        {children}
+      </select>
+    </label>
+  );
+}
+
+function Toggle({ on, label, onClick }: { on: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={onClick}
+      className={`${CONTROL} inline-flex items-center gap-1.5 ${
+        on ? "border-zinc-400 bg-zinc-100 text-zinc-900 dark:border-zinc-500 dark:bg-zinc-800 dark:text-zinc-50" : ""
+      }`}
     >
-      {children}
-    </select>
+      <span
+        aria-hidden="true"
+        className={`relative inline-flex h-3.5 w-6 rounded-full transition-colors ${on ? "bg-zinc-700 dark:bg-zinc-300" : "bg-zinc-300 dark:bg-zinc-600"}`}
+      >
+        <span className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-all dark:bg-zinc-900 ${on ? "left-3" : "left-0.5"}`} />
+      </span>
+      {label}
+    </button>
   );
 }
 
@@ -330,10 +357,267 @@ function isDefaultFilters(filters: QueueFilters): boolean {
     !filters.model &&
     !filters.owner &&
     filters.status === "any" &&
+    !filters.review &&
     !filters.q &&
     filters.state === "open"
   );
 }
+
+/**
+ * One slim line over the queue: pipeline health, open items per priority
+ * (each a filter shortcut), unowned P0/P1, new today. When labelling or
+ * judging falls behind, the full health strip opens under it by itself;
+ * the operator panels sit behind "System stats".
+ */
+function StatusLine({
+  stats,
+  statsOpen,
+  onToggleStats,
+  onPickBand,
+  onPickUnowned,
+}: {
+  stats: TriageStats | undefined;
+  statsOpen: boolean;
+  onToggleStats: () => void;
+  onPickBand: (band: BandKey) => void;
+  onPickUnowned: () => void;
+}) {
+  const now = useMinuteClock();
+  if (!stats?.health) {
+    return <div aria-hidden="true" className="h-6 w-full max-w-2xl animate-pulse rounded-md bg-zinc-100 dark:bg-zinc-800/70" />;
+  }
+  const view = pipelineHealth(stats.health, now);
+  const unowned = stats.unowned;
+  const hasP0Unowned = stats.unownedPage > 0;
+  const bands = BAND_ORDER.filter((band) => stats.bandCounts[band] > 0);
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
+      <span
+        className={`inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-medium ${HEALTH_CHIP[view.tone]}`}
+        title="Labelling and relevance judging run every 10 minutes on the extractor host."
+      >
+        <span aria-hidden="true" className={`h-2 w-2 rounded-full ${HEALTH_DOT[view.tone]}`} />
+        Pipeline {HEALTH_WORD[view.tone]}
+      </span>
+      <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>
+      <span className="inline-flex flex-wrap items-center gap-x-1.5" role="group" aria-label="Open items by priority">
+        {bands.map((band) => (
+          <button
+            key={band}
+            type="button"
+            onClick={() => onPickBand(band)}
+            title={`${BAND_STYLES[band].meaning}. Click to show only ${BAND_STYLES[band].label}.`}
+            className="dashboard-control rounded px-0.5 tabular-nums hover:text-zinc-950 hover:underline dark:hover:text-zinc-50"
+          >
+            <span className="font-semibold">{BAND_STYLES[band].label}</span> {stats.bandCounts[band].toLocaleString()}
+          </button>
+        ))}
+      </span>
+      <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>
+      <button
+        type="button"
+        onClick={onPickUnowned}
+        disabled={unowned === 0}
+        title={`P0/P1 items with no owner: ${stats.unownedPage} are P0, ${stats.pageUnacked} P0 not acked. Click to filter.`}
+        className={`dashboard-control rounded px-1.5 py-0.5 tabular-nums enabled:hover:underline ${
+          unowned > 0
+            ? hasP0Unowned
+              ? "bg-red-50 font-semibold text-red-800 ring-1 ring-inset ring-red-300 dark:bg-red-500/10 dark:text-red-200 dark:ring-red-500/40"
+              : "bg-amber-50 font-semibold text-amber-900 ring-1 ring-inset ring-amber-300 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/40"
+            : ""
+        }`}
+      >
+        {unowned} P0/P1 unowned
+      </button>
+      <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>
+      <span className="tabular-nums">{stats.newToday} new today</span>
+      <button
+        type="button"
+        onClick={onToggleStats}
+        aria-expanded={statsOpen}
+        aria-controls="triage-system-stats"
+        className="dashboard-control ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+      >
+        System stats
+        <svg aria-hidden="true" viewBox="0 0 16 16" className={`h-3 w-3 transition-transform ${statsOpen ? "rotate-180" : ""}`} fill="currentColor">
+          <path d="M4 6l4 4 4-4z" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+/** Whether the pipeline needs attention, for opening its full strip automatically. */
+function pipelineNeedsAttention(stats: TriageStats | undefined, now: number): boolean {
+  return !!stats?.health && pipelineHealth(stats.health, now).tone !== "ok";
+}
+
+/** One-click views (triage-presets.ts); the active one is pressed. */
+function PresetBar({ active, onPick }: { active: QueuePresetId | null; onPick: (id: QueuePresetId) => void }) {
+  return (
+    <div
+      role="group"
+      aria-label="Views"
+      className="inline-flex h-8 shrink-0 items-stretch overflow-hidden rounded-md border border-zinc-200 bg-white shadow-sm shadow-black/[0.02] dark:border-zinc-700 dark:bg-zinc-900"
+    >
+      {QUEUE_PRESETS.map((preset, index) => {
+        const on = active === preset.id;
+        return (
+          <button
+            key={preset.id}
+            type="button"
+            aria-pressed={on}
+            title={preset.title}
+            onClick={() => onPick(preset.id)}
+            className={`dashboard-control whitespace-nowrap px-2.5 text-xs font-medium ${
+              index > 0 ? "border-l border-zinc-200 dark:border-zinc-700" : ""
+            } ${
+              on
+                ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                : "text-zinc-600 hover:bg-zinc-50 hover:text-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-zinc-50"
+            }`}
+          >
+            {preset.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Every other filter, in a popover: priority, kind, area, hardware, owner, status, closed, sort. */
+function FiltersPopover({
+  filters,
+  counts,
+  onChange,
+  onToggleBand,
+  onReset,
+}: {
+  filters: QueueFilters;
+  counts: TriageStats["bandCounts"] | undefined;
+  onChange: (patch: Partial<QueueFilters>) => void;
+  onToggleBand: (band: BandKey) => void;
+  onReset: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const count = activeFilterCount(filters);
+
+  useEffect(() => {
+    if (!open) return;
+    panel.current?.querySelector<HTMLElement>("button, select")?.focus();
+    const onDown = (event: MouseEvent) => {
+      if (root.current && !root.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  return (
+    <div ref={root} className="relative">
+      <button
+        ref={trigger}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={open ? "triage-filters" : undefined}
+        onClick={() => setOpen((value) => !value)}
+        className={`${CONTROL} inline-flex items-center gap-1.5 font-medium ${count > 0 ? "border-zinc-400 text-zinc-900 dark:border-zinc-500 dark:text-zinc-50" : ""}`}
+      >
+        <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+          <path d="M2.5 4h11M4.5 8h7M6.5 12h3" />
+        </svg>
+        Filters
+        {count > 0 && (
+          <span className="rounded-full bg-zinc-900 px-1.5 text-[10px] font-semibold leading-4 text-white dark:bg-zinc-100 dark:text-zinc-900">
+            {count}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div
+          ref={panel}
+          id="triage-filters"
+          role="dialog"
+          aria-label="Filters"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.stopPropagation();
+              setOpen(false);
+              trigger.current?.focus();
+            }
+          }}
+          className="absolute right-0 z-30 mt-1 w-[min(22rem,calc(100vw-2rem))] space-y-3 rounded-lg border border-zinc-200 bg-white p-3 shadow-lg shadow-black/10 dark:border-zinc-700 dark:bg-zinc-900 dark:shadow-black/40"
+        >
+          <div className="space-y-1">
+            <p className={PANEL_LABEL}>Priority</p>
+            <div className="scrollbar-hidden -mx-1 max-w-full overflow-x-auto px-1">
+              <PriorityToggle selected={filters.bands} counts={counts} onToggle={onToggleBand} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <FieldSelect label="Type" value={filters.kind ?? ""} onChange={(value) => onChange({ kind: (value || null) as QueueFilters["kind"] })}>
+              <option value="">Issues + PRs</option>
+              <option value="issue">Issues</option>
+              <option value="pr">PRs</option>
+            </FieldSelect>
+            <FieldSelect label="Status" value={filters.status} onChange={(value) => onChange({ status: value as QueueFilters["status"] })}>
+              <option value="any">Any status</option>
+              <option value="unassigned">Nobody on it</option>
+              <option value="open">Owner hasn&apos;t acked</option>
+              <option value="acked">Owner acked</option>
+              <option value="closed">Owner closed it</option>
+            </FieldSelect>
+            <FieldSelect label="Area" value={filters.area ?? ""} onChange={(value) => onChange({ area: value || null })}>
+              <option value="">Any area</option>
+              {TRIAGE_AREAS.map((area) => <option key={area} value={area}>{area}</option>)}
+            </FieldSelect>
+            <FieldSelect label="Hardware" value={filters.hardware ?? ""} onChange={(value) => onChange({ hardware: value || null })}>
+              <option value="">Any hardware</option>
+              {TRIAGE_HARDWARE.map((hw) => <option key={hw} value={hw}>{hw}</option>)}
+            </FieldSelect>
+            <div className="flex flex-col gap-1">
+              <span className={PANEL_LABEL}>Owner</span>
+              <OwnerPicker value={filters.owner} onChange={(owner) => onChange({ owner })} className="w-full" />
+            </div>
+            <FieldSelect label="Sort" value={filters.sort} onChange={(value) => onChange({ sort: value as QueueFilters["sort"] })}>
+              <option value="score">By priority</option>
+              <option value="age">Newest first</option>
+              <option value="updated">Recently updated</option>
+            </FieldSelect>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Toggle on={filters.state === "all"} label="Closed too" onClick={() => onChange({ state: filters.state === "all" ? "open" : "all" })} />
+            <Toggle on={filters.review === "ready"} label="Ready to review only" onClick={() => onChange({ review: filters.review ? null : "ready" })} />
+          </div>
+          <div className="flex items-center justify-between border-t border-zinc-100 pt-2 dark:border-zinc-800">
+            <button
+              type="button"
+              onClick={onReset}
+              className="dashboard-control rounded text-xs font-medium text-zinc-500 underline-offset-2 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+            >
+              Reset all
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                trigger.current?.focus();
+              }}
+              className={`${CONTROL} font-medium`}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const STATS_OPEN_KEY = "triage.queue.systemStats";
 
 export default function QueueContent() {
   return (
@@ -354,6 +638,7 @@ function Queue() {
   const grouped = filters.sort === "score";
   const pageSize = grouped && !searchParams.get("pageSize") ? GROUPED_PAGE_SIZE : filters.pageSize;
   const apiParams = queueFiltersToParams({ ...filters, pageSize }).toString();
+  const now = useMinuteClock();
 
   const { data, error, isLoading, mutate } = useSWR<TriageQueueResponse>(
     `/api/triage/items${apiParams ? `?${apiParams}` : ""}`,
@@ -365,16 +650,41 @@ function Queue() {
   });
   const [search, setSearch] = useState(formatSearchInput(filters.q, filters.model));
   const [showP3, setShowP3] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- read once after mount; storage isn't available during SSR
+      setStatsOpen(window.localStorage.getItem(STATS_OPEN_KEY) === "1");
+    } catch {
+      // storage blocked: stay collapsed
+    }
+  }, []);
+  function toggleStats() {
+    const next = !statsOpen;
+    setStatsOpen(next);
+    try {
+      window.localStorage.setItem(STATS_OPEN_KEY, next ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }
+
+  const replaceFilters = useCallback(
+    (next: QueueFilters, item: string | null) => {
+      const params = queueFiltersToParams(next);
+      if (item) params.set("item", item);
+      const query = params.toString();
+      router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+    },
+    [pathname, router],
+  );
 
   const update = useCallback(
     (patch: Partial<QueueFilters>, extra: Record<string, string | null> = {}) => {
-      const next = queueFiltersToParams({ ...filters, page: 1, ...patch });
       const item = "item" in extra ? extra.item : openItem;
-      if (item) next.set("item", item);
-      const query = next.toString();
-      router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+      replaceFilters({ ...filters, page: 1, ...patch }, item ?? null);
     },
-    [filters, openItem, pathname, router],
+    [filters, openItem, replaceFilters],
   );
 
   // Search applies as you type (debounced) and immediately on Enter.
@@ -405,6 +715,12 @@ function Queue() {
     update({ bands: bands.length > 0 ? bands : filters.bands });
   }
 
+  function pickPreset(id: QueuePresetId) {
+    const next = presetFilters(id, filters);
+    if (next.bands.includes("ignore")) setShowP3(true);
+    replaceFilters(next, openItem);
+  }
+
   function clearFilters() {
     setSearch("");
     router.replace(openItem ? `${pathname}?item=${encodeURIComponent(openItem)}` : pathname, { scroll: false });
@@ -416,77 +732,51 @@ function Queue() {
   const groups = data && grouped ? groupByPriority(rows, groupBand) : [];
   const openRow = (itemKey: string) => update({ page: filters.page }, { item: itemKey });
   const lastOnPage = data && data.page < totalPages ? data.items[data.items.length - 1]?.band : undefined;
+  // j / k walk the rows as drawn (a collapsed P3 group is skipped).
+  const order = grouped
+    ? groups.filter((group) => group.band !== "ignore" || showP3).flatMap((group) => rowOrder(group.items))
+    : rowOrder(rows);
+  const prevKey = openItem ? stepItem(order, openItem, -1) : null;
+  const nextKey = openItem ? stepItem(order, openItem, 1) : null;
+  const preset = activePreset(filters);
+  const needsAttention = pipelineNeedsAttention(stats, now);
 
   return (
-    <div className="space-y-4">
-      <PipelineHealthStrip stats={stats} />
-      <SuppressionWarning stats={stats} />
-      <StatStrip
+    <div className="space-y-3">
+      <StatusLine
         stats={stats}
+        statsOpen={statsOpen}
+        onToggleStats={toggleStats}
         onPickBand={(band) => {
           if (band === "ignore") setShowP3(true);
           update({ bands: [band], status: "any" });
         }}
         onPickUnowned={() => update({ bands: ["page", "route"], owner: OWNER_NONE, status: "any" })}
       />
+      {(needsAttention || statsOpen) && <PipelineHealthStrip stats={stats} />}
+      <SuppressionWarning stats={stats} />
+      {statsOpen && (
+        <div id="triage-system-stats">
+          <StatStrip
+            stats={stats}
+            onPickBand={(band) => {
+              if (band === "ignore") setShowP3(true);
+              update({ bands: [band], status: "any" });
+            }}
+            onPickUnowned={() => update({ bands: ["page", "route"], owner: OWNER_NONE, status: "any" })}
+          />
+        </div>
+      )}
 
       {/* overflow-clip, not overflow-hidden: hidden would make this box the sticky container and stop the group headers sticking. */}
       <div className="overflow-clip rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex flex-wrap items-center gap-2 border-b border-zinc-200 bg-zinc-50/60 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900/40">
           <div className="scrollbar-hidden -mx-1 max-w-full overflow-x-auto px-1">
-            <PriorityToggle selected={filters.bands} counts={stats?.bandCounts} onToggle={toggleBand} />
+            <PresetBar active={preset} onPick={pickPreset} />
           </div>
-          <Select label="Kind" value={filters.kind ?? ""} onChange={(value) => update({ kind: (value || null) as QueueFilters["kind"] })}>
-            <option value="">Issues + PRs</option>
-            <option value="issue">Issues</option>
-            <option value="pr">PRs</option>
-          </Select>
-          <Select label="Area" value={filters.area ?? ""} onChange={(value) => update({ area: value || null })}>
-            <option value="">Any area</option>
-            {TRIAGE_AREAS.map((area) => <option key={area} value={area}>{area}</option>)}
-          </Select>
-          <Select label="Hardware" value={filters.hardware ?? ""} onChange={(value) => update({ hardware: value || null })}>
-            <option value="">Any hardware</option>
-            {TRIAGE_HARDWARE.map((hw) => <option key={hw} value={hw}>{hw}</option>)}
-          </Select>
-          <OwnerPicker
-            value={filters.owner}
-            onChange={(owner) => update({ owner })}
-            className="min-w-0 flex-1 basis-[calc(50%-0.25rem)] sm:w-40 sm:flex-none sm:basis-auto"
-          />
-          <Select label="Status" value={filters.status} onChange={(value) => update({ status: value as QueueFilters["status"] })}>
-            <option value="any">Any status</option>
-            <option value="unassigned">Nobody on it</option>
-            <option value="open">Owner hasn&apos;t acked</option>
-            <option value="acked">Owner acked</option>
-            <option value="closed">Owner closed it</option>
-          </Select>
-          <Select label="Sort" value={filters.sort} onChange={(value) => update({ sort: value as QueueFilters["sort"] })}>
-            <option value="score">By priority</option>
-            <option value="age">Newest first</option>
-            <option value="updated">Recently updated</option>
-          </Select>
-          <button
-            type="button"
-            aria-pressed={filters.state === "all"}
-            onClick={() => update({ state: filters.state === "all" ? "open" : "all" })}
-            className={`${CONTROL} inline-flex items-center gap-1.5 ${
-              filters.state === "all" ? "border-zinc-400 bg-zinc-100 text-zinc-900 dark:border-zinc-500 dark:bg-zinc-800 dark:text-zinc-50" : ""
-            }`}
-          >
-            <span
-              aria-hidden="true"
-              className={`relative inline-flex h-3.5 w-6 rounded-full transition-colors ${filters.state === "all" ? "bg-zinc-700 dark:bg-zinc-300" : "bg-zinc-300 dark:bg-zinc-600"}`}
-            >
-              <span
-                className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white transition-all dark:bg-zinc-900 ${filters.state === "all" ? "left-3" : "left-0.5"}`}
-              />
-            </span>
-            Closed
-          </button>
           <form
             role="search"
-            className="relative min-w-[10rem] flex-[1_1_10rem]"
+            className="relative min-w-[10rem] flex-[1_1_12rem]"
             onSubmit={(event) => {
               event.preventDefault();
               applySearch(search);
@@ -505,15 +795,18 @@ function Queue() {
               className={`${CONTROL} w-full pl-7`}
             />
           </form>
+          <FiltersPopover filters={filters} counts={stats?.bandCounts} onChange={update} onToggleBand={toggleBand} onReset={clearFilters} />
           <Link
             href="/triage/scoring"
+            title="How is this scored?"
+            aria-label="How is this scored?"
             className="dashboard-control inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-zinc-600 underline-offset-2 hover:text-zinc-950 hover:underline dark:text-zinc-300 dark:hover:text-zinc-50"
           >
             <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
               <circle cx="8" cy="8" r="6.25" />
               <path d="M6.4 6.2a1.7 1.7 0 113.1 1c-.6.5-1.5.8-1.5 1.8M8 11.2v.1" strokeLinecap="round" />
             </svg>
-            How is this scored?
+            <span className="hidden lg:inline">How is this scored?</span>
           </Link>
           {!isDefaultFilters(filters) && (
             <button
@@ -561,7 +854,7 @@ function Queue() {
                 />
                 {!collapsed && (
                   <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
-                    <GroupedRows rows={group.items} rowKey={(item) => item.itemKey} onOpen={(item) => openRow(item.itemKey)} />
+                    <GroupedRows rows={group.items} rowKey={(item) => item.itemKey} activeKey={openItem} onOpen={(item) => openRow(item.itemKey)} />
                   </ul>
                 )}
               </section>
@@ -569,7 +862,7 @@ function Queue() {
           })}
         {data && data.items.length > 0 && !grouped && (
           <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
-            <GroupedRows rows={rows} rowKey={(item) => item.itemKey} onOpen={(item) => openRow(item.itemKey)} />
+            <GroupedRows rows={rows} rowKey={(item) => item.itemKey} activeKey={openItem} onOpen={(item) => openRow(item.itemKey)} />
           </ul>
         )}
 
@@ -590,6 +883,7 @@ function Queue() {
         )}
       </div>
 
+      <ListShortcuts enabled={!openItem} onOpenFirst={order[0] ? () => openRow(order[0]) : null} />
       {openItem && (
         <ItemDrawer
           itemKey={openItem}
@@ -598,6 +892,11 @@ function Queue() {
           onChanged={() => {
             void mutate();
             void mutateStats();
+          }}
+          nav={{
+            position: listPosition(order, openItem),
+            onPrev: prevKey ? () => openRow(prevKey) : null,
+            onNext: nextKey ? () => openRow(nextKey) : null,
           }}
         />
       )}

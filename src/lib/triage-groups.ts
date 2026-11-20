@@ -78,3 +78,8 @@ export function groupBand<T extends Groupable>(row: NestedRow<T>): string | null
 export function linkLabel(link: Pick<TriageLinkedItem, "number" | "state">): string {
   return link.state === "open" ? `#${link.number}` : `#${link.number} (${link.state})`;
 }
+
+/** Item keys in the order the list draws them: each row, then its nested fix PRs. */
+export function rowOrder(rows: readonly { item: { itemKey: string }; members: readonly { itemKey: string }[] }[]): string[] {
+  return rows.flatMap(({ item, members }) => [item.itemKey, ...members.map((member) => member.itemKey)]);
+}
