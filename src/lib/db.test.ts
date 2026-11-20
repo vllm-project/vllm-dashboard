@@ -35,4 +35,6 @@ test("the web client uses transaction pooling for a Supabase session URL", async
 
   assert.deepEqual(db.options.port, [6543]);
   assert.equal(db.options.prepare, false);
+  assert.equal((db.options as typeof db.options & { max_pipeline?: number }).max_pipeline, 1);
+  assert.equal(db.options.max, 6);
 });
