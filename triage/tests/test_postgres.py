@@ -1078,7 +1078,7 @@ def test_the_digest_shows_a_group_as_one_item(store: PostgresTriageStore, databa
     [(_, _, _, payload)] = outbox(database_url)
     items = [b for b in payload["blocks"] if str(b.get("block_id", "")).startswith("triage:item:")]
     assert [b["block_id"] for b in items] == ["triage:item:vllm-project/vllm#830", "triage:item:vllm-project/vllm#832"]
-    assert "↳ Fix <https://github.com/vllm-project/vllm/issues/831|#831> · ready for review · CI unknown" in items[0]["text"]["text"]
+    assert "↳ Fix <https://github.com/vllm-project/vllm/issues/831|#831> · 👀 ready for review · ⚪ CI unknown" in items[0]["text"]["text"]
     assert payload["text"] == "Triage digest: 2 P1"
     assert store.unnotified_assignments("d") == []
 

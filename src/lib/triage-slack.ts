@@ -182,14 +182,14 @@ function digestStatusAfterAction(block: Block, action: SlackClickAction): Block 
   const lines = text.text.split("\n");
   if (!/^<https:\/\/github\.com\/[^|]+\|#\d+> · /.test(lines[1] ?? "")) return block;
   const labels = {
-    ack: ["acked", "đã nhận"],
-    done: ["done", "đã hoàn thành"],
-    not_mine: ["awaiting reroute", "chờ chuyển người phụ trách"],
-    reassign: ["reassigned", "đã chuyển người phụ trách"],
+    ack: ["✅ acked", "✅ đã nhận"],
+    done: ["🏁 done", "🏁 đã hoàn thành"],
+    not_mine: ["↩️ awaiting reroute", "↩️ chờ chuyển người phụ trách"],
+    reassign: ["➡️ reassigned", "➡️ đã chuyển người phụ trách"],
   }[action];
   lines[1] = lines[1].split(" · ").map((part) =>
-    ["needs your ack", "acked"].includes(part) ? labels[0]
-      : ["chờ bạn nhận", "đã nhận"].includes(part) ? labels[1] : part,
+    ["needs your ack", "acked", "🔔 needs your ack", "✅ acked", ":bell: needs your ack", ":white_check_mark: acked"].includes(part) ? labels[0]
+      : ["chờ bạn nhận", "đã nhận", "🔔 chờ bạn nhận", "✅ đã nhận", ":bell: chờ bạn nhận", ":white_check_mark: đã nhận"].includes(part) ? labels[1] : part,
   ).join(" · ");
   return { ...block, text: { ...text, text: lines.join("\n") } };
 }

@@ -160,7 +160,8 @@ test("Vietnamese confirmation for maintainers with language: vi", () => {
 
 test("compact digest clicks update metadata without changing titles, fixes or other groups", () => {
   const key = "vllm-project/vllm#68575";
-  for (const [initial, ackedLabel, doneLabel] of [["needs your ack", "acked", "done"], ["chờ bạn nhận", "đã nhận", "đã hoàn thành"]]) {
+  for (const [initial, ackedLabel, doneLabel] of [["needs your ack", "✅ acked", "🏁 done"], ["chờ bạn nhận", "✅ đã nhận", "🏁 đã hoàn thành"],
+    ["🔔 needs your ack", "✅ acked", "🏁 done"], [":bell: chờ bạn nhận", "✅ đã nhận", "🏁 đã hoàn thành"]]) {
     const title = "*<https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2368575|needs your ack in a title>*";
     const meta = "<https://github.com/vllm-project/vllm/issues/68575|#68575> · wrong output · 33h · ";
     const fix = "↳ Fix <https://github.com/vllm-project/vllm/pull/68597|#68597> · ready for review · CI ✓";

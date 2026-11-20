@@ -56,32 +56,33 @@ STRINGS: dict[str, dict[str, str]] = {
         "more_waiting": "…and {n} more overdue items · <{url}|Open full list>",
         "more_fixes": "…and {n} more fix PRs · <{url}|View issue>",
         "compact_fix": "↳ Fix {ref}",
-        "needs_ack": "needs your ack",
-        "acked": "acked",
+        "why_matters": "Why it matters",
+        "needs_ack": "🔔 needs your ack",
+        "acked": "✅ acked",
         "done": "Done",
-        "merged": "merged",
-        "closed": "closed",
-        "draft": "draft",
-        "waiting_author": "waiting on author",
-        "ready_review": "ready for review",
-        "ready_merge": "ready to merge",
-        "approved": "approved",
-        "check_status": "check PR status",
-        "ci_unknown": "CI unknown",
-        "ci_in_progress": "CI running",
-        "ci_failed_main": "CI ✗ (also on main)",
+        "merged": "🟣 merged",
+        "closed": "⚫ closed",
+        "draft": "📝 draft",
+        "waiting_author": "🟡 waiting on author",
+        "ready_review": "👀 ready for review",
+        "ready_merge": "🟢 ready to merge",
+        "approved": "✅ approved",
+        "check_status": "❔ check PR status",
+        "ci_unknown": "⚪ CI unknown",
+        "ci_in_progress": "🔵 CI running",
+        "ci_failed_main": "🔴 CI ✗ (also on main)",
         "age_minutes": "{n}m",
         "age_hours": "{n}h",
         "age_days": "{n}d",
         "age_weeks": "{n}w",
-        "symptom_serving_broken": "serving broken",
-        "symptom_crash": "crash",
-        "symptom_wrong_output": "wrong output",
-        "symptom_security": "security",
-        "symptom_hang": "hang",
-        "symptom_regression": "regression",
-        "symptom_perf": "performance regression",
-        "symptom_memory": "memory regression",
+        "symptom_serving_broken": "🔴 serving broken",
+        "symptom_crash": "💥 crash",
+        "symptom_wrong_output": "⚠️ wrong output",
+        "symptom_security": "🔒 security",
+        "symptom_hang": "⏳ hang",
+        "symptom_regression": "📉 regression",
+        "symptom_perf": "📉 performance regression",
+        "symptom_memory": "📈 memory regression",
         "authored": "you wrote #{n}, which this item names",
         "gh_assigned": "it is assigned to you on GitHub",
         "commented": "you already commented on it",
@@ -119,32 +120,33 @@ STRINGS: dict[str, dict[str, str]] = {
         "more_waiting": "…và {n} mục quá hạn khác · <{url}|Mở toàn bộ danh sách>",
         "more_fixes": "…và {n} PR sửa lỗi khác · <{url}|Xem issue>",
         "compact_fix": "↳ Bản sửa {ref}",
-        "needs_ack": "chờ bạn nhận",
-        "acked": "đã nhận",
+        "why_matters": "Vì sao quan trọng",
+        "needs_ack": "🔔 chờ bạn nhận",
+        "acked": "✅ đã nhận",
         "done": "Hoàn thành",
-        "merged": "đã hợp nhất",
-        "closed": "đã đóng",
-        "draft": "bản nháp",
-        "waiting_author": "chờ tác giả",
-        "ready_review": "sẵn sàng review",
-        "ready_merge": "sẵn sàng hợp nhất",
-        "approved": "đã duyệt",
-        "check_status": "kiểm tra trạng thái PR",
-        "ci_unknown": "chưa rõ CI",
-        "ci_in_progress": "CI đang chạy",
-        "ci_failed_main": "CI ✗ (cũng lỗi trên main)",
+        "merged": "🟣 đã hợp nhất",
+        "closed": "⚫ đã đóng",
+        "draft": "📝 bản nháp",
+        "waiting_author": "🟡 chờ tác giả",
+        "ready_review": "👀 sẵn sàng review",
+        "ready_merge": "🟢 sẵn sàng hợp nhất",
+        "approved": "✅ đã duyệt",
+        "check_status": "❔ kiểm tra trạng thái PR",
+        "ci_unknown": "⚪ chưa rõ CI",
+        "ci_in_progress": "🔵 CI đang chạy",
+        "ci_failed_main": "🔴 CI ✗ (cũng lỗi trên main)",
         "age_minutes": "{n} phút",
         "age_hours": "{n} giờ",
         "age_days": "{n} ngày",
         "age_weeks": "{n} tuần",
-        "symptom_serving_broken": "không phục vụ được",
-        "symptom_crash": "bị crash",
-        "symptom_wrong_output": "kết quả sai",
-        "symptom_security": "bảo mật",
-        "symptom_hang": "bị treo",
-        "symptom_regression": "lỗi hồi quy",
-        "symptom_perf": "giảm hiệu năng",
-        "symptom_memory": "tăng bộ nhớ",
+        "symptom_serving_broken": "🔴 không phục vụ được",
+        "symptom_crash": "💥 bị crash",
+        "symptom_wrong_output": "⚠️ kết quả sai",
+        "symptom_security": "🔒 bảo mật",
+        "symptom_hang": "⏳ bị treo",
+        "symptom_regression": "📉 lỗi hồi quy",
+        "symptom_perf": "📉 giảm hiệu năng",
+        "symptom_memory": "📈 tăng bộ nhớ",
         "authored": "bạn đã viết #{n}, PR được nhắc tới trong mục này",
         "gh_assigned": "mục này được giao cho bạn trên GitHub",
         "commented": "bạn đã bình luận trong mục này",
@@ -498,11 +500,11 @@ def _compact_ci(entry: DigestEntry, lang: str) -> str:
         return _t(lang, "ci_unknown")
     state = ci.get("state")
     if state == "passed":
-        return "CI ✓"
+        return "✅ CI ✓"
     if state == "failed" or ci.get("jobs_failed", 0):
         if ci.get("main_known") and ci.get("jobs_failed", 0) and ci.get("jobs_failed_pr_only") == 0:
             return _t(lang, "ci_failed_main")
-        return "CI ✗"
+        return "🔴 CI ✗"
     return _t(lang, {"running": "ci_in_progress", "not_started": "ci_not_started",
                     "canceled": "ci_canceled"}.get(str(state), "ci_unknown"))
 
@@ -521,6 +523,12 @@ def _digest_section(
     if entry.kind == "pr":
         metadata.append(_compact_ci(entry, lang))
     lines = [f"*{_link(_item_url(entry.item_key), entry.title)}*", " · ".join(p for p in metadata if p)]
+    # Use the extracted summary, not an invented impact claim. Keep one quiet line.
+    impact = " ".join(entry.summary.split())
+    if len(impact) > 180:
+        impact = impact[:177].rsplit(" ", 1)[0].rstrip(".,;:") + "…"
+    if impact:
+        lines.append(f"💡 _{_t(lang, 'why_matters')}: {safe_slack_mrkdwn(impact)}_")
     # Context can include a merged or unassigned fix that isn't a notification.
     linked = {f.item_key: f for f in fixes}
     linked.update({f.item_key: f for f in entry.related_fixes})

@@ -339,7 +339,9 @@ Every route run, before routing (`store.follow_github`):
   sections. At most five groups are shown, with at most three per priority;
   overflow counts link to the full list, also linked at the top. Item titles
   open triage; `#number` opens GitHub. A quiet line shows the extracted symptom,
-  item age (not assignment age), and acknowledgement status.
+  item age (not assignment age), and acknowledgement status. Colored emoji
+  distinguish symptoms, action states and CI. An italic "why it matters" line
+  uses the extracted summary, capped at 180 characters; absent summaries are omitted.
 - **Groups.** An issue and its assigned fix PRs form one entry, at the band of
   its most urgent assigned member. Digests also show linked fixes that are
   unassigned, drafts, closed or merged, as context only: they do not change
