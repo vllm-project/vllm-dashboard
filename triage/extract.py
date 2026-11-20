@@ -279,8 +279,10 @@ def run_extraction(
 ) -> ExtractRunResult:
     result = ExtractRunResult()
     items_today, tokens_today = store.extraction_usage_since(now - timedelta(days=1))
-    room = min(budget.max_items_per_run, budget.max_items_per_day - items_today)
-    if room <= 0 or tokens_today >= budget.max_tokens_per_day:
+    day_room = (budget.max_items_per_day - items_today) if budget.max_items_per_day > 0 else budget.max_items_per_run
+    room = min(budget.max_items_per_run, day_room)
+    tokens_exhausted = budget.max_tokens_per_day > 0 and tokens_today >= budget.max_tokens_per_day
+    if room <= 0 or tokens_exhausted:
         result.stopped_reason = f"daily budget reached ({items_today} items, {tokens_today} tokens)"
         return result
     tasks = store.lease_extraction_batch(
@@ -316,7 +318,7 @@ def run_extraction(
                 )
                 result.extracted += 1
                 tokens_today += (llm.input_tokens or 0) + (llm.output_tokens or 0)
-                if tokens_today >= budget.max_tokens_per_day:
+                if budget.max_tokens_per_day > 0 and tokens_today >= budget.max_tokens_per_day:
                     exhausted = True
                     result.stopped_reason = "daily token budget reached"
     return result
