@@ -7,7 +7,7 @@ import { ActionButtons, TERMINAL_ACTIONS } from "@/components/triage/action-butt
 import { ItemDrawer } from "@/components/triage/item-drawer";
 import { ListShortcuts } from "@/components/triage/list-shortcuts";
 import { UndoToastProvider } from "@/components/triage/undo-toast";
-import { EmptyState, GroupedRows, PriorityGroupHeader, RowSkeleton } from "@/components/triage/item-row";
+import { EmptyState, GroupedRows, KindLegend, PriorityGroupHeader, RowSkeleton } from "@/components/triage/item-row";
 import { groupBand, nestGroups, rowOrder } from "@/lib/triage-groups";
 import { advanceAfter, listPosition, stepItem } from "@/lib/triage-keys";
 import { PLATE_VIEWS, inPlateView, parsePlateView, type PlateView } from "@/lib/triage-presets";
@@ -175,6 +175,7 @@ function MyPlate() {
             }
           />
         )}
+        {groups.length > 0 && <KindLegend />}
         {groups.map((group) => (
           <section key={group.band} aria-label={`${BAND_STYLES[group.band].label} items`}>
             <PriorityGroupHeader band={group.band} count={group.items.reduce((n, row) => n + 1 + row.members.length, 0)} />

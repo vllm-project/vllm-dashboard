@@ -16,8 +16,11 @@ import {
   SCORE_TOOLTIP,
   contextText,
   impactBadge,
-  kindLabel,
-  fixLabelText,
+  fixPrStatus,
+  kindTag,
+  priorityCell,
+  type KindTag as KindTagView,
+  type PriorityCellView,
   fixTargets,
   linkText,
   listBlocks,
@@ -60,34 +63,23 @@ function Owner({ item }: { item: TriageQueueItem }) {
 }
 
 /** "P0" pill and "79 pts" under it; the score links to how it's computed. */
-/** Outline pill text colours for a member whose own priority differs from its group card's. */
-const OUTLINE_PILL: Record<string, string> = {
-  page: "text-red-700 dark:text-red-400",
-  route: "text-amber-700 dark:text-amber-400",
-  watch: "text-blue-700 dark:text-blue-400",
-};
-
-function PriorityCell({ band, score, outlined = false }: { band: string | null; score: number | null; outlined?: boolean }) {
-  const { value, unit } = scoreParts(score);
-  const style = bandStyle(band);
+/** The Priority · Score cell. Empty for a fix PR inside a card (the issue row carries the card's score). */
+function PriorityCell({ view }: { view: PriorityCellView }) {
+  if (!view.show) {
+    return <div className="pt-0.5"><span className="sr-only">Priority is on the issue row above</span></div>;
+  }
+  const { value, unit } = scoreParts(view.score);
   return (
-    <div className="flex flex-col items-start gap-0.5 pt-0.5">
-      {outlined ? (
-        <span
-          title={`${style.meaning} (its own priority; the card is filed by its most urgent item)`}
-          className={`inline-flex h-[18px] min-w-6 shrink-0 items-center justify-center rounded px-1 text-[10px] font-bold tabular-nums ring-1 ring-inset ring-current ${
-            OUTLINE_PILL[band ?? ""] ?? "text-zinc-500 dark:text-zinc-400"
-          }`}
-        >
-          {style.label}
-        </span>
-      ) : (
-        <PriorityBadge band={band} />
-      )}
+    <div className="flex flex-col items-start gap-0.5 pt-0.5" title={view.tooltip ?? undefined}>
+      <PriorityBadge band={view.band} />
       <Link
         href="/triage/scoring"
-        title={SCORE_TOOLTIP}
-        aria-label={score === null ? "Not scored yet: how scores are computed" : `Impact score ${value} points: how it's computed`}
+        title={view.tooltip ?? SCORE_TOOLTIP}
+        aria-label={
+          view.score === null
+            ? "Not scored yet: how scores are computed"
+            : `${view.tooltip ? `${view.tooltip}. ` : ""}Impact score ${value} points: how it's computed`
+        }
         onClick={(event) => event.stopPropagation()}
         className="rounded-sm text-sm font-semibold tabular-nums leading-tight text-zinc-700 underline-offset-2 hover:underline dark:text-zinc-300"
       >
@@ -159,30 +151,64 @@ function DetailLine({ item, shownLinks }: { item: TriageQueueItem; shownLinks: r
   );
 }
 
-/** "Issue" / "PR" with the state-coloured icon, or "↳ Fix PR" under its issue. */
+/** Line 2 of a fix PR inside a card: CI when it says something, and whose move it is. */
+function FixPrStatusLine({ item }: { item: TriageQueueItem }) {
+  const { ci, move } = fixPrStatus(item);
+  if (!ci && !move) return null;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] font-semibold">
+      {ci && (
+        <span title={ci.title} className={`tabular-nums ${CI_TONE[ci.tone]}`}>
+          {ci.label}
+        </span>
+      )}
+      {ci && move && <span aria-hidden="true" className="font-normal text-zinc-300 dark:text-zinc-600">·</span>}
+      {move && (
+        <span className={move.tone === "ready" ? "text-emerald-700 dark:text-emerald-400" : "font-normal text-zinc-500 dark:text-zinc-400"}>
+          {move.text}
+        </span>
+      )}
+    </div>
+  );
+}
+
+const KIND_BOX: Record<KindTagView["style"], string> = {
+  // Issue: plain small caps. PR: an outlined, tinted box. Different shape and word, not just colour.
+  issue: "text-zinc-600 dark:text-zinc-300",
+  pr: "rounded bg-zinc-100 px-1 ring-1 ring-inset ring-zinc-300 text-zinc-700 dark:bg-zinc-800 dark:ring-zinc-600 dark:text-zinc-200",
+};
+
 /**
- * "Issue" / "PR" with the state-coloured icon; a fix PR in a group card reads
- * "↳ Fix PR for #65364", each number opening that issue's drawer.
+ * The kind tag that starts every title line, same width on every row so it
+ * scans as a column: "ISSUE" or an outlined "PR", each with its
+ * state-coloured icon. A fix PR in a card adds "· fix for #65364", each
+ * number opening that issue's drawer.
  */
 function KindTag({
   item,
-  nested,
   fixFor,
   onOpenKey,
 }: {
   item: TriageQueueItem;
-  nested: boolean;
   fixFor?: readonly FixTarget[];
   onOpenKey?: (itemKey: string) => void;
 }) {
-  const label = kindLabel(item, nested);
+  const tag = kindTag(item, fixFor);
   return (
-    <span className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-      {nested && <span aria-hidden="true" className="text-zinc-400 dark:text-zinc-500">↳</span>}
-      <KindIcon kind={item.kind} draft={item.draft} state={item.state} />
-      {nested && fixFor && fixFor.length > 0 ? (
-        <span aria-label={fixLabelText(fixFor)}>
-          Fix PR for{" "}
+    <>
+      <span
+        role="img"
+        aria-label={tag.label}
+        className={`inline-flex w-[4.25rem] shrink-0 items-center gap-1 self-start pt-px`}
+      >
+        <span className={`inline-flex items-center gap-1 text-[11px] font-semibold uppercase leading-4 tracking-wide ${KIND_BOX[tag.style]}`}>
+          <KindIcon kind={item.kind} draft={item.draft} state={item.state} />
+          {tag.word}
+        </span>
+      </span>
+      {tag.fixFor && fixFor && (
+        <span className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400" aria-hidden={!onOpenKey || undefined}>
+          fix for{" "}
           {fixFor.map((target, index) => (
             <Fragment key={target.itemKey}>
               {onOpenKey ? (
@@ -204,10 +230,25 @@ function KindTag({
             </Fragment>
           ))}
         </span>
-      ) : (
-        <span>{label}</span>
       )}
-    </span>
+    </>
+  );
+}
+
+/** One muted line above a list: how to read the kind tags. */
+export function KindLegend() {
+  return (
+    <p className="flex flex-wrap items-center gap-x-1.5 px-4 py-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+      <span className="inline-flex items-center gap-1">
+        <KindIcon kind="issue" /> Issue
+      </span>
+      <span aria-hidden="true">·</span>
+      <span className="inline-flex items-center gap-1">
+        <KindIcon kind="pr" /> Pull request
+      </span>
+      <span aria-hidden="true">·</span>
+      <span>↳ fix PR (linked to the issue above)</span>
+    </p>
   );
 }
 
@@ -215,8 +256,10 @@ function KindTag({
 export interface CardPlace {
   /** The card's band: one stripe for the whole card. */
   band: string | null;
-  /** The issue at the top (connector starts under its icon). */
+  /** The issue at the top (connector starts beside its kind tag). */
   lead: boolean;
+  /** The fix PRs' own scores, for the issue row's tooltip when they set the card's band. */
+  memberScores: readonly (number | null)[];
   /** The last fix PR (connector ends at its label). */
   last: boolean;
 }
@@ -293,23 +336,31 @@ export function ItemRow({
     >
       {!card && style.stripe && <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${style.stripe}`} />}
       <div className={ROW_GRID}>
-        <PriorityCell band={item.band} score={item.score} outlined={!!card && item.band !== card.band} />
-        <div className={`relative min-w-0 ${nested ? "pl-6" : ""}`}>
-          {/* Elbow connector: from under the issue's icon down and into each fix PR's label. */}
+        <PriorityCell view={priorityCell(item, card)} />
+        <div className="relative min-w-0">
+          {/*
+            Connector in the gutter left of the item column (never over text or
+            badges): a stub into the issue's kind tag, down to each fix PR, and an
+            elbow into each fix PR's kind tag.
+          */}
           {card?.lead && connectsDown && (
-            <span aria-hidden="true" className={`absolute -bottom-2.5 left-[6px] top-[1.15rem] w-[1.5px] ${CONNECTOR}`} />
+            <>
+              <span aria-hidden="true" className={`absolute -left-[7px] top-[0.5rem] h-[1.5px] w-[6px] ${CONNECTOR}`} />
+              <span aria-hidden="true" className={`absolute -bottom-2.5 -left-[7px] top-[0.5rem] w-[1.5px] ${CONNECTOR}`} />
+            </>
           )}
           {card && nested && (
             <>
               <span
                 aria-hidden="true"
-                className={`absolute -top-2.5 left-[6px] w-[1.5px] ${CONNECTOR} ${card.last ? "h-[1.2rem]" : "-bottom-2.5"}`}
+                className={`absolute -left-[7px] -top-2.5 w-[1.5px] ${CONNECTOR} ${card.last ? "h-[1.15rem]" : "-bottom-2.5"}`}
               />
-              <span aria-hidden="true" className={`absolute left-[6px] top-[0.55rem] h-[1.5px] w-3 ${CONNECTOR}`} />
+              <span aria-hidden="true" className={`absolute -left-[7px] top-[0.5rem] h-[1.5px] w-[6px] ${CONNECTOR}`} />
             </>
           )}
           <div className="flex min-w-0 items-baseline gap-2">
-            <KindTag item={item} nested={nested} fixFor={fixFor} onOpenKey={onOpenKey} />
+            {nested && <span className="sr-only">↳ fix PR for the issue above.</span>}
+            <KindTag item={item} fixFor={nested ? fixFor : undefined} onOpenKey={onOpenKey} />
             <button
               type="button"
               onClick={(event) => {
@@ -323,8 +374,8 @@ export function ItemRow({
             </button>
             {number}
           </div>
-          {/* A fix PR's label already names its issues; no "Fixes #N" again. */}
-          <DetailLine item={item} shownLinks={nested ? [...shownLinks, ...item.fixes.map((link) => link.itemKey)] : shownLinks} />
+          {/* A fix PR in a card: what's actionable for the PR (its issue row carries impact and context). */}
+          {card && nested ? <FixPrStatusLine item={item} /> : <DetailLine item={item} shownLinks={shownLinks} />}
           {!hideOwner && (
             <div className="mt-1 md:hidden">
               <Owner item={item} />
@@ -405,7 +456,12 @@ export function GroupedRows<T extends TriageQueueItem>({
               {block.rows.map((row, index) =>
                 draw(
                   row,
-                  { band: block.band, lead: index === 0, last: index === block.rows.length - 1 },
+                  {
+                    band: block.band,
+                    lead: index === 0,
+                    last: index === block.rows.length - 1,
+                    memberScores: block.rows.slice(1).map((member) => member.item.score),
+                  },
                   row.nested ? fixTargets(row.item, lead.itemKey, lead.number) : undefined,
                 ),
               )}

@@ -8,7 +8,10 @@ import {
   fixTargets,
   listBlocks,
   impactBadge,
-  kindLabel,
+  fixPrStatus,
+  kindHeading,
+  kindTag,
+  priorityCell,
   linkText,
   listRows,
   rowCiChip,
@@ -121,10 +124,50 @@ test("context is one plain line: hardware · model · area, then +N", () => {
   assert.equal(contextText({ hardware: [], models: [], areas: [] }).text, "");
 });
 
-test("line 1 kind label", () => {
-  assert.equal(kindLabel({ kind: "issue" }, false), "Issue");
-  assert.equal(kindLabel({ kind: "pr" }, false), "PR");
-  assert.equal(kindLabel({ kind: "pr" }, true), "Fix PR");
+test("kind tag: ISSUE vs outlined PR, and a fix PR names its issues", () => {
+  assert.deepEqual(kindTag({ kind: "issue" }), { word: "Issue", style: "issue", fixFor: null, label: "Issue" });
+  assert.deepEqual(kindTag({ kind: "pr" }), { word: "PR", style: "pr", fixFor: null, label: "Pull request" });
+  const fix = kindTag({ kind: "pr" }, [{ number: 65364 }]);
+  assert.equal(fix.fixFor, "fix for #65364");
+  assert.equal(fix.label, "Pull request, fix for #65364");
+  assert.equal(kindTag({ kind: "pr" }, [{ number: 1 }, { number: 2 }]).fixFor, "fix for #1, #2");
+  // An issue never reads as a fix, even if handed targets.
+  assert.equal(kindTag({ kind: "issue" }, [{ number: 1 }]).fixFor, null);
+  assert.equal(kindHeading("issue", 65364), "Issue #65364");
+  assert.equal(kindHeading("pr", "65365"), "Pull request #65365");
+});
+
+test("one score per card: the issue row only, with the group band when a fix PR is more urgent", () => {
+  // Standalone rows keep their own band and score.
+  assert.deepEqual(priorityCell({ band: "route", score: 58 }), { show: true, band: "route", score: 58, tooltip: null });
+  // Same band: the issue's own pill and score, no tooltip.
+  assert.deepEqual(
+    priorityCell({ band: "page", score: 79 }, { band: "page", lead: true, memberScores: [105] }),
+    { show: true, band: "page", score: 79, tooltip: null },
+  );
+  // P1 issue + P0 fix PR: the group's P0 pill with the issue's own points, explained.
+  assert.deepEqual(
+    priorityCell({ band: "route", score: 55 }, { band: "page", lead: true, memberScores: [75] }),
+    { show: true, band: "page", score: 55, tooltip: "Group priority; this issue scores 55, its fix PR 75" },
+  );
+  assert.equal(
+    priorityCell({ band: "route", score: 55 }, { band: "page", lead: true, memberScores: [75, null] }).tooltip,
+    "Group priority; this issue scores 55, its fix PRs 75, —",
+  );
+  // Fix PR rows in a card show no pill and no points.
+  assert.deepEqual(priorityCell({ band: "page", score: 105 }, { band: "page", lead: false, memberScores: [] }).show, false);
+});
+
+test("a fix PR's line 2 is what's actionable: CI when informative, and whose move", () => {
+  const base = { ci: null, waitingOn: null, draft: false, state: "open" } as const;
+  assert.deepEqual(fixPrStatus(base), { ci: null, move: null });
+  assert.deepEqual(fixPrStatus({ ...base, waitingOn: "reviewer" }).move, { text: "ready for review", tone: "ready" });
+  assert.deepEqual(fixPrStatus({ ...base, waitingOn: "author" }).move, { text: "waiting on author", tone: "muted" });
+  assert.deepEqual(fixPrStatus({ ...base, draft: true, waitingOn: "reviewer" }).move, { text: "draft", tone: "muted" });
+  assert.deepEqual(fixPrStatus({ ...base, state: "merged" }).move, { text: "merged", tone: "muted" });
+  assert.equal(fixPrStatus({ ...base, ci: ci({ state: "failed", jobs_failed: 2, jobs_failed_pr_only: 2 }) }).ci!.label, "2 CI failed");
+  assert.equal(fixPrStatus({ ...base, ci: ci({}) }).ci!.label, "CI ✓");
+  assert.equal(fixPrStatus({ ...base, ci: ci({ state: "not_started" }) }).ci, null);
 });
 
 test("score reads as points, uncapped", () => {
@@ -187,6 +230,6 @@ test("a fix PR's label names its issues, the one it sits under first", () => {
   const fixA = item(67460, { kind: "pr", fixes: [link(67401), link(67454)] });
   const targets = fixTargets(fixA, "vllm-project/vllm#67454", 67454);
   assert.deepEqual(targets.map((t) => t.number), [67454, 67401]);
-  assert.equal(fixLabelText(targets), "Fix PR for #67454, #67401");
-  assert.equal(fixLabelText(fixTargets(item(65365, { kind: "pr", fixes: [link(65364)] }), "vllm-project/vllm#65364", 65364)), "Fix PR for #65364");
+  assert.equal(fixLabelText(targets), "PR · fix for #67454, #67401");
+  assert.equal(fixLabelText(fixTargets(item(65365, { kind: "pr", fixes: [link(65364)] }), "vllm-project/vllm#65364", 65364)), "PR · fix for #65364");
 });

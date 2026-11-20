@@ -12,6 +12,7 @@ import {
   EmptyState,
   GroupedRows,
   ItemListHeader,
+  KindLegend,
   PriorityGroupHeader,
   RowSkeleton,
 } from "@/components/triage/item-row";
@@ -818,6 +819,7 @@ function Queue() {
           </p>
         )}
 
+        <KindLegend />
         <ItemListHeader />
         {!data && isLoading && <RowSkeleton />}
         {data && data.items.length === 0 && (
