@@ -8,11 +8,12 @@ import { ItemDrawer } from "@/components/triage/item-drawer";
 import { OwnerPicker } from "@/components/triage/owner-picker";
 import {
   EmptyState,
+  GroupedRows,
   ItemListHeader,
-  ItemRow,
   PriorityGroupHeader,
   RowSkeleton,
 } from "@/components/triage/item-row";
+import { groupBand, nestGroups } from "@/lib/triage-groups";
 import { useTriageLogin } from "@/components/triage/use-triage-session";
 import { useLocationHash } from "@/lib/use-location-hash";
 import { itemFromLocation, percent, triageFetcher } from "@/lib/triage-format";
@@ -401,7 +402,9 @@ export default function QueueContent() {
   }
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
-  const groups = data && grouped ? groupByPriority(data.items, (item) => item.band) : [];
+  // Fix PRs sit under their issue; a group is filed under its most urgent member.
+  const rows = data ? nestGroups(data.items) : [];
+  const groups = data && grouped ? groupByPriority(rows, groupBand) : [];
   const openRow = (itemKey: string) => update({ page: filters.page }, { item: itemKey });
   const lastOnPage = data && data.page < totalPages ? data.items[data.items.length - 1]?.band : undefined;
 
@@ -542,16 +545,14 @@ export default function QueueContent() {
               <section key={group.band} aria-label={`${BAND_STYLES[group.band].label} items`}>
                 <PriorityGroupHeader
                   band={group.band}
-                  count={group.items.length}
+                  count={group.items.reduce((n, row) => n + 1 + row.members.length, 0)}
                   collapsed={group.band === "ignore" ? collapsed : undefined}
                   onToggle={group.band === "ignore" ? () => setShowP3((value) => !value) : undefined}
                   note={group.band === lastOnPage ? "continues on the next page" : undefined}
                 />
                 {!collapsed && (
                   <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
-                    {group.items.map((item) => (
-                      <ItemRow key={item.itemKey} item={item} onOpen={() => openRow(item.itemKey)} />
-                    ))}
+                    <GroupedRows rows={group.items} rowKey={(item) => item.itemKey} onOpen={(item) => openRow(item.itemKey)} />
                   </ul>
                 )}
               </section>
@@ -559,9 +560,7 @@ export default function QueueContent() {
           })}
         {data && data.items.length > 0 && !grouped && (
           <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
-            {data.items.map((item) => (
-              <ItemRow key={item.itemKey} item={item} onOpen={() => openRow(item.itemKey)} />
-            ))}
+            <GroupedRows rows={rows} rowKey={(item) => item.itemKey} onOpen={(item) => openRow(item.itemKey)} />
           </ul>
         )}
 

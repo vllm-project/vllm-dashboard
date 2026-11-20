@@ -8,6 +8,8 @@ test("router reasons read as plain words", () => {
   assert.equal(describeReason("commented"), "already commented on this item");
   assert.equal(describeReason("assigned on GitHub"), "assigned to them on GitHub");
   assert.equal(describeReason("area:moe"), "their rule: area moe");
+  assert.equal(describeReason("fixes #65385"), "fixes #65385, which they own");
+  assert.equal(describeReason("fixed by #66694"), "fixed by #66694, which they own");
   assert.equal(describeReason("something:new"), "something:new");
 });
 

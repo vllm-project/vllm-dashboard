@@ -19,6 +19,7 @@ from alerting.ports import NotificationIntent
 from alerting.postgres import PostgresAlertStore
 
 from triage.extract import ExtractionTask, LLMResult
+from triage.groups import Member
 from triage.relevance import (
     FEEDBACK_LIMIT,
     FEEDBACK_WINDOW,
@@ -28,7 +29,35 @@ from triage.relevance import (
     profile_hash,
 )
 from triage.model import Item, Maintainer, Score
-from triage.prepass import BODY_LIMIT, COMMENTS_LIMIT, MAX_FILES
+from triage.prepass import BODY_LIMIT, COMMENTS_LIMIT, MAX_FILES, fixes_issues
+
+
+def _fix_numbers(pr: str, facets: str) -> str:
+    """SQL: the issue numbers (text) PR row `pr` fixes: prepass.fixes_issues
+    (closing keywords and GitHub closing references) plus Claude's
+    facets.pr.fixes_issues. See triage/groups.py."""
+    def arr(expr: str) -> str:
+        return f"(CASE WHEN jsonb_typeof({expr}) = 'array' THEN {expr} ELSE '[]'::jsonb END)"
+    mine = arr(pr + ".prepass->'fixes_issues'")
+    claude = arr(facets + "->'pr'->'fixes_issues'")
+    return (f"(SELECT DISTINCT n.num FROM jsonb_array_elements_text({mine} || {claude}) AS n(num) "
+            "WHERE n.num ~ '^[0-9]{1,9}$')")
+
+
+def _fixes_of(item: str, facets: str) -> str:
+    """SQL: text[] of the issue keys PR row `item` fixes (empty for issues)."""
+    return (f"COALESCE((SELECT array_agg(t.item_key ORDER BY t.number) FROM {_fix_numbers(item, facets)} f "
+            f"JOIN triage_items t ON t.item_key = {item}.repo || '#' || f.num AND t.kind = 'issue' "
+            f"WHERE {item}.kind = 'pr'), '{{}}')")
+
+
+def _fixed_by_merged(item: str) -> str:
+    """SQL: true when a merged PR fixes issue row `item`."""
+    return (f"EXISTS (SELECT 1 FROM triage_items p LEFT JOIN LATERAL ("
+            f"SELECT x.facets FROM triage_extractions x WHERE x.item_key = p.item_key "
+            f"ORDER BY x.created_at DESC, x.id DESC LIMIT 1) pe ON true "
+            f"WHERE {item}.kind = 'issue' AND p.repo = {item}.repo AND p.kind = 'pr' AND p.state = 'merged' "
+            f"AND {item}.number::text IN {_fix_numbers('p', 'pe.facets')})")
 
 
 @dataclass(frozen=True)
@@ -85,6 +114,9 @@ class NewAssignment:
     role: str
     reason: dict[str, Any]
     notification: NotificationIntent | None
+    # Notified along with another item (a group's page DM): don't put it in
+    # the next digest.
+    notified: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,6 +133,10 @@ class DigestEntry:
     why_local: str = ""
     # Set on "still waiting" reminders (waiting_assignments) only.
     assigned_at: datetime | None = None
+    kind: str = ""
+    # For a PR: the issue keys it fixes (triage/groups.py), so a digest can
+    # show it under its issue.
+    fixes: tuple[str, ...] = ()
 
 
 class PostgresTriageStore(PostgresAlertStore):
@@ -472,7 +508,9 @@ class PostgresTriageStore(PostgresAlertStore):
     def maintainer_load(self, *, since: datetime) -> dict[str, int]:
         """Primary assignments this week that the person kept (open, acked,
         done, dropped); ones they passed on or reassigned away don't count,
-        nor ones closed on GitHub before they acked them."""
+        nor ones closed on GitHub before they acked them, nor ones that
+        followed their issue/fix-PR group (reason.grouped_with): a group takes
+        one slot."""
         with self._connection_factory() as c:
             rows = c.execute(
                 """SELECT maintainer, count(*) FROM triage_assignments
@@ -480,6 +518,7 @@ class PostgresTriageStore(PostgresAlertStore):
                      AND status NOT IN ('not_mine', 'reassigned')
                      AND NOT (status = 'done' AND reason->>'closed_by' = 'github'
                               AND reason->>'closed_from' = 'open')
+                     AND NOT (reason ? 'grouped_with')
                    GROUP BY maintainer""",
                 (since,),
             ).fetchall()
@@ -529,6 +568,65 @@ class PostgresTriageStore(PostgresAlertStore):
             for r in rows
         ]
 
+    # --- issue + fix PR groups (triage/groups.py) ---------------------------
+
+    def fix_links(self, *, open_only: bool = False) -> list[tuple[str, str]]:
+        """(pr_key, issue_key) for every PR that fixes an issue, or only
+        those where one of the two is open with `open_only`."""
+        with self._connection_factory() as c:
+            rows = c.execute(
+                f"""SELECT p.item_key, i.item_key
+                    FROM triage_items p
+                    LEFT JOIN LATERAL (
+                        SELECT x.facets FROM triage_extractions x WHERE x.item_key = p.item_key
+                        ORDER BY x.created_at DESC, x.id DESC LIMIT 1) e ON true
+                    CROSS JOIN LATERAL {_fix_numbers('p', 'e.facets')} f
+                    JOIN triage_items i ON i.item_key = p.repo || '#' || f.num AND i.kind = 'issue'
+                    WHERE p.kind = 'pr' AND (NOT %s OR p.state = 'open' OR i.state = 'open')
+                    ORDER BY p.item_key, i.item_key""",
+                (open_only,),
+            ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def group_members(self, keys: Iterable[str]) -> dict[str, Member]:
+        """Number, kind, state, score, band and open/acked primary owner of each item."""
+        keys = sorted(set(keys))
+        if not keys:
+            return {}
+        with self._connection_factory() as c:
+            rows = c.execute(
+                """SELECT i.item_key, i.number, i.kind, i.state, s.score, s.band,
+                          (SELECT a.maintainer FROM triage_assignments a
+                           WHERE a.item_key = i.item_key AND a.role = 'primary'
+                             AND a.status IN ('open', 'acked')
+                           ORDER BY a.assigned_at DESC, a.id DESC LIMIT 1)
+                   FROM triage_items i LEFT JOIN triage_scores s USING (item_key)
+                   WHERE i.item_key = ANY(%s)""",
+                (keys,),
+            ).fetchall()
+        return {r[0]: Member(r[0], int(r[1]), r[2], r[3], r[4], r[5], r[6]) for r in rows}
+
+    def backfill_fixes_issues(self, *, limit: int = 1000) -> int:
+        """PRs stored before prepass.fixes_issues existed: read it from the
+        stored title and body (closing keywords only; the ingest also adds
+        GitHub's closing references the next time it sees the PR)."""
+        with self._connection_factory() as c:
+            rows = c.execute(
+                """SELECT item_key, title, body_excerpt FROM triage_items
+                   WHERE kind = 'pr' AND NOT (prepass ? 'fixes_issues')
+                   ORDER BY gh_created_at DESC LIMIT %s""",
+                (limit,),
+            ).fetchall()
+            if rows:
+                with c.transaction():
+                    with c.cursor() as cur:
+                        cur.executemany(
+                            """UPDATE triage_items SET prepass = prepass || jsonb_build_object('fixes_issues', %s::jsonb)
+                               WHERE item_key = %s AND NOT (prepass ? 'fixes_issues')""",
+                            [(json.dumps(fixes_issues(f"{r[1]}\n{r[2]}")), r[0]) for r in rows],
+                        )
+        return len(rows)
+
     def waiting_prs(self, repo: str, *, limit: int) -> list[tuple[str, int, dict[str, Any]]]:
         """(item_key, number, prepass) of open P1 PRs the router holds back
         because they wait on their author and nobody owns yet, highest score
@@ -560,27 +658,36 @@ class PostgresTriageStore(PostgresAlertStore):
     def commit_assignments(
         self, item_key: str, score: int, assignments: list[NewAssignment], *, now: datetime
     ) -> None:
+        self.commit_routes([(item_key, score, assignments)], now=now)
+
+    def commit_routes(
+        self, routes: list[tuple[str, int, list[NewAssignment]]], *, now: datetime
+    ) -> None:
+        """Assignments for one or more items (an item and the group members
+        that follow it) in one transaction."""
         with self._connection_factory() as c:
             with c.transaction():
-                for a in assignments:
-                    row = c.execute(
-                        """INSERT INTO triage_assignments (item_key, maintainer, role, reason,
-                               score_at_assign, assigned_at, notified_at)
-                           VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s)
-                           ON CONFLICT DO NOTHING RETURNING id""",
-                        (item_key, a.maintainer, a.role, json.dumps(a.reason), score, now,
-                         now if a.notification else None),
-                    ).fetchone()
-                    if row and a.notification:
-                        self._enqueue(c, a.notification, next_attempt_at=now)
+                for item_key, score, assignments in routes:
+                    for a in assignments:
+                        row = c.execute(
+                            """INSERT INTO triage_assignments (item_key, maintainer, role, reason,
+                                   score_at_assign, assigned_at, notified_at)
+                               VALUES (%s,%s,%s,%s::jsonb,%s,%s,%s)
+                               ON CONFLICT DO NOTHING RETURNING id""",
+                            (item_key, a.maintainer, a.role, json.dumps(a.reason), score, now,
+                             now if a.notification or a.notified else None),
+                        ).fetchone()
+                        if row and a.notification:
+                            self._enqueue(c, a.notification, next_attempt_at=now)
 
     # --- digests -------------------------------------------------------------
 
     def unnotified_assignments(self, maintainer: str) -> list[DigestEntry]:
         with self._connection_factory() as c:
             rows = c.execute(
-                """SELECT a.id, i.item_key, i.title, i.html_url, s.score, s.band,
-                          COALESCE(e.facets->>'summary', ''), a.reason, COALESCE(r.reason_local, '')
+                f"""SELECT a.id, i.item_key, i.title, i.html_url, s.score, s.band,
+                          COALESCE(e.facets->>'summary', ''), a.reason, COALESCE(r.reason_local, ''),
+                          i.kind, {_fixes_of('i', 'e.facets')}
                    FROM triage_assignments a
                    JOIN triage_items i USING (item_key)
                    JOIN triage_scores s USING (item_key)
@@ -592,7 +699,8 @@ class PostgresTriageStore(PostgresAlertStore):
                 (maintainer,),
             ).fetchall()
         return [
-            DigestEntry(r[0], r[1], r[2], r[3], r[4], r[5], r[6], list((r[7] or {}).get("matched", [])), r[8])
+            DigestEntry(r[0], r[1], r[2], r[3], r[4], r[5], r[6], list((r[7] or {}).get("matched", [])), r[8],
+                        kind=r[9], fixes=tuple(r[10]))
             for r in rows
         ]
 
@@ -603,12 +711,13 @@ class PostgresTriageStore(PostgresAlertStore):
         (notified_at set) and assigned before `assigned_before`, oldest
         first, at most `limit`, plus how many there are in all. Skips items
         that are closed, dropped or slop, or that someone else has already
-        taken (acked or done)."""
+        taken (acked or done), and issues a merged PR fixes (they wait for
+        GitHub to close them, not for the maintainer)."""
         with self._connection_factory() as c:
             rows = c.execute(
-                """SELECT a.id, i.item_key, i.title, i.html_url, s.score, s.band,
+                f"""SELECT a.id, i.item_key, i.title, i.html_url, s.score, s.band,
                           COALESCE(e.facets->>'summary', ''), a.reason, COALESCE(r.reason_local, ''),
-                          a.assigned_at, count(*) OVER ()
+                          a.assigned_at, count(*) OVER (), i.kind, {_fixes_of('i', 'e.facets')}
                    FROM triage_assignments a
                    JOIN triage_items i USING (item_key)
                    JOIN triage_scores s USING (item_key)
@@ -620,13 +729,14 @@ class PostgresTriageStore(PostgresAlertStore):
                                      AND o.id <> a.id AND o.status IN ('acked', 'done'))
                      AND NOT EXISTS (SELECT 1 FROM triage_actions x WHERE x.item_key = a.item_key
                                      AND x.action IN ('drop', 'slop'))
+                     AND NOT {_fixed_by_merged('i')}
                    ORDER BY a.assigned_at, a.id
                    LIMIT %s""",
                 (maintainer, assigned_before, limit),
             ).fetchall()
         entries = [
             DigestEntry(r[0], r[1], r[2], r[3], r[4], r[5], r[6], list((r[7] or {}).get("matched", [])), r[8],
-                        assigned_at=r[9])
+                        assigned_at=r[9], kind=r[11], fixes=tuple(r[12]))
             for r in rows
         ]
         return entries, int(rows[0][10]) if rows else 0
@@ -634,18 +744,19 @@ class PostgresTriageStore(PostgresAlertStore):
     def top_new_items(self, *, since: datetime, limit: int) -> list[tuple[DigestEntry, list[str]]]:
         with self._connection_factory() as c:
             rows = c.execute(
-                """SELECT i.item_key, i.title, i.html_url, s.score, s.band,
-                          COALESCE(e.facets->>'summary', ''),
+                f"""SELECT i.item_key, i.title, i.html_url, s.score, s.band,
+                          COALESCE(e.facets->>'summary', ''), i.kind, {_fixes_of('i', 'e.facets')},
                           COALESCE((SELECT array_agg(a.maintainer ORDER BY a.role DESC)
                                     FROM triage_assignments a
-                                    WHERE a.item_key = i.item_key AND a.status IN ('open','acked')), '{}')
+                                    WHERE a.item_key = i.item_key AND a.status IN ('open','acked')), '{{}}')
                    FROM triage_items i JOIN triage_scores s USING (item_key)
                    LEFT JOIN triage_extractions e ON e.id = s.extraction_id
                    WHERE i.first_seen_at >= %s AND i.state = 'open' AND s.band IN ('page', 'route')
                    ORDER BY s.score DESC LIMIT %s""",
                 (since, limit),
             ).fetchall()
-        return [(DigestEntry(0, r[0], r[1], r[2], r[3], r[4], r[5], []), list(r[6])) for r in rows]
+        return [(DigestEntry(0, r[0], r[1], r[2], r[3], r[4], r[5], [], kind=r[6], fixes=tuple(r[7])), list(r[8]))
+                for r in rows]
 
     def suppression_since(self, since: datetime, *, threshold: int) -> list[tuple[str, int, int]]:
         """(actor, drops, slops) for people who hid >= threshold items since `since`."""

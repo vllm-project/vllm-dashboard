@@ -231,3 +231,38 @@ export function planTriageAction(
     },
   };
 }
+
+/** Actions on a group's issue that its fix PRs held by the same person follow (triage/groups.py). */
+export const GROUP_ACTIONS: readonly TriageAction[] = ["ack", "not_mine", "done", "reassign"];
+
+/**
+ * The same action for one fix PR of the issue just acted on, or null when
+ * it doesn't apply: only ack / not mine / done / reassign, only the PR's
+ * open (or acked) assignment held by `holder` (the actor, or for reassign
+ * the person it was taken from), and nothing to do when it's already in
+ * that state. `planTriageAction` then checks it as usual.
+ */
+export function memberRequest(
+  main: ActionRequest,
+  holder: string,
+  memberKey: string,
+  member: readonly AssignmentState[],
+): ActionRequest | null {
+  if (!GROUP_ACTIONS.includes(main.action)) return null;
+  const held = member
+    .filter((assignment) => OPEN.includes(assignment.status) && sameLogin(assignment.maintainer, holder))
+    .sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"))[0];
+  if (!held) return null;
+  if (main.action === "ack" && held.status === "acked") return null;
+  if (main.action === "reassign" && main.target && sameLogin(held.maintainer, main.target)) return null;
+  if (main.action === "reassign" && member.some((a) => OPEN.includes(a.status) && main.target && sameLogin(a.maintainer, main.target))) {
+    return null; // the target already has it
+  }
+  return {
+    itemKey: memberKey,
+    action: main.action,
+    assignmentId: held.id,
+    target: main.target,
+    note: `with ${main.itemKey.replace(/^.*#/, "#")}${main.note ? `: ${main.note}` : ""}`.slice(0, 2000),
+  };
+}

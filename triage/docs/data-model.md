@@ -22,6 +22,9 @@ dashboard / Slack ──► triage_actions + triage_assignments.status
   "areas": ["moe", "kernels"],          // from changed paths (PRs) and labels
   "linked_issues": [12345],             // "Fixes #N", "Closes #N", issue URLs, and (GraphQL
                                         // ingest) the PR's closing references in the sidebar
+  "fixes_issues": [12345],              // PRs: only "Fixes/Closes/Resolves #N" (or the issue URL)
+                                        // plus the closing references; "related to #N" is not a
+                                        // fix. Issues: []. Groups an issue with its fix PRs.
   "hardware_hints": ["B200"],           // regex hits in title/body
   "model_hints": ["DeepSeek-V3"],       // regex hits in title/body
   "is_maintainer": false,               // author_association in OWNER/MEMBER/COLLABORATOR
@@ -155,7 +158,29 @@ without `triage_actions` rows (those are what people did):
 | the assigned maintainer comments after `assigned_at` | open → acked; `reason.acked_by = "github_comment"` |
 
 Weekly capacity does not count a primary that was closed on GitHub before it
-was acked. An item whose GitHub assignees are all people outside the active
+was acked.
+
+### Issue + fix PR groups (`triage/groups.py`)
+
+A PR fixes an issue when `prepass.fixes_issues` or Claude's
+`facets.pr.fixes_issues` names it and both are `vllm-project/vllm` items in
+`triage_items` (`store.fix_links`). A group is an issue and its fix PRs.
+
+- Routing: an item whose issue / fix PR has an open or acked primary owner
+  goes to that owner (`reason.matched` starts with `"fixes #N"` or
+  `"fixed by #N"`, and `reason.grouped_with` is that item's key), unless the
+  owner said `not_mine` to it, excludes it, is away, or the group's highest
+  score is under their `min_score`. With no owner, the highest-scored member
+  is routed as usual with the group's highest score and band, and the other
+  unowned candidates follow it in the same run (one P0 DM for the group).
+- Capacity: rows with `reason.grouped_with` don't count, so a group takes one
+  slot.
+- Actions: `ack`, `not_mine`, `done` and `reassign` on an issue also apply to
+  its fix PRs' open/acked assignments held by the same person (the actor, or
+  for reassign the person it was taken from), each with its own
+  `triage_actions` row (`note = "with #N"`). `drop`, `slop` and `reopen` stay on
+  the item clicked.
+- Reminders ("Still waiting") skip an issue whose fix PR is merged. An item whose GitHub assignees are all people outside the active
 maintainer list is not routed (it stays on the dashboard); a GitHub assignee
 who is a maintainer counts as involvement (`"assigned on GitHub"`) and ranks
 above every other reason.

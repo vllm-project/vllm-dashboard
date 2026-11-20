@@ -112,6 +112,12 @@ test("ack keeps the buttons (Done replaces Ack); done / not mine / reassign leav
   assert.deepEqual((done[3].elements as { action_id: string }[]).map((e) => e.action_id), [SLACK_ACTIONS.open]);
   assert.match(JSON.stringify(done[2]), /Marked done/);
 
+  // On a group, the result line says which fix PRs the click applied to too.
+  const group = blocksAfterAction(blocks, key, "ack", "gau-nernst", null, new Date(0), "en", ["vllm-project/vllm#67812"]);
+  assert.match(JSON.stringify(group[2]), /Acked by \*gau-nernst\* \(and its fix #67812\)/);
+  const vi = blocksAfterAction(blocks, key, "done", "gau-nernst", null, new Date(0), "vi", ["vllm-project/vllm#67812"]);
+  assert.match(JSON.stringify(vi[2]), /cùng bản sửa #67812/);
+
   const moved = blocksAfterAction(blocks, key, "reassign", "khluu", "gau-nernst", new Date(0));
   assert.match(JSON.stringify(moved[2]), /Reassigned to \*gau-nernst\* by khluu/);
   assert.deepEqual((moved[3].elements as { action_id: string }[]).map((e) => e.action_id), [SLACK_ACTIONS.open]);

@@ -46,6 +46,8 @@ export interface TriageFacets {
 export interface TriagePrepass {
   areas?: string[];
   linked_issues?: number[];
+  /** PRs: issues it fixes (closing keywords and GitHub closing references); see triage/groups.py. */
+  fixes_issues?: number[];
   hardware_hints?: string[];
   model_hints?: string[];
   is_maintainer?: boolean;
@@ -96,6 +98,21 @@ export interface TriageAssignmentSummary {
   status: AssignmentStatus;
 }
 
+/** The other side of an issue + fix PR link (triage/groups.py). */
+export interface TriageLinkedItem {
+  itemKey: string;
+  number: number;
+  kind: "issue" | "pr";
+  title: string;
+  /** open / closed / merged. */
+  state: string;
+  htmlUrl: string;
+  score: number | null;
+  band: string | null;
+  /** Open/acked primary owner, if any. */
+  owner: string | null;
+}
+
 export interface TriageQueueItem {
   itemKey: string;
   repo: string;
@@ -119,6 +136,10 @@ export interface TriageQueueItem {
   /** facets.severity, for the scan-for flags (serving broken, crash, …). */
   severity: NonNullable<TriageFacets["severity"]> | null;
   assignments: TriageAssignmentSummary[];
+  /** PRs: the issues it fixes. */
+  fixes: TriageLinkedItem[];
+  /** Issues: the PRs that fix it. */
+  fixedBy: TriageLinkedItem[];
 }
 
 export interface TriageQueueResponse {
@@ -193,6 +214,10 @@ export interface TriageItemDetail {
   relevance: TriageRelevance[];
   /** Why it has no open owner, as the router sees it; null when someone owns it. */
   whyUnowned: WhyUnowned | null;
+  /** PRs: the issues it fixes. */
+  fixes: TriageLinkedItem[];
+  /** Issues: the PRs that fix it. */
+  fixedBy: TriageLinkedItem[];
 }
 
 export interface TriageRelevance {

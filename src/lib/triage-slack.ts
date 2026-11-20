@@ -139,6 +139,12 @@ const RESULT_TEXT: Record<SlackLanguage, Record<SlackClickAction, (login: string
 
 const DONE_LABEL: Record<SlackLanguage, string> = { en: "Done", vi: "Hoàn thành" };
 
+/** "(and #67812)": the group's fix PRs the click applied to too. */
+const ALSO: Record<SlackLanguage, (numbers: string) => string> = {
+  en: (numbers) => `(and its fix ${numbers})`,
+  vi: (numbers) => `(cùng bản sửa ${numbers})`,
+};
+
 type Block = Record<string, unknown>;
 type Element = Record<string, unknown>;
 
@@ -174,7 +180,8 @@ function menuOpenOnly(accessory: Record<string, unknown>): Record<string, unknow
  * mine / Reassign / Open stay, under a one-line result. Done, Not mine and
  * Reassign end this person's ownership, so only "Open in dashboard" remains.
  * The result line is replaced on each later click, so it always shows the
- * latest state.
+ * latest state. On a group (an issue with its fix PRs), `also` lists the fix
+ * PRs the click applied to as well.
  */
 export function blocksAfterAction(
   blocks: Block[],
@@ -184,12 +191,15 @@ export function blocksAfterAction(
   target: string | null,
   at: Date,
   lang: SlackLanguage = "en",
+  also: readonly string[] = [],
 ): Block[] {
   const time = `<!date^${Math.floor(at.getTime() / 1000)}^{time}|${at.toISOString()}>`;
+  const numbers = also.map((key) => `#${key.replace(/^.*#/, "")}`).join(", ");
+  const alsoText = numbers ? ` ${ALSO[lang](numbers)}` : "";
   const result: Block = {
     type: "context",
     block_id: `triage:result:${itemKey}`,
-    elements: [{ type: "mrkdwn", text: `${RESULT_TEXT[lang][action](login, target)} · ${time}` }],
+    elements: [{ type: "mrkdwn", text: `${RESULT_TEXT[lang][action](login, target)}${alsoText} · ${time}` }],
   };
   const out: Block[] = [];
   let placed = false;

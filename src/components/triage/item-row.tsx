@@ -1,9 +1,10 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import {
   ContextLine,
   GithubLink,
+  GroupLinks,
   KindIcon,
   OwnerStack,
   PriorityBadge,
@@ -14,6 +15,7 @@ import {
 } from "@/components/triage/badges";
 import { formatAge } from "@/lib/triage-format";
 import { bandStyle, isUnrouted, type BandKey } from "@/lib/triage-style";
+import type { NestedRow } from "@/lib/triage-groups";
 import type { TriageQueueItem } from "@/lib/triage-types";
 
 /**
@@ -47,24 +49,34 @@ function Owner({ item }: { item: TriageQueueItem }) {
 /**
  * One item. The whole row opens the drawer; the title links to GitHub.
  * `footer` (e.g. My list's action buttons) renders under the context line.
+ * `nested` draws a fix PR indented under its issue's row (see
+ * `GroupedRows`); `shownLinks` are group members already visible, so its
+ * "Fixes #N" / "Fixed by #N" line leaves them out.
  */
 export function ItemRow({
   item,
   onOpen,
   footer,
   hideOwner = false,
+  nested = false,
+  shownLinks = [],
 }: {
   item: TriageQueueItem;
   onOpen: () => void;
   footer?: ReactNode;
   hideOwner?: boolean;
+  nested?: boolean;
+  shownLinks?: readonly string[];
 }) {
   const style = bandStyle(item.band);
   const facets = { severity: item.severity ?? undefined, type: item.type ?? undefined };
   return (
     <li
       data-row
-      className={`relative cursor-pointer px-4 py-2.5 transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900/70 ${style.row}`}
+      data-nested={nested || undefined}
+      className={`relative cursor-pointer py-2.5 pr-4 transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900/70 ${
+        nested ? "border-l-2 border-zinc-200 pl-10 dark:border-zinc-700" : "pl-4"
+      } ${style.row}`}
       onClick={onOpen}
     >
       {style.stripe && <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${style.stripe}`} />}
@@ -74,6 +86,7 @@ export function ItemRow({
         </div>
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            {nested && <span className="text-xs text-zinc-400 dark:text-zinc-500" aria-label="fix PR">↳ fix</span>}
             <KindIcon kind={item.kind} draft={item.draft} />
             <span className="text-xs tabular-nums text-zinc-400 dark:text-zinc-500">#{item.number}</span>
             <TypeLabel type={item.type} />
@@ -86,6 +99,7 @@ export function ItemRow({
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
             <ContextLine item={item} />
+            <GroupLinks item={item} shown={shownLinks} />
             {!hideOwner && (
               <span className="md:hidden">
                 <Owner item={item} />
@@ -114,6 +128,51 @@ export function ItemRow({
         </div>
       </div>
     </li>
+  );
+}
+
+/**
+ * Rows with each fix PR nested under its issue (triage-groups.ts
+ * `nestGroups`): the issue's row, then its fix PRs indented beneath.
+ */
+export function GroupedRows<T extends TriageQueueItem>({
+  rows,
+  rowKey,
+  onOpen,
+  footer,
+  hideOwner = false,
+}: {
+  rows: readonly NestedRow<T>[];
+  rowKey: (item: T) => string | number;
+  onOpen: (item: T) => void;
+  footer?: (item: T) => ReactNode;
+  hideOwner?: boolean;
+}) {
+  return (
+    <>
+      {rows.map(({ item, members }) => (
+        <Fragment key={rowKey(item)}>
+          <ItemRow
+            item={item}
+            onOpen={() => onOpen(item)}
+            footer={footer?.(item)}
+            hideOwner={hideOwner}
+            shownLinks={members.map((member) => member.itemKey)}
+          />
+          {members.map((member) => (
+            <ItemRow
+              key={rowKey(member)}
+              item={member}
+              nested
+              onOpen={() => onOpen(member)}
+              footer={footer?.(member)}
+              hideOwner={hideOwner}
+              shownLinks={[item.itemKey]}
+            />
+          ))}
+        </Fragment>
+      ))}
+    </>
   );
 }
 

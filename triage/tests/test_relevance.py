@@ -155,6 +155,16 @@ class FakeRouteStore:
     def commit_assignments(self, item_key: str, score: int, assignments: list[NewAssignment], *, now: datetime) -> None:
         self.committed[item_key] = assignments
 
+    def commit_routes(self, routes: list[tuple[str, int, list[NewAssignment]]], *, now: datetime) -> None:
+        for item_key, _, assignments in routes:
+            self.committed[item_key] = assignments
+
+    def fix_links(self, *, open_only: bool = False) -> list[tuple[str, str]]:
+        return []
+
+    def group_members(self, keys: Any) -> dict[str, Any]:
+        return {}
+
 
 def route_row(relevance: dict[str, dict[str, Any]], *, waited: timedelta, **kw: Any) -> RoutingRow:
     return RoutingRow(

@@ -14,6 +14,7 @@ from datetime import date
 from fnmatch import fnmatch
 from typing import Any
 
+from triage.groups import Member, group_reason
 from triage.model import Band, Maintainer
 
 
@@ -245,3 +246,46 @@ def _excluded(rules: Mapping[str, Any], ctx: RoutingContext) -> bool:
         or areas & set(exclude.get("areas") or [])
         or (hardware and hardware <= excluded_hw)
     )
+
+
+def can_follow(maintainer: Maintainer, ctx: RoutingContext, *, excluded: set[str], today: date,
+               score: int) -> bool:
+    """May this item follow its issue/fix-PR group to `maintainer`
+    (triage/groups.py)? Not if they said "not mine" to it, their file
+    excludes it, they are away or inactive, or the group's highest score
+    (`score`) is under their min_score. Capacity doesn't apply: the group
+    already has its slot."""
+    return (
+        maintainer.active
+        and maintainer.github_login not in excluded
+        and score >= maintainer.min_score
+        and not is_away(maintainer, today)
+        and not _excluded(maintainer.rules, ctx)
+    )
+
+
+def group_owner(
+    ctx: RoutingContext,
+    members: Iterable[Member],
+    by_login: Mapping[str, Maintainer],
+    *,
+    load: Mapping[str, int],
+    excluded: set[str],
+    today: date,
+) -> tuple[Candidate, Member] | None:
+    """The owner of the item's group, and the linked item they own: the
+    open/acked primary owner of the highest-scored linked item that has one
+    and may take this item too (`can_follow`). The candidate's reasons are
+    "fixes #N" / "fixed by #N" first, then how that person is involved in
+    this item."""
+    members = list(members)
+    owned = sorted((m for m in members if m.owner), key=lambda m: (-(m.score or 0), m.number))
+    score = max([ctx.score, *((m.score or 0) for m in members if m.state == "open")])
+    for member in owned:
+        maintainer = by_login.get(str(member.owner))
+        if maintainer is None or not can_follow(maintainer, ctx, excluded=excluded, today=today, score=score):
+            continue
+        login = maintainer.github_login
+        return Candidate(maintainer, (), load.get(login, 0),
+                         (group_reason(member), *involvement(login, ctx))), member
+    return None

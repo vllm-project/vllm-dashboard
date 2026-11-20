@@ -5,7 +5,8 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ActionButtons } from "@/components/triage/action-buttons";
 import { ItemDrawer } from "@/components/triage/item-drawer";
-import { EmptyState, ItemRow, PriorityGroupHeader, RowSkeleton } from "@/components/triage/item-row";
+import { EmptyState, GroupedRows, PriorityGroupHeader, RowSkeleton } from "@/components/triage/item-row";
+import { groupBand, nestGroups } from "@/lib/triage-groups";
 import { useLocationHash } from "@/lib/use-location-hash";
 import { describeReason, itemFromLocation, triageFetcher } from "@/lib/triage-format";
 import { BAND_STYLES, groupByPriority } from "@/lib/triage-style";
@@ -61,7 +62,8 @@ export default function MyPlateContent() {
     router.replace(item ? `${pathname}?item=${encodeURIComponent(item)}` : pathname, { scroll: false });
   }
 
-  const groups = data ? groupByPriority(data.open, (entry) => entry.band) : [];
+  // Your fix PRs sit under the issue they fix: one row, the PRs indented beneath.
+  const groups = data ? groupByPriority(nestGroups(data.open), groupBand) : [];
   const notAcked = data?.open.filter((entry) => entry.assignment.status === "open").length ?? 0;
 
   return (
@@ -97,15 +99,13 @@ export default function MyPlateContent() {
           <section key={group.band} aria-label={`${BAND_STYLES[group.band].label} items`}>
             <PriorityGroupHeader band={group.band} count={group.items.length} />
             <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
-              {group.items.map((entry) => (
-                <ItemRow
-                  key={entry.assignment.id}
-                  item={entry}
-                  hideOwner
-                  onOpen={() => setItem(entry.itemKey)}
-                  footer={<PlateFooter entry={entry} closed={false} onChanged={() => void mutate()} />}
-                />
-              ))}
+              <GroupedRows
+                rows={group.items}
+                rowKey={(entry) => entry.assignment.id}
+                hideOwner
+                onOpen={(entry) => setItem(entry.itemKey)}
+                footer={(entry) => <PlateFooter entry={entry} closed={false} onChanged={() => void mutate()} />}
+              />
             </ul>
           </section>
         ))}
@@ -118,15 +118,13 @@ export default function MyPlateContent() {
             <p className="text-xs tabular-nums text-zinc-500 dark:text-zinc-400">{data.recentlyClosed.length}</p>
           </div>
           <ul className="divide-y divide-zinc-100 opacity-90 dark:divide-zinc-900">
-            {data.recentlyClosed.map((entry) => (
-              <ItemRow
-                key={entry.assignment.id}
-                item={entry}
-                hideOwner
-                onOpen={() => setItem(entry.itemKey)}
-                footer={<PlateFooter entry={entry} closed onChanged={() => void mutate()} />}
-              />
-            ))}
+            <GroupedRows
+              rows={nestGroups(data.recentlyClosed)}
+              rowKey={(entry) => entry.assignment.id}
+              hideOwner
+              onOpen={(entry) => setItem(entry.itemKey)}
+              footer={(entry) => <PlateFooter entry={entry} closed onChanged={() => void mutate()} />}
+            />
           </ul>
         </div>
       )}

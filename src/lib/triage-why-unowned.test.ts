@@ -8,6 +8,7 @@ import {
   excludedFor,
   explainUnowned,
   involvementOf,
+  type LinkedForRouting,
   type RelevanceLevel,
   type RoutingMaintainer,
   type WhyUnownedInput,
@@ -344,4 +345,49 @@ test("waiting reasons in words, as whose_move lists them", () => {
   assert.equal(waitingOnAuthor({ waiting_on: "author" }, "page"), false);
   assert.equal(waitingOnAuthor({ waiting_on: "reviewer" }, "route"), false);
   assert.equal(waitingOnAuthor({}, "route"), false);
+});
+
+// --- issue + fix PR groups (group_owner in triage/routing.py) ---------------
+
+function linked(number: number, kind: "issue" | "pr", owner: string | null, patch: Partial<LinkedForRouting> = {}): LinkedForRouting {
+  return { number, kind, state: "open", score: 76, band: "page", owner, ...patch };
+}
+
+test("a fix PR whose issue has an owner goes to them, before any wait for judgements", () => {
+  const why = explainUnowned(input({ band: "route", score: 52, relevance: [], linked: [linked(65385, "issue", "gau-nernst")] }));
+  assert.equal(why.pending, true);
+  assert.match(why.summary, /^It fixes #65385, which gau-nernst owns, so the router should give it to gau-nernst too/);
+  const issue = explainUnowned(input({ relevance: [], linked: [linked(66694, "pr", "gau-nernst", { score: 99 })] }));
+  assert.match(issue.summary, /^It's fixed by #66694, which gau-nernst owns/);
+  // A full weekly cap doesn't matter: the group already has its slot.
+  const full = explainUnowned(input({ relevance: [], load: { "gau-nernst": 10 }, linked: [linked(1, "issue", "gau-nernst")] }));
+  assert.equal(full.pending, true);
+});
+
+test("a group owner who can't take it is named, and the item is routed on its own", () => {
+  const why = explainUnowned(input({ notMine: ["gau-nernst"], linked: [linked(65385, "issue", "gau-nernst")] }));
+  assert.equal(why.lines[0], "It fixes #65385, which gau-nernst owns, but gau-nernst said it's not theirs, so it's routed on its own.");
+  assert.doesNotMatch(why.summary, /gau-nernst owns/);
+  // min_score counts the group's highest score: 50 + its 76 issue clears 70.
+  const picky = TEN.map((p) => (p.login === "gau-nernst" ? person("gau-nernst", { minScore: 70 }) : p));
+  assert.equal(explainUnowned(input({ score: 50, band: "route", maintainers: picky, linked: [linked(1, "issue", "gau-nernst")] })).pending, true);
+  const low = explainUnowned(input({ score: 50, band: "route", maintainers: picky, linked: [linked(1, "issue", "gau-nernst", { score: 60 })] }));
+  assert.match(low.lines[0], /only takes items scoring 70\+/);
+  const gone = explainUnowned(input({ linked: [linked(1, "issue", "someone-else")] }));
+  assert.match(gone.lines[0], /someone-else isn't an active maintainer/);
+});
+
+test("nobody owns the group: routed with its most urgent member's band", () => {
+  // A P1 PR (old, so no fresh-P0 exception) whose only match is at capacity: blocked on its own...
+  const base = { band: "route", score: 50, relevance: allLow({ a1: "medium" }), load: { a1: 10 } };
+  assert.equal(explainUnowned(input(base)).pending, false);
+  // ...but it fixes an unowned P0 issue, so it's routed as a P0 (still capped: a medium match on an old P0).
+  const why = explainUnowned(input({ ...base, linked: [linked(2, "issue", null, { score: 90, band: "page" })] }));
+  assert.ok(why.lines.some((l) => /over someone's weekly cap/.test(l)));
+});
+
+test("an issue whose fix is merged says it's waiting for GitHub to close it", () => {
+  const why = explainUnowned(input({ linked: [linked(67812, "pr", null, { state: "merged", score: 52 })] }));
+  assert.match(why.lines[0], /^Its fix #67812 is merged, so it should close once GitHub closes it/);
+  assert.doesNotMatch(explainUnowned(input({ state: "closed", linked: [linked(67812, "pr", null, { state: "merged" })] })).lines.join(), /merged/);
 });

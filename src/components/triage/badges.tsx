@@ -12,7 +12,8 @@ import {
   typeStyle,
   type ChipKind,
 } from "@/lib/triage-style";
-import type { TriageFacets } from "@/lib/triage-types";
+import { linkLabel } from "@/lib/triage-groups";
+import type { TriageFacets, TriageLinkedItem } from "@/lib/triage-types";
 
 /** The priority pill: P0/P1 solid, P2 soft, P3 and Unscored neutral. */
 export function PriorityBadge({ band, size = "sm" }: { band: string | null; size?: "sm" | "md" }) {
@@ -336,6 +337,35 @@ export function OwnerStack({
         </span>
       )}
       {ordered.length > 1 && <span className="text-[11px] text-zinc-400">+{ordered.length - 1}</span>}
+    </span>
+  );
+}
+
+/**
+ * "Fixes #65385" on a PR, "Fixed by #67812 (merged)" on an issue: the other
+ * members of its issue + fix PR group (triage/groups.py), as GitHub links.
+ * `shown` are keys already visible next to it (its nested rows), left out.
+ */
+export function GroupLinks({
+  item,
+  shown = [],
+}: {
+  item: { kind: "issue" | "pr"; fixes: TriageLinkedItem[]; fixedBy: TriageLinkedItem[] };
+  shown?: readonly string[];
+}) {
+  const links = (item.kind === "pr" ? item.fixes : item.fixedBy).filter((link) => !shown.includes(link.itemKey));
+  if (links.length === 0) return null;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-x-1 text-[11px] text-zinc-500 dark:text-zinc-400" onClick={(event) => event.stopPropagation()}>
+      <span>{item.kind === "pr" ? "Fixes" : "Fixed by"}</span>
+      {links.map((link, index) => (
+        <span key={link.itemKey}>
+          <GithubLink href={link.htmlUrl} title={link.title} className="!text-zinc-600 dark:!text-zinc-300">
+            {linkLabel(link)}
+          </GithubLink>
+          {index < links.length - 1 ? "," : ""}
+        </span>
+      ))}
     </span>
   );
 }

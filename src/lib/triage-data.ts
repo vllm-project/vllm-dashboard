@@ -1,7 +1,10 @@
 import { getDb } from "@/lib/db";
 import { OWNER_NONE, type QueueFilters } from "@/lib/triage-query";
 import {
+  GROUP_ACTIONS,
+  memberRequest,
   planTriageAction,
+  type ActionPlan,
   type ActionRequest,
   type AssignmentState,
   type PlanResult,
@@ -20,6 +23,7 @@ import type {
   TriageAssignmentSummary,
   TriageFacets,
   TriageItemDetail,
+  TriageLinkedItem,
   TriageMaintainer,
   TriageMyPlate,
   TriagePipelineHealth,
@@ -94,7 +98,102 @@ function toQueueItem(row: QueueRow): TriageQueueItem {
         ? facets.severity
         : null,
     assignments: row.assignments ?? [],
+    fixes: [],
+    fixedBy: [],
   };
+}
+
+export interface GroupLinks {
+  fixes: TriageLinkedItem[];
+  fixedBy: TriageLinkedItem[];
+}
+
+/**
+ * Issue + fix PR links touching `keys` (triage/groups.py; the SQL mirrors
+ * `fix_links` in triage/store.py): for each key, the issues it fixes (a PR)
+ * or the PRs that fix it (an issue), with their state, score and owner.
+ */
+export async function groupLinks(db: Db, keys: readonly string[]): Promise<Map<string, GroupLinks>> {
+  const out = new Map<string, GroupLinks>();
+  if (keys.length === 0) return out;
+  const rows = await db<
+    {
+      pr_key: string;
+      issue_key: string;
+      side: "pr" | "issue";
+      item_key: string;
+      number: number;
+      kind: "issue" | "pr";
+      title: string;
+      state: string;
+      html_url: string;
+      score: number | null;
+      band: string | null;
+      owner: string | null;
+    }[]
+  >`
+    WITH links AS (
+      SELECT p.item_key AS pr_key, t.item_key AS issue_key
+      FROM triage_items p
+      LEFT JOIN LATERAL (
+        SELECT x.facets FROM triage_extractions x WHERE x.item_key = p.item_key
+        ORDER BY x.created_at DESC, x.id DESC LIMIT 1
+      ) e ON true
+      CROSS JOIN LATERAL (
+        SELECT DISTINCT n.num FROM jsonb_array_elements_text(
+          (CASE WHEN jsonb_typeof(p.prepass->'fixes_issues') = 'array'
+                THEN p.prepass->'fixes_issues' ELSE '[]'::jsonb END)
+          || (CASE WHEN jsonb_typeof(e.facets->'pr'->'fixes_issues') = 'array'
+                   THEN e.facets->'pr'->'fixes_issues' ELSE '[]'::jsonb END)) AS n(num)
+        WHERE n.num ~ '^[0-9]{1,9}$'
+      ) f
+      JOIN triage_items t ON t.item_key = p.repo || '#' || f.num AND t.kind = 'issue'
+      WHERE p.kind = 'pr'
+    ),
+    touching AS (
+      SELECT pr_key, issue_key, 'issue' AS side, issue_key AS item_key FROM links WHERE pr_key IN ${db(keys as string[])}
+      UNION
+      SELECT pr_key, issue_key, 'pr' AS side, pr_key AS item_key FROM links WHERE issue_key IN ${db(keys as string[])}
+    )
+    SELECT l.pr_key, l.issue_key, l.side, i.item_key, i.number, i.kind, i.title, i.state, i.html_url,
+           s.score, s.band,
+           (SELECT a.maintainer FROM triage_assignments a
+             WHERE a.item_key = i.item_key AND a.role = 'primary' AND a.status IN ('open', 'acked')
+             ORDER BY a.assigned_at DESC, a.id DESC LIMIT 1) AS owner
+    FROM touching l
+    JOIN triage_items i ON i.item_key = l.item_key
+    LEFT JOIN triage_scores s ON s.item_key = i.item_key
+    ORDER BY s.score DESC NULLS LAST, i.number
+  `;
+  const entry = (key: string) => {
+    let value = out.get(key);
+    if (!value) {
+      value = { fixes: [], fixedBy: [] };
+      out.set(key, value);
+    }
+    return value;
+  };
+  for (const row of rows) {
+    const linked: TriageLinkedItem = {
+      itemKey: row.item_key,
+      number: Number(row.number),
+      kind: row.kind,
+      title: row.title,
+      state: row.state,
+      htmlUrl: row.html_url,
+      score: row.score,
+      band: row.band,
+      owner: row.owner,
+    };
+    if (row.side === "issue") entry(row.pr_key).fixes.push(linked);
+    else entry(row.issue_key).fixedBy.push(linked);
+  }
+  return out;
+}
+
+async function withGroupLinks<T extends TriageQueueItem>(db: Db, items: T[]): Promise<T[]> {
+  const links = await groupLinks(db, items.map((item) => item.itemKey));
+  return items.map((item) => ({ ...item, ...(links.get(item.itemKey) ?? { fixes: [], fixedBy: [] }) }));
 }
 
 /**
@@ -191,7 +290,7 @@ export async function listQueue(filters: QueueFilters): Promise<TriageQueueRespo
     LIMIT ${filters.pageSize} OFFSET ${(filters.page - 1) * filters.pageSize}
   `;
   return {
-    items: rows.map(toQueueItem),
+    items: await withGroupLinks(db, rows.map(toQueueItem)),
     total: rows.length > 0 ? Number(rows[0].total) : 0,
     page: filters.page,
     pageSize: filters.pageSize,
@@ -283,7 +382,7 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
   `;
   if (!item) return null;
 
-  const [score, extraction, assignments, actions, relevance] = await Promise.all([
+  const [score, extraction, assignments, actions, relevance, links] = await Promise.all([
     db<
       {
         score: number;
@@ -349,7 +448,9 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
       ORDER BY CASE r.relevance WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
                r.maintainer
     `,
+    groupLinks(db, [itemKey]),
   ]);
+  const group = links.get(itemKey) ?? { fixes: [], fixedBy: [] };
 
   const labelNames = Array.isArray(item.labels)
     ? item.labels
@@ -390,12 +491,15 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
           relevance: relevanceRows,
           assignments: assignments.map(toAssignment),
           actions: actions.map((a) => ({ actor: a.actor, action: a.action })),
+          linked: [...group.fixes, ...group.fixedBy],
         })
       : null;
 
   return {
     relevance: relevanceRows,
     whyUnowned,
+    fixes: group.fixes,
+    fixedBy: group.fixedBy,
     item: {
       itemKey: item.item_key,
       repo: item.repo,
@@ -476,6 +580,7 @@ async function explainItemRouting(
     relevance: TriageRelevance[];
     assignments: TriageAssignment[];
     actions: { actor: string; action: string }[];
+    linked: TriageLinkedItem[];
   },
 ): Promise<WhyUnowned> {
   const [maintainers, load, excerpt, ahead, waiting] = await Promise.all([
@@ -492,6 +597,7 @@ async function explainItemRouting(
         AND status NOT IN ('not_mine', 'reassigned')
         AND NOT (status = 'done' AND reason->>'closed_by' = 'github'
                  AND reason->>'closed_from' = 'open')
+        AND NOT (reason ? 'grouped_with')
       GROUP BY maintainer
     `,
     input.item.prepass && "commenters" in input.item.prepass
@@ -563,6 +669,14 @@ async function explainItemRouting(
     doneOnGithub: done?.reason.closed_by === "github",
     waitingSince: waiting[0]?.has_column ? iso(waiting[0].waiting_since) : undefined,
     queuePosition: Number(ahead[0]?.n ?? 0) + 1,
+    linked: input.linked.map((l) => ({
+      number: l.number,
+      kind: l.kind,
+      state: l.state,
+      score: l.score,
+      band: l.band,
+      owner: l.owner,
+    })),
     now: new Date(),
   });
 }
@@ -594,7 +708,12 @@ export async function getMyPlate(login: string): Promise<TriageMyPlate> {
       : recentlyClosed
     ).push(entry);
   }
-  return { login, open, recentlyClosed };
+  const links = await groupLinks(db, rows.map((row) => row.a_item_key));
+  const attach = <T extends TriageQueueItem>(entry: T): T => ({
+    ...entry,
+    ...(links.get(entry.itemKey) ?? { fixes: [], fixedBy: [] }),
+  });
+  return { login, open: open.map(attach), recentlyClosed: recentlyClosed.map(attach) };
 }
 
 interface MaintainerRow {
@@ -914,109 +1033,154 @@ async function getPipelineHealth(db: Db): Promise<TriagePipelineHealth> {
 /**
  * Applies one maintainer action in a single transaction: lock the item's
  * assignments, plan the transition, update/insert assignments, and record a
- * triage_actions row.
+ * triage_actions row. Ack / not mine / done / reassign on an issue also
+ * apply to the PRs fixing it that the same person holds (triage/groups.py);
+ * their keys come back in `alsoApplied`.
  */
 export async function applyTriageAction(
   actor: string,
   request: ActionRequest,
   source: "dashboard" | "slack" = "dashboard",
-): Promise<PlanResult | { ok: true; assignmentId: number | null; actionId: number }> {
+): Promise<PlanResult | { ok: true; assignmentId: number | null; actionId: number; alsoApplied: string[] }> {
   const db = getDb();
   return db.begin(async (transaction) => {
     const tx = transaction as unknown as Db;
-    const [item] = await tx<{ item_key: string }[]>`
-      SELECT item_key FROM triage_items WHERE item_key = ${request.itemKey} FOR UPDATE
+    const [item] = await tx<{ item_key: string; kind: "issue" | "pr" }[]>`
+      SELECT item_key, kind FROM triage_items WHERE item_key = ${request.itemKey} FOR UPDATE
     `;
     if (!item) return { ok: false as const, status: 404 as const, error: "No such triage item." };
-
-    const rows = await tx<
-      {
-        id: string;
-        maintainer: string;
-        role: "primary" | "backup";
-        status: AssignmentState["status"];
-        closed_at: Date | null;
-        assigned_at: Date;
-      }[]
-    >`
-      SELECT id, maintainer, role, status, closed_at, assigned_at
-      FROM triage_assignments WHERE item_key = ${request.itemKey}
-      FOR UPDATE
-    `;
     const maintainers = await tx<{ github_login: string }[]>`
       SELECT github_login FROM triage_maintainers WHERE active
     `;
-    const assignments: AssignmentState[] = rows.map((row) => ({
-      id: Number(row.id),
-      maintainer: row.maintainer,
-      role: row.role,
-      status: row.status,
-      closedAt: iso(row.closed_at),
-      assignedAt: iso(row.assigned_at)!,
-    }));
     const active = new Set(maintainers.map((row) => row.github_login.toLowerCase()));
+
+    const assignments = await lockAssignments(tx, request.itemKey);
     const result = planTriageAction(request, actor, assignments, active);
     if (!result.ok) return result;
-    const { plan } = result;
+    const { assignmentId, actionId } = await applyPlan(tx, actor, request, result.plan, source);
 
-    if (plan.update) {
-      const closedAt =
-        plan.update.closedAt === "close"
-          ? tx`closed_at = now()`
-          : plan.update.closedAt === "reopen"
-            ? tx`closed_at = NULL`
-            : tx`closed_at = closed_at`;
-      await tx`
-        UPDATE triage_assignments
-        SET status = ${plan.update.status}, ${closedAt}
-        WHERE id = ${plan.update.id}
-      `;
-    }
-
-    let assignmentId = plan.assignmentId;
-    if (plan.insert) {
-      // Canonical casing for the FK: use the maintainer row's own login.
-      const [target] = await tx<{ github_login: string }[]>`
-        SELECT github_login FROM triage_maintainers
-        WHERE lower(github_login) = lower(${plan.insert.maintainer})
-      `;
-      if (!target) {
-        // `ack` on an unassigned item by someone without a maintainer row:
-        // create a minimal row so the assignment FK holds. updated_by is the
-        // actor, never 'repo': the triage/config/maintainers/ sync only manages
-        // rows with a file or marked updated_by='repo', so it leaves this row
-        // alone until the person adds their own file.
-        await tx`
-          INSERT INTO triage_maintainers (github_login, updated_by)
-          VALUES (${plan.insert.maintainer}, ${actor})
-          ON CONFLICT (github_login) DO NOTHING
-        `;
+    const alsoApplied: string[] = [];
+    const holder =
+      request.action === "reassign"
+        ? assignments.find((a) => a.id === result.plan.update?.id)?.maintainer
+        : actor;
+    if (item.kind === "issue" && holder && GROUP_ACTIONS.includes(request.action)) {
+      const members = (await groupLinks(tx, [request.itemKey])).get(request.itemKey)?.fixedBy ?? [];
+      for (const member of members) {
+        await tx`SELECT item_key FROM triage_items WHERE item_key = ${member.itemKey} FOR UPDATE`;
+        const memberAssignments = await lockAssignments(tx, member.itemKey);
+        const follow = memberRequest(request, holder, member.itemKey, memberAssignments);
+        if (!follow) continue;
+        const planned = planTriageAction(follow, actor, memberAssignments, active);
+        if (!planned.ok) continue;
+        await applyPlan(tx, actor, follow, planned.plan, source, request.itemKey);
+        alsoApplied.push(member.itemKey);
       }
-      const [inserted] = await tx<{ id: string }[]>`
-        INSERT INTO triage_assignments
-          (item_key, maintainer, role, status, reason, score_at_assign, assigned_by)
-        VALUES (
-          ${request.itemKey},
-          ${target?.github_login ?? plan.insert.maintainer},
-          ${plan.insert.role},
-          ${plan.insert.status},
-          ${db.json({ manual: request.action, by: actor } as never)}::jsonb,
-          COALESCE((SELECT score FROM triage_scores WHERE item_key = ${request.itemKey}), 0),
-          ${actor}
-        )
-        RETURNING id
-      `;
-      // The action row refers to the assignment it closed (reassign) or,
-      // when nothing was closed, the one it created.
-      if (assignmentId === null) assignmentId = Number(inserted.id);
     }
+    return { ok: true as const, assignmentId, actionId, alsoApplied };
+  });
+}
 
-    const [action] = await tx<{ id: string }[]>`
-      INSERT INTO triage_actions (item_key, assignment_id, actor, action, target, note, source)
-      VALUES (${request.itemKey}, ${assignmentId}, ${actor}, ${request.action},
-              ${request.target}, ${request.note}, ${source})
+async function lockAssignments(tx: Db, itemKey: string): Promise<AssignmentState[]> {
+  const rows = await tx<
+    {
+      id: string;
+      maintainer: string;
+      role: "primary" | "backup";
+      status: AssignmentState["status"];
+      closed_at: Date | null;
+      assigned_at: Date;
+    }[]
+  >`
+    SELECT id, maintainer, role, status, closed_at, assigned_at
+    FROM triage_assignments WHERE item_key = ${itemKey}
+    FOR UPDATE
+  `;
+  return rows.map((row) => ({
+    id: Number(row.id),
+    maintainer: row.maintainer,
+    role: row.role,
+    status: row.status,
+    closedAt: iso(row.closed_at),
+    assignedAt: iso(row.assigned_at)!,
+  }));
+}
+
+/**
+ * Write one planned transition and its triage_actions row. `groupedWith`:
+ * the issue this fix PR followed; a new assignment it creates (reassign)
+ * then carries reason.grouped_with, so the group still takes one slot of
+ * the new owner's weekly capacity (`maintainer_load` in triage/store.py).
+ */
+async function applyPlan(
+  tx: Db,
+  actor: string,
+  request: ActionRequest,
+  plan: ActionPlan,
+  source: "dashboard" | "slack",
+  groupedWith?: string,
+): Promise<{ assignmentId: number | null; actionId: number }> {
+  if (plan.update) {
+    const closedAt =
+      plan.update.closedAt === "close"
+        ? tx`closed_at = now()`
+        : plan.update.closedAt === "reopen"
+          ? tx`closed_at = NULL`
+          : tx`closed_at = closed_at`;
+    await tx`
+      UPDATE triage_assignments
+      SET status = ${plan.update.status}, ${closedAt}
+      WHERE id = ${plan.update.id}
+    `;
+  }
+
+  let assignmentId = plan.assignmentId;
+  if (plan.insert) {
+    // Canonical casing for the FK: use the maintainer row's own login.
+    const [target] = await tx<{ github_login: string }[]>`
+      SELECT github_login FROM triage_maintainers
+      WHERE lower(github_login) = lower(${plan.insert.maintainer})
+    `;
+    if (!target) {
+      // `ack` on an unassigned item by someone without a maintainer row:
+      // create a minimal row so the assignment FK holds. updated_by is the
+      // actor, never 'repo': the triage/config/maintainers/ sync only manages
+      // rows with a file or marked updated_by='repo', so it leaves this row
+      // alone until the person adds their own file.
+      await tx`
+        INSERT INTO triage_maintainers (github_login, updated_by)
+        VALUES (${plan.insert.maintainer}, ${actor})
+        ON CONFLICT (github_login) DO NOTHING
+      `;
+    }
+    const [inserted] = await tx<{ id: string }[]>`
+      INSERT INTO triage_assignments
+        (item_key, maintainer, role, status, reason, score_at_assign, assigned_by)
+      VALUES (
+        ${request.itemKey},
+        ${target?.github_login ?? plan.insert.maintainer},
+        ${plan.insert.role},
+        ${plan.insert.status},
+        ${getDb().json(
+          (groupedWith
+            ? { manual: request.action, by: actor, grouped_with: groupedWith }
+            : { manual: request.action, by: actor }) as never,
+        )}::jsonb,
+        COALESCE((SELECT score FROM triage_scores WHERE item_key = ${request.itemKey}), 0),
+        ${actor}
+      )
       RETURNING id
     `;
-    return { ok: true as const, assignmentId, actionId: Number(action.id) };
-  });
+    // The action row refers to the assignment it closed (reassign) or,
+    // when nothing was closed, the one it created.
+    if (assignmentId === null) assignmentId = Number(inserted.id);
+  }
+
+  const [action] = await tx<{ id: string }[]>`
+    INSERT INTO triage_actions (item_key, assignment_id, actor, action, target, note, source)
+    VALUES (${request.itemKey}, ${assignmentId}, ${actor}, ${request.action},
+            ${request.target}, ${request.note}, ${source})
+    RETURNING id
+  `;
+  return { assignmentId, actionId: Number(action.id) };
 }
