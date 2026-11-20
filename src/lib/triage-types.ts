@@ -92,6 +92,8 @@ export interface TriageRules {
   // Digest delivery (maintainer file fields); kept as-is when the file is regenerated.
   timezone?: string;
   digest_hour?: number;
+  /** Max immediate Slack DMs per local day (0–50; default 5, the rest wait for the digest). */
+  max_notifications_per_day?: number;
 }
 
 export interface TriageAssignmentSummary {
@@ -240,7 +242,11 @@ export interface TriageRelevance {
 
 export interface TriageMyPlate {
   login: string;
-  open: (TriageQueueItem & { assignment: TriageAssignment })[];
+  /** `relevanceMatches`: Claude's high/medium judgements for active maintainers (orders "Reassign…"). */
+  open: (TriageQueueItem & {
+    assignment: TriageAssignment;
+    relevanceMatches?: { maintainer: string; relevance: "high" | "medium" }[];
+  })[];
   recentlyClosed: (TriageQueueItem & { assignment: TriageAssignment })[];
 }
 

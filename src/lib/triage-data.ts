@@ -2,8 +2,14 @@ import { getDb } from "@/lib/db";
 import { OWNER_NONE, type QueueFilters } from "@/lib/triage-query";
 import {
   GROUP_ACTIONS,
+  checkUndo,
   memberRequest,
   planTriageAction,
+  planUndo,
+  type UndoActionRow,
+  type UndoAssignmentState,
+  type UndoResult,
+  type UndoStep,
   type ActionPlan,
   type ActionRequest,
   type AssignmentState,
@@ -764,7 +770,24 @@ export async function getMyPlate(login: string): Promise<TriageMyPlate> {
     ...entry,
     ...(links.get(entry.itemKey) ?? { fixes: [], fixedBy: [] }),
   });
-  return { login, open: await withCi(db, open.map(attach)), recentlyClosed: recentlyClosed.map(attach) };
+  // Claude's high/medium matches per open item, to order "Reassign…".
+  const openKeys = open.map((entry) => entry.itemKey);
+  const matches = new Map<string, { maintainer: string; relevance: "high" | "medium" }[]>();
+  if (openKeys.length > 0) {
+    const rows = await db<{ item_key: string; maintainer: string; relevance: "high" | "medium" }[]>`
+      SELECT r.item_key, r.maintainer, r.relevance
+      FROM triage_relevance r
+      JOIN triage_maintainers m ON m.github_login = r.maintainer AND m.active
+      WHERE r.item_key IN ${db(openKeys)} AND r.relevance IN ('high', 'medium')
+    `;
+    for (const row of rows) {
+      const list = matches.get(row.item_key) ?? [];
+      list.push({ maintainer: row.maintainer, relevance: row.relevance });
+      matches.set(row.item_key, list);
+    }
+  }
+  const withMatches = open.map((entry) => ({ ...attach(entry), relevanceMatches: matches.get(entry.itemKey) ?? [] }));
+  return { login, open: await withCi(db, withMatches), recentlyClosed: recentlyClosed.map(attach) };
 }
 
 interface MaintainerRow {
@@ -822,20 +845,24 @@ export async function openAssignmentFor(itemKey: string, login: string): Promise
 }
 
 export async function listActiveMaintainers(): Promise<
-  { githubLogin: string; openAssignments: number }[]
+  { githubLogin: string; openAssignments: number; openPrimaries: number }[]
 > {
   const db = getDb();
-  const rows = await db<{ github_login: string; open_assignments: string }[]>`
+  const rows = await db<{ github_login: string; open_assignments: string; open_primaries: string }[]>`
     SELECT m.github_login,
-           (SELECT count(*) FROM triage_assignments a
-             WHERE a.maintainer = m.github_login AND a.status IN ('open', 'acked')) AS open_assignments
+           count(a.id) AS open_assignments,
+           count(a.id) FILTER (WHERE a.role = 'primary') AS open_primaries
     FROM triage_maintainers m
+    LEFT JOIN triage_assignments a
+      ON a.maintainer = m.github_login AND a.status IN ('open', 'acked')
     WHERE m.active
+    GROUP BY m.github_login
     ORDER BY lower(m.github_login)
   `;
   return rows.map((row) => ({
     githubLogin: row.github_login,
     openAssignments: Number(row.open_assignments),
+    openPrimaries: Number(row.open_primaries),
   }));
 }
 
@@ -1253,4 +1280,144 @@ async function applyPlan(
     RETURNING id
   `;
   return { assignmentId, actionId: Number(action.id) };
+}
+
+/**
+ * Undo one dashboard action of `actor` (see `checkUndo` / `planUndo` in
+ * triage-actions.ts): reverts the assignment(s) and deletes the action rows,
+ * including the fix-PR rows that followed it in the same transaction.
+ */
+export async function undoTriageAction(
+  actor: string,
+  actionId: number,
+): Promise<UndoResult<{ itemKeys: string[] }>> {
+  const db = getDb();
+  return db.begin(async (transaction) => {
+    const tx = transaction as unknown as Db;
+    const actionRow = async (id: number) => {
+      const [row] = await tx<
+        {
+          id: string;
+          item_key: string;
+          assignment_id: string | null;
+          actor: string;
+          action: UndoActionRow["action"];
+          target: string | null;
+          source: string;
+          age_seconds: number;
+        }[]
+      >`
+        SELECT id, item_key, assignment_id, actor, action, target, source,
+               EXTRACT(EPOCH FROM (now() - created_at))::float8 AS age_seconds
+        FROM triage_actions WHERE id = ${id}
+        FOR UPDATE
+      `;
+      return row
+        ? ({
+            id: Number(row.id),
+            itemKey: row.item_key,
+            assignmentId: row.assignment_id === null ? null : Number(row.assignment_id),
+            actor: row.actor,
+            action: row.action,
+            target: row.target,
+            source: row.source,
+            ageSeconds: Number(row.age_seconds),
+          } satisfies UndoActionRow)
+        : undefined;
+    };
+
+    const checked = checkUndo(actor, await actionRow(actionId));
+    if (!checked.ok) return checked;
+    const main = checked.value;
+
+    // Rows the same click wrote on the issue's fix PRs (applyTriageAction):
+    // same actor, same transaction time, note "with #N".
+    const number = main.itemKey.replace(/^.*#/, "");
+    const followIds = await tx<{ id: string }[]>`
+      SELECT f.id FROM triage_actions f
+      JOIN triage_actions m ON m.id = ${main.id}
+      WHERE f.id <> m.id
+        AND f.created_at = m.created_at
+        AND f.actor = m.actor
+        AND f.action = m.action
+        AND f.source = m.source
+        AND f.note LIKE ${`with #${number}%`}
+      ORDER BY f.id
+    `;
+    const rows: UndoActionRow[] = [main];
+    for (const { id } of followIds) {
+      const row = await actionRow(Number(id));
+      if (row) rows.push(row);
+    }
+
+    const plans: { row: UndoActionRow; steps: UndoStep[] }[] = [];
+    for (const row of rows) {
+      await tx`SELECT item_key FROM triage_items WHERE item_key = ${row.itemKey} FOR UPDATE`;
+      const assignments = await tx<
+        {
+          id: string;
+          maintainer: string;
+          role: "primary" | "backup";
+          status: UndoAssignmentState["status"];
+          closed_at: Date | null;
+          assigned_at: Date;
+          assigned_by: string;
+          notified_at: Date | null;
+          created_by_action: boolean;
+          was_acked: boolean;
+        }[]
+      >`
+        SELECT a.id, a.maintainer, a.role, a.status, a.closed_at, a.assigned_at, a.assigned_by,
+               a.notified_at,
+               a.assigned_at = (SELECT created_at FROM triage_actions WHERE id = ${row.id}) AS created_by_action,
+               (a.reason ? 'acked_by' OR EXISTS (
+                  SELECT 1 FROM triage_actions t WHERE t.assignment_id = a.id AND t.action = 'ack'
+               )) AS was_acked
+        FROM triage_assignments a WHERE a.item_key = ${row.itemKey}
+        FOR UPDATE OF a
+      `;
+      const [later] = await tx<{ n: string }[]>`
+        SELECT count(*) AS n FROM triage_actions
+        WHERE item_key = ${row.itemKey} AND id > ${row.id}
+      `;
+      const planned = planUndo(
+        row,
+        assignments.map((a) => ({
+          id: Number(a.id),
+          maintainer: a.maintainer,
+          role: a.role,
+          status: a.status,
+          closedAt: iso(a.closed_at),
+          assignedAt: iso(a.assigned_at)!,
+          assignedBy: a.assigned_by,
+          notifiedAt: iso(a.notified_at),
+          createdByAction: a.created_by_action,
+          wasAcked: a.was_acked,
+        })),
+        Number(later?.n ?? 0),
+      );
+      if (!planned.ok) {
+        // The clicked item must undo cleanly; a fix PR that moved on since is left as it is.
+        if (row.id === main.id) return planned;
+        continue;
+      }
+      plans.push({ row, steps: planned.value });
+    }
+
+    for (const { row, steps } of plans) {
+      // The action row first: it may reference an assignment deleted below.
+      await tx`DELETE FROM triage_actions WHERE id = ${row.id}`;
+      for (const step of steps) {
+        if (step.kind === "delete") {
+          await tx`DELETE FROM triage_assignments WHERE id = ${step.assignmentId} AND status = 'open'`;
+        } else {
+          await tx`
+            UPDATE triage_assignments SET status = ${step.status}, closed_at = NULL
+            WHERE id = ${step.assignmentId}
+          `;
+        }
+      }
+    }
+    return { ok: true as const, value: { itemKeys: plans.map(({ row }) => row.itemKey) } };
+  });
 }

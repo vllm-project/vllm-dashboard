@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ItemDrawer } from "@/components/triage/item-drawer";
+import { UndoToastProvider } from "@/components/triage/undo-toast";
 import { OwnerPicker } from "@/components/triage/owner-picker";
 import {
   EmptyState,
@@ -335,6 +336,14 @@ function isDefaultFilters(filters: QueueFilters): boolean {
 }
 
 export default function QueueContent() {
+  return (
+    <UndoToastProvider>
+      <Queue />
+    </UndoToastProvider>
+  );
+}
+
+function Queue() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();

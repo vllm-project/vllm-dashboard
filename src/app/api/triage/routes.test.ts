@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { GET as items } from "./items/route";
 import { POST as actions } from "./actions/route";
+import { POST as undo } from "./actions/undo/route";
 import { PUT as putRules } from "./rules/route";
 import { POST as previewRules } from "./rules/preview/route";
 import { GET as login } from "./auth/login/route";
@@ -70,6 +71,7 @@ test("mutations refuse cross-origin requests even with a session", async () => {
   await withEnv(ENABLED, async () => {
     for (const [handler, method] of [
       [actions, "POST"],
+      [undo, "POST"],
       [previewRules, "POST"],
     ] as const) {
       const response = await handler(
@@ -94,6 +96,29 @@ test("same-origin mutations with a session reach validation (400 before any DB c
       }),
     );
     assert.equal(response.status, 400);
+  });
+});
+
+test("undo needs a session and a valid actionId (400 before any DB call)", async () => {
+  await withEnv(ENABLED, async () => {
+    const noSession = await undo(
+      new Request("https://ci.vllm.ai/api/triage/actions/undo", {
+        method: "POST",
+        body: JSON.stringify({ actionId: 1 }),
+        headers: { host: "ci.vllm.ai", origin: "https://ci.vllm.ai" },
+      }),
+    );
+    assert.equal(noSession.status, 401);
+    for (const body of ["{}", JSON.stringify({ actionId: "x" }), JSON.stringify({ actionId: -3 }), "nope"]) {
+      const response = await undo(
+        new Request("https://ci.vllm.ai/api/triage/actions/undo", {
+          method: "POST",
+          body,
+          headers: { cookie: session(), host: "ci.vllm.ai", origin: "https://ci.vllm.ai" },
+        }),
+      );
+      assert.equal(response.status, 400, body);
+    }
   });
 });
 

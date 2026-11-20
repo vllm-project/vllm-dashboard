@@ -266,3 +266,108 @@ export function memberRequest(
     note: `with ${main.itemKey.replace(/^.*#/, "#")}${main.note ? `: ${main.note}` : ""}`.slice(0, 2000),
   };
 }
+
+// --- Undo -------------------------------------------------------------------
+
+/**
+ * Undo (POST /api/triage/actions/undo {actionId}): the dashboard's 5-second
+ * "Undo" after a terminal click. It puts things back as if the click never
+ * happened: the action row (and the rows of fix PRs that followed it, see
+ * GROUP_ACTIONS) is deleted and the assignment returns to open or acked; for
+ * reassign, the new owner's row is deleted too. Deleting rather than adding a
+ * `reopen` keeps the router and feedback right: an item with a `drop`/`slop`
+ * row is never routed again, and `not_mine` rows count against similar items.
+ *
+ * Only allowed for the person who clicked, from the dashboard, within
+ * UNDO_WINDOW_SECONDS, and only while nothing else has happened to the item.
+ */
+export const UNDO_WINDOW_SECONDS = 60;
+export const UNDOABLE_ACTIONS: readonly TriageAction[] = ["not_mine", "drop", "slop", "done", "reassign"];
+
+export interface UndoActionRow {
+  id: number;
+  itemKey: string;
+  assignmentId: number | null;
+  actor: string;
+  action: TriageAction;
+  target: string | null;
+  source: string;
+  /** Seconds since the action, by the database clock. */
+  ageSeconds: number;
+}
+
+export interface UndoAssignmentState extends AssignmentState {
+  assignedBy: string;
+  /** assigned_at equals the action's created_at (same transaction). */
+  createdByAction: boolean;
+  notifiedAt: string | null;
+  /** Was acked before it closed: an `ack` action on it, or acked on GitHub. */
+  wasAcked: boolean;
+}
+
+export type UndoStep =
+  | { kind: "restore"; assignmentId: number; status: "open" | "acked" }
+  | { kind: "delete"; assignmentId: number };
+
+export type UndoResult<T> = { ok: true; value: T } | { ok: false; status: 400 | 403 | 404 | 409; error: string };
+
+export function parseUndoRequest(body: unknown): { ok: true; actionId: number } | { ok: false; error: string } {
+  const id = body && typeof body === "object" ? Number((body as { actionId?: unknown }).actionId) : NaN;
+  return Number.isInteger(id) && id > 0 ? { ok: true, actionId: id } : { ok: false, error: "actionId must be a positive integer." };
+}
+
+/** May `login` undo this action row at all? */
+export function checkUndo(login: string, row: UndoActionRow | undefined): UndoResult<UndoActionRow> {
+  if (!row) return { ok: false, status: 404, error: "No such action." };
+  if (!sameLogin(row.actor, login)) return { ok: false, status: 403, error: "You can only undo your own actions." };
+  if (row.source !== "dashboard") return { ok: false, status: 403, error: "Only dashboard actions can be undone here." };
+  if (!UNDOABLE_ACTIONS.includes(row.action)) return { ok: false, status: 400, error: `${row.action} can't be undone.` };
+  if (!(row.ageSeconds >= 0 && row.ageSeconds <= UNDO_WINDOW_SECONDS)) {
+    return { ok: false, status: 409, error: "Too late to undo; reopen it instead." };
+  }
+  return { ok: true, value: row };
+}
+
+/**
+ * The writes that revert one action row on one item, given that item's
+ * assignments and whether any other action happened on it since.
+ */
+export function planUndo(
+  row: UndoActionRow,
+  assignments: readonly UndoAssignmentState[],
+  laterActions: number,
+): UndoResult<UndoStep[]> {
+  if (laterActions > 0) return { ok: false, status: 409, error: "Someone acted on this item since; undo it by hand." };
+  const steps: UndoStep[] = [];
+  const restoreStatus = (assignment: UndoAssignmentState) => (assignment.wasAcked ? "acked" : "open") as "open" | "acked";
+  const closed = row.assignmentId !== null ? assignments.find((a) => a.id === row.assignmentId) : undefined;
+
+  if (row.action === "reassign") {
+    const created = assignments.find(
+      (a) =>
+        a.createdByAction &&
+        row.target !== null &&
+        sameLogin(a.maintainer, row.target) &&
+        sameLogin(a.assignedBy, row.actor) &&
+        a.id !== closed?.id,
+    ) ?? (closed && closed.createdByAction && closed.status !== "reassigned" ? closed : undefined);
+    if (!created) return { ok: false, status: 409, error: "The new assignment is gone; undo it by hand." };
+    if (created.status !== "open") return { ok: false, status: 409, error: `${created.maintainer} already picked it up.` };
+    if (created.notifiedAt) return { ok: false, status: 409, error: `${created.maintainer} has already been notified.` };
+    steps.push({ kind: "delete", assignmentId: created.id });
+    if (closed && closed.id !== created.id) {
+      if (closed.status !== "reassigned") return { ok: false, status: 409, error: "That assignment changed since." };
+      steps.push({ kind: "restore", assignmentId: closed.id, status: restoreStatus(closed) });
+    }
+    return { ok: true, value: steps };
+  }
+
+  const expected = CLOSING_STATUS[row.action];
+  if (!closed || !expected) return { ok: false, status: 409, error: "The assignment is gone; undo it by hand." };
+  if (closed.status !== expected) return { ok: false, status: 409, error: "That assignment changed since." };
+  if (assignments.some((a) => a.id !== closed.id && a.role === closed.role && OPEN.includes(a.status))) {
+    return { ok: false, status: 409, error: `It already has a new ${closed.role} owner.` };
+  }
+  steps.push({ kind: "restore", assignmentId: closed.id, status: restoreStatus(closed) });
+  return { ok: true, value: steps };
+}

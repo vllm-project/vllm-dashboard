@@ -297,7 +297,7 @@ test("language: vi survives the rules page round trip", async () => {
   assert.match(text, /^notify_mode: digest\nlanguage: vi$/m);
 });
 
-test("fields the form doesn't edit survive a save: language, timezone, digest_hour", () => {
+test("language, timezone and digest_hour survive a save", () => {
   const rules = normalizeRules({ areas: ["moe"], language: "vi", timezone: "Asia/Ho_Chi_Minh", digest_hour: 8 });
   assert.deepEqual([rules.language, rules.timezone, rules.digest_hour], ["vi", "Asia/Ho_Chi_Minh", 8]);
   assert.equal(normalizeRules({ timezone: "not a zone!" }).timezone, undefined);
@@ -315,4 +315,67 @@ test("notes up to the worker's 4000-character limit are accepted", () => {
   const base = { minScore: 40, capacityPerWeek: 8, away: [], notifyMode: "digest", slackUserId: null };
   assert.ok(validateMaintainerSettings({ ...base, rules: { natural_language: "x".repeat(4000) } }).ok);
   assert.equal(validateMaintainerSettings({ ...base, rules: { natural_language: "x".repeat(4001) } }).ok, false);
+});
+
+test("timezone and digest_hour are validated, not silently dropped", async () => {
+  const { isValidTimeZone } = await import("./triage-rules");
+  const base = { minScore: 40, capacityPerWeek: 8, away: [], notifyMode: "digest", slackUserId: null };
+  const check = (rules: Record<string, unknown>) => validateMaintainerSettings({ ...base, rules });
+
+  for (const zone of ["UTC", "Europe/London", "America/Los_Angeles", "Asia/Ho_Chi_Minh", "America/Argentina/Buenos_Aires"]) {
+    assert.ok(isValidTimeZone(zone), zone);
+    const result = check({ timezone: zone });
+    assert.ok(result.ok && result.value.rules.timezone === zone, zone);
+  }
+  for (const zone of ["Mars/Olympus_Mons", "not a zone!", "../etc/passwd", 7]) {
+    assert.equal(isValidTimeZone(zone), false, String(zone));
+    const result = check({ timezone: zone });
+    assert.equal(result.ok, false, String(zone));
+    if (!result.ok) assert.match(result.error, /IANA/);
+  }
+  // Empty / absent means "default (UTC)" and is left out of the file.
+  for (const rules of [{}, { timezone: "" }, { timezone: null }]) {
+    const result = check(rules);
+    assert.ok(result.ok && result.value.rules.timezone === undefined);
+  }
+
+  for (const hour of [0, 9, 23]) {
+    const result = check({ digest_hour: hour });
+    assert.ok(result.ok && result.value.rules.digest_hour === hour, String(hour));
+  }
+  for (const hour of [-1, 24, 9.5, "9", true]) {
+    const result = check({ digest_hour: hour });
+    assert.equal(result.ok, false, String(hour));
+    if (!result.ok) assert.match(result.error, /0 to 23/);
+  }
+  const unset = check({ digest_hour: "" });
+  assert.ok(unset.ok && unset.value.rules.digest_hour === undefined);
+});
+
+test("edited timezone and digest_hour land in the YAML", () => {
+  const checked = validateMaintainerSettings({
+    rules: { natural_language: "Send me HiSparse bugs.", timezone: "Europe/London", digest_hour: 0 },
+    minScore: 40, capacityPerWeek: 10, away: [], notifyMode: "digest", slackUserId: null,
+  });
+  assert.ok(checked.ok);
+  if (!checked.ok) return;
+  const text = maintainerFileYaml("alice", checked.value);
+  assert.match(text, /^timezone: Europe\/London\ndigest_hour: 0$/m);
+  assert.match(text, /^notes: \|\n {2}Send me HiSparse bugs\.$/m);
+});
+
+test("max_notifications_per_day (worker field since #354) is kept, edited and validated", () => {
+  const stored = normalizeRules({ max_notifications_per_day: 3 });
+  assert.equal(stored.max_notifications_per_day, 3);
+  assert.equal(normalizeRules({ max_notifications_per_day: 51 }).max_notifications_per_day, undefined);
+  const base = { minScore: 40, capacityPerWeek: 8, away: [], notifyMode: "immediate", slackUserId: null };
+  const ok = validateMaintainerSettings({ ...base, rules: { max_notifications_per_day: 0 } });
+  assert.ok(ok.ok);
+  if (!ok.ok) return;
+  assert.match(maintainerFileYaml("alice", ok.value), /^notify_mode: immediate\nmax_notifications_per_day: 0$/m);
+  for (const bad of [-1, 51, 2.5, "3", true]) {
+    assert.equal(validateMaintainerSettings({ ...base, rules: { max_notifications_per_day: bad } }).ok, false, String(bad));
+  }
+  const unset = validateMaintainerSettings({ ...base, rules: { max_notifications_per_day: "" } });
+  assert.ok(unset.ok && unset.value.rules.max_notifications_per_day === undefined);
 });

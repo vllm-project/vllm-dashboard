@@ -140,13 +140,43 @@ export function matchRules(
   return matched.length > 0 ? { matched } : null;
 }
 
-/** Normalises a stored `rules` jsonb (untrusted shape) into TriageRules. */
 // IANA zone names like "Asia/Ho_Chi_Minh" or "UTC" (the worker checks they exist).
 const TIMEZONE = /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+){0,2}$/;
 
-/** language / timezone / digest_hour: file fields the form doesn't edit but must keep. */
-function passThrough(value: Record<string, unknown>): Pick<TriageRules, "language" | "timezone" | "digest_hour"> {
+/**
+ * An IANA time zone name the runtime knows ("Europe/London", "UTC"). Same
+ * shape check as the stored-rules reader, plus Intl, which accepts the
+ * canonical names and their aliases (e.g. "Asia/Saigon"), like Python's
+ * zoneinfo in triage/maintainers.py.
+ */
+export function isValidTimeZone(name: unknown): name is string {
+  if (typeof name !== "string" || name.length > 64 || !TIMEZONE.test(name)) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: name });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The default digest hour (local time) when the file sets none; see triage/config/maintainers/README.md. */
+export const DEFAULT_DIGEST_HOUR = 9;
+/** Default and limit for `max_notifications_per_day` (triage/maintainers.py). */
+export const DEFAULT_MAX_NOTIFICATIONS_PER_DAY = 5;
+export const MAX_NOTIFICATIONS_PER_DAY_LIMIT = 50;
+
+function isNotificationCap(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_NOTIFICATIONS_PER_DAY_LIMIT;
+}
+
+/** language / timezone / digest_hour from a stored rules jsonb: kept when valid, dropped otherwise. */
+function passThrough(
+  value: Record<string, unknown>,
+): Pick<TriageRules, "language" | "timezone" | "digest_hour" | "max_notifications_per_day"> {
   return {
+    ...(isNotificationCap(value.max_notifications_per_day)
+      ? { max_notifications_per_day: value.max_notifications_per_day }
+      : {}),
     ...(value.language === "vi" ? { language: "vi" as const } : {}),
     ...(typeof value.timezone === "string" && TIMEZONE.test(value.timezone) ? { timezone: value.timezone } : {}),
     ...(Number.isInteger(value.digest_hour) && (value.digest_hour as number) >= 0 && (value.digest_hour as number) <= 23
@@ -155,6 +185,7 @@ function passThrough(value: Record<string, unknown>): Pick<TriageRules, "languag
   };
 }
 
+/** Normalises a stored `rules` jsonb (untrusted shape) into TriageRules. */
 export function normalizeRules(raw: unknown): TriageRules {
   const value = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const strings = (input: unknown): string[] =>
@@ -245,6 +276,26 @@ export function validateMaintainerSettings(
     return { ok: false, error: "Notes must be text of at most 4000 characters." };
   }
 
+  // Digest delivery: optional; absent means UTC and 09:00. Invalid values are
+  // errors here (the worker would reject the whole file), not silently dropped.
+  const timezone = rulesInput.timezone ?? null;
+  if (timezone !== null && timezone !== "" && !isValidTimeZone(timezone)) {
+    return { ok: false, error: "timezone must be an IANA time zone name like Europe/London." };
+  }
+  const digestHour = rulesInput.digest_hour ?? null;
+  if (
+    digestHour !== null &&
+    digestHour !== "" &&
+    (typeof digestHour !== "number" || !Number.isInteger(digestHour) || digestHour < 0 || digestHour > 23)
+  ) {
+    return { ok: false, error: "digest_hour must be a whole hour from 0 to 23." };
+  }
+
+  const notificationCap = rulesInput.max_notifications_per_day ?? null;
+  if (notificationCap !== null && notificationCap !== "" && !isNotificationCap(notificationCap)) {
+    return { ok: false, error: `max_notifications_per_day must be a whole number from 0 to ${MAX_NOTIFICATIONS_PER_DAY_LIMIT}.` };
+  }
+
   const minScore = input.minScore ?? 40;
   if (typeof minScore !== "number" || !Number.isInteger(minScore) || minScore < 0 || minScore > 1000) {
     return { ok: false, error: "minScore must be an integer between 0 and 1000." };
@@ -291,7 +342,10 @@ export function validateMaintainerSettings(
           hardware: fields.excludeHardware as string[],
         },
         natural_language: naturalLanguage.trim(),
-        ...passThrough(rulesInput),
+        ...(rulesInput.language === "vi" ? { language: "vi" as const } : {}),
+        ...(typeof timezone === "string" && timezone ? { timezone } : {}),
+        ...(typeof digestHour === "number" ? { digest_hour: digestHour } : {}),
+        ...(typeof notificationCap === "number" ? { max_notifications_per_day: notificationCap } : {}),
       },
       minScore,
       capacityPerWeek: capacity,
@@ -354,8 +408,8 @@ function flowList(values: readonly string[], render: (value: string) => string):
  * mapping. Key order is fixed; empty lists and optional keys are omitted
  * (github_login always appears). Enum values (areas, hardware, types) are
  * plain, notify_mode is quoted when YAML would misread it (`off`); models,
- * paths and keywords are double-quoted; notes are a literal block. Fields the
- * form doesn't edit (language, timezone, digest_hour) are carried through.
+ * paths and keywords are double-quoted; notes are a literal block. `language`
+ * (not editable in the form) is carried through.
  */
 export function maintainerFileYaml(login: string, settings: MaintainerSettingsInput): string {
   const lines = [`github_login: ${plainOrQuoted(login)}`];
@@ -364,6 +418,9 @@ export function maintainerFileYaml(login: string, settings: MaintainerSettingsIn
   lines.push(`capacity_per_week: ${settings.capacityPerWeek}`);
   // plainOrQuoted: a bare `off` would be read back as the boolean false.
   lines.push(`notify_mode: ${plainOrQuoted(settings.notifyMode)}`);
+  if (settings.rules.max_notifications_per_day !== undefined) {
+    lines.push(`max_notifications_per_day: ${settings.rules.max_notifications_per_day}`);
+  }
   if (settings.rules.language === "vi") lines.push("language: vi");
   if (settings.rules.timezone) lines.push(`timezone: ${plainOrQuoted(settings.rules.timezone)}`);
   if (settings.rules.digest_hour !== undefined) lines.push(`digest_hour: ${settings.rules.digest_hour}`);

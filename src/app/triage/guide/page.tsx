@@ -196,12 +196,16 @@ export default function TriageGuidePage() {
           rows={[
             ["Ack", "“I’ve got it.” It stays on your list as yours. On an unowned item the button reads Take it and makes it yours."],
             ["Not mine", "It goes to the next best match, if there is one, within a few minutes, and never comes back to you. It doesn’t count against your capacity."],
-            ["Reassign…", "Hand it to a maintainer you choose. Anyone can reassign any open item."],
+            ["Reassign…", "Hand it to a maintainer you choose. Anyone can reassign any open item. The best matches for the item, as Claude judged them, are listed first."],
             ["Done", "You’ve dealt with it. It moves to Closed on My list, and Reopen brings it back."],
-            ["Drop", "Nobody needs to look at this. Hidden for good: it is never routed to anyone again."],
-            ["Slop", "Same as Drop, for low-quality or spam items, and recorded as slop."],
+            ["Hide ▾ → Drop", "Nobody needs to look at this. Hidden for good: it is never routed to anyone again."],
+            ["Hide ▾ → Slop", "Same as Drop, for low-quality or spam items, and recorded as slop."],
           ]}
         />
+        <p>
+          <b>Clicked the wrong one?</b> After Done, Not mine, Reassign, Drop or Slop, an <b>Undo</b> button shows for
+          5 seconds and puts the item back exactly as it was.
+        </p>
         <p>
           <b>GitHub counts too.</b> If the item is closed or merged on GitHub, it&apos;s marked Done for you (and comes
           back if it&apos;s reopened). If you comment on it on GitHub, that counts as Ack.
