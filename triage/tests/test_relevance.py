@@ -71,14 +71,14 @@ def test_relevance_routes_without_any_rules_and_low_never_does() -> None:
                          load={}, excluded=set(), today=date(2026, 11, 12)) == []
 
 
-def test_high_beats_medium_beats_rules_and_exclude_blocks_relevance() -> None:
+def test_medium_is_not_a_fallback_and_explicit_rules_still_apply() -> None:
     rule_only = Maintainer(github_login="rules", rules={"areas": [], "hardware": ["B200"]})
     medium = Maintainer(github_login="medium")
     high_but_excluded = Maintainer(github_login="nvidia", rules={"exclude": {"hardware": ["B200"]}})
     owners = choose_owners(
         ctx({"medium": {"relevance": "medium"}, "nvidia": {"relevance": "high"}}, band="page", hardware=["B200"]),
         [rule_only, medium, high_but_excluded], load={}, excluded=set(), today=date(2026, 11, 12))
-    assert [o.maintainer.github_login for o in owners] == ["medium"]  # backups must be clear matches
+    assert [o.maintainer.github_login for o in owners] == ["rules"]  # medium does not qualify; explicit rule remains
 
 
 def test_strong_only_pass_and_strong_backups() -> None:
@@ -91,7 +91,7 @@ def test_strong_only_pass_and_strong_backups() -> None:
     assert choose_owners(ctx(only_medium, band="page"), people, load={}, excluded=set(),
                          today=date(2026, 11, 12), strong_only=True) == []
     owners = choose_owners(ctx(only_medium, band="page"), people, load={}, excluded=set(), today=date(2026, 11, 12))
-    assert [(o.maintainer.github_login, o.strong) for o in owners] == [("a", False)]
+    assert owners == []
 
 
 def test_backlog_page_items_respect_capacity_unless_fresh_or_a_clear_match() -> None:
@@ -100,7 +100,7 @@ def test_backlog_page_items_respect_capacity_unless_fresh_or_a_clear_match() -> 
     full = {"gau": 2}
     today = date(2026, 11, 12)
     assert choose_owners(ctx(medium, band="page", fresh=False), [m], load=full, excluded=set(), today=today) == []
-    assert len(choose_owners(ctx(medium, band="page", fresh=True), [m], load=full, excluded=set(), today=today)) == 1
+    assert choose_owners(ctx(medium, band="page", fresh=True), [m], load=full, excluded=set(), today=today) == []
     assert len(choose_owners(ctx(high, band="page", fresh=False), [m], load=full, excluded=set(), today=today)) == 1
 
 
@@ -198,9 +198,9 @@ def test_routing_waits_for_missing_judgements_within_the_grace() -> None:
 
 
 def test_routing_proceeds_after_the_grace_with_partial_judgements(caplog: pytest.LogCaptureFixture) -> None:
-    row = route_row({"judged": {"relevance": "medium"}}, waited=RELEVANCE_GRACE)
+    row = route_row({"judged": {"relevance": "high"}}, waited=RELEVANCE_GRACE)
     with caplog.at_level(logging.WARNING, logger="triage.pipeline"):
-        assert run_route(PEOPLE, row) == {"r#1": [("judged", ["relevance:medium"])]}
+        assert run_route(PEOPLE, row) == {"r#1": [("judged", ["relevance:high"])]}
     [warning] = [r.getMessage() for r in caplog.records]
     assert "1 item(s)" in warning and "(1 routed)" in warning and "new=1" in warning
 
@@ -288,3 +288,23 @@ def test_shortlist_filters_large_roster_and_falls_back_when_empty() -> None:
     # No matches at all: falls back to everyone.
     empty_task = RelevanceTask("r#2", "issue", "Misc", {"areas": ["other"]}, "c2", ["unrelated-1", "unrelated-2"])
     assert shortlist_maintainers(empty_task, profiles, min_maintainers=1) == (["unrelated-1", "unrelated-2"], [])
+
+
+def test_medium_does_not_route_via_comments_groups_or_grace() -> None:
+    from dataclasses import replace
+    from triage.routing import can_follow, explain_unowned
+
+    m = Maintainer(github_login="gau")
+    context = replace(ctx({"gau": {"relevance": "medium"}}, band="page"), prepass={"commenters": ["gau"]})
+    today = date(2026, 11, 20)
+    assert choose_owners(context, [m], load={}, excluded=set(), today=today) == []
+    assert not can_follow(m, context, excluded=set(), today=today, score=99)
+    why = explain_unowned(context, [m], load={}, excluded=set(), today=today)
+    assert "requires high" in str(why) and not why["pending"]
+    row = route_row({"judged": {"relevance": "medium"}}, waited=RELEVANCE_GRACE)
+    assert run_route(PEOPLE, row) == {}
+    # Direct assignment and a referenced PR remain independent routing evidence.
+    for signal in ({"gh_assignees": ["gau"]}, {"referenced_pr_authors": {"123": "gau"}}):
+        direct = replace(context, prepass=signal)
+        assert [c.maintainer.github_login for c in choose_owners(direct, [m], load={}, excluded=set(), today=today)] == ["gau"]
+        assert can_follow(m, direct, excluded=set(), today=today, score=99)

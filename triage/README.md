@@ -269,7 +269,8 @@ open, in scope, P0/P1, no open/acked/done primary owner, and no `drop`/`slop`.
 
 1. **Involved:** assigned to them on GitHub, they wrote a PR the item names
    (for example, the commit a regression was bisected to), or they commented.
-2. **Relevance** high or medium.
+2. **Relevance** high only. Medium is retained as context, but cannot create
+   an assignment, even for a fresh P0 or after the relevance grace period.
 3. **Rules** in their file: any one of `areas`, `hardware`, `models` (globs),
    `paths` (globs), `keywords` (title or summary) matches, with an optional
    `types` filter.
@@ -302,9 +303,15 @@ and its fix PRs are a group:
   and aren't counted.
 
 **Two passes.** Pass 1 gives every clear match (involved or high) its slot
-across the whole queue. Pass 2 lets medium and rule matches use what's left.
+across the whole queue. Pass 2 lets explicit rule matches use what's left.
 Ties go to the lower load/capacity, then login. Owners: the best candidate is
 **primary**. A P0 also gets a **backup**, who must be a clear match.
+
+**Reconciliation.** On each routing run, open, unacknowledged router-created
+assignments below high relevance are released unless supported by a direct
+GitHub assignment, authorship of a referenced PR, or an explicit rule. Medium
+also blocks group-following and cannot be overridden by a comment alone.
+Manual assignments and acknowledged work are preserved.
 
 **What people do** (dashboard or Slack, `triage_actions`): Ack, Not mine (closes
 it; the item is routed again without them), Reassign, Drop and Slop (never
