@@ -14,6 +14,7 @@ import { formatAge } from "@/lib/triage-format";
 import { linkLabel, type NestedRow } from "@/lib/triage-groups";
 import {
   SCORE_TOOLTIP,
+  cleanupReasons,
   contextText,
   impactBadge,
   fixPrStatus,
@@ -98,13 +99,22 @@ const CI_TONE: Record<CiTone, string> = {
   idle: "text-zinc-500 dark:text-zinc-400",
 };
 
-/** Line 2: one impact badge, CI when actionable, then plain muted context and "Fixes #N". */
-function DetailLine({ item, shownLinks }: { item: TriageQueueItem; shownLinks: readonly string[] }) {
+/** Line 2: cleanup reasons (on Close / dedup), one impact badge, CI when actionable, then plain muted context and "Fixes #N". */
+function DetailLine({
+  item,
+  shownLinks,
+  onOpenKey,
+}: {
+  item: TriageQueueItem;
+  shownLinks: readonly string[];
+  onOpenKey?: (itemKey: string) => void;
+}) {
+  const cleanup = cleanupReasons(item.cleanup);
   const impact = impactBadge(item);
   const ci = rowCiChip(item.ci);
   const context = contextText(item);
   const links = linkText(item, shownLinks);
-  if (!impact && !ci && !context.text && !links) return null;
+  if (cleanup.length === 0 && !impact && !ci && !context.text && !links) return null;
   const parts: ReactNode[] = [];
   if (context.text) {
     parts.push(
@@ -131,6 +141,38 @@ function DetailLine({ item, shownLinks }: { item: TriageQueueItem; shownLinks: r
   }
   return (
     <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+      {cleanup.map((reason, index) => (
+        <span
+          key={`cleanup-${index}`}
+          title={reason.title}
+          className="inline-flex shrink-0 items-center gap-1 rounded bg-amber-50 px-1.5 py-px text-[11px] font-semibold leading-4 text-amber-900 ring-1 ring-inset ring-amber-300/80 dark:bg-amber-500/15 dark:text-amber-200 dark:ring-amber-500/40"
+        >
+          {reason.label}
+          {reason.peers && (
+            <span className="inline-flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
+              {reason.peers.map((peer, peerIndex) => (
+                <Fragment key={peer.itemKey}>
+                  {onOpenKey ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenKey(peer.itemKey)}
+                      title={`Open competing PR #${peer.number}`}
+                      className="rounded-sm underline decoration-amber-600/60 underline-offset-2 hover:text-amber-950 dark:hover:text-amber-100"
+                    >
+                      #{peer.number}
+                    </button>
+                  ) : (
+                    <GithubLink href={peer.htmlUrl} title={`Open competing PR #${peer.number} on GitHub`}>
+                      #{peer.number}
+                    </GithubLink>
+                  )}
+                  {peerIndex < reason.peers!.length - 1 ? "," : ""}
+                </Fragment>
+              ))}
+            </span>
+          )}
+        </span>
+      ))}
       {impact && (
         <span title={impact.title} className={`shrink-0 rounded px-1.5 py-px text-[11px] font-semibold leading-4 ${flagStyle(impact.flag)}`}>
           {impact.label}
@@ -143,7 +185,7 @@ function DetailLine({ item, shownLinks }: { item: TriageQueueItem; shownLinks: r
       )}
       {parts.map((part, index) => (
         <Fragment key={index}>
-          {(index > 0 || impact || ci) && <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>}
+          {(index > 0 || cleanup.length > 0 || impact || ci) && <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>}
           {part}
         </Fragment>
       ))}
@@ -379,7 +421,7 @@ export function ItemRow({
           </div>
           {label && <div className="mt-1">{label}</div>}
           {/* A fix PR in a card: what's actionable for the PR (its issue row carries impact and context). */}
-          {card && nested ? <FixPrStatusLine item={item} /> : <DetailLine item={item} shownLinks={shownLinks} />}
+          {card && nested ? <FixPrStatusLine item={item} /> : <DetailLine item={item} shownLinks={shownLinks} onOpenKey={onOpenKey} />}
           {!hideOwner && (
             <div className="mt-1 md:hidden">
               <Owner item={item} />

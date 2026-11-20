@@ -2,7 +2,7 @@ import { ciLine, type CiTone, type TriageCi } from "@/lib/triage-ci";
 import { humanizeTag } from "@/lib/triage-factors";
 import { groupBand, type NestedRow } from "@/lib/triage-groups";
 import { severityFlags, type SeverityFlag } from "@/lib/triage-style";
-import type { TriageFacets, TriageQueueItem } from "@/lib/triage-types";
+import type { TriageCleanupInfo, TriageFacets, TriageQueueItem } from "@/lib/triage-types";
 
 /**
  * What a queue / My list row shows, as plain data (item-row.tsx draws it).
@@ -93,6 +93,39 @@ export function impactBadge(item: Pick<TriageQueueItem, "severity" | "type">): I
       ? `${symptom.flag.label}; also ${symptom.others.map((flag) => flag.label).join(", ")}`
       : symptom.flag.label,
   };
+}
+
+export interface CleanupReasonView {
+  label: string;
+  title: string;
+  /** Other competing PRs on the same issue, clickable to open their drawer. */
+  peers?: { itemKey: string; number: number; htmlUrl: string }[];
+}
+
+/** Plain-English reasons a PR is listed in Close / dedup; empty outside that view. */
+export function cleanupReasons(cleanup: TriageCleanupInfo | null | undefined): CleanupReasonView[] {
+  if (!cleanup) return [];
+  const out: CleanupReasonView[] = [];
+  for (const group of cleanup.competesWith) {
+    const nums = group.prs.map((pr) => `#${pr.number}`).join(", ");
+    out.push({
+      label: `Competes on #${group.issueNumber}:`,
+      title: `Another open non-draft PR also fixes #${group.issueNumber}: ${nums}`,
+      peers: group.prs,
+    });
+  }
+  if (cleanup.lowEffort) {
+    out.push({ label: "Low effort", title: "Flagged low effort during triage extraction" });
+  }
+  if (cleanup.slopSignals.length > 0) {
+    const first = humanizeTag(cleanup.slopSignals[0]);
+    const extra = cleanup.slopSignals.length > 1 ? ` +${cleanup.slopSignals.length - 1}` : "";
+    out.push({
+      label: `Slop: ${first}${extra}`,
+      title: `Slop signals: ${cleanup.slopSignals.map(humanizeTag).join(", ")}`,
+    });
+  }
+  return out;
 }
 
 // --- context line -------------------------------------------------------------

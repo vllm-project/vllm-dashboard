@@ -7,7 +7,7 @@ type Db = ReturnType<typeof getDb>;
 export function queueFocusCte(db: Db, focus: QueueFilters["focus"], review: QueueFilters["review"] = null) {
   if (focus !== "cleanup" && focus !== "has-fix" && review !== "cleanup") return db``;
   return db`WITH open_fix_links AS (
-    SELECT DISTINCT p.item_key AS pr_key, p.repo, n.num AS issue_number
+    SELECT DISTINCT p.item_key AS pr_key, p.repo, p.draft, n.num AS issue_number
     FROM triage_items p
     LEFT JOIN LATERAL (
       SELECT x.facets FROM triage_extractions x WHERE x.item_key = p.item_key
@@ -51,7 +51,7 @@ function queueFocusWhere(db: Db, value: QueueFilters["focus"]) {
         OR EXISTS (
           SELECT 1 FROM open_fix_links a JOIN open_fix_links b
             ON a.repo = b.repo AND a.issue_number = b.issue_number AND a.pr_key <> b.pr_key
-          WHERE a.pr_key = i.item_key
+          WHERE a.pr_key = i.item_key AND NOT a.draft AND NOT b.draft
         ))`;
       break;
     case "fires":

@@ -38,6 +38,9 @@ test("queue SQL filters before pagination and handles missing/closed data", { sk
     await item(6, "pr", {}, { pr: { low_effort: true } });
     await item(7, "pr", {}, { slop_signals: ["low effort"] });
     await item(8, "pr", { fixes_issues: "malformed" }, { slop_signals: null, pr: null });
+    // Draft PRs must not drag a ready PR into Close / dedup as a competing fix.
+    await item(14, "pr", { fixes_issues: [9] });
+    await db`UPDATE triage_items SET draft = true WHERE number = 14`;
     // Same issue number in a different repository must not create a competing fix.
     await item(10, "pr", { fixes_issues: [9] }, {}, "open", "other/repo");
     assert.deepEqual(nums(await matching("cleanup")), [2, 3, 6, 7]);

@@ -126,6 +126,14 @@ export interface TriageLinkedItem {
   owner: string | null;
 }
 
+/** Why a PR appeared in the Close / dedup view (only populated on that view). */
+export interface TriageCleanupInfo {
+  lowEffort: boolean;
+  slopSignals: string[];
+  /** Other open non-draft PRs fixing the same issue(s). */
+  competesWith: { issueNumber: number; prs: { itemKey: string; number: number; htmlUrl: string }[] }[];
+}
+
 export interface TriageQueueItem {
   itemKey: string;
   repo: string;
@@ -161,6 +169,8 @@ export interface TriageQueueItem {
   fixedBy: TriageLinkedItem[];
   /** Open PRs: CI of the head commit (triage_pr_ci); null/absent when not tracked. */
   ci?: TriageCi | null;
+  /** Close / dedup reasons (only populated when the cleanup view is active). */
+  cleanup?: TriageCleanupInfo | null;
 }
 
 export interface TriageQueueResponse {
