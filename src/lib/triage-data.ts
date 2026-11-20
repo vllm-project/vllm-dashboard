@@ -492,6 +492,14 @@ function toAssignment(row: AssignmentRow): TriageAssignment {
 export async function getItemDetail(itemKey: string): Promise<TriageItemDetail | null> {
   if (triageDevFixturesEnabled()) return fixtureItemDetail(itemKey);
   const db = getDb();
+  // Keep the parallel reads on one backend. Independent statements pipelined
+  // through the transaction pooler can lose their result descriptions.
+  return db.begin("read only", (transaction) =>
+    readItemDetail(transaction as unknown as Db, itemKey),
+  );
+}
+
+async function readItemDetail(db: Db, itemKey: string): Promise<TriageItemDetail | null> {
   const [item] = await db<
     {
       item_key: string;
