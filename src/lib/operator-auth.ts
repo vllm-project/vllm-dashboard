@@ -29,7 +29,11 @@ export function cronAuthError(
   authorization: string | null,
 ): { error: string; status: 401 | 503 } | null {
   const secret = process.env.CRON_SECRET;
-  if (!secret) return { error: "CRON_SECRET is not configured", status: 503 };
+  if (!secret) {
+    // Every scheduled job is down until it is set: say so in the error logs.
+    console.error("Cron request refused: CRON_SECRET is not configured");
+    return { error: "CRON_SECRET is not configured", status: 503 };
+  }
   if (!bearerTokenMatches(authorization, secret)) {
     return { error: "Unauthorized", status: 401 };
   }

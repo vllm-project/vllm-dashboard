@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { StatCard } from "@/components/stat-card";
+import { QueueStaleNotice } from "@/components/queue-stale-notice";
 import { SearchableSelect } from "@/components/searchable-select";
 import { QueueOverviewChart } from "@/components/queue-overview-chart";
 import { QueueWaitingJobs, useQueueWaitingJobs } from "@/components/queue-waiting-jobs";
@@ -65,6 +66,8 @@ interface MetricsResponse {
   snapshots: MetricsSnapshot[];
   queues: string[];
   latest: MetricsLatest[];
+  /** When the newest queue snapshot was polled; null if there is none. */
+  lastPolledAt?: string | null;
 }
 
 const METRICS_HOURS_OPTIONS = [
@@ -291,6 +294,8 @@ export default function QueueContent() {
           </div>
         </div>
       </div>
+
+      {metricsData && <QueueStaleNotice lastPolledAt={metricsData.lastPolledAt} />}
 
       {/* Stat cards */}
       <div ref={metricsRef} className="grid scroll-mt-20 grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3 xl:grid-cols-6">
