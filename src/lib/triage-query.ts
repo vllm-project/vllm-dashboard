@@ -39,6 +39,8 @@ export interface QueueFilters {
   review: (typeof QUEUE_REVIEWS)[number] | null;
   focus: "cleanup" | "fires" | "has-fix" | "stale" | null;
   q: string | null;
+  /** Scope the queue to the signed-in maintainer's configured areas/hardware (`?mine=1`). */
+  mine: boolean;
   state: "open" | "all";
   includeOutOfScope: boolean;
   sort: (typeof QUEUE_SORTS)[number];
@@ -101,6 +103,7 @@ export function parseQueueFilters(params: URLSearchParams): QueueFilters {
     focus: isOneOf(["cleanup", "fires", "has-fix", "stale"] as const, params.get("focus"))
       ? params.get("focus") as QueueFilters["focus"] : null,
     q: text(params.get("q"), 200),
+    mine: params.get("mine") === "1",
     state: params.get("state") === "all" ? "all" : "open",
     includeOutOfScope: params.get("scope") === "all",
     sort: isOneOf(QUEUE_SORTS, sort) ? sort : "score",
@@ -150,6 +153,7 @@ function literalParams(filters: Partial<QueueFilters>): URLSearchParams {
   if (filters.review) params.set("review", filters.review);
   if (filters.focus) params.set("focus", filters.focus);
   if (filters.q) params.set("q", filters.q);
+  if (filters.mine) params.set("mine", "1");
   if (filters.state === "all") params.set("state", "all");
   if (filters.includeOutOfScope) params.set("scope", "all");
   if (filters.sort && filters.sort !== "score") params.set("sort", filters.sort);

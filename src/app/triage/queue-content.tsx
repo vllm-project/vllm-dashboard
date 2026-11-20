@@ -18,11 +18,11 @@ import {
 } from "@/components/triage/item-row";
 import { groupBand, nestGroups, rowOrder } from "@/lib/triage-groups";
 import { listPosition, stepItem } from "@/lib/triage-keys";
-import { QUEUE_PRESETS, focusFilters, queueViewDescription, activeFilterCount, activePreset, parseQueueLocation, presetFilters, type QueuePresetId } from "@/lib/triage-presets";
+import { QUEUE_PRESETS, focusFilters, emptyStateCopy, queueViewDescription, activeFilterCount, activePreset, parseQueueLocation, presetFilters, type QueuePresetId } from "@/lib/triage-presets";
 import { useTriageLogin } from "@/components/triage/use-triage-session";
 import { useCollapsedBands } from "@/lib/use-collapsed-bands";
 import { useLocationHash } from "@/lib/use-location-hash";
-import { itemFromLocation, percent, triageFetcher } from "@/lib/triage-format";
+import { itemFromLocation, percent, sendJson, triageFetcher } from "@/lib/triage-format";
 import { OWNER_NONE, queueFiltersToParams, type QueueFilters } from "@/lib/triage-query";
 import {
   BAND_ORDER,
@@ -33,7 +33,7 @@ import {
   type BandKey,
 } from "@/lib/triage-style";
 import { pipelineHealth, type HealthTone } from "@/lib/triage-health";
-import type { TriageQueueResponse, TriageStats } from "@/lib/triage-types";
+import type { TriageQueueItem, TriageQueueResponse, TriageStats } from "@/lib/triage-types";
 import { TRIAGE_AREAS, TRIAGE_HARDWARE } from "@/lib/triage-vocab";
 
 const CONTROL =
@@ -348,9 +348,9 @@ function Toggle({ on, label, onClick }: { on: boolean; label: string; onClick: (
   );
 }
 
-/** The landing view ("Needs triage", no search): what Reset goes back to. */
+/** The landing view ("Needs triage", no search, all areas): what Reset goes back to. */
 function isDefaultFilters(filters: QueueFilters): boolean {
-  return activePreset(filters) === "needs-triage" && !filters.q;
+  return activePreset(filters) === "needs-triage" && !filters.q && !filters.mine;
 }
 
 /**
@@ -447,8 +447,16 @@ function pipelineNeedsAttention(stats: TriageStats | undefined, now: number): bo
   return !!stats?.health && pipelineHealth(stats.health, now).tone !== "ok";
 }
 
-/** One-click views (triage-presets.ts); the active one is pressed. */
-function PresetBar({ active, onPick }: { active: QueuePresetId | null; onPick: (id: QueuePresetId) => void }) {
+/** One-click views (triage-presets.ts); the active one is pressed, with live counts when loaded. */
+function PresetBar({
+  active,
+  counts,
+  onPick,
+}: {
+  active: QueuePresetId | null;
+  counts?: TriageStats["presetCounts"];
+  onPick: (id: QueuePresetId) => void;
+}) {
   return (
     <div
       role="group"
@@ -457,6 +465,7 @@ function PresetBar({ active, onPick }: { active: QueuePresetId | null; onPick: (
     >
       {QUEUE_PRESETS.map((preset, index) => {
         const on = active === preset.id;
+        const count = counts?.[preset.id];
         return (
           <button
             key={preset.id}
@@ -473,10 +482,68 @@ function PresetBar({ active, onPick }: { active: QueuePresetId | null; onPick: (
             }`}
           >
             {preset.label}
+            {typeof count === "number" && (
+              <span
+                className={`ml-1 text-[11px] tabular-nums ${
+                  on ? "text-zinc-300 dark:text-zinc-600" : "text-zinc-400 dark:text-zinc-500"
+                }`}
+              >
+                {count}
+              </span>
+            )}
           </button>
         );
       })}
     </div>
+  );
+}
+
+/** One-click Take (unowned) or Ack (viewer's unacked item) directly on a Queue row. */
+function RowQuickAction({
+  item,
+  viewer,
+  onDone,
+}: {
+  item: TriageQueueItem;
+  viewer: string | null;
+  onDone: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  if (!viewer || item.state !== "open") return null;
+  const mineOpen = item.assignments.find(
+    (a) => a.maintainer.toLowerCase() === viewer.toLowerCase() && a.status === "open",
+  );
+  const canTake = item.assignments.length === 0;
+  if (!mineOpen && !canTake) return null;
+  const label = mineOpen ? "Ack" : "Take";
+  const title = mineOpen ? "Acknowledge this assignment" : "Claim this item as primary owner";
+
+  async function run() {
+    setBusy(true);
+    try {
+      await sendJson("/api/triage/actions", "POST", {
+        itemKey: item.itemKey,
+        action: "ack",
+        assignmentId: mineOpen?.id ?? null,
+      });
+      onDone();
+    } catch {
+      // Errors can be investigated in the drawer; keep the row calm.
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      title={title}
+      onClick={() => void run()}
+      className="dashboard-control inline-flex h-5 items-center rounded border border-zinc-300 bg-white px-1.5 text-[11px] font-medium text-zinc-700 hover:border-zinc-900 hover:bg-zinc-900 hover:text-white disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-zinc-100 dark:hover:bg-zinc-100 dark:hover:text-zinc-900"
+    >
+      {busy ? "…" : label}
+    </button>
   );
 }
 
@@ -800,8 +867,27 @@ function Queue() {
       <div className="overflow-clip rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex flex-wrap items-center gap-1.5 border-b border-zinc-200 bg-zinc-50/60 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900/40">
           <div className="scrollbar-hidden -mx-1 max-w-full overflow-x-auto px-1">
-            <PresetBar active={preset} onPick={pickPreset} />
+            <PresetBar active={preset} counts={stats?.presetCounts} onPick={pickPreset} />
           </div>
+          {((stats?.viewer?.areas.length ?? 0) > 0 || (stats?.viewer?.hardware.length ?? 0) > 0 || filters.mine) && (
+            <button
+              type="button"
+              aria-pressed={filters.mine}
+              onClick={() => update({ mine: !filters.mine })}
+              title={
+                stats?.viewer
+                  ? `Scope to your areas/hardware: ${[...stats.viewer.areas, ...stats.viewer.hardware].join(", ") || "none configured"}`
+                  : "Scope to your configured areas and hardware"
+              }
+              className={`dashboard-control inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-2 text-xs font-medium ${
+                filters.mine
+                  ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                  : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              }`}
+            >
+              My areas
+            </button>
+          )}
           <form
             role="search"
             className="relative min-w-[7.5rem] flex-[1_1_8rem]"
@@ -864,19 +950,29 @@ function Queue() {
           </p>
         )}
         <div aria-busy={stale || undefined} className={stale ? "pointer-events-none select-none opacity-40 transition-opacity" : "transition-opacity"}>
-        {data && data.items.length === 0 && (
-          <EmptyState
-            title={isDefaultFilters(filters) ? "Nothing needs triage right now" : "No items match these filters"}
-            detail={isDefaultFilters(filters) ? "New issues and PRs show up here a few minutes after they are opened." : undefined}
-            action={
-              !isDefaultFilters(filters) && (
-                <button type="button" onClick={clearFilters} className={`${CONTROL} mt-1 font-medium`}>
-                  Reset filters
-                </button>
-              )
-            }
-          />
-        )}
+        {data && data.items.length === 0 && (() => {
+          const empty = emptyStateCopy(filters);
+          return (
+            <EmptyState
+              title={empty.title}
+              detail={empty.detail}
+              action={
+                !isDefaultFilters(filters) && (
+                  <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+                    {filters.mine && (
+                      <button type="button" onClick={() => update({ mine: false })} className={`${CONTROL} font-medium`}>
+                        Show all areas
+                      </button>
+                    )}
+                    <button type="button" onClick={clearFilters} className={`${CONTROL} font-medium`}>
+                      Reset filters
+                    </button>
+                  </div>
+                )
+              }
+            />
+          );
+        })()}
         {data && data.items.length > 0 && grouped &&
           groups.map((group) => {
             const collapsed = isCollapsed(group.band);
@@ -891,7 +987,23 @@ function Queue() {
                 />
                 {!collapsed && (
                   <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
-                    <GroupedRows rows={group.items} rowKey={(item) => item.itemKey} activeKey={openItem} onOpen={(item) => openRow(item.itemKey)} onOpenKey={openRow} />
+                    <GroupedRows
+                      rows={group.items}
+                      rowKey={(item) => item.itemKey}
+                      activeKey={openItem}
+                      onOpen={(item) => openRow(item.itemKey)}
+                      onOpenKey={openRow}
+                      quickAction={(item) => (
+                        <RowQuickAction
+                          item={item}
+                          viewer={viewer}
+                          onDone={() => {
+                            void mutate();
+                            void mutateStats();
+                          }}
+                        />
+                      )}
+                    />
                   </ul>
                 )}
               </section>
@@ -899,7 +1011,23 @@ function Queue() {
           })}
         {data && data.items.length > 0 && !grouped && (
           <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
-            <GroupedRows rows={rows} rowKey={(item) => item.itemKey} activeKey={openItem} onOpen={(item) => openRow(item.itemKey)} onOpenKey={openRow} />
+            <GroupedRows
+              rows={rows}
+              rowKey={(item) => item.itemKey}
+              activeKey={openItem}
+              onOpen={(item) => openRow(item.itemKey)}
+              onOpenKey={openRow}
+              quickAction={(item) => (
+                <RowQuickAction
+                  item={item}
+                  viewer={viewer}
+                  onDone={() => {
+                    void mutate();
+                    void mutateStats();
+                  }}
+                />
+              )}
+            />
           </ul>
         )}
         </div>

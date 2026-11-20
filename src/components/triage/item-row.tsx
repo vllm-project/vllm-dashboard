@@ -14,11 +14,13 @@ import { formatAge } from "@/lib/triage-format";
 import { linkLabel, type NestedRow } from "@/lib/triage-groups";
 import {
   SCORE_TOOLTIP,
+  activityNote,
   cleanupReasons,
   contextText,
   impactBadge,
   fixPrStatus,
   kindTag,
+  prEffortText,
   priorityCell,
   type KindTag as KindTagView,
   type PriorityCellView,
@@ -29,6 +31,7 @@ import {
   type ListRow,
   rowCiChip,
   scoreParts,
+  unownedHint,
 } from "@/lib/triage-rows";
 import { bandStyle, flagStyle, isUnrouted, type BandKey } from "@/lib/triage-style";
 import type { TriageQueueItem } from "@/lib/triage-types";
@@ -64,11 +67,32 @@ export function ItemListHeader({ hideOwner = false }: { hideOwner?: boolean }) {
   );
 }
 
-function Owner({ item }: { item: TriageQueueItem }) {
-  if (item.assignments.length > 0) return <OwnerStack assignments={item.assignments} />;
-  if (isUnrouted(item.band, 0)) return <UnroutedBadge />;
-  // P2/P3 are never routed, so an empty owner is expected: show nothing.
-  return null;
+function Owner({ item, quickAction }: { item: TriageQueueItem; quickAction?: ReactNode }) {
+  const hint = item.assignments.length === 0 ? unownedHint(item.unownedReason) : null;
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {item.assignments.length > 0 ? (
+          <OwnerStack assignments={item.assignments} />
+        ) : isUnrouted(item.band, 0) ? (
+          <UnroutedBadge />
+        ) : null}
+        {quickAction && (
+          <span
+            className="opacity-100 transition-opacity md:opacity-0 md:group-hover/row:opacity-100 md:group-focus-within/row:opacity-100"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {quickAction}
+          </span>
+        )}
+      </div>
+      {hint && isUnrouted(item.band, 0) && (
+        <span className="text-[11px] leading-tight text-zinc-400 dark:text-zinc-500" title={hint.title}>
+          {hint.label}
+        </span>
+      )}
+    </div>
+  );
 }
 
 /** "P0" pill and "79 pts" under it; the score links to how it's computed. */
@@ -128,10 +152,18 @@ function DetailLine({
   const cleanup = cleanupReasons(item.cleanup);
   const impact = impactBadge(item);
   const ci = rowCiChip(item.ci);
+  const effort = prEffortText(item);
   const context = contextText(item);
   const links = linkText(item, shownLinks);
-  if (!status && cleanup.length === 0 && !impact && !ci && !context.text && !links) return null;
+  if (!status && cleanup.length === 0 && !impact && !ci && !effort && !context.text && !links) return null;
   const parts: ReactNode[] = [];
+  if (effort) {
+    parts.push(
+      <span key="effort" className="shrink-0 font-medium text-zinc-600 dark:text-zinc-300" title={effort.title}>
+        {effort.text}
+      </span>,
+    );
+  }
   if (context.text) {
     parts.push(
       <span key="context" className="min-w-0 truncate" title={[context.text, ...context.hidden].join(" · ")}>
@@ -345,6 +377,7 @@ export function ItemRow({
   footer,
   status,
   compact = false,
+  quickAction,
   hideOwner = false,
   nested = false,
   connectsDown = false,
@@ -359,6 +392,8 @@ export function ItemRow({
   footer?: ReactNode;
   status?: ReactNode;
   compact?: boolean;
+  /** Subtle inline button shown in the owner column on hover/focus (e.g. Take / Ack). */
+  quickAction?: ReactNode;
   hideOwner?: boolean;
   nested?: boolean;
   connectsDown?: boolean;
@@ -372,6 +407,7 @@ export function ItemRow({
   onOpenKey?: (itemKey: string) => void;
 }) {
   const style = bandStyle(item.band);
+  const activity = activityNote(item.ghCreatedAt, item.ghUpdatedAt);
   const row = useRef<HTMLLIElement>(null);
   useEffect(() => {
     // Keep the open item in view while j/k walk the list behind the drawer.
@@ -396,7 +432,7 @@ export function ItemRow({
       data-item-key={item.itemKey}
       data-nested={nested || undefined}
       aria-current={active || undefined}
-      className={`relative cursor-pointer py-2.5 transition-colors ${
+      className={`group/row relative cursor-pointer py-2.5 transition-colors ${
         // Cards span the full width (no side margin/border), so card rows use the same
         // padding as standalone rows and every stripe and cell lines up.
         card ? "px-4 hover:bg-zinc-100/70 dark:hover:bg-zinc-800/50" : `px-4 hover:bg-zinc-50 dark:hover:bg-zinc-900/70 ${style.row}`
@@ -451,7 +487,7 @@ export function ItemRow({
           )}
           {!hideOwner && (
             <div className="mt-1 md:hidden">
-              <Owner item={item} />
+              <Owner item={item} quickAction={quickAction} />
             </div>
           )}
           {footer && (
@@ -460,9 +496,14 @@ export function ItemRow({
             </div>
           )}
         </div>
-        {!hideOwner && <div className="hidden min-w-0 pt-0.5 md:block"><Owner item={item} /></div>}
-        <div className="pt-0.5 text-right text-xs tabular-nums text-zinc-500 dark:text-zinc-400" title={item.ghCreatedAt}>
+        {!hideOwner && <div className="hidden min-w-0 pt-0.5 md:block"><Owner item={item} quickAction={quickAction} /></div>}
+        <div className="pt-0.5 text-right text-xs tabular-nums text-zinc-500 dark:text-zinc-400" title={`Opened ${item.ghCreatedAt}`}>
           {formatAge(item.ghCreatedAt)}
+          {activity && (
+            <span className="block text-[10px] text-emerald-700/80 dark:text-emerald-400/80" title={activity.title}>
+              {activity.label}
+            </span>
+          )}
         </div>
       </div>
     </li>
@@ -484,6 +525,7 @@ export function GroupedRows<T extends TriageQueueItem>({
   footer,
   status,
   compact = false,
+  quickAction,
   hideOwner = false,
   activeKey = null,
 }: {
@@ -494,6 +536,7 @@ export function GroupedRows<T extends TriageQueueItem>({
   footer?: (item: T) => ReactNode;
   status?: (item: T) => ReactNode;
   compact?: boolean;
+  quickAction?: (item: T) => ReactNode;
   hideOwner?: boolean;
   /** The item key whose drawer is open. */
   activeKey?: string | null;
@@ -509,6 +552,7 @@ export function GroupedRows<T extends TriageQueueItem>({
       footer={footer?.(row.item)}
       status={status?.(row.item)}
       compact={compact}
+      quickAction={quickAction?.(row.item)}
       hideOwner={hideOwner}
       shownLinks={row.shownLinks}
       active={row.item.itemKey === activeKey}

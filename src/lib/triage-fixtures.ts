@@ -427,6 +427,7 @@ export function fixtureQueue(filters: QueueFilters): TriageQueueResponse {
     if (filters.kind && item.kind !== filters.kind) return false;
     if (filters.area && !item.areas.includes(filters.area)) return false;
     if (filters.hardware && !item.hardware.includes(filters.hardware)) return false;
+    if (filters.mine && !item.areas.some((a) => FIXTURE_VIEWER_AREAS.includes(a))) return false;
     if (model && !item.models.some((m) => m.toLowerCase().includes(model))) return false;
     if (filters.owner === OWNER_NONE && item.assignments.length > 0) return false;
     if (
@@ -519,6 +520,8 @@ export function fixtureQueue(filters: QueueFilters): TriageQueueResponse {
   };
 }
 
+const FIXTURE_VIEWER_AREAS = ["build_install", "ci", "frontend_api"];
+
 export function fixtureStats(): TriageStats {
   const bandCounts: TriageStats["bandCounts"] = { page: 0, route: 0, watch: 0, ignore: 0, unscored: 0 };
   for (const item of FIXTURE_ITEMS) {
@@ -528,6 +531,13 @@ export function fixtureStats(): TriageStats {
   const unownedItems = FIXTURE_ITEMS.filter(
     (i) => (i.band === "page" || i.band === "route") && i.assignments.length === 0,
   );
+  const notAcked = FIXTURE_ITEMS.filter((i) => i.assignments.some((a) => a.status === "open")).length;
+  const readyReview = FIXTURE_ITEMS.filter(
+    (i) => i.kind === "pr" && !i.draft && i.waitingOn === "reviewer" && !APPROVED_FIXTURE_KEYS.has(i.itemKey),
+  ).length;
+  const readyMerge = FIXTURE_ITEMS.filter(
+    (i) => i.kind === "pr" && !i.draft && i.waitingOn === "reviewer" && APPROVED_FIXTURE_KEYS.has(i.itemKey) && i.ci?.state === "passed",
+  ).length;
   return {
     bandCounts,
     unowned: unownedItems.length,
@@ -553,6 +563,20 @@ export function fixtureStats(): TriageStats {
       loginExpiresOn: null,
       workerWarnings24h: 0,
       latestWorkerWarning: null,
+    },
+    presetCounts: {
+      "needs-triage": unownedItems.length,
+      "not-acked": notAcked,
+      review: readyReview,
+      merge: readyMerge,
+      cleanup: 4,
+      all: FIXTURE_ITEMS.length,
+    },
+    viewer: {
+      myOpen: 3,
+      myUnacked: 2,
+      areas: FIXTURE_VIEWER_AREAS,
+      hardware: [],
     },
   };
 }
