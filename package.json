@@ -4,9 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:triage": "TRIAGE_ENABLED=1 TRIAGE_DEV_LOGIN=khluu TRIAGE_DEV_FIXTURES=1 next dev",
     "build": "next build",
     "start": "next start",
+    "typecheck": "tsc --noEmit",
     "test": "tsx --test \"src/**/*.test.ts\"",
+    "test:triage": "tsx --test \"src/**/*triage*.test.ts\"",
     "lint": "eslint",
     "migrate": "uv run --project migrations vllm-dashboard-migrate",
     "configure:buildkite-otel": "node scripts/configure-buildkite-otel.mjs",
