@@ -118,6 +118,7 @@ def _relevance(args: argparse.Namespace) -> int:
     result = run_relevance(
         store, ClaudeCodeBackend(model=args.model), now=datetime.now(timezone.utc),
         min_score=args.min_score, limit=args.limit, workers=args.workers,
+        shortlist_min=args.shortlist_min,
     )
     print(json.dumps({"judged": result.judged, "failed": result.failed,
                       "stopped_reason": result.stopped_reason, "errors": result.errors[:3]}))
@@ -163,6 +164,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     rel.add_argument("--min-score", type=int, default=int(os.environ.get("TRIAGE_RELEVANCE_MIN_SCORE", "40")))
     rel.add_argument("--limit", type=int, default=int(os.environ.get("TRIAGE_RELEVANCE_PER_RUN", "40")))
     rel.add_argument("--workers", type=int, default=2)
+    rel.add_argument(
+        "--shortlist-min", type=int, default=int(os.environ.get("TRIAGE_RELEVANCE_SHORTLIST_MIN", "8")),
+        help="Pre-shortlist maintainers when roster exceeds this size (0 disables).",
+    )
 
     sync = sub.add_parser("sync-maintainers")
     sync.add_argument("--dir")

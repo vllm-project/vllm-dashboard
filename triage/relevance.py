@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from fnmatch import fnmatch
 from typing import Any, Protocol
 from xml.sax.saxutils import escape
 
@@ -28,6 +31,15 @@ from triage.extract import BudgetExhausted, ExtractionError, LLMBackend
 RELEVANCE_LEVELS = ("high", "medium", "low", "none")
 PROMPT_VERSION = "rel-v4"
 MAX_PRS_PER_KIND = 120
+# Cap rendered PRs in the prompt: reviews alone never qualify for medium, so
+# sending 120 reviewed PR titles per maintainer wastes prompt tokens.
+MAX_RENDERED_AUTHORED_PRS = 80
+MAX_RENDERED_REVIEWED_PRS = 20
+MAX_RENDERED_OWNED_PATHS = 15
+# Pre-shortlist kicks in once the maintainer roster grows past this size
+# (0 disables shortlisting).
+DEFAULT_SHORTLIST_MIN = 8
+_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{2,}")
 # What each maintainer did with items routed to them, shown to Claude as
 # evidence: the last FEEDBACK_WINDOW, at most FEEDBACK_LIMIT per kind, newest
 # first. The worker snapshots it into the profile when it rebuilds the
@@ -66,14 +78,28 @@ LANGUAGE_NAMES = {"vi": "Vietnamese"}
 LOCAL_REASON_VERSION = "2"
 
 
+def invalidation_hash(notes: str, language: str = "en") -> str:
+    """Hash of the maintainer's routing policy (`PROMPT_VERSION`, `notes`, and
+    output `language`).
+
+    Used to decide when existing `triage_relevance` rows must be re-judged:
+    editing notes, changing language, or bumping the prompt version re-queues
+    open unowned items, whereas daily PR/feedback refreshes update the profile
+    for *new* items without invalidating already-judged items.
+    """
+    parts: list[Any] = [PROMPT_VERSION, notes]
+    if language != "en":
+        parts.append(f"{language}:{LOCAL_REASON_VERSION}")
+    digest = hashlib.sha256(json.dumps(parts, sort_keys=True).encode())
+    return digest.hexdigest()[:24]
+
+
 def profile_hash(
     prs: list[dict[str, Any]], notes: str, language: str = "en", feedback: dict[str, Any] | None = None
 ) -> str:
-    """Covers the PRs, the maintainer's notes, their language, their feedback
-    titles and the prompt version, so a change to any of them re-queues that
-    maintainer's judgements. (English and no feedback add nothing, so
-    existing hashes stay valid.) Feedback only changes when the worker
-    rebuilds the profile, once a day, usually together with the PRs."""
+    """Covers the full profile snapshot (PRs, notes, language, feedback titles
+    and prompt version). Stored on `triage_maintainer_profiles` for change
+    tracking; `invalidation_hash` controls when existing judgements re-run."""
     parts: list[Any] = [PROMPT_VERSION, prs, notes]
     if language != "en":
         parts.append(f"{language}:{LOCAL_REASON_VERSION}")
@@ -82,6 +108,20 @@ def profile_hash(
         parts.append({"feedback": titles})
     digest = hashlib.sha256(json.dumps(parts, sort_keys=True).encode())
     return digest.hexdigest()[:24]
+
+
+def path_prefixes(path: str) -> list[str]:
+    """Directory prefixes (2-4 segments) of a repo-relative file path."""
+    parts = [p for p in path.strip("/").split("/") if p]
+    if len(parts) <= 1:
+        return []
+    dirs = parts[:-1]
+    out: list[str] = []
+    for depth in range(2, min(len(dirs), 4) + 1):
+        out.append("/".join(dirs[:depth]))
+    if not out and dirs:
+        out.append(dirs[0])
+    return out
 
 
 def feedback_titles(feedback: dict[str, Any] | None) -> dict[str, list[str]]:
@@ -102,8 +142,23 @@ def render_profiles(profiles: list[MaintainerProfile]) -> str:
             lines.append(f"<language>{LANGUAGE_NAMES[p.language]}</language>")
         if p.notes.strip():
             lines.append(f"<notes>{escape(p.notes.strip())}</notes>")
+        if p.authored_paths:
+            top_paths = sorted(p.authored_paths.items(), key=lambda kv: (-kv[1], kv[0]))[:MAX_RENDERED_OWNED_PATHS]
+            summary = ", ".join(f"{escape(path)} ({count})" for path, count in top_paths)
+            lines.append(f"<owned_paths>{summary}</owned_paths>")
+        authored_count = 0
+        reviewed_count = 0
         for pr in p.prs:
-            lines.append(f"#{pr['number']} [{pr['kind']}] {escape(str(pr['title']))}")
+            kind = pr.get("kind")
+            if kind == "authored":
+                if authored_count >= MAX_RENDERED_AUTHORED_PRS:
+                    continue
+                authored_count += 1
+            elif kind == "reviewed":
+                if reviewed_count >= MAX_RENDERED_REVIEWED_PRS:
+                    continue
+                reviewed_count += 1
+            lines.append(f"#{pr['number']} [{kind}] {escape(str(pr['title']))}")
         titles = feedback_titles(p.feedback)
         lines += [f"said not mine: {escape(t)}" for t in titles["declined"]]
         lines += [f"took: {escape(t)}" for t in titles["took"]]
@@ -146,6 +201,16 @@ class MaintainerProfile:
     language: str = "en"  # the maintainer file's `language`; reason_local is written in it
     # Recent items they declined / took: {"declined": [{"item_key", "title", "at"}], "took": [...]}
     feedback: dict[str, Any] = field(default_factory=dict)
+    # Policy hash (prompt version + notes + language); governs re-judging.
+    policy_hash: str = ""
+    # Directory prefixes from authored PRs: {"vllm/model_executor/layers/fused_moe": 12}
+    authored_paths: dict[str, int] = field(default_factory=dict)
+    # Maintainer routing rules (areas, hardware, models, paths, keywords) for shortlisting.
+    rules: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def effective_policy_hash(self) -> str:
+        return self.policy_hash or self.profile_hash
 
 
 @dataclass(frozen=True)
@@ -156,6 +221,8 @@ class RelevanceTask:
     facets: dict[str, Any]
     content_hash: str
     maintainers: list[str]  # who still needs a judgement for this item
+    files: list[str] = field(default_factory=list)
+    prepass: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -233,6 +300,92 @@ class RelevanceRunResult:
     errors: list[str] = field(default_factory=list)
 
 
+def _item_signal_tokens(task: RelevanceTask) -> set[str]:
+    f = task.facets
+    parts: list[str] = []
+    parts.extend(str(a) for a in (f.get("areas") or []) if a and a != "other")
+    parts.extend(str(a) for a in (task.prepass.get("areas") or []) if a and a != "other")
+    parts.extend(str(h) for h in (f.get("hardware") or []) if h and h != "other")
+    for m in f.get("models") or []:
+        if isinstance(m, dict):
+            parts.extend(str(v) for v in (m.get("name"), m.get("family")) if v)
+    tokens: set[str] = set()
+    for part in parts:
+        tokens.update(_TOKEN_RE.findall(part.lower().replace("_", " ")))
+    return tokens
+
+
+def _profile_matches_item(profile: MaintainerProfile, task: RelevanceTask, item_prefixes: set[str],
+                          item_tokens: set[str]) -> bool:
+    if profile.notes.strip():
+        return True
+    if item_prefixes and profile.authored_paths and (item_prefixes & set(profile.authored_paths)):
+        return True
+    rules = profile.rules or {}
+    areas = set(task.facets.get("areas") or []) | set(task.prepass.get("areas") or [])
+    if areas & set(rules.get("areas") or []):
+        return True
+    hardware = set(task.facets.get("hardware") or []) | set(task.prepass.get("hardware_hints") or [])
+    if hardware & set(rules.get("hardware") or []):
+        return True
+    model_names = [
+        str(v).lower()
+        for m in (task.facets.get("models") or [])
+        if isinstance(m, dict)
+        for v in (m.get("name"), m.get("family"))
+        if v
+    ]
+    for pattern in rules.get("models") or []:
+        if any(fnmatch(name, str(pattern).lower()) for name in model_names):
+            return True
+    for pattern in rules.get("paths") or []:
+        glob = str(pattern)
+        if any(fnmatch(path, glob) or fnmatch(path, glob.rstrip("*").rstrip("/") + "/*") for path in task.files):
+            return True
+    haystack = f"{task.title}\n{task.facets.get('summary') or ''}".lower()
+    for kw in rules.get("keywords") or []:
+        if str(kw).strip() and str(kw).lower() in haystack:
+            return True
+    if item_tokens:
+        authored_text = " ".join(
+            str(pr.get("title") or "").lower()
+            for pr in profile.prs
+            if pr.get("kind") == "authored"
+        )
+        if authored_text and (item_tokens & set(_TOKEN_RE.findall(authored_text))):
+            return True
+    return False
+
+
+def shortlist_maintainers(
+    task: RelevanceTask,
+    profiles: Mapping[str, MaintainerProfile],
+    *,
+    min_maintainers: int = DEFAULT_SHORTLIST_MIN,
+) -> tuple[list[str], list[str]]:
+    """Pre-filter maintainers before invoking the LLM when the roster is large.
+
+    Returns `(to_judge, skipped)`. Maintainers with custom `notes`, matching
+    rules, authored file-path prefix overlap, or authored-PR keyword overlap
+    always stay in `to_judge`. If no one matches, falls back to judging all.
+    """
+    if min_maintainers <= 0 or len(task.maintainers) <= min_maintainers:
+        return list(task.maintainers), []
+    item_prefixes = {prefix for path in task.files for prefix in path_prefixes(path)}
+    item_tokens = _item_signal_tokens(task)
+    to_judge: list[str] = []
+    skipped: list[str] = []
+    for login in task.maintainers:
+        profile = profiles.get(login)
+        if profile is not None and _profile_matches_item(profile, task, item_prefixes, item_tokens):
+            to_judge.append(login)
+        else:
+            skipped.append(login)
+    if not to_judge:
+        return list(task.maintainers), []
+    return to_judge, skipped
+
+
 def run_relevance(
     store: RelevanceStore,
     backend: LLMBackend,
@@ -241,17 +394,18 @@ def run_relevance(
     min_score: int,
     limit: int = 40,
     workers: int = 1,
+    shortlist_min: int = DEFAULT_SHORTLIST_MIN,
 ) -> RelevanceRunResult:
     """Judge routable items (score >= min_score) that lack a current
     judgement for some active maintainer. One call per item covers every
-    maintainer, with all profiles in the (cached) system prompt. Run one of
-    these at a time: the queue is not leased."""
+    shortlisted maintainer, with profiles in the (cached) system prompt. Run
+    one of these at a time: the queue is not leased."""
     result = RelevanceRunResult()
     profiles = {p.login: p for p in store.maintainer_profiles()}
     if not profiles:
         result.stopped_reason = "no maintainer profiles yet"
         return result
-    system = render_profiles(list(profiles.values()))
+    full_system = render_profiles(list(profiles.values()))
     tasks = []
     for task in store.relevance_queue(limit=limit, min_score=min_score):
         task = RelevanceTask(**{**task.__dict__, "maintainers": [m for m in task.maintainers if m in profiles]})
@@ -262,9 +416,20 @@ def run_relevance(
     def judge(task: RelevanceTask) -> tuple[RelevanceTask, Any]:
         if stop.is_set():
             return task, None
+        to_judge, skipped = shortlist_maintainers(task, profiles, min_maintainers=shortlist_min)
+        sub_task = task if not skipped else RelevanceTask(**{**task.__dict__, "maintainers": to_judge})
+        sys_prompt = full_system if not skipped else render_profiles([profiles[m] for m in sorted(to_judge)])
         try:
-            llm = backend.complete(system=system, prompt=render_item(task), schema=schema(sorted(task.maintainers)))
-            return task, (llm, parse_judgments(llm.output, task, profiles))
+            llm = backend.complete(
+                system=sys_prompt, prompt=render_item(sub_task), schema=schema(sorted(sub_task.maintainers))
+            )
+            judgments = parse_judgments(llm.output, sub_task, profiles)
+            if skipped:
+                judgments.extend(
+                    Judgment(login, "none", [], "Filtered out by pre-shortlist (no path, area, or profile overlap)")
+                    for login in skipped
+                )
+            return task, (llm, judgments)
         except BudgetExhausted as exc:
             stop.set()
             return task, exc

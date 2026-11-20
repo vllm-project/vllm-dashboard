@@ -99,7 +99,7 @@ def ingest(store: PostgresTriageStore, item: Item) -> None:
 def issue(number: int, title: str, body: str = "x" * 200, **kw: Any) -> Item:
     return Item(
         repo="vllm-project/vllm", number=number, kind=kw.pop("kind", "issue"), title=title, body=body,
-        author="user", author_association=kw.pop("author_association", "NONE"), state="open",
+        author=kw.pop("author", "user"), author_association=kw.pop("author_association", "NONE"), state="open",
         html_url=f"https://github.com/vllm-project/vllm/issues/{number}",
         created_at=NOW - timedelta(hours=2), updated_at=NOW - timedelta(hours=1), **kw,
     )
@@ -1152,3 +1152,64 @@ def test_main_ci_jobs(store: PostgresTriageStore, database_url: str) -> None:
         recent=frozenset({"step:a|name:A", "step:c|name:C", "step:d|name:D"}))
     # Main CI stopped scanning over an hour ago: too stale to say.
     assert store.main_ci_jobs(now=NOW + timedelta(hours=2)) is None
+
+
+def test_relevance_skips_owned_items_and_survives_daily_pr_refresh(
+    store: PostgresTriageStore, database_url: str
+) -> None:
+    from triage.relevance import run_relevance
+
+    ingest(store, issue(1701, "DeepSeek startup crash"))
+    # Author a PR by gau-nernst so authored_paths populates without extra GitHub calls.
+    ingest(store, issue(1702, "MoE refactor", kind="pr", author="gau-nernst", author_association="MEMBER",
+                        files=[FileChange("vllm/model_executor/layers/fused_moe/layer.py")]))
+    seed(store, [
+        {"github_login": "gau-nernst", "notes": "FP8 kernels"},
+        {"github_login": "amd-person", "notes": "ROCm"},
+    ])
+    run_extraction(store, FakeBackend({"DeepSeek": SEVERE}), budget=Budget(), now=NOW, workers=1)
+    route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
+                         delivery_mode=DeliveryMode.SHADOW, github=FakeProfiles())  # type: ignore[arg-type]
+    route(ScheduledCommand("triage_route", NOW))
+
+    # Authored paths captured from gau-nernst's PR.
+    profiles = {p.login: p for p in store.maintainer_profiles()}
+    assert "vllm/model_executor/layers/fused_moe" in profiles["gau-nernst"].authored_paths
+
+    calls = 0
+
+    class Judge:
+        def complete(self, *, system: str, prompt: str, schema: dict[str, Any]) -> LLMResult:
+            nonlocal calls
+            calls += 1
+            return LLMResult(output={"judgments": [
+                {"github_login": "gau-nernst", "relevance": "high", "evidence_prs": [61343], "reason": "his PR"},
+                {"github_login": "amd-person", "relevance": "none", "evidence_prs": [], "reason": "NVIDIA only"},
+            ]}, model="fake")
+
+    assert run_relevance(store, Judge(), now=NOW, min_score=40).judged == 1
+    assert calls == 1
+
+    # Daily PR refresh adds a new PR: existing judgement must NOT be re-queued!
+    store.save_profile("gau-nernst", [
+        {"number": 61343, "kind": "authored", "title": "per_token_group_quant reciprocal"},
+        {"number": 62000, "kind": "authored", "title": "new unrelated PR"},
+    ], now=NOW + timedelta(days=1))
+    assert store.relevance_queue(limit=10, min_score=40) == []
+
+    # Routing assigns the item -> needs_relevance flips to false -> even a notes edit won't re-judge an owned item!
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=5)))
+    seed(store, [
+        {"github_login": "gau-nernst", "notes": "FP8 kernels and MoE"},
+        {"github_login": "amd-person", "notes": "ROCm"},
+    ])
+    assert store.relevance_queue(limit=10, min_score=40) == []
+
+    # When the owner clicks not_mine and triage-route runs, needs_relevance flips back to true and re-queues!
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_assignments SET status = 'not_mine', closed_at = now()")
+        c.execute("INSERT INTO triage_actions (item_key, actor, action, source) "
+                  "VALUES ('vllm-project/vllm#1701', 'gau-nernst', 'not_mine', 'dashboard')")
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=10)))
+    queued = store.relevance_queue(limit=10, min_score=40)
+    assert len(queued) == 1 and queued[0].maintainers == ["gau-nernst"]

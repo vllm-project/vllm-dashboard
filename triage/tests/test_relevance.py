@@ -229,3 +229,62 @@ def test_rel_v4_prompt_requires_an_authored_component_and_requeues_everyone(monk
     assert "raises an item to medium only if it is also in a component they author" in rel.SYSTEM
     assert "where the fix belongs, not where the symptom shows up" in rel.SYSTEM
     assert "Vendor-specific backends" in rel.SYSTEM
+
+
+def test_invalidation_hash_ignores_daily_pr_churn_and_tracks_notes_and_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    import triage.relevance as rel
+
+    h1 = rel.invalidation_hash("FP8 kernels")
+    assert h1 == rel.invalidation_hash("FP8 kernels", "en")
+    assert rel.invalidation_hash("FP8 kernels, MoE") != h1
+    assert rel.invalidation_hash("FP8 kernels", "vi") != h1
+    monkeypatch.setattr(rel, "PROMPT_VERSION", "rel-v5")
+    assert rel.invalidation_hash("FP8 kernels") != h1
+
+
+def test_render_profiles_caps_reviewed_prs_and_shows_owned_paths() -> None:
+    from triage.relevance import MAX_RENDERED_AUTHORED_PRS, MAX_RENDERED_REVIEWED_PRS
+
+    prs = [
+        *[{"number": i, "kind": "authored", "title": f"auth {i}"} for i in range(MAX_RENDERED_AUTHORED_PRS + 10)],
+        *[{"number": 1000 + i, "kind": "reviewed", "title": f"rev {i}"} for i in range(MAX_RENDERED_REVIEWED_PRS + 15)],
+    ]
+    prof = MaintainerProfile(
+        "gau", prs, "kernels", "h",
+        authored_paths={"vllm/model_executor/layers/fused_moe": 12, "vllm/v1/worker": 3},
+    )
+    rendered = render_profiles([prof])
+    assert "<owned_paths>vllm/model_executor/layers/fused_moe (12), vllm/v1/worker (3)</owned_paths>" in rendered
+    assert sum(1 for line in rendered.splitlines() if "[authored]" in line) == MAX_RENDERED_AUTHORED_PRS
+    assert sum(1 for line in rendered.splitlines() if "[reviewed]" in line) == MAX_RENDERED_REVIEWED_PRS
+
+
+def test_shortlist_filters_large_roster_and_falls_back_when_empty() -> None:
+    from triage.relevance import shortlist_maintainers
+
+    profiles = {
+        "path-owner": MaintainerProfile("path-owner", [], "", "h1",
+                                        authored_paths={"vllm/model_executor/layers/fused_moe": 5}),
+        "notes-person": MaintainerProfile("notes-person", [], "Send me DeepSeek bugs", "h2"),
+        "rule-person": MaintainerProfile("rule-person", [], "", "h3", rules={"hardware": ["B200"]}),
+        "title-person": MaintainerProfile("title-person",
+                                          [{"number": 1, "kind": "authored", "title": "Fix DeepSeek MoE kernel"}],
+                                          "", "h4"),
+        "unrelated-1": MaintainerProfile("unrelated-1", [{"number": 2, "kind": "authored", "title": "Docs typo"}],
+                                         "", "h5"),
+        "unrelated-2": MaintainerProfile("unrelated-2", [], "", "h6"),
+    }
+    task = RelevanceTask(
+        "r#1", "pr", "Fix fused_moe crash",
+        {"areas": ["moe"], "hardware": ["B200"], "models": [{"name": "DeepSeek-V3", "family": "deepseek"}]},
+        "c1", list(profiles),
+        files=["vllm/model_executor/layers/fused_moe/layer.py"],
+    )
+    to_judge, skipped = shortlist_maintainers(task, profiles, min_maintainers=3)
+    assert set(to_judge) == {"path-owner", "notes-person", "rule-person", "title-person"}
+    assert set(skipped) == {"unrelated-1", "unrelated-2"}
+    # Below threshold: judges everyone.
+    assert shortlist_maintainers(task, profiles, min_maintainers=10) == (list(profiles), [])
+    # No matches at all: falls back to everyone.
+    empty_task = RelevanceTask("r#2", "issue", "Misc", {"areas": ["other"]}, "c2", ["unrelated-1", "unrelated-2"])
+    assert shortlist_maintainers(empty_task, profiles, min_maintainers=1) == (["unrelated-1", "unrelated-2"], [])
