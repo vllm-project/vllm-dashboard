@@ -27,13 +27,36 @@ export function SectionNav() {
   return (
     <div className="mb-6">
       <div className="border-b border-zinc-200 dark:border-zinc-800">
-        <div className="mb-3">
-          <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-zinc-500 dark:text-zinc-400">
-            {section.label}
-          </p>
-          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-            {section.description}
-          </p>
+        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-zinc-500 dark:text-zinc-400">
+              {section.label}
+            </p>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              {section.description}
+            </p>
+          </div>
+          {section.referenceLinks && (
+            <nav aria-label={`${section.label} reference`} className="flex shrink-0 flex-wrap gap-x-4 gap-y-1">
+              {section.referenceLinks.map((link) => {
+                const active = navItemActive(pathname, link);
+                return (
+                  <Link
+                    key={link.href}
+                    href={link.href}
+                    aria-current={active ? "page" : undefined}
+                    className={`dashboard-control inline-flex min-h-8 items-center rounded text-xs underline-offset-4 hover:underline ${
+                      active
+                        ? "font-medium text-zinc-950 underline dark:text-zinc-50"
+                        : "text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-50"
+                    }`}
+                  >
+                    {link.label}
+                  </Link>
+                );
+              })}
+            </nav>
+          )}
         </div>
         <div className="flex items-end gap-4">
         <nav

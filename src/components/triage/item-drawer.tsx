@@ -731,7 +731,7 @@ export function ItemDrawer({
                     footer={
                       <p className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-500 dark:text-zinc-400">
                         <Link href="/triage/scoring" className="font-medium text-zinc-700 underline underline-offset-2 hover:text-zinc-950 dark:text-zinc-300 dark:hover:text-zinc-50">
-                          How is this scored?
+                          How scoring works
                         </Link>
                         <span>scoring version {data.score.scoringVersion}</span>
                       </p>

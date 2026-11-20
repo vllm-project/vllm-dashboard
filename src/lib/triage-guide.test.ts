@@ -31,6 +31,6 @@ test("the guide's languages and notify modes match triage/maintainers.py", () =>
   assert.deepEqual([...GUIDE_FACTS.notifyModes], [...NOTIFY_MODES]);
 });
 
-test("the guide is linked from the triage tabs", () => {
-  assert.ok(TRIAGE_SECTION.links.some((link) => link.href === "/triage/guide"));
+test("the guide is linked from the triage header", () => {
+  assert.ok(TRIAGE_SECTION.referenceLinks.some((link) => link.href === "/triage/guide"));
 });
