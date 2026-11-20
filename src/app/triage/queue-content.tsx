@@ -353,49 +353,34 @@ function isDefaultFilters(filters: QueueFilters): boolean {
   return activePreset(filters) === "needs-triage" && !filters.q && !filters.mine;
 }
 
+/** Priority bands shown in the calm status bar above the queue (P3 lives in System stats). */
+const HEADER_BANDS: readonly BandKey[] = ["page", "route", "watch"];
+
 /**
- * One slim line over the queue: pipeline health, open items per priority
- * (each a filter shortcut), unowned P0/P1, new today. When labelling or
- * judging falls behind, the full health strip opens under it by itself;
- * the operator panels sit behind "System stats". Rendered only once stats
- * have loaded and only when there's something to say: never a grey
- * placeholder that might not fill (e.g. when /api/triage/stats fails).
+ * One calm line over the queue: P0 / P1 / P2 counts (each a filter shortcut)
+ * and how many P0 items have no owner yet. Operator pipeline health, P3, and
+ * 7-day volume sit strictly behind the collapsed "System stats" toggle.
  */
 function StatusLine({
   stats,
   statsOpen,
   onToggleStats,
   onPickBand,
-  onPickUnowned,
+  onPickUnownedP0,
 }: {
   stats: TriageStats | undefined;
   statsOpen: boolean;
   onToggleStats: () => void;
   onPickBand: (band: BandKey) => void;
-  onPickUnowned: () => void;
+  onPickUnownedP0: () => void;
 }) {
-  const now = useMinuteClock();
   if (!stats) return null;
-  const view = stats.health ? pipelineHealth(stats.health, now) : null;
-  const unowned = stats.unowned ?? 0;
-  const hasP0Unowned = (stats.unownedPage ?? 0) > 0;
-  const bands = BAND_ORDER.filter((band) => (stats.bandCounts?.[band] ?? 0) > 0);
-  if (!view && bands.length === 0 && unowned === 0 && !stats.newToday) return null;
+  const unownedP0 = stats.unownedPage ?? 0;
+  const bands = HEADER_BANDS.filter((band) => (stats.bandCounts?.[band] ?? 0) > 0);
+  if (bands.length === 0 && unownedP0 === 0) return null;
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
-      {view && (
-        <>
-          <span
-            className={`inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-medium ${HEALTH_CHIP[view.tone]}`}
-            title="Labelling and relevance judging run every 10 minutes on the extractor host."
-          >
-            <span aria-hidden="true" className={`h-2 w-2 rounded-full ${HEALTH_DOT[view.tone]}`} />
-            Pipeline {HEALTH_WORD[view.tone]}
-          </span>
-          <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>
-        </>
-      )}
-      <span className="inline-flex flex-wrap items-center gap-x-1.5" role="group" aria-label="Open items by priority">
+      <span className="inline-flex flex-wrap items-center gap-x-2" role="group" aria-label="Open P0–P2 items">
         {bands.map((band) => (
           <button
             key={band}
@@ -411,21 +396,17 @@ function StatusLine({
       <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>
       <button
         type="button"
-        onClick={onPickUnowned}
-        disabled={unowned === 0}
-        title={`P0/P1 items with no owner: ${stats.unownedPage} are P0, ${stats.pageUnacked} P0 not acked. Click to filter.`}
+        onClick={onPickUnownedP0}
+        disabled={unownedP0 === 0}
+        title={`${unownedP0} P0 items with no owner (${stats.pageUnacked} P0 not acked). Click to filter.`}
         className={`dashboard-control rounded px-1.5 py-0.5 tabular-nums enabled:hover:underline ${
-          unowned > 0
-            ? hasP0Unowned
-              ? "bg-red-50 font-semibold text-red-800 ring-1 ring-inset ring-red-300 dark:bg-red-500/10 dark:text-red-200 dark:ring-red-500/40"
-              : "bg-amber-50 font-semibold text-amber-900 ring-1 ring-inset ring-amber-300 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/40"
-            : ""
+          unownedP0 > 0
+            ? "bg-red-50 font-semibold text-red-800 ring-1 ring-inset ring-red-300 dark:bg-red-500/10 dark:text-red-200 dark:ring-red-500/40"
+            : "text-zinc-500 dark:text-zinc-400"
         }`}
       >
-        {unowned} P0/P1 unowned
+        {unownedP0} P0 unowned
       </button>
-      <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>
-      <span className="tabular-nums">{stats.newToday} new today</span>
       <button
         type="button"
         onClick={onToggleStats}
@@ -440,11 +421,6 @@ function StatusLine({
       </button>
     </div>
   );
-}
-
-/** Whether the pipeline needs attention, for opening its full strip automatically. */
-function pipelineNeedsAttention(stats: TriageStats | undefined, now: number): boolean {
-  return !!stats?.health && pipelineHealth(stats.health, now).tone !== "ok";
 }
 
 /** One-click views (triage-presets.ts); the active one is pressed, with live counts when loaded. */
@@ -721,8 +697,6 @@ function Queue() {
   const grouped = filters.sort === "score";
   const pageSize = grouped && !searchParams.get("pageSize") ? GROUPED_PAGE_SIZE : filters.pageSize;
   const apiParams = queueFiltersToParams({ ...filters, pageSize }).toString();
-  const now = useMinuteClock();
-
   const { data, error, isLoading, mutate } = useSWR<TriageQueueResponse>(
     `/api/triage/items${apiParams ? `?${apiParams}` : ""}`,
     triageFetcher,
@@ -741,6 +715,11 @@ function Queue() {
   );
   const isCollapsed = (band: BandKey) => collapsedBands.includes(band);
   const [statsOpen, setStatsOpen] = useState(false);
+  const { data: healthStats } = useSWR<TriageStats>(
+    statsOpen ? "/api/triage/stats?health=1" : null,
+    triageFetcher,
+    { refreshInterval: 120_000 },
+  );
   useEffect(() => {
     try {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- read once after mount; storage isn't available during SSR
@@ -830,7 +809,6 @@ function Queue() {
   const prevKey = openItem ? stepItem(order, openItem, -1) : null;
   const nextKey = openItem ? stepItem(order, openItem, 1) : null;
   const preset = activePreset(filters);
-  const needsAttention = pipelineNeedsAttention(stats, now);
 
   return (
     <div className="space-y-3">
@@ -842,14 +820,14 @@ function Queue() {
           if (band === "ignore") expandGroup("ignore");
           update({ bands: [band], status: "any" });
         }}
-        onPickUnowned={() => update({ bands: ["page", "route"], owner: OWNER_NONE, status: "any" })}
+        onPickUnownedP0={() => update({ bands: ["page"], owner: OWNER_NONE, status: "any" })}
       />
-      {(needsAttention || statsOpen) && <PipelineHealthStrip stats={stats} />}
       <SuppressionWarning stats={stats} />
       {statsOpen && stats && (
-        <div id="triage-system-stats">
+        <div id="triage-system-stats" className="space-y-2">
+          <PipelineHealthStrip stats={healthStats ?? stats} />
           <StatStrip
-            stats={stats}
+            stats={healthStats ?? stats}
             onPickBand={(band) => {
               if (band === "ignore") expandGroup("ignore");
               update({ bands: [band], status: "any" });

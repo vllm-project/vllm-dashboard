@@ -320,8 +320,8 @@ export interface TriageStats {
    * burst can hide real problems (a compromised or careless account).
    */
   suppression: { threshold: number; actors: { actor: string; drops: number; slops: number }[] };
-  /** Raw pipeline-health signals; `pipelineHealth` in triage-health.ts grades them. */
-  health: TriagePipelineHealth;
+  /** Raw pipeline-health signals; only populated when `?health=1` is requested (System stats). */
+  health?: TriagePipelineHealth | null;
   /** Live counts for each of the 6 queue preset tabs. */
   presetCounts?: Record<"needs-triage" | "not-acked" | "review" | "merge" | "cleanup" | "all", number>;
   /** Signed-in maintainer's plate counts and configured areas/hardware (for "My areas" and My list badge). */

@@ -1107,7 +1107,10 @@ export function suppressionThreshold(env: Record<string, string | undefined> = p
   return Number.isInteger(value) && value > 0 ? value : 10;
 }
 
-export async function getStats(viewerLogin?: string): Promise<TriageStats> {
+export async function getStats(
+  viewerLogin?: string,
+  options: { includeHealth?: boolean } = {},
+): Promise<TriageStats> {
   if (triageDevFixturesEnabled()) return fixtureStats();
   const db = getDb();
   const threshold = suppressionThreshold();
@@ -1188,7 +1191,7 @@ export async function getStats(viewerLogin?: string): Promise<TriageStats> {
       HAVING count(*) >= ${threshold}
       ORDER BY count(*) DESC
     `,
-    getPipelineHealth(db),
+    options.includeHealth ? getPipelineHealth(db) : Promise.resolve(null),
     db<{ n: string }[]>`
       ${queueFocusCte(db, "cleanup")}
       SELECT count(*) AS n
