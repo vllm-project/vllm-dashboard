@@ -847,7 +847,7 @@ function Queue() {
                 />
                 {!collapsed && (
                   <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
-                    <GroupedRows rows={group.items} rowKey={(item) => item.itemKey} activeKey={openItem} onOpen={(item) => openRow(item.itemKey)} />
+                    <GroupedRows rows={group.items} rowKey={(item) => item.itemKey} activeKey={openItem} onOpen={(item) => openRow(item.itemKey)} onOpenKey={openRow} />
                   </ul>
                 )}
               </section>
@@ -855,7 +855,7 @@ function Queue() {
           })}
         {data && data.items.length > 0 && !grouped && (
           <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
-            <GroupedRows rows={rows} rowKey={(item) => item.itemKey} activeKey={openItem} onOpen={(item) => openRow(item.itemKey)} />
+            <GroupedRows rows={rows} rowKey={(item) => item.itemKey} activeKey={openItem} onOpen={(item) => openRow(item.itemKey)} onOpenKey={openRow} />
           </ul>
         )}
 

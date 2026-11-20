@@ -303,7 +303,106 @@ const FIXTURE_ITEMS: readonly TriageQueueItem[] = [
     fixedBy: [],
     ci: null,
   },
+  // Two more issue + fix PR groups (one mixed: a P1 issue with a P0 fix PR)
+  // and two standalone items, so group cards can be checked against plain rows.
+  fixtureItem(68705, "issue", "[Bug]: Llama-4 Maverick returns empty tool calls with the pythonic parser", 64, "route", {
+    areas: ["tool_calling", "frontend_api"], models: ["Llama-4-Maverick"], hardware: ["H100"],
+    severity: { wrong_output: true }, fixedBy: [linkTo(68822, "pr", 101, "page")],
+  }),
+  fixtureItem(68822, "pr", "[Bugfix][Frontend] Pythonic tool parser: keep calls when content is empty", 101, "page", {
+    areas: ["tool_calling"], models: ["Llama-4-Maverick"], severity: { wrong_output: true, serving_broken: true },
+    fixes: [linkTo(68705, "issue", 64, "route")], waitingOn: "reviewer", ci: fixtureCi("passed", 0),
+  }),
+  fixtureItem(67454, "issue", "[Bug]: MoE EP all2all hangs after ~2h under load on H200", 75, "page", {
+    areas: ["moe", "distributed"], models: ["DeepSeek-V3"], hardware: ["H200"], severity: { hang: true },
+    assignments: [{ id: 105, maintainer: "khluu", role: "primary", status: "open" }],
+    fixedBy: [linkTo(67460, "pr", 72, "page")],
+  }),
+  fixtureItem(67460, "pr", "[Bugfix][MoE] Fix all2all deadlock when an EP rank drains early", 72, "page", {
+    areas: ["moe"], hardware: ["H200"], severity: { hang: true },
+    assignments: [{ id: 106, maintainer: "khluu", role: "primary", status: "open" }],
+    fixes: [linkTo(67454, "issue", 75, "page"), linkTo(67401, "issue", 40, "route")], ci: fixtureCi("running", 0),
+  }),
+  fixtureItem(66920, "pr", "[Perf] Faster top-k/top-p sampling with fused kernel", 58, "route", {
+    areas: ["sampling", "kernels"], hardware: ["B200"], waitingOn: "reviewer", ci: fixtureCi("failed", 2),
+  }),
+  fixtureItem(64584, "issue", "[Bug]: Gemma 3 vision encoder OOM at 32k context", 52, "route", {
+    areas: ["multimodal", "memory"], models: ["gemma-3-27b"], hardware: ["H100"], severity: { memory_regression: true },
+  }),
 ];
+
+function linkTo(number: number, kind: "issue" | "pr", score: number, band: string): TriageLinkedItem {
+  return {
+    itemKey: `vllm-project/vllm#${number}`,
+    number,
+    kind,
+    title: `Fixture ${kind} #${number}`,
+    state: "open",
+    htmlUrl: `https://github.com/vllm-project/vllm/${kind === "pr" ? "pull" : "issues"}/${number}`,
+    score,
+    band,
+    owner: null,
+  };
+}
+
+function fixtureCi(state: "passed" | "failed" | "running", failed: number): NonNullable<TriageQueueItem["ci"]> {
+  return {
+    head_sha: `fixture${state}`,
+    state,
+    build_number: 42200,
+    build_url: "https://buildkite.com/vllm/ci/builds/42200",
+    build_state: state,
+    jobs_total: 40,
+    jobs_passed: state === "running" ? 30 : 40 - failed,
+    jobs_running: state === "running" ? 10 : 0,
+    jobs_failed: failed,
+    jobs_failed_on_main: 0,
+    jobs_failed_recent_on_main: 0,
+    jobs_failed_pr_only: failed,
+    main_known: true,
+    failed_jobs: [],
+    checked_at: NOW_ISO,
+  };
+}
+
+function fixtureItem(
+  number: number,
+  kind: "issue" | "pr",
+  title: string,
+  score: number,
+  band: string,
+  extra: Partial<Omit<TriageQueueItem, "severity">> & { severity?: Partial<NonNullable<TriageQueueItem["severity"]>> },
+): TriageQueueItem {
+  const { severity, ...rest } = extra;
+  return {
+    itemKey: `vllm-project/vllm#${number}`,
+    repo: "vllm-project/vllm",
+    number,
+    kind,
+    title,
+    htmlUrl: `https://github.com/vllm-project/vllm/${kind === "pr" ? "pull" : "issues"}/${number}`,
+    author: "fixture-author",
+    state: "open",
+    draft: false,
+    ghCreatedAt: HOURS_AGO(30 + (number % 50)),
+    ghUpdatedAt: HOURS_AGO(2),
+    score,
+    band,
+    summary: title,
+    type: "bug",
+    areas: [],
+    models: [],
+    hardware: [],
+    serving: [],
+    severity: severity ? { serving_broken: false, crash: false, wrong_output: false, hang: false, memory_regression: false, security: false, ...severity } : null,
+    assignments: [],
+    waitingOn: null,
+    fixes: [],
+    fixedBy: [],
+    ci: null,
+    ...rest,
+  };
+}
 
 export function fixtureQueue(filters: QueueFilters): TriageQueueResponse {
   const q = filters.q?.toLowerCase() ?? "";

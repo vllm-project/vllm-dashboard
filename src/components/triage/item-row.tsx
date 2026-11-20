@@ -17,8 +17,12 @@ import {
   contextText,
   impactBadge,
   kindLabel,
+  fixLabelText,
+  fixTargets,
   linkText,
-  listRows,
+  listBlocks,
+  type FixTarget,
+  type ListRow,
   rowCiChip,
   scoreParts,
 } from "@/lib/triage-rows";
@@ -56,11 +60,30 @@ function Owner({ item }: { item: TriageQueueItem }) {
 }
 
 /** "P0" pill and "79 pts" under it; the score links to how it's computed. */
-function PriorityCell({ band, score }: { band: string | null; score: number | null }) {
+/** Outline pill text colours for a member whose own priority differs from its group card's. */
+const OUTLINE_PILL: Record<string, string> = {
+  page: "text-red-700 dark:text-red-400",
+  route: "text-amber-700 dark:text-amber-400",
+  watch: "text-blue-700 dark:text-blue-400",
+};
+
+function PriorityCell({ band, score, outlined = false }: { band: string | null; score: number | null; outlined?: boolean }) {
   const { value, unit } = scoreParts(score);
+  const style = bandStyle(band);
   return (
     <div className="flex flex-col items-start gap-0.5 pt-0.5">
-      <PriorityBadge band={band} />
+      {outlined ? (
+        <span
+          title={`${style.meaning} (its own priority; the card is filed by its most urgent item)`}
+          className={`inline-flex h-[18px] min-w-6 shrink-0 items-center justify-center rounded px-1 text-[10px] font-bold tabular-nums ring-1 ring-inset ring-current ${
+            OUTLINE_PILL[band ?? ""] ?? "text-zinc-500 dark:text-zinc-400"
+          }`}
+        >
+          {style.label}
+        </span>
+      ) : (
+        <PriorityBadge band={band} />
+      )}
       <Link
         href="/triage/scoring"
         title={SCORE_TOOLTIP}
@@ -137,16 +160,68 @@ function DetailLine({ item, shownLinks }: { item: TriageQueueItem; shownLinks: r
 }
 
 /** "Issue" / "PR" with the state-coloured icon, or "↳ Fix PR" under its issue. */
-function KindTag({ item, nested }: { item: TriageQueueItem; nested: boolean }) {
+/**
+ * "Issue" / "PR" with the state-coloured icon; a fix PR in a group card reads
+ * "↳ Fix PR for #65364", each number opening that issue's drawer.
+ */
+function KindTag({
+  item,
+  nested,
+  fixFor,
+  onOpenKey,
+}: {
+  item: TriageQueueItem;
+  nested: boolean;
+  fixFor?: readonly FixTarget[];
+  onOpenKey?: (itemKey: string) => void;
+}) {
   const label = kindLabel(item, nested);
   return (
     <span className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">
       {nested && <span aria-hidden="true" className="text-zinc-400 dark:text-zinc-500">↳</span>}
       <KindIcon kind={item.kind} draft={item.draft} state={item.state} />
-      <span>{label}</span>
+      {nested && fixFor && fixFor.length > 0 ? (
+        <span aria-label={fixLabelText(fixFor)}>
+          Fix PR for{" "}
+          {fixFor.map((target, index) => (
+            <Fragment key={target.itemKey}>
+              {onOpenKey ? (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOpenKey(target.itemKey);
+                  }}
+                  title={`Open issue #${target.number}`}
+                  className="rounded-sm font-semibold text-zinc-700 underline-offset-2 hover:underline dark:text-zinc-200"
+                >
+                  #{target.number}
+                </button>
+              ) : (
+                <span className="font-semibold text-zinc-700 dark:text-zinc-200">#{target.number}</span>
+              )}
+              {index < fixFor.length - 1 ? ", " : ""}
+            </Fragment>
+          ))}
+        </span>
+      ) : (
+        <span>{label}</span>
+      )}
     </span>
   );
 }
+
+/** Where a row sits in a group card: drives the connector, stripe and pill. */
+export interface CardPlace {
+  /** The card's band: one stripe for the whole card. */
+  band: string | null;
+  /** The issue at the top (connector starts under its icon). */
+  lead: boolean;
+  /** The last fix PR (connector ends at its label). */
+  last: boolean;
+}
+
+const CONNECTOR = "bg-zinc-300 dark:bg-zinc-600";
 
 /**
  * One item. The whole row and its title open the drawer; "#123 ↗" after the
@@ -166,6 +241,9 @@ export function ItemRow({
   connectsDown = false,
   shownLinks = [],
   active = false,
+  card,
+  fixFor,
+  onOpenKey,
 }: {
   item: TriageQueueItem;
   onOpen: () => void;
@@ -175,6 +253,12 @@ export function ItemRow({
   connectsDown?: boolean;
   shownLinks?: readonly string[];
   active?: boolean;
+  /** Set when the row is inside a group card (see `GroupedRows`). */
+  card?: CardPlace;
+  /** A fix PR's issues, for "Fix PR for #N". */
+  fixFor?: readonly FixTarget[];
+  /** Opens another item's drawer by key (the "#N" in "Fix PR for #N"). */
+  onOpenKey?: (itemKey: string) => void;
 }) {
   const style = bandStyle(item.band);
   const row = useRef<HTMLLIElement>(null);
@@ -201,26 +285,31 @@ export function ItemRow({
       data-item-key={item.itemKey}
       data-nested={nested || undefined}
       aria-current={active || undefined}
-      aria-label={nested ? `Fix PR #${item.number} for the issue above` : undefined}
-      className={`relative cursor-pointer py-2.5 pl-4 pr-4 transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900/70 ${active ? "bg-zinc-100 dark:bg-zinc-800/70" : ""} ${style.row}`}
+      className={`relative cursor-pointer py-2.5 transition-colors ${
+        // In a card: 1rem minus the card's margin and border, so every cell lines up with standalone rows.
+        card ? "px-[9px] hover:bg-zinc-100/70 dark:hover:bg-zinc-800/50" : `px-4 hover:bg-zinc-50 dark:hover:bg-zinc-900/70 ${style.row}`
+      } ${active ? "!bg-zinc-100 dark:!bg-zinc-800/70" : ""}`}
       onClick={onOpen}
     >
-      {style.stripe && <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${style.stripe}`} />}
+      {!card && style.stripe && <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${style.stripe}`} />}
       <div className={ROW_GRID}>
-        <PriorityCell band={item.band} score={item.score} />
+        <PriorityCell band={item.band} score={item.score} outlined={!!card && item.band !== card.band} />
         <div className={`relative min-w-0 ${nested ? "pl-6" : ""}`}>
-          {/* Connector in the gutter left of the item column: from the issue down to each of its fix PRs. */}
-          {nested && (
-            <span aria-hidden="true" className="absolute -left-1.5 -top-2.5 h-5 w-px bg-zinc-300 dark:bg-zinc-700" />
+          {/* Elbow connector: from under the issue's icon down and into each fix PR's label. */}
+          {card?.lead && connectsDown && (
+            <span aria-hidden="true" className={`absolute -bottom-2.5 left-[6px] top-[1.15rem] w-[1.5px] ${CONNECTOR}`} />
           )}
-          {connectsDown && (
-            <span
-              aria-hidden="true"
-              className={`absolute -bottom-2.5 -left-1.5 ${nested ? "top-2.5" : "top-2"} w-px bg-zinc-300 dark:bg-zinc-700`}
-            />
+          {card && nested && (
+            <>
+              <span
+                aria-hidden="true"
+                className={`absolute -top-2.5 left-[6px] w-[1.5px] ${CONNECTOR} ${card.last ? "h-[1.2rem]" : "-bottom-2.5"}`}
+              />
+              <span aria-hidden="true" className={`absolute left-[6px] top-[0.55rem] h-[1.5px] w-3 ${CONNECTOR}`} />
+            </>
           )}
           <div className="flex min-w-0 items-baseline gap-2">
-            <KindTag item={item} nested={nested} />
+            <KindTag item={item} nested={nested} fixFor={fixFor} onOpenKey={onOpenKey} />
             <button
               type="button"
               onClick={(event) => {
@@ -234,7 +323,8 @@ export function ItemRow({
             </button>
             {number}
           </div>
-          <DetailLine item={item} shownLinks={shownLinks} />
+          {/* A fix PR's label already names its issues; no "Fixes #N" again. */}
+          <DetailLine item={item} shownLinks={nested ? [...shownLinks, ...item.fixes.map((link) => link.itemKey)] : shownLinks} />
           {!hideOwner && (
             <div className="mt-1 md:hidden">
               <Owner item={item} />
@@ -256,13 +346,17 @@ export function ItemRow({
 }
 
 /**
- * Rows with each fix PR under its issue (triage-groups.ts `nestGroups`,
- * shaped by `listRows`): same order as j/k.
+ * The list: an issue and its fix PRs as one group card (one stripe in the
+ * group's most urgent band, a light tint, no dividers inside, space around
+ * it); everything else as plain rows. Row order is `listRows` order, which
+ * is also the j/k order. `onOpenKey` opens a drawer by key (the "#N" in a
+ * fix PR's "Fix PR for #N").
  */
 export function GroupedRows<T extends TriageQueueItem>({
   rows,
   rowKey,
   onOpen,
+  onOpenKey,
   footer,
   hideOwner = false,
   activeKey = null,
@@ -270,26 +364,55 @@ export function GroupedRows<T extends TriageQueueItem>({
   rows: readonly NestedRow<T>[];
   rowKey: (item: T) => string | number;
   onOpen: (item: T) => void;
+  onOpenKey?: (itemKey: string) => void;
   footer?: (item: T) => ReactNode;
   hideOwner?: boolean;
   /** The item key whose drawer is open. */
   activeKey?: string | null;
 }) {
+  const draw = (row: ListRow<T>, card?: CardPlace, fixFor?: FixTarget[]) => (
+    <ItemRow
+      key={rowKey(row.item)}
+      item={row.item}
+      nested={row.nested}
+      connectsDown={row.connectsDown}
+      onOpen={() => onOpen(row.item)}
+      onOpenKey={onOpenKey}
+      footer={footer?.(row.item)}
+      hideOwner={hideOwner}
+      shownLinks={row.shownLinks}
+      active={row.item.itemKey === activeKey}
+      card={card}
+      fixFor={fixFor}
+    />
+  );
   return (
     <>
-      {listRows(rows).map((row) => (
-        <ItemRow
-          key={rowKey(row.item)}
-          item={row.item}
-          nested={row.nested}
-          connectsDown={row.connectsDown}
-          onOpen={() => onOpen(row.item)}
-          footer={footer?.(row.item)}
-          hideOwner={hideOwner}
-          shownLinks={row.shownLinks}
-          active={row.item.itemKey === activeKey}
-        />
-      ))}
+      {listBlocks(rows).map((block) => {
+        if (block.kind === "single") return draw(block.row);
+        const lead = block.rows[0].item;
+        const stripe = bandStyle(block.band).stripe;
+        return (
+          <li
+            key={block.key}
+            role="group"
+            aria-label={block.label}
+            data-group={block.key}
+            className="relative mx-1.5 my-2 overflow-hidden rounded-lg !border border-zinc-200 bg-zinc-50/60 dark:border-zinc-700/80 dark:bg-zinc-900/40"
+          >
+            {stripe && <span aria-hidden="true" className={`absolute inset-y-0 left-0 z-[1] w-1 ${stripe}`} />}
+            <ul>
+              {block.rows.map((row, index) =>
+                draw(
+                  row,
+                  { band: block.band, lead: index === 0, last: index === block.rows.length - 1 },
+                  row.nested ? fixTargets(row.item, lead.itemKey, lead.number) : undefined,
+                ),
+              )}
+            </ul>
+          </li>
+        );
+      })}
     </>
   );
 }

@@ -19,6 +19,7 @@
   Use `npm run test:triage` when the change spans triage behavior. Do not run unrelated suites for a presentation-only change.
 - **Production builds:** skip `next build` locally by default, including before PR creation. Vercel builds a preview deployment automatically on each PR. If a local build is justified, run it once and repeat only after a change addressing a failure.
 - **Worktrees:** reuse one persistent worktree with warm dependencies when possible. Do not install or copy dependencies, or troubleshoot a browser/dev-server setup, solely to obtain optional screenshots or builds.
+- **Screenshots are not needed.** Only take screenshots when explicitly requested. Do not start a dev server or set up Postgres just to produce PR screenshots; reviewers can use the automatically generated Vercel Preview URL.
 - **Optional visual inspection:** when explicitly requested or needed to diagnose a rendering problem, prefer the Vercel Preview URL. For local triage inspection, use:
   ```bash
   npm run dev:triage
