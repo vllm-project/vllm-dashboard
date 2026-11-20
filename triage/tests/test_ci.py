@@ -185,12 +185,13 @@ def test_head_commit_reads_the_buildkite_status() -> None:
 def test_whose_move_with_ci() -> None:
     failed = mark_main(summarize_build(FAILED_BUILD, SHA), MAIN_FAILING).as_json()
     fields = whose_move(draft=False, review_decision=None, mergeable="MERGEABLE", failing_checks=[], ci=failed)
-    assert fields == {"waiting_on": "author", "waiting_reasons": ["ci_pr_failures"], "failing_checks": [],
-                      "ci_pr_only_jobs": [":github: GitHub pre-commit check"]}
+    assert fields == {"waiting_on": "author", "waiting_reasons": ["ci_pr_failures"], "mergeable": "MERGEABLE",
+                      "failing_checks": [], "ci_pr_only_jobs": [":github: GitHub pre-commit check"]}
     on_main = mark_main(summarize_build(FAILED_BUILD, SHA), main(MAIN_KEYS | {
         "step:pre-commit|name::github: GitHub pre-commit check"})).as_json()
     assert whose_move(draft=False, review_decision=None, mergeable="MERGEABLE", failing_checks=[], ci=on_main) == {
-        "waiting_on": "reviewer", "waiting_reasons": [], "failing_checks": [], "ci_pr_only_jobs": []}
+        "waiting_on": "reviewer", "waiting_reasons": [], "mergeable": "MERGEABLE",
+        "failing_checks": [], "ci_pr_only_jobs": []}
 
 
 def test_the_rule_can_be_switched_off(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -296,7 +297,7 @@ def status(head: str = SHA, build_url: str | None = BUILD_URL, **kw: Any) -> PrS
 
 def test_ingest_refreshes_ci_and_whose_move() -> None:
     store = Store()
-    reviewer = {"waiting_on": "reviewer", "waiting_reasons": [], "failing_checks": []}
+    reviewer = {"waiting_on": "reviewer", "waiting_reasons": [], "mergeable": "MERGEABLE", "failing_checks": []}
     store.due = [("k1", 1, dict(reviewer)), ("k2", 2, dict(reviewer)), ("k3", 3, dict(reviewer)),
                  ("k4", 4, dict(reviewer))]
     store.waiting = [("k5", 5, {"waiting_on": "author", "waiting_reasons": ["draft"], "failing_checks": []})]
@@ -315,24 +316,25 @@ def test_ingest_refreshes_ci_and_whose_move() -> None:
     # gets the new, empty ci_pr_only_jobs once. k5 isn't due a CI check and
     # has no CI row, so only its GitHub state counts (no longer a draft).
     assert sorted(store.prepass_updates) == [
-        ("k1", {"waiting_on": "author", "waiting_reasons": ["ci_pr_failures"], "failing_checks": [],
-                "ci_pr_only_jobs": [":github: GitHub pre-commit check"]}),
-        ("k2", {"waiting_on": "reviewer", "waiting_reasons": [], "failing_checks": [], "ci_pr_only_jobs": []}),
-        ("k5", {"waiting_on": "reviewer", "waiting_reasons": [], "failing_checks": []}),
+        ("k1", {"waiting_on": "author", "waiting_reasons": ["ci_pr_failures"], "mergeable": "MERGEABLE",
+                "failing_checks": [], "ci_pr_only_jobs": [":github: GitHub pre-commit check"]}),
+        ("k2", {"waiting_on": "reviewer", "waiting_reasons": [], "mergeable": "MERGEABLE",
+                "failing_checks": [], "ci_pr_only_jobs": []}),
+        ("k5", {"waiting_on": "reviewer", "waiting_reasons": [], "mergeable": "MERGEABLE", "failing_checks": []}),
     ]
 
     # Next run: k1's finished build isn't fetched again; main now fails pre-commit too.
     store.prepass_updates.clear()
-    store.due = [("k1", 1, {"waiting_on": "author", "waiting_reasons": ["ci_pr_failures"], "failing_checks": [],
-                            "ci_pr_only_jobs": [":github: GitHub pre-commit check"]})]
+    store.due = [("k1", 1, {"waiting_on": "author", "waiting_reasons": ["ci_pr_failures"], "mergeable": "MERGEABLE",
+                            "failing_checks": [], "ci_pr_only_jobs": [":github: GitHub pre-commit check"]})]
     store.waiting = []
     store.main = main(MAIN_KEYS | {"step:pre-commit|name::github: GitHub pre-commit check",
                                    "step:lost|name::docker: Lost agent"})
     handler(ScheduledCommand("triage_ingest", NOW))
     assert buildkite.fetched == [104586, 9]
     assert store.ci["k1"]["jobs_failed_on_main"] == 4
-    assert store.prepass_updates == [("k1", {"waiting_on": "reviewer", "waiting_reasons": [], "failing_checks": [],
-                                             "ci_pr_only_jobs": []})]
+    assert store.prepass_updates == [("k1", {"waiting_on": "reviewer", "waiting_reasons": [], "mergeable": "MERGEABLE",
+                                             "failing_checks": [], "ci_pr_only_jobs": []})]
 
     # A new commit: the stored CI is for the old one and doesn't count.
     store.prepass_updates.clear()

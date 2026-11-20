@@ -258,10 +258,12 @@ def test_whose_move() -> None:
     assert whose_move(draft=False, review_decision="APPROVED", mergeable="MERGEABLE",
                       failing_checks=["pre-run-check", "docs/readthedocs.org:vllm", "buildkite/ci/pr"]) == {
         "waiting_on": "reviewer", "waiting_reasons": [],
+        "review_decision": "APPROVED", "mergeable": "MERGEABLE",
         "failing_checks": ["pre-run-check", "docs/readthedocs.org:vllm", "buildkite/ci/pr"]}
     assert whose_move(draft=True, review_decision="CHANGES_REQUESTED", mergeable="CONFLICTING",
                       failing_checks=["pre-commit"]) == {
         "waiting_on": "author", "waiting_reasons": ["draft", "ci_failing", "merge_conflict", "changes_requested"],
+        "review_decision": "CHANGES_REQUESTED", "mergeable": "CONFLICTING",
         "failing_checks": ["pre-commit"]}
     # REST knows only the draft flag.
     assert whose_move(draft=False, review_decision=None, mergeable=None, failing_checks=None) == {
@@ -385,12 +387,13 @@ def test_waiting_prs_are_rechecked_and_only_changes_written(fake: Any) -> None:
                    "commits": checks()},
         }})
     store = MemoryStore()
-    still = {"waiting_on": "author", "waiting_reasons": ["draft"], "failing_checks": []}
+    still = {"waiting_on": "author", "waiting_reasons": ["draft"], "mergeable": "MERGEABLE", "failing_checks": []}
     store.waiting = [("k1", 1, {"waiting_on": "author", "waiting_reasons": ["ci_failing"], "failing_checks": ["pre-commit"]}),
                      ("k2", 2, still), ("k3", 3, still)]
     IngestHandler(store=store, github=GraphQLGitHubClient("t"), config=default_config(),  # type: ignore[arg-type]
                   clock=Clock())(ScheduledCommand("triage_ingest", NOW))
-    assert store.prepass_updates == [("k1", {"waiting_on": "reviewer", "waiting_reasons": [], "failing_checks": []})]
+    assert store.prepass_updates == [("k1", {"waiting_on": "reviewer", "waiting_reasons": [], "mergeable": "MERGEABLE",
+                                             "failing_checks": []})]
 
 
 def test_the_api_switch(monkeypatch: pytest.MonkeyPatch) -> None:

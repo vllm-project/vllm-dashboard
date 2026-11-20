@@ -329,7 +329,16 @@ const FIXTURE_ITEMS: readonly TriageQueueItem[] = [
   fixtureItem(64584, "issue", "[Bug]: Gemma 3 vision encoder OOM at 32k context", 52, "route", {
     areas: ["multimodal", "memory"], models: ["gemma-3-27b"], hardware: ["H100"], severity: { memory_regression: true },
   }),
+  fixtureItem(67131, "pr", "[Frontend] Alternate fix for /v1/responses previous_input_messages", 51, "route", {
+    author: "contrib-dupe",
+    summary: "Competing duplicate PR fixing #68575 without regression tests.",
+    areas: ["frontend_api"], models: ["Qwen3-0.6B"], serving: ["openai_api"],
+    waitingOn: "reviewer", fixes: [ISSUE_68575_LINK],
+  }),
 ];
+
+const APPROVED_FIXTURE_KEYS = new Set(["vllm-project/vllm#65365"]);
+const LOW_EFFORT_FIXTURE_KEYS = new Set(["vllm-project/vllm#67131"]);
 
 function linkTo(number: number, kind: "issue" | "pr", score: number, band: string): TriageLinkedItem {
   return {
@@ -427,7 +436,25 @@ export function fixtureQueue(filters: QueueFilters): TriageQueueResponse {
     if (filters.status === "unassigned" && item.assignments.length > 0) return false;
     if (filters.status === "open" && !item.assignments.some((a) => a.status === "open")) return false;
     if (filters.status === "acked" && !item.assignments.some((a) => a.status === "acked")) return false;
-    if (filters.review === "ready" && (item.kind !== "pr" || item.draft || item.waitingOn !== "reviewer")) return false;
+    if (filters.review === "ready" && (item.kind !== "pr" || item.draft || item.waitingOn !== "reviewer" || APPROVED_FIXTURE_KEYS.has(item.itemKey))) {
+      return false;
+    }
+    if (filters.review === "merge" && (item.kind !== "pr" || item.draft || item.waitingOn !== "reviewer" || !APPROVED_FIXTURE_KEYS.has(item.itemKey) || item.ci?.state !== "passed")) {
+      return false;
+    }
+    if (filters.review === "cleanup") {
+      if (item.kind !== "pr" || item.state !== "open") return false;
+      const hasCompetingPr = item.fixes.some((issue) =>
+        FIXTURE_ITEMS.some(
+          (other) =>
+            other.kind === "pr" &&
+            other.state === "open" &&
+            other.itemKey !== item.itemKey &&
+            other.fixes.some((f) => f.itemKey === issue.itemKey),
+        ),
+      );
+      if (!LOW_EFFORT_FIXTURE_KEYS.has(item.itemKey) && !hasCompetingPr) return false;
+    }
     if (
       q &&
       !item.title.toLowerCase().includes(q) &&

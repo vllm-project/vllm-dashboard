@@ -15,7 +15,7 @@ import { DEFAULT_QUEUE_BANDS, TRIAGE_BANDS } from "@/lib/triage-vocab";
  * (`unowned` → needs-triage). Search (`q`) and sort are kept when switching
  * presets; everything else is replaced.
  */
-export type QueuePresetId = "needs-triage" | "not-acked" | "review" | "all";
+export type QueuePresetId = "needs-triage" | "not-acked" | "review" | "merge" | "cleanup" | "all";
 
 export interface QueuePreset {
   id: QueuePresetId;
@@ -34,15 +34,27 @@ export const QUEUE_PRESETS: readonly QueuePreset[] = [
   },
   {
     id: "not-acked",
-    label: "Not acked yet",
+    label: "Not acked",
     title: "Open items whose owner hasn't acked them yet",
     filters: { status: "open" },
   },
   {
     id: "review",
-    label: "PRs ready to review",
-    title: "Open PRs whose next move is a reviewer's: not a draft, CI not failing on its own account, no conflicts",
+    label: "Ready to review",
+    title: "Open PRs waiting on a reviewer: not a draft, not yet approved, CI not failing on its own account, no conflicts",
     filters: { kind: "pr", review: "ready" },
+  },
+  {
+    id: "merge",
+    label: "Ready to merge",
+    title: "Approved open PRs with passing CI and no merge conflicts",
+    filters: { bands: [...TRIAGE_BANDS], kind: "pr", review: "merge" },
+  },
+  {
+    id: "cleanup",
+    label: "Close / dedup",
+    title: "Competing duplicate fix PRs (2+ open PRs fixing the same issue) and low-effort PRs",
+    filters: { bands: [...TRIAGE_BANDS], kind: "pr", review: "cleanup" },
   },
   {
     id: "all",
@@ -59,6 +71,11 @@ const VIEW_ALIASES: Record<string, QueuePresetId> = {
   "needs-owner": "needs-triage",
   "not-acked": "not-acked",
   review: "review",
+  merge: "merge",
+  "ready-to-merge": "merge",
+  cleanup: "cleanup",
+  close: "cleanup",
+  dupes: "cleanup",
   all: "all",
 };
 

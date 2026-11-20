@@ -276,6 +276,10 @@ def whose_move(
         "waiting_on": "author" if any(reasons.values()) else "reviewer",
         "waiting_reasons": [r for r in WAITING_REASONS if reasons[r]],
     }
+    if review_decision is not None:
+        out["review_decision"] = review_decision
+    if mergeable is not None:
+        out["mergeable"] = mergeable
     if failing_checks is not None:
         out["failing_checks"] = failing[:10]
     if ci is not None:

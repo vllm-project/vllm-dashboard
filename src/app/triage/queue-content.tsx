@@ -575,6 +575,16 @@ function FiltersPopover({
               <span className={PANEL_LABEL}>Owner</span>
               <OwnerPicker value={filters.owner} onChange={(owner) => onChange({ owner })} className="w-full" />
             </div>
+            <FieldSelect
+              label="PR view"
+              value={filters.review ?? ""}
+              onChange={(value) => onChange({ review: (value || null) as QueueFilters["review"] })}
+            >
+              <option value="">Any PR state</option>
+              <option value="ready">Ready to review</option>
+              <option value="merge">Ready to merge</option>
+              <option value="cleanup">Close / dedup</option>
+            </FieldSelect>
             <FieldSelect label="Sort" value={filters.sort} onChange={(value) => onChange({ sort: value as QueueFilters["sort"] })}>
               <option value="score">By priority</option>
               <option value="age">Newest first</option>
@@ -583,7 +593,6 @@ function FiltersPopover({
           </div>
           <div className="flex flex-wrap gap-2">
             <Toggle on={filters.state === "all"} label="Closed too" onClick={() => onChange({ state: filters.state === "all" ? "open" : "all" })} />
-            <Toggle on={filters.review === "ready"} label="Ready to review only" onClick={() => onChange({ review: filters.review ? null : "ready" })} />
           </div>
           <div className="flex items-center justify-between border-t border-zinc-100 pt-2 dark:border-zinc-800">
             <button

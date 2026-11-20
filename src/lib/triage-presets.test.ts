@@ -18,6 +18,8 @@ test("each preset maps to its query string", () => {
   assert.equal(presetQuery("needs-triage"), "");
   assert.equal(presetQuery("not-acked"), "status=open");
   assert.equal(presetQuery("review"), "kind=pr&review=ready");
+  assert.equal(presetQuery("merge"), "bands=page%2Croute%2Cwatch%2Cignore%2Cunscored&kind=pr&review=merge");
+  assert.equal(presetQuery("cleanup"), "bands=page%2Croute%2Cwatch%2Cignore%2Cunscored&kind=pr&review=cleanup");
   assert.equal(presetQuery("all"), "bands=page%2Croute%2Cwatch%2Cignore%2Cunscored");
 });
 
@@ -50,6 +52,10 @@ test("existing links keep landing sensibly", () => {
   assert.equal(view("needs-triage"), "needs-triage");
   assert.equal(view("not-acked"), "not-acked");
   assert.equal(view("review"), "review");
+  assert.equal(view("merge"), "merge");
+  assert.equal(view("ready-to-merge"), "merge");
+  assert.equal(view("cleanup"), "cleanup");
+  assert.equal(view("dupes"), "cleanup");
   assert.equal(view("all"), "all");
   assert.equal(parseQueueLocation(new URLSearchParams("view=unowned&q=moe")).q, "moe");
   assert.equal(activePreset(parseQueueLocation(new URLSearchParams("view=bogus"))), "needs-triage");
@@ -73,8 +79,10 @@ test("switching preset keeps search and sort, resets the rest", () => {
   assert.equal(presetQuery("not-acked", current), "status=open&q=deepseek&sort=updated");
 });
 
-test("review=ready parses and serialises", () => {
+test("review filter parses and serialises ready, merge, and cleanup", () => {
   assert.equal(parse("review=ready").review, "ready");
+  assert.equal(parse("review=merge").review, "merge");
+  assert.equal(parse("review=cleanup").review, "cleanup");
   assert.equal(parse("review=bogus").review, null);
 });
 
