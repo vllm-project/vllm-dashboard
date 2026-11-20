@@ -152,10 +152,10 @@ function MyPlate() {
             detail="Nothing is assigned to you right now. Unowned P0/P1 items are waiting in the queue."
             action={
               <Link
-                href="/triage?bands=page,route&owner=none"
+                href="/triage"
                 className="dashboard-control mt-1 rounded-md border border-zinc-200 px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
               >
-                See unowned P0/P1
+                See what needs triage
               </Link>
             }
           />

@@ -6,6 +6,7 @@ import {
   activePreset,
   inPlateView,
   parsePlateView,
+  parseQueueLocation,
   presetFilters,
   presetQuery,
 } from "./triage-presets";
@@ -15,9 +16,18 @@ const parse = (query: string) => parseQueueFilters(new URLSearchParams(query));
 
 test("each preset maps to its query string", () => {
   assert.equal(presetQuery("needs-triage"), "");
-  assert.equal(presetQuery("unowned"), "bands=page%2Croute&owner=none");
+  assert.equal(presetQuery("not-acked"), "status=open");
   assert.equal(presetQuery("review"), "kind=pr&review=ready");
   assert.equal(presetQuery("all"), "bands=page%2Croute%2Cwatch%2Cignore%2Cunscored");
+});
+
+test("the presets mean what their names say", () => {
+  const needs = parse(presetQuery("needs-triage"));
+  assert.deepEqual([needs.bands, needs.owner, needs.state], [["page", "route"], "none", "open"]);
+  const notAcked = parse(presetQuery("not-acked"));
+  assert.deepEqual([notAcked.status, notAcked.owner], ["open", null]);
+  const all = parse(presetQuery("all"));
+  assert.deepEqual([all.bands.length, all.owner, all.state], [5, null, "open"]);
 });
 
 test("every preset round-trips through the URL and is recognised", () => {
@@ -26,12 +36,25 @@ test("every preset round-trips through the URL and is recognised", () => {
   }
 });
 
-test("existing links keep landing on their preset", () => {
-  assert.equal(activePreset(parse("bands=page,route&owner=none")), "unowned");
-  assert.equal(activePreset(parse("owner=none&bands=route,page")), "unowned");
+test("existing links keep landing sensibly", () => {
+  // Slack and the My-list empty state link here; it was "Unowned P0/P1", now "Needs triage".
+  assert.equal(activePreset(parse("bands=page,route&owner=none")), "needs-triage");
+  assert.equal(activePreset(parse("owner=none&bands=route,page")), "needs-triage");
+  // The old default ("/triage") is the new default.
   assert.equal(activePreset(parse("")), "needs-triage");
+  // The old "All" link.
+  assert.equal(activePreset(parse("bands=page,route,watch,ignore,unscored")), "all");
+  // ?view= with old and new preset ids.
+  const view = (id: string) => activePreset(parseQueueLocation(new URLSearchParams(`view=${id}&q=moe`)));
+  assert.equal(view("unowned"), "needs-triage");
+  assert.equal(view("needs-triage"), "needs-triage");
+  assert.equal(view("not-acked"), "not-acked");
+  assert.equal(view("review"), "review");
+  assert.equal(view("all"), "all");
+  assert.equal(parseQueueLocation(new URLSearchParams("view=unowned&q=moe")).q, "moe");
+  assert.equal(activePreset(parseQueueLocation(new URLSearchParams("view=bogus"))), "needs-triage");
   // Search, sort and paging don't change which preset is active.
-  assert.equal(activePreset(parse("bands=page,route&owner=none&q=moe&sort=age&page=2")), "unowned");
+  assert.equal(activePreset(parse("bands=page,route&owner=none&q=moe&sort=age&page=2")), "needs-triage");
   // Anything else is a custom view.
   assert.equal(activePreset(parse("bands=page,route&owner=none&area=moe")), null);
   assert.equal(activePreset(parse("owner=alice")), null);
@@ -40,13 +63,14 @@ test("existing links keep landing on their preset", () => {
 
 test("switching preset keeps search and sort, resets the rest", () => {
   const current = parse("area=moe&owner=bob&q=deepseek&sort=updated&page=4");
-  const next = presetFilters("unowned", current);
+  const next = presetFilters("needs-triage", current);
   assert.equal(next.area, null);
   assert.equal(next.owner, "none");
   assert.equal(next.q, "deepseek");
   assert.equal(next.sort, "updated");
   assert.equal(next.page, 1);
   assert.equal(presetQuery("needs-triage", current), "q=deepseek&sort=updated");
+  assert.equal(presetQuery("not-acked", current), "status=open&q=deepseek&sort=updated");
 });
 
 test("review=ready parses and serialises", () => {
@@ -54,9 +78,10 @@ test("review=ready parses and serialises", () => {
   assert.equal(parse("review=bogus").review, null);
 });
 
-test("filter badge counts what differs from the default view", () => {
+test("filter badge counts what goes beyond the view", () => {
   assert.equal(activeFilterCount(parse("")), 0);
   assert.equal(activeFilterCount(parse("q=moe")), 0);
+  assert.equal(activeFilterCount(parse("status=open")), 0);
   assert.equal(activeFilterCount(parse("area=moe&hardware=B200")), 2);
   // On a preset, only what goes beyond it counts.
   assert.equal(activeFilterCount(parse("bands=page,route&owner=none")), 0);

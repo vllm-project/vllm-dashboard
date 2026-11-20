@@ -54,9 +54,26 @@ function positiveInt(value: string | null, fallback: number, max: number): numbe
   return Number.isInteger(parsed) && parsed >= 1 ? Math.min(parsed, max) : fallback;
 }
 
+/** Params that choose what's listed (not search, sort, paging or the open item). */
+export const FILTER_PARAMS = [
+  "bands", "kind", "area", "hardware", "model", "owner", "assignee", "status", "review", "state", "scope",
+] as const;
+
+/**
+ * The landing view, `/triage` with no filter params: "Needs triage", open
+ * P0/P1 items nobody owns. Any filter param switches to literal parsing,
+ * where a missing `bands` means P0–P2 and a missing `owner` means anyone.
+ */
+export const LANDING_BANDS: readonly TriageBand[] = ["page", "route"];
+
+function hasFilterParams(params: URLSearchParams): boolean {
+  return FILTER_PARAMS.some((name) => params.has(name));
+}
+
 /** Parses /api/triage/items query params; unknown values fall back to defaults. */
 export function parseQueueFilters(params: URLSearchParams): QueueFilters {
-  const bandParam = params.get("bands");
+  const landing = !hasFilterParams(params);
+  const bandParam = landing ? LANDING_BANDS.join(",") : params.get("bands");
   const bands =
     bandParam === null
       ? [...DEFAULT_QUEUE_BANDS]
@@ -67,7 +84,7 @@ export function parseQueueFilters(params: URLSearchParams): QueueFilters {
   const kind = params.get("kind");
   const area = params.get("area");
   const hardware = params.get("hardware");
-  const owner = text(params.get("owner") ?? params.get("assignee"), 40);
+  const owner = landing ? OWNER_NONE : text(params.get("owner") ?? params.get("assignee"), 40);
   const status = params.get("status");
   const sort = params.get("sort");
   return {
@@ -88,8 +105,31 @@ export function parseQueueFilters(params: URLSearchParams): QueueFilters {
   };
 }
 
-/** The inverse, for building client URLs; omits defaults. */
+/**
+ * The inverse, for building client URLs; omits defaults. The landing view
+ * ("Needs triage") is no filter params at all; literal defaults (P0–P2,
+ * anyone) spell out `bands` so they don't read back as the landing view.
+ */
 export function queueFiltersToParams(filters: Partial<QueueFilters>): URLSearchParams {
+  const params = literalParams(filters);
+  const keys = FILTER_PARAMS.filter((name) => params.has(name));
+  const bands = new Set((params.get("bands") ?? "").split(","));
+  const isLanding =
+    keys.length === 2 &&
+    params.get("owner") === OWNER_NONE &&
+    bands.size === LANDING_BANDS.length &&
+    LANDING_BANDS.every((band) => bands.has(band));
+  if (isLanding) {
+    params.delete("bands");
+    params.delete("owner");
+  } else if (keys.length === 0 && filters.bands) {
+    params.set("bands", filters.bands.join(","));
+  }
+  // Keep a stable order: filters first, then the rest as built.
+  return params;
+}
+
+function literalParams(filters: Partial<QueueFilters>): URLSearchParams {
   const params = new URLSearchParams();
   if (filters.bands) {
     const isDefault =

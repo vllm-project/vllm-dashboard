@@ -1,38 +1,46 @@
 "use client";
 
+import Link from "next/link";
 import { Fragment, useEffect, useRef, type ReactNode } from "react";
 import {
-  ContextLine,
   GithubLink,
-  GroupLinks,
   KindIcon,
   OwnerStack,
   PriorityBadge,
-  PriorityScore,
-  SeverityFlags,
-  TypeLabel,
   UnroutedBadge,
 } from "@/components/triage/badges";
-import { CiBadge } from "@/components/triage/ci-status";
+import type { CiTone } from "@/lib/triage-ci";
 import { formatAge } from "@/lib/triage-format";
-import { bandStyle, isUnrouted, type BandKey } from "@/lib/triage-style";
-import type { NestedRow } from "@/lib/triage-groups";
+import { linkLabel, type NestedRow } from "@/lib/triage-groups";
+import {
+  SCORE_TOOLTIP,
+  contextText,
+  impactBadge,
+  kindLabel,
+  linkText,
+  listRows,
+  rowCiChip,
+  scoreParts,
+} from "@/lib/triage-rows";
+import { bandStyle, flagStyle, isUnrouted, type BandKey } from "@/lib/triage-style";
 import type { TriageQueueItem } from "@/lib/triage-types";
 
 /**
  * Column template shared by the header and every row (md and up):
- * priority+score · item · owner · age. Below md a row stacks, with the owner
- * folded under the title.
+ * priority · score, item, owner, age. Every row, fix PRs included, keeps its
+ * own stripe and priority cell in the same place; only the item column of a
+ * fix PR indents. Below md a row stacks, with the owner folded under the
+ * title.
  */
 export const ROW_GRID =
-  "grid grid-cols-[auto_minmax(0,1fr)_auto] gap-x-3 md:grid-cols-[5.5rem_minmax(0,1fr)_12rem_3rem]";
+  "grid grid-cols-[auto_minmax(0,1fr)_auto] gap-x-3 md:grid-cols-[7rem_minmax(0,1fr)_12rem_3rem]";
 
 export function ItemListHeader() {
   return (
     <div
       className={`${ROW_GRID} hidden border-b border-zinc-200 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500 md:grid dark:border-zinc-800 dark:text-zinc-400`}
     >
-      <span>Priority</span>
+      <span className="whitespace-nowrap">Priority · Score</span>
       <span>Item</span>
       <span>Owner</span>
       <span className="text-right">Age</span>
@@ -47,13 +55,107 @@ function Owner({ item }: { item: TriageQueueItem }) {
   return null;
 }
 
+/** "P0" pill and "79 pts" under it; the score links to how it's computed. */
+function PriorityCell({ band, score }: { band: string | null; score: number | null }) {
+  const { value, unit } = scoreParts(score);
+  return (
+    <div className="flex flex-col items-start gap-0.5 pt-0.5">
+      <PriorityBadge band={band} />
+      <Link
+        href="/triage/scoring"
+        title={SCORE_TOOLTIP}
+        aria-label={score === null ? "Not scored yet: how scores are computed" : `Impact score ${value} points: how it's computed`}
+        onClick={(event) => event.stopPropagation()}
+        className="rounded-sm text-sm font-semibold tabular-nums leading-tight text-zinc-700 underline-offset-2 hover:underline dark:text-zinc-300"
+      >
+        {value}
+        {unit && <span className="ml-0.5 text-[11px] font-normal text-zinc-400 dark:text-zinc-500">{unit}</span>}
+      </Link>
+    </div>
+  );
+}
+
+const CI_TONE: Record<CiTone, string> = {
+  fail: "text-red-700 dark:text-red-400",
+  main: "text-amber-700 dark:text-amber-400",
+  pass: "text-emerald-700 dark:text-emerald-400",
+  running: "text-zinc-500 dark:text-zinc-400",
+  idle: "text-zinc-500 dark:text-zinc-400",
+};
+
+/** Line 2: one impact badge, CI when actionable, then plain muted context and "Fixes #N". */
+function DetailLine({ item, shownLinks }: { item: TriageQueueItem; shownLinks: readonly string[] }) {
+  const impact = impactBadge(item);
+  const ci = rowCiChip(item.ci);
+  const context = contextText(item);
+  const links = linkText(item, shownLinks);
+  if (!impact && !ci && !context.text && !links) return null;
+  const parts: ReactNode[] = [];
+  if (context.text) {
+    parts.push(
+      <span key="context" className="min-w-0 truncate" title={[context.text, ...context.hidden].join(" · ")}>
+        {context.text}
+        {context.more > 0 && <span className="text-zinc-400 dark:text-zinc-500"> · +{context.more}</span>}
+      </span>,
+    );
+  }
+  if (links) {
+    parts.push(
+      <span key="links" className="shrink-0" onClick={(event) => event.stopPropagation()}>
+        {links.verb}{" "}
+        {links.links.map((link, index) => (
+          <Fragment key={link.itemKey}>
+            <GithubLink href={link.htmlUrl} title={link.title} className="!text-zinc-500 hover:!text-zinc-800 dark:!text-zinc-400 dark:hover:!text-zinc-100">
+              {linkLabel(link)}
+            </GithubLink>
+            {index < links.links.length - 1 ? ", " : ""}
+          </Fragment>
+        ))}
+      </span>,
+    );
+  }
+  return (
+    <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+      {impact && (
+        <span title={impact.title} className={`shrink-0 rounded px-1.5 py-px text-[11px] font-semibold leading-4 ${flagStyle(impact.flag)}`}>
+          {impact.label}
+        </span>
+      )}
+      {ci && (
+        <span title={ci.title} className={`shrink-0 text-[11px] font-semibold tabular-nums ${CI_TONE[ci.tone]}`}>
+          {ci.label}
+        </span>
+      )}
+      {parts.map((part, index) => (
+        <Fragment key={index}>
+          {(index > 0 || impact || ci) && <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>}
+          {part}
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+/** "Issue" / "PR" with the state-coloured icon, or "↳ Fix PR" under its issue. */
+function KindTag({ item, nested }: { item: TriageQueueItem; nested: boolean }) {
+  const label = kindLabel(item, nested);
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+      {nested && <span aria-hidden="true" className="text-zinc-400 dark:text-zinc-500">↳</span>}
+      <KindIcon kind={item.kind} draft={item.draft} state={item.state} />
+      <span>{label}</span>
+    </span>
+  );
+}
+
 /**
- * One item. The whole row and its title open the drawer; "#123 ↗" next to
- * the title goes to GitHub. `footer` (e.g. My list's action buttons) renders
- * under the context line. `nested` draws a fix PR indented under its issue's
- * row (see `GroupedRows`); `shownLinks` are group members already visible,
- * so its "Fixes #N" / "Fixed by #N" line leaves them out. `active` marks the
- * row whose drawer is open.
+ * One item. The whole row and its title open the drawer; "#123 ↗" after the
+ * title goes to GitHub. `footer` (e.g. My list's action buttons) renders
+ * under the detail line. `nested`: a fix PR under its issue, indented in the
+ * item column only, joined to it by a thin connector; `connectsDown` carries
+ * that line on to the next fix PR. `shownLinks` are group members already on
+ * screen, left out of its "Fixes #N" text. `active` marks the row whose
+ * drawer is open.
  */
 export function ItemRow({
   item,
@@ -61,6 +163,7 @@ export function ItemRow({
   footer,
   hideOwner = false,
   nested = false,
+  connectsDown = false,
   shownLinks = [],
   active = false,
 }: {
@@ -69,16 +172,28 @@ export function ItemRow({
   footer?: ReactNode;
   hideOwner?: boolean;
   nested?: boolean;
+  connectsDown?: boolean;
   shownLinks?: readonly string[];
   active?: boolean;
 }) {
   const style = bandStyle(item.band);
-  const facets = { severity: item.severity ?? undefined, type: item.type ?? undefined };
   const row = useRef<HTMLLIElement>(null);
   useEffect(() => {
     // Keep the open item in view while j/k walk the list behind the drawer.
     if (active) row.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
+  const number = (
+    <span className="shrink-0 text-xs tabular-nums" onClick={(event) => event.stopPropagation()}>
+      <GithubLink
+        href={item.htmlUrl}
+        title={`Open #${item.number} on GitHub`}
+        className="!text-zinc-400 hover:!text-zinc-700 dark:!text-zinc-500 dark:hover:!text-zinc-200"
+      >
+        #{item.number}
+        <span aria-hidden="true"> ↗</span>
+      </GithubLink>
+    </span>
+  );
   return (
     <li
       ref={row}
@@ -86,25 +201,26 @@ export function ItemRow({
       data-item-key={item.itemKey}
       data-nested={nested || undefined}
       aria-current={active || undefined}
-      className={`relative cursor-pointer py-2.5 pr-4 transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900/70 ${
-        nested ? "border-l-2 border-zinc-200 pl-10 dark:border-zinc-700" : "pl-4"
-      } ${active ? "bg-zinc-100 dark:bg-zinc-800/70" : ""} ${style.row}`}
+      aria-label={nested ? `Fix PR #${item.number} for the issue above` : undefined}
+      className={`relative cursor-pointer py-2.5 pl-4 pr-4 transition-colors hover:bg-zinc-50 dark:hover:bg-zinc-900/70 ${active ? "bg-zinc-100 dark:bg-zinc-800/70" : ""} ${style.row}`}
       onClick={onOpen}
     >
       {style.stripe && <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${style.stripe}`} />}
       <div className={ROW_GRID}>
-        <div className="pt-0.5">
-          <PriorityScore band={item.band} score={item.score} />
-        </div>
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            {nested && <span className="text-xs text-zinc-400 dark:text-zinc-500" aria-label="fix PR">↳ fix</span>}
-            <KindIcon kind={item.kind} draft={item.draft} state={item.state} />
-            <TypeLabel type={item.type} />
-            <SeverityFlags facets={facets} max={2} />
-            <CiBadge ci={item.ci} />
-          </div>
-          <div className="mt-0.5 flex min-w-0 items-baseline gap-2">
+        <PriorityCell band={item.band} score={item.score} />
+        <div className={`relative min-w-0 ${nested ? "pl-6" : ""}`}>
+          {/* Connector in the gutter left of the item column: from the issue down to each of its fix PRs. */}
+          {nested && (
+            <span aria-hidden="true" className="absolute -left-1.5 -top-2.5 h-5 w-px bg-zinc-300 dark:bg-zinc-700" />
+          )}
+          {connectsDown && (
+            <span
+              aria-hidden="true"
+              className={`absolute -bottom-2.5 -left-1.5 ${nested ? "top-2.5" : "top-2"} w-px bg-zinc-300 dark:bg-zinc-700`}
+            />
+          )}
+          <div className="flex min-w-0 items-baseline gap-2">
+            <KindTag item={item} nested={nested} />
             <button
               type="button"
               onClick={(event) => {
@@ -116,26 +232,14 @@ export function ItemRow({
             >
               {item.title}
             </button>
-            <span className="shrink-0 text-xs tabular-nums" onClick={(event) => event.stopPropagation()}>
-              <GithubLink
-                href={item.htmlUrl}
-                title={`Open #${item.number} on GitHub`}
-                className="!text-zinc-400 hover:!text-zinc-700 dark:!text-zinc-500 dark:hover:!text-zinc-200"
-              >
-                #{item.number}
-                <span aria-hidden="true"> ↗</span>
-              </GithubLink>
-            </span>
+            {number}
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
-            <ContextLine item={item} />
-            <GroupLinks item={item} shown={shownLinks} />
-            {!hideOwner && (
-              <span className="md:hidden">
-                <Owner item={item} />
-              </span>
-            )}
-          </div>
+          <DetailLine item={item} shownLinks={shownLinks} />
+          {!hideOwner && (
+            <div className="mt-1 md:hidden">
+              <Owner item={item} />
+            </div>
+          )}
           {footer && (
             <div className="mt-2" onClick={(event) => event.stopPropagation()}>
               {footer}
@@ -152,8 +256,8 @@ export function ItemRow({
 }
 
 /**
- * Rows with each fix PR nested under its issue (triage-groups.ts
- * `nestGroups`): the issue's row, then its fix PRs indented beneath.
+ * Rows with each fix PR under its issue (triage-groups.ts `nestGroups`,
+ * shaped by `listRows`): same order as j/k.
  */
 export function GroupedRows<T extends TriageQueueItem>({
   rows,
@@ -173,29 +277,18 @@ export function GroupedRows<T extends TriageQueueItem>({
 }) {
   return (
     <>
-      {rows.map(({ item, members }) => (
-        <Fragment key={rowKey(item)}>
-          <ItemRow
-            item={item}
-            onOpen={() => onOpen(item)}
-            footer={footer?.(item)}
-            hideOwner={hideOwner}
-            shownLinks={members.map((member) => member.itemKey)}
-            active={item.itemKey === activeKey}
-          />
-          {members.map((member) => (
-            <ItemRow
-              key={rowKey(member)}
-              item={member}
-              nested
-              onOpen={() => onOpen(member)}
-              footer={footer?.(member)}
-              hideOwner={hideOwner}
-              shownLinks={[item.itemKey]}
-              active={member.itemKey === activeKey}
-            />
-          ))}
-        </Fragment>
+      {listRows(rows).map((row) => (
+        <ItemRow
+          key={rowKey(row.item)}
+          item={row.item}
+          nested={row.nested}
+          connectsDown={row.connectsDown}
+          onOpen={() => onOpen(row.item)}
+          footer={footer?.(row.item)}
+          hideOwner={hideOwner}
+          shownLinks={row.shownLinks}
+          active={row.item.itemKey === activeKey}
+        />
       ))}
     </>
   );

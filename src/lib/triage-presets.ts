@@ -1,19 +1,27 @@
-import { parseQueueFilters, queueFiltersToParams, OWNER_NONE, type QueueFilters } from "@/lib/triage-query";
+import {
+  LANDING_BANDS,
+  parseQueueFilters,
+  queueFiltersToParams,
+  OWNER_NONE,
+  type QueueFilters,
+} from "@/lib/triage-query";
 import { DEFAULT_QUEUE_BANDS, TRIAGE_BANDS } from "@/lib/triage-vocab";
 
 /**
  * One-click views on /triage. Each preset is a set of URL filters, so links
- * stay shareable and old links (e.g. `?bands=page,route&owner=none` from
- * Slack and My list) land on the matching preset. Search (`q`) and sort are
- * kept when switching presets; everything else is replaced.
+ * stay shareable. "Needs triage" is the landing view (no params), and old
+ * links land sensibly: `?bands=page,route&owner=none` (Slack, My list) is
+ * "Needs triage", and `?view=<id>` accepts the preset ids, old ones too
+ * (`unowned` → needs-triage). Search (`q`) and sort are kept when switching
+ * presets; everything else is replaced.
  */
-export type QueuePresetId = "needs-triage" | "unowned" | "review" | "all";
+export type QueuePresetId = "needs-triage" | "not-acked" | "review" | "all";
 
 export interface QueuePreset {
   id: QueuePresetId;
   label: string;
   title: string;
-  /** Filters on top of the defaults. */
+  /** Filters on top of the literal defaults (P0–P2, anyone, open). */
   filters: Partial<QueueFilters>;
 }
 
@@ -21,14 +29,14 @@ export const QUEUE_PRESETS: readonly QueuePreset[] = [
   {
     id: "needs-triage",
     label: "Needs triage",
-    title: "Open P0, P1 and P2 items (the default view)",
-    filters: {},
+    title: "Open P0 and P1 items nobody owns yet (the default view)",
+    filters: { bands: [...LANDING_BANDS], owner: OWNER_NONE },
   },
   {
-    id: "unowned",
-    label: "Unowned P0/P1",
-    title: "Open P0 and P1 items nobody owns",
-    filters: { bands: ["page", "route"], owner: OWNER_NONE },
+    id: "not-acked",
+    label: "Not acked yet",
+    title: "Open items whose owner hasn't acked them yet",
+    filters: { status: "open" },
   },
   {
     id: "review",
@@ -44,11 +52,32 @@ export const QUEUE_PRESETS: readonly QueuePreset[] = [
   },
 ];
 
+/** Preset ids accepted in `?view=`, including retired ones. */
+const VIEW_ALIASES: Record<string, QueuePresetId> = {
+  "needs-triage": "needs-triage",
+  unowned: "needs-triage",
+  "needs-owner": "needs-triage",
+  "not-acked": "not-acked",
+  review: "review",
+  all: "all",
+};
+
+/**
+ * The queue's filters from its URL: `?view=<preset>` (any id, old or new)
+ * expands to that preset; otherwise parseQueueFilters as usual.
+ */
+export function parseQueueLocation(params: URLSearchParams): QueueFilters {
+  const view = VIEW_ALIASES[params.get("view") ?? ""];
+  const parsed = parseQueueFilters(params);
+  return view ? presetFilters(view, parsed) : parsed;
+}
+
 /** Filters the presets set; search, sort and paging are left alone. */
 const PRESET_FIELDS = ["bands", "kind", "area", "hardware", "model", "owner", "status", "review", "state", "includeOutOfScope"] as const;
 
+/** Literal defaults: P0–P2, anyone, open (not the landing view). */
 function defaults(): QueueFilters {
-  return parseQueueFilters(new URLSearchParams());
+  return parseQueueFilters(new URLSearchParams(`bands=${DEFAULT_QUEUE_BANDS.join(",")}`));
 }
 
 function sameValue(a: unknown, b: unknown): boolean {
@@ -89,7 +118,7 @@ export function activePreset(filters: QueueFilters): QueuePresetId | null {
 /**
  * How many filters in the Filters popover are set beyond the view (the
  * "Filters 2" badge): 0 on an exact preset apart from a changed sort,
- * otherwise what differs from the default view. Search has its own box and
+ * otherwise what differs from the literal defaults (P0–P2, anyone). Search has its own box and
  * is not counted.
  */
 export function activeFilterCount(filters: QueueFilters): number {
