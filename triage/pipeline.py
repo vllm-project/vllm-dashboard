@@ -30,7 +30,7 @@ from triage.diff import format_diff_excerpt
 from triage.github import GitHubClient, GitHubError, IngestClient
 from triage.groups import Member, group_reason, number_of, partner_map
 from triage.model import Item, Score
-from triage.maintainers import MaintainersFileError, parse_maintainer_files
+from triage.maintainers import parse_maintainer_files_partial
 from triage.notify import WAITING_AFTER_DAYS, WAITING_MAX_ITEMS, maintainer_digest, page_dm, team_digest
 from triage.prepass import (
     COMMENTS_LIMIT,
@@ -50,6 +50,7 @@ from triage.routing import (
     assigned_elsewhere,
     can_follow,
     choose_owners,
+    explain_unowned,
     gh_assignees,
     group_owner,
     involvement,
@@ -128,13 +129,50 @@ class IngestHandler:
     # Max PR unified diffs fetched via REST per ingest run (cached per head_sha).
     diff_fetch_limit: int = 40
     _diffs_fetched: int = field(default=0, init=False, repr=False)
+    # Webhook queue drain (triage_webhook_queue) and optional cursor polling.
+    webhook_batch_limit: int = 100
+    poll_cursor: bool = True
 
     def __call__(self, command: ScheduledCommand) -> None:
         self._diffs_fetched = 0
+        started = self.clock.now()
+        warnings: list[str] = []
+        webhook_ingested = 0
+        if hasattr(self.store, "claim_webhook_queue") and hasattr(self.github, "items_by_numbers"):
+            queued = self.store.claim_webhook_queue(self.repo, limit=self.webhook_batch_limit)
+            if queued:
+                wh_items = self.github.items_by_numbers(self.repo, queued)
+                self._ingest_items(wh_items, started)
+                self.store.ack_webhook_queue(self.repo, queued)
+                webhook_ingested = len(wh_items)
         name = f"github:{self.repo}"
-        now = self.clock.now()
-        since = (self.store.cursor(name) or now - FIRST_RUN_LOOKBACK) - CURSOR_OVERLAP
-        items = self.github.updated_items(self.repo, since, max_items=self.max_items)
+        items: list[Item] = []
+        if self.poll_cursor:
+            since = (self.store.cursor(name) or started - FIRST_RUN_LOOKBACK) - CURSOR_OVERLAP
+            items = self.github.updated_items(self.repo, since, max_items=self.max_items)
+            newest = self._ingest_items(items, started)
+            if newest is not None:
+                self.store.set_cursor(name, newest)
+        if self.github.reads_pr_status:
+            try:
+                self._refresh_pr_status(started)
+            except GitHubError as exc:
+                msg = f"triage: PR status not refreshed: {exc}"
+                log.warning(msg)
+                warnings.append(msg)
+        log.info("triage ingest: %d polled, %d webhook; GitHub calls %s, GraphQL points %s",
+                 len(items), webhook_ingested, getattr(self.github, "calls", "?"), getattr(self.github, "cost", "-"))
+        if hasattr(self.store, "record_run"):
+            self.store.record_run(
+                consumer="triage-ingest",
+                started_at=started,
+                finished_at=self.clock.now(),
+                status="warning" if warnings else "ok",
+                summary={"polled": len(items), "webhook": webhook_ingested},
+                warnings=warnings,
+            )
+
+    def _ingest_items(self, items: list[Item], now: datetime) -> datetime | None:
         newest: datetime | None = None
         for start in range(0, len(items), self.batch_size):
             batch = items[start:start + self.batch_size]
@@ -143,15 +181,7 @@ class IngestHandler:
             for item in batch:
                 self._ingest(item, states[item.key])
                 newest = item.updated_at if newest is None else max(newest, item.updated_at)
-        if newest is not None:
-            self.store.set_cursor(name, newest)
-        if self.github.reads_pr_status:
-            try:
-                self._refresh_pr_status(now)
-            except GitHubError as exc:
-                log.warning("triage: PR status not refreshed: %s", exc)
-        log.info("triage ingest: %d items; GitHub calls so far %s, GraphQL points %s",
-                 len(items), getattr(self.github, "calls", "?"), getattr(self.github, "cost", "-"))
+        return newest
 
     def _prefetch(self, batch: list[Item], states: dict[str, StoredItemState | None], now: datetime) -> None:
         """Tell the client what _ingest will ask for, so it can fetch it in one go."""
@@ -335,7 +365,8 @@ class RouteHandler:
 
     def __call__(self, command: ScheduledCommand) -> None:
         now = self.clock.now()
-        self._sync_maintainers()
+        warnings: list[str] = []
+        warnings.extend(self._sync_maintainers())
         # Items leave triage as they age past the window; unacted router
         # assignments on them go too (acked/done ones stay in people's history).
         self.store.expire_out_of_window(now - timedelta(days=self.config.max_age_days))
@@ -344,40 +375,58 @@ class RouteHandler:
         closed, reopened, acked = self.store.follow_github(now=now)
         if closed or reopened or acked:
             log.info("triage: from GitHub, %d assignments closed, %d reopened, %d acked", closed, reopened, acked)
-        self._refresh_profiles(now)
+        warnings.extend(self._refresh_profiles(now))
         self.store.backfill_fixes_issues()
-        self._rescore(now)
-        self._route(now)
+        scored = self._rescore(now)
+        routed_count, route_warnings = self._route(now)
+        warnings.extend(route_warnings)
+        if hasattr(self.store, "record_run"):
+            self.store.record_run(
+                consumer="triage-route",
+                started_at=now,
+                finished_at=self.clock.now(),
+                status="warning" if warnings else "ok",
+                summary={"scored": scored, "routed": routed_count, "closed": closed,
+                         "reopened": reopened, "acked": acked},
+                warnings=warnings,
+            )
 
-    def _refresh_profiles(self, now: datetime) -> None:
+    def _refresh_profiles(self, now: datetime) -> list[str]:
+        warnings: list[str] = []
         if self.github is None:
-            return
+            return warnings
         for login, built_at in self.store.profile_ages().items():
             if not profile_is_stale(built_at, now):
                 continue
             try:
                 prs = self.github.maintainer_prs(self.repo, login, since=now - PROFILE_WINDOW)
             except GitHubError as exc:
-                log.warning("profile for %s not refreshed: %s", login, exc)
+                msg = f"profile for {login} not refreshed: {exc}"
+                log.warning(msg)
+                warnings.append(msg)
                 continue
             self.store.save_profile(login, prs, now=now)
+        return warnings
 
-    def _sync_maintainers(self) -> None:
+    def _sync_maintainers(self) -> list[str]:
         if self.maintainers_source is None:
-            return
+            return []
         files = self.maintainers_source()
         if files is None:
-            log.warning("maintainer files could not be fetched; keeping current rules")
-            return
-        try:
-            maintainers = parse_maintainer_files(files)
-        except MaintainersFileError as exc:
-            # Keep the last good rules; a broken merge must not unroute everyone.
-            log.error("maintainer files rejected: %s", exc)
-            return
-        self.store.sync_maintainers(maintainers)
+            msg = "maintainer files could not be fetched; keeping current rules"
+            log.warning(msg)
+            return [msg]
+        maintainers, problems, broken_stems = parse_maintainer_files_partial(files)
+        warnings: list[str] = []
+        if problems:
+            msg = f"maintainer file(s) rejected ({len(problems)}): " + "; ".join(problems[:5])
+            log.error(msg)
+            warnings.append(msg)
+        if maintainers or not broken_stems:
+            self.store.sync_maintainers(maintainers, keep_logins=broken_stems)
+        return warnings
 
-    def _rescore(self, now: datetime) -> None:
+    def _rescore(self, now: datetime) -> int:
         rows = self.store.scoring_candidates(scoring_version=self.config.version, limit=self.score_limit)
         linked = {n for r in rows if r.kind == "pr" for n in self._fixes(r.prepass, r.facets)}
         issue_scores = self.store.issue_scores(self.repo, linked)
@@ -392,6 +441,7 @@ class RouteHandler:
                 issue_scores[row.number] = score.score
             results.append((row.item_key, row.extraction_id, score))
         self.store.save_scores(results, now=now)
+        return len(results)
 
     @staticmethod
     def _fixes(prepass: dict[str, Any], facets: dict[str, Any] | None) -> set[int]:
@@ -400,10 +450,10 @@ class RouteHandler:
             out |= set(facets["pr"].get("fixes_issues") or [])
         return out
 
-    def _route(self, now: datetime) -> None:
+    def _route(self, now: datetime) -> tuple[int, list[str]]:
         maintainers = self.store.active_maintainers()
         if not maintainers:
-            return
+            return 0, []
         by_login = {m.github_login: m for m in maintainers}
         load = self.store.maintainer_load(since=week_ago(now))
         judged_by = {m.github_login for m in maintainers}
@@ -425,14 +475,37 @@ class RouteHandler:
                     )
         if routed and hasattr(self.store, "sync_needs_relevance"):
             self.store.sync_needs_relevance(active_maintainers=judged_by)
+        # Persist router-computed unowned_reason on any candidate that stayed unowned.
+        if hasattr(self.store, "save_unowned_reasons"):
+            reasons: dict[str, dict[str, Any] | None] = {}
+            for row in rows:
+                if row.item_key in routed:
+                    continue
+                ctx = self._context(row, now)
+                missing = judged_by - set(row.relevance) if self.github is not None else set()
+                reasons[row.item_key] = explain_unowned(
+                    ctx,
+                    maintainers,
+                    load=load,
+                    excluded=set(row.excluded),
+                    today=now.date(),
+                    waiting_for_relevance=missing,
+                    grace_over=relevance_grace_over(row, now),
+                )
+            if reasons:
+                self.store.save_unowned_reasons(reasons)
+        warnings: list[str] = []
         if partial:
-            missing = Counter(login for logins in partial.values() for login in logins)
-            log.warning(
-                "triage: %d item(s) waited over %s for relevance and were considered with partial "
-                "judgements (%d routed); missing judgements per maintainer: %s",
-                len(partial), RELEVANCE_GRACE, len(partial.keys() & routed),
-                ", ".join(f"{login}={n}" for login, n in sorted(missing.items())),
+            missing_counts = Counter(login for logins in partial.values() for login in logins)
+            msg = (
+                f"triage: {len(partial)} item(s) waited over {RELEVANCE_GRACE} for relevance and were "
+                f"considered with partial judgements ({len(partial.keys() & routed)} routed); "
+                f"missing judgements per maintainer: "
+                + ", ".join(f"{login}={n}" for login, n in sorted(missing_counts.items()))
             )
+            log.warning(msg)
+            warnings.append(msg)
+        return len(routed), warnings
 
     def _route_one(
         self, row: RoutingRow, maintainers: list[Maintainer], by_login: dict[str, Maintainer],

@@ -451,6 +451,43 @@ class GraphQLGitHubClient:
             repo, number, token=self._token, timeout=self._timeout, min_remaining=self._min_remaining
         )
 
+    def items_by_numbers(self, repo: str, numbers: list[int]) -> list[Item]:
+        """Fetch specific issues/PRs by number in batched GraphQL queries."""
+        ordered = sorted(set(numbers))
+        if not ordered:
+            return []
+        owner, name = _split(repo)
+        out: list[Item] = []
+        pr_extra = (
+            f"{_PR_STATUS} "
+            "closingIssuesReferences(first: 25) { nodes { number repository { nameWithOwner } } }"
+        )
+        for start in range(0, len(ordered), DETAIL_BATCH):
+            chunk = ordered[start:start + DETAIL_BATCH]
+            fields = "\n".join(
+                f"n{n}: issueOrPullRequest(number: {n}) {{ __typename "
+                f"... on Issue {{ {_COMMON} }} "
+                f"... on PullRequest {{ {_COMMON} {pr_extra} }} }}"
+                for n in chunk
+            )
+            data = self._query(
+                f"query($owner: String!, $name: String!) {{ {_RATE} "
+                f"repository(owner: $owner, name: $name) {{ {fields} }} }}",
+                {"owner": owner, "name": name},
+            )
+            repository = data.get("repository") or {}
+            for n in chunk:
+                node = repository.get(f"n{n}")
+                if not isinstance(node, dict):
+                    continue
+                typename = node.get("__typename")
+                if typename == "Issue":
+                    out.append(item_from_node(repo, node, "issue"))
+                elif typename == "PullRequest":
+                    out.append(item_from_node(repo, node, "pr"))
+        out.sort(key=lambda i: (i.updated_at, i.number))
+        return out
+
 
 def _file(node: dict[str, Any]) -> FileChange:
     return FileChange(str(node.get("path") or ""), int(node.get("additions") or 0), int(node.get("deletions") or 0))

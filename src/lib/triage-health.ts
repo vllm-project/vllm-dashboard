@@ -10,7 +10,7 @@ import type { TriagePipelineHealth } from "@/lib/triage-types";
 export type HealthTone = "ok" | "warn" | "bad";
 
 export interface HealthSignal {
-  key: "labels" | "judgements" | "failures" | "login";
+  key: "labels" | "judgements" | "failures" | "login" | "warnings";
   tone: HealthTone;
   /** Short text for the strip, e.g. "Labelled 4m ago". */
   text: string;
@@ -133,6 +133,18 @@ export function pipelineHealth(health: TriagePipelineHealth, now: number = Date.
           "Labelling and relevance stop when it does. Log in again on the host, then update TRIAGE_CLAUDE_LOGIN_EXPIRES.",
       });
     }
+  }
+
+  if ((health.workerWarnings24h ?? 0) > 0) {
+    const count = health.workerWarnings24h ?? 0;
+    signals.push({
+      key: "warnings",
+      tone: "warn",
+      text: `${plural(count, "worker warning")} · 24h`,
+      detail:
+        `${plural(count, "triage worker run")} logged warnings in the last 24 hours.` +
+        (health.latestWorkerWarning ? ` Latest: ${health.latestWorkerWarning.slice(0, 240)}` : ""),
+    });
   }
 
   return { tone: worst(signals.map((s) => s.tone)), signals };

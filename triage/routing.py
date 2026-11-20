@@ -289,3 +289,84 @@ def group_owner(
         return Candidate(maintainer, (), load.get(login, 0),
                          (group_reason(member), *involvement(login, ctx))), member
     return None
+
+
+def explain_unowned(
+    ctx: RoutingContext,
+    maintainers: Iterable[Maintainer],
+    *,
+    load: Mapping[str, int],
+    excluded: set[str],
+    today: date,
+    waiting_for_relevance: Iterable[str] = (),
+    grace_over: bool = False,
+) -> dict[str, Any]:
+    """Router-authored explanation of why an open P0/P1 item has no owner.
+
+    Persisted in `triage_scores.unowned_reason` with the same JSON contract as
+    `WhyUnowned` in `src/lib/triage-why-unowned.ts` (`{summary, lines, pending}`)
+    so the dashboard displays the router's exact decision without drifting.
+    """
+    active = [m for m in maintainers if m.active]
+    active_logins = {m.github_login for m in active}
+    if waiting_on_author(ctx.prepass, ctx.band):
+        reasons = [str(r) for r in ctx.prepass.get("waiting_reasons") or []]
+        detail = f" ({', '.join(reasons)})" if reasons else ""
+        return {
+            "summary": f"Waiting on the PR author{detail}; routed once it's the reviewers' move.",
+            "lines": [],
+            "pending": False,
+        }
+    if assigned_elsewhere(ctx.prepass, active_logins):
+        who = ", ".join(sorted(gh_assignees(ctx.prepass)))
+        return {
+            "summary": f"Assigned on GitHub to {who}, who is not in the triage maintainer list.",
+            "lines": [],
+            "pending": False,
+        }
+    missing = sorted(set(waiting_for_relevance))
+    if missing and not grace_over:
+        return {
+            "summary": (
+                f"Waiting for relevance judgements for {len(missing)} of {len(active)} maintainer(s); "
+                "routing proceeds after the 2-hour grace window."
+            ),
+            "lines": [f"Not judged yet: {', '.join(missing[:8])}" + ("…" if len(missing) > 8 else "")],
+            "pending": True,
+        }
+    lines: list[str] = []
+    match_count = 0
+    for m in active:
+        involved = involvement(m.github_login, ctx)
+        judged = ctx.relevance.get(m.github_login) or {}
+        level = judged.get("relevance")
+        is_excluded = _excluded(m.rules, ctx)
+        relevant = level in ("high", "medium") and not is_excluded
+        matched = match_rules(m.rules, ctx)
+        if not (involved or relevant or matched):
+            if is_excluded and level in ("high", "medium"):
+                lines.append(f"{m.github_login} is a {level} match but their file excludes items like this.")
+            continue
+        match_count += 1
+        current = load.get(m.github_login, 0)
+        clear = bool(involved) or (relevant and level == "high")
+        if m.github_login in excluded:
+            blocker = 'marked this item "Not mine"'
+        elif ctx.score < m.min_score:
+            blocker = f"their min_score is {m.min_score} (item scored {ctx.score})"
+        elif is_away(m, today):
+            blocker = "they are away"
+        elif current >= m.capacity_per_week and not (ctx.band == "page" and (ctx.fresh or clear)):
+            blocker = f"already has {current} of {m.capacity_per_week} items this week"
+        else:
+            blocker = "eligible on next route run"
+        lines.append(f"{m.github_login} matches but {blocker}.")
+    if missing and grace_over:
+        lines.append(f"Not judged yet for {', '.join(missing[:6])} (past 2-hour grace window).")
+    if match_count == 0:
+        summary = "Nobody is a match: everyone judged is low or none, and no one's rules match it."
+    elif match_count == 1:
+        summary = "Its only match can't take it right now."
+    else:
+        summary = f"It matches {match_count} maintainers, but none of them can take it right now."
+    return {"summary": summary, "lines": lines[:8], "pending": False}

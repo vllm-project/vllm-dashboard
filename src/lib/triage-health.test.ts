@@ -84,6 +84,20 @@ test("login expiry shows only in the last week", () => {
   assert.equal(pipelineHealth(health({ loginExpiresOn: "soon" }), NOW).signals.length, 3);
 });
 
+test("worker warnings show up when runs logged warnings in 24h", () => {
+  assert.equal(tone(health({ workerWarnings24h: 0 }), "warnings"), undefined);
+  const view = pipelineHealth(
+    health({ workerWarnings24h: 2, latestWorkerWarning: "maintainer file(s) rejected (1): broken.yaml" }),
+    NOW,
+  );
+  const sig = view.signals.find((s) => s.key === "warnings");
+  assert.ok(sig);
+  assert.equal(sig.tone, "warn");
+  assert.equal(sig.text, "2 worker warnings · 24h");
+  assert.match(sig.detail, /broken\.yaml/);
+  assert.equal(view.tone, "warn");
+});
+
 test("helpers", () => {
   assert.equal(agoText(null, NOW), "never");
   assert.equal(agoText(minutesAgo(0.5), NOW), "just now");

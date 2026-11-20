@@ -94,6 +94,10 @@ class IngestClient(Protocol):
         """Raw unified diff for a PR (capped at RAW_DIFF_READ_LIMIT bytes), or ''."""
         ...
 
+    def items_by_numbers(self, repo: str, numbers: list[int]) -> list[Item]:
+        """Fetch specific issue/PR numbers (used when draining webhook events)."""
+        ...
+
 
 def _parse_time(value: str | None) -> datetime | None:
     if not value:
@@ -253,6 +257,14 @@ class GitHubClient:
         return fetch_pull_diff(
             repo, number, token=self._token, timeout=self._timeout, min_remaining=self._min_remaining
         )
+
+    def items_by_numbers(self, repo: str, numbers: list[int]) -> list[Item]:
+        out: list[Item] = []
+        for number in sorted(set(numbers)):
+            raw = self._get(f"/repos/{repo}/issues/{number}")
+            if isinstance(raw, dict):
+                out.append(item_from_raw(repo, raw))
+        return out
 
     def comment_records(self, repo: str, number: int) -> list[CommentRecord]:
         """(login, created_at, text as stored) for the first MAX_COMMENTS comments."""

@@ -53,5 +53,12 @@ BEGIN
         CREATE POLICY triage_extractor_relevance ON triage_relevance
             FOR ALL TO triage_extractor USING (true) WITH CHECK (true);
     END IF;
+    IF to_regclass('public.triage_runs') IS NOT NULL THEN
+        GRANT INSERT ON triage_runs TO triage_extractor;
+        GRANT USAGE ON SEQUENCE triage_runs_id_seq TO triage_extractor;
+        DROP POLICY IF EXISTS triage_extractor_runs_insert ON triage_runs;
+        CREATE POLICY triage_extractor_runs_insert ON triage_runs
+            FOR INSERT TO triage_extractor WITH CHECK (true);
+    END IF;
 END
 $$;

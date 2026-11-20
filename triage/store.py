@@ -846,8 +846,102 @@ class PostgresTriageStore(PostgresAlertStore):
                             (item_key, a.maintainer, a.role, json.dumps(a.reason), score, now,
                              now if a.notification or a.notified else None),
                         ).fetchone()
+                        if row and a.role == "primary":
+                            c.execute(
+                                "UPDATE triage_scores SET unowned_reason = NULL WHERE item_key = %s",
+                                (item_key,),
+                            )
                         if row and a.notification:
                             self._enqueue(c, a.notification, next_attempt_at=now)
+
+    def save_unowned_reasons(self, reasons: dict[str, dict[str, Any] | None]) -> None:
+        """Persist router-computed `unowned_reason` on `triage_scores`."""
+        if not reasons:
+            return
+        with self._connection_factory() as c:
+            with c.transaction():
+                with c.cursor() as cur:
+                    cur.executemany(
+                        "UPDATE triage_scores SET unowned_reason = %s::jsonb WHERE item_key = %s",
+                        [(json.dumps(val) if val is not None else None, key) for key, val in reasons.items()],
+                    )
+
+    # --- structured run telemetry (migration 0047) ---------------------------
+
+    def record_run(
+        self,
+        *,
+        consumer: str,
+        started_at: datetime,
+        finished_at: datetime,
+        status: str,
+        summary: dict[str, Any],
+        warnings: list[str] | None = None,
+    ) -> None:
+        """Record one consumer run's summary and non-fatal warnings in `triage_runs`.
+
+        Tolerates missing `triage_runs` table during rolling deploys.
+        """
+        from psycopg import errors
+
+        try:
+            with self._connection_factory() as c:
+                c.execute(
+                    """INSERT INTO triage_runs (consumer, started_at, finished_at, status, summary, warnings)
+                       VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb)""",
+                    (consumer, started_at, finished_at, status, json.dumps(summary), json.dumps(list(warnings or []))),
+                )
+        except errors.UndefinedTable:
+            return
+
+    # --- webhook queue (migration 0047) --------------------------------------
+
+    def enqueue_webhook_item(
+        self, repo: str, number: int, kind: str, event: str, *, now: datetime | None = None
+    ) -> None:
+        with self._connection_factory() as c:
+            c.execute(
+                """INSERT INTO triage_webhook_queue (repo, number, kind, event, received_at)
+                   VALUES (%s, %s, %s, %s, COALESCE(%s, now()))
+                   ON CONFLICT (repo, number) DO UPDATE SET
+                       kind = EXCLUDED.kind,
+                       event = EXCLUDED.event,
+                       received_at = EXCLUDED.received_at""",
+                (repo, number, kind, event, now),
+            )
+
+    def claim_webhook_queue(self, repo: str, *, limit: int = 100) -> list[int]:
+        """Return up to `limit` queued item numbers for `repo`, oldest first."""
+        from psycopg import errors
+
+        try:
+            with self._connection_factory() as c:
+                rows = c.execute(
+                    """UPDATE triage_webhook_queue
+                       SET attempts = attempts + 1
+                       WHERE (repo, number) IN (
+                           SELECT repo, number FROM triage_webhook_queue
+                           WHERE repo = %s
+                           ORDER BY received_at ASC
+                           LIMIT %s
+                           FOR UPDATE SKIP LOCKED
+                       )
+                       RETURNING number""",
+                    (repo, limit),
+                ).fetchall()
+        except errors.UndefinedTable:
+            return []
+        return sorted({int(r[0]) for r in rows})
+
+    def ack_webhook_queue(self, repo: str, numbers: Iterable[int]) -> None:
+        nums = sorted({int(n) for n in numbers})
+        if not nums:
+            return
+        with self._connection_factory() as c:
+            c.execute(
+                "DELETE FROM triage_webhook_queue WHERE repo = %s AND number = ANY(%s)",
+                (repo, nums),
+            )
 
     # --- digests -------------------------------------------------------------
 
@@ -1195,12 +1289,20 @@ class PostgresTriageStore(PostgresAlertStore):
 
     # --- maintainers (synced from triage/config/maintainers/*.yaml) --------
 
-    def sync_maintainers(self, maintainers: list[Maintainer], *, owner: str = "repo") -> tuple[int, int]:
+    def sync_maintainers(
+        self,
+        maintainers: list[Maintainer],
+        *,
+        owner: str = "repo",
+        keep_logins: Iterable[str] = (),
+    ) -> tuple[int, int]:
         """Make the database match the file: upsert every listed maintainer,
-        deactivate file-owned rows that are no longer listed. Rows created by
-        the dashboard for unlisted people (updated_by = their login) are left
-        alone. Returns (upserted, deactivated)."""
+        deactivate file-owned rows that are no longer listed (except logins in
+        `keep_logins`, whose files had syntax errors and keep their last good
+        rules). Rows created by the dashboard for unlisted people
+        (`updated_by = their login`) are left alone."""
         logins = [m.github_login for m in maintainers]
+        keep = sorted({*(m.lower() for m in logins), *(k.lower() for k in keep_logins)})
         with self._connection_factory() as c:
             with c.transaction():
                 for m in maintainers:
@@ -1226,8 +1328,8 @@ class PostgresTriageStore(PostgresAlertStore):
                     )
                 deactivated = c.execute(
                     """UPDATE triage_maintainers SET active = false
-                       WHERE updated_by = %s AND active AND NOT (github_login = ANY(%s))""",
-                    (owner, logins),
+                       WHERE updated_by = %s AND active AND NOT (lower(github_login) = ANY(%s))""",
+                    (owner, keep),
                 ).rowcount
         return len(maintainers), int(deactivated or 0)
 
