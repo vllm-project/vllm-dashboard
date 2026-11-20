@@ -126,7 +126,7 @@ export interface TriageLinkedItem {
   owner: string | null;
 }
 
-/** Why a PR appeared in the Close / dedup view (only populated on that view). */
+/** Why a PR appeared in the Suggested to close view (only populated on that view). */
 export interface TriageCleanupInfo {
   lowEffort: boolean;
   slopSignals: string[];
@@ -169,7 +169,7 @@ export interface TriageQueueItem {
   fixedBy: TriageLinkedItem[];
   /** Open PRs: CI of the head commit (triage_pr_ci); null/absent when not tracked. */
   ci?: TriageCi | null;
-  /** Close / dedup reasons (only populated when the cleanup view is active). */
+  /** Suggested to close reasons (only populated when the cleanup view is active). */
   cleanup?: TriageCleanupInfo | null;
 }
 

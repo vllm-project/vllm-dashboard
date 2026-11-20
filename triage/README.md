@@ -441,7 +441,7 @@ deploys on merge to `main`.
   guidelines (`/triage/scoring`), above the tabs. The item drawer also links
   to scoring guidelines from its score breakdown.
 - **Queue views:** Needs triage, Not acked, Ready to review, Ready to merge,
-  Close / dedup, All. Close / dedup includes every priority, including P3/unscored:
+  Suggested to close, All. Suggested to close includes every priority, including P3/unscored:
   open PRs sharing a fix target with another open PR, or flagged with
   `pr.low_effort` / `slop_signals`. These are review candidates, not confirmed
   duplicates. Link matching uses both prepass and extracted fix references.

@@ -52,8 +52,8 @@ export const QUEUE_PRESETS: readonly QueuePreset[] = [
   },
   {
     id: "cleanup",
-    label: "Close / dedup",
-    title: "Open PRs with competing fixes or low-effort signals. Review candidates, not confirmed duplicates.",
+    label: "Suggested to close",
+    title: "Open PRs we suggest closing: competing fixes or low-effort signals. Suggestions only; review before closing.",
     filters: { bands: [...TRIAGE_BANDS], kind: "pr", review: "cleanup" },
   },
   {
@@ -162,7 +162,7 @@ export function focusFilters(focus: QueueFilters["focus"]): Partial<QueueFilters
 }
 
 export function queueViewDescription(filters: QueueFilters): string | null {
-  if (filters.review === "cleanup" || filters.focus === "cleanup") return "Competing fixes or low-effort signals across all priorities. Review each PR before closing; these are not confirmed duplicates.";
+  if (filters.review === "cleanup" || filters.focus === "cleanup") return "PRs we suggest closing: a competing fix exists, or the PR shows low-effort or slop signals (all priorities). Review each one before closing; these are suggestions, not confirmed duplicates.";
   if (filters.focus === "fires") return "Open items flagged as serving broken, security, or regressions.";
   if (filters.focus === "has-fix") return "Open P0/P1 issues with an open fix PR.";
   if (filters.focus === "stale") return "Open P0/P1 items unowned for over 3 days since becoming routable, or unacked for over 3 days since assignment.";

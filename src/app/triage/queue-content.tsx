@@ -585,7 +585,7 @@ function FiltersPopover({
               <option value="">Any PR state</option>
               <option value="ready">Ready to review</option>
               <option value="merge">Ready to merge</option>
-              <option value="cleanup">Close / dedup</option>
+              <option value="cleanup">Suggested to close</option>
               {filters.review === "blocked" && <option value="blocked">Waiting on author / CI</option>}
             </FieldSelect>
             <FieldSelect label="Sort" value={filters.sort} onChange={(value) => onChange({ sort: value as QueueFilters["sort"] })}>

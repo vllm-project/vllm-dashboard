@@ -35,7 +35,7 @@ a soft blue badge and P3 is grey.
 | `/triage/rules` | Draft & preview. Loads the signed-in maintainer's current rules from the database (synced from `triage/config/maintainers/<login>.yaml`) into a local draft with the same fields (areas, hardware, model globs, path globs, keywords, type filter, excludes, minimum score, weekly capacity, away dates, Slack notification mode and user ID). **Preview last 30 days** lists which recent items the draft matches. **Copy as YAML** copies the full file content. If the maintainer already has a file (their row has `updated_by = 'repo'`), **Edit your rules file on GitHub** opens it in GitHub's editor on `main`; otherwise **Create your rules file on GitHub** opens GitHub's new-file page pre-filled with `<login>.yaml` and the draft's YAML. Nothing is saved from the dashboard. |
 
 The queue toolbar has six presets: **Needs triage**, **Not acked**, **Ready
-to review**, **Ready to merge**, **Close / dedup**, and **All**. Filters also offers
+to review**, **Ready to merge**, **Suggested to close**, and **All**. Filters also offers
 Fires, Has fix PR, Stale (>3d), and Waiting on author / CI; these shortcuts
 start across owners and ack statuses. URLs preserve all selections.
 Cleanup includes P3/unscored candidates and compares fix references across
