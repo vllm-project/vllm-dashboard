@@ -99,7 +99,7 @@ const CI_TONE: Record<CiTone, string> = {
   idle: "text-zinc-500 dark:text-zinc-400",
 };
 
-/** Line 2: cleanup reasons (on Close / dedup), one impact badge, CI when actionable, then plain muted context and "Fixes #N". */
+/** Line 2: cleanup reasons (on Suggested to close), one impact badge, CI when actionable, then plain muted context and "Fixes #N". */
 function DetailLine({
   item,
   shownLinks,

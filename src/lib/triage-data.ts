@@ -296,7 +296,7 @@ async function withCi<T extends TriageQueueItem>(db: Db, items: T[]): Promise<T[
 }
 
 /**
- * Adds Close / dedup reasons (competing non-draft open PRs, low effort, slop
+ * Adds Suggested to close reasons (competing non-draft open PRs, low effort, slop
  * signals) to a cleanup-filtered list so each row explains why it is listed.
  */
 async function withCleanupInfo(

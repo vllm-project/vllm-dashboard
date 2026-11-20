@@ -102,7 +102,7 @@ export interface CleanupReasonView {
   peers?: { itemKey: string; number: number; htmlUrl: string }[];
 }
 
-/** Plain-English reasons a PR is listed in Close / dedup; empty outside that view. */
+/** Plain-English reasons a PR is listed in Suggested to close; empty outside that view. */
 export function cleanupReasons(cleanup: TriageCleanupInfo | null | undefined): CleanupReasonView[] {
   if (!cleanup) return [];
   const out: CleanupReasonView[] = [];
