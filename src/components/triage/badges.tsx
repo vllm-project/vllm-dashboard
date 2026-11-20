@@ -191,13 +191,33 @@ export function GithubLink({
 }
 
 /** Issue vs PR, GitHub-style: green circle-dot for issues, purple branch for PRs. */
-export function KindIcon({ kind, draft }: { kind: "issue" | "pr"; draft?: boolean }) {
-  const label = kind === "pr" ? (draft ? "Draft pull request" : "Pull request") : "Issue";
+/** GitHub's colours for an item's state: open green, draft grey, merged
+ * purple, closed PR red, closed issue purple. Unknown state reads as open. */
+export function kindIconStyle(
+  kind: "issue" | "pr",
+  state?: string,
+  draft?: boolean,
+): { label: string; tone: string } {
+  const GREEN = "text-green-600 dark:text-green-400";
+  const PURPLE = "text-purple-600 dark:text-purple-400";
+  const RED = "text-red-600 dark:text-red-400";
+  const GREY = "text-zinc-400 dark:text-zinc-500";
+  if (kind === "issue") {
+    return state === "closed" ? { label: "Closed issue", tone: PURPLE } : { label: "Open issue", tone: GREEN };
+  }
+  if (state === "merged") return { label: "Merged pull request", tone: PURPLE };
+  if (state === "closed") return { label: "Closed pull request", tone: RED };
+  if (draft) return { label: "Draft pull request", tone: GREY };
+  return { label: "Open pull request", tone: GREEN };
+}
+
+export function KindIcon({ kind, draft, state }: { kind: "issue" | "pr"; draft?: boolean; state?: string }) {
+  const { label, tone } = kindIconStyle(kind, state, draft);
   return (
     <span title={label} className="inline-flex shrink-0 items-center">
       <span className="sr-only">{label}</span>
       {kind === "issue" ? (
-        <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3.5 w-3.5 text-green-600 dark:text-green-400">
+        <svg aria-hidden="true" viewBox="0 0 16 16" className={`h-3.5 w-3.5 ${tone}`}>
           <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
           <circle cx="8" cy="8" r="1.75" fill="currentColor" />
         </svg>
@@ -205,7 +225,7 @@ export function KindIcon({ kind, draft }: { kind: "issue" | "pr"; draft?: boolea
         <svg
           aria-hidden="true"
           viewBox="0 0 16 16"
-          className={`h-3.5 w-3.5 ${draft ? "text-zinc-400 dark:text-zinc-500" : "text-purple-600 dark:text-purple-400"}`}
+          className={`h-3.5 w-3.5 ${tone}`}
           fill="none"
           stroke="currentColor"
           strokeWidth="1.5"
@@ -223,10 +243,10 @@ export function KindIcon({ kind, draft }: { kind: "issue" | "pr"; draft?: boolea
 }
 
 /** Text badge kept for the drawer header. */
-export function KindBadge({ kind, draft }: { kind: "issue" | "pr"; draft?: boolean }) {
+export function KindBadge({ kind, draft, state }: { kind: "issue" | "pr"; draft?: boolean; state?: string }) {
   return (
     <span className="inline-flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-      <KindIcon kind={kind} draft={draft} />
+      <KindIcon kind={kind} draft={draft} state={state} />
       {kind === "pr" ? (draft ? "PR·draft" : "PR") : "Issue"}
     </span>
   );

@@ -547,7 +547,7 @@ export function ItemDrawer({
             </button>
           )}
           <span className="ml-1 hidden items-center gap-1.5 text-xs text-zinc-500 sm:inline-flex dark:text-zinc-400">
-            {data && <KindIcon kind={data.item.kind} draft={data.item.draft} />}#{number}
+            {data && <KindIcon kind={data.item.kind} draft={data.item.draft} state={data.item.state} />}#{number}
           </span>
           <div className="ml-auto flex items-center gap-1">
             {nav && (
