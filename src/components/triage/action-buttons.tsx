@@ -151,6 +151,30 @@ export function ActionButtons({ itemKey, assignmentId, mode, onDone, relevance =
             </button>
           );
         })}
+        {mode !== "closed" &&
+          keyboard &&
+          relevance
+            .filter(
+              (match) =>
+                (match.relevance === "high" || match.relevance === "medium") &&
+                !owners.some((owner) => owner.toLowerCase() === match.maintainer.toLowerCase()),
+            )
+            .slice(0, 2)
+            .map((match) => (
+              <button
+                key={match.maintainer}
+                type="button"
+                className={LOOK.secondary}
+                disabled={busy}
+                title={`One-click assign to ${match.maintainer} (${match.relevance} relevance match)`}
+                onClick={() => act("reassign", { target: match.maintainer })}
+              >
+                → {match.maintainer}
+                <span className="text-[10px] font-normal text-zinc-400 dark:text-zinc-500">
+                  {match.relevance === "high" ? "high" : "med"}
+                </span>
+              </button>
+            ))}
       </div>
       {reassigning && (
         <div className="flex flex-wrap items-center gap-1.5">

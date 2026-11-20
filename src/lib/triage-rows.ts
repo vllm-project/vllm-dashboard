@@ -1,5 +1,6 @@
 import { ciLine, type CiTone, type TriageCi } from "@/lib/triage-ci";
 import { humanizeTag } from "@/lib/triage-factors";
+import { formatAge } from "@/lib/triage-format";
 import { groupBand, type NestedRow } from "@/lib/triage-groups";
 import { severityFlags, type SeverityFlag } from "@/lib/triage-style";
 import type { TriageCleanupInfo, TriageFacets, TriageQueueItem } from "@/lib/triage-types";
@@ -126,6 +127,75 @@ export function cleanupReasons(cleanup: TriageCleanupInfo | null | undefined): C
     });
   }
   return out;
+}
+
+/**
+ * Compact scan-friendly review-effort summary for PR rows: diff size, whether
+ * tests are included, and maintainer / first-time author signal.
+ */
+export function prEffortText(
+  item: Pick<TriageQueueItem, "kind" | "prSize" | "hasTests" | "isMaintainer" | "firstTime">,
+): { text: string; title: string } | null {
+  if (item.kind !== "pr") return null;
+  const parts: string[] = [];
+  const details: string[] = [];
+  const size = item.prSize?.trim().toUpperCase();
+  if (size && ["XS", "S", "M", "L", "XL"].includes(size)) {
+    parts.push(size);
+    details.push(`Size ${size}`);
+  }
+  if (item.hasTests === true) {
+    parts.push("tests");
+    details.push("Includes tests");
+  } else if (item.hasTests === false && (size === "M" || size === "L" || size === "XL")) {
+    parts.push("no tests");
+    details.push("No tests seen in diff");
+  }
+  if (item.isMaintainer) {
+    parts.push("maintainer");
+    details.push("Author is a maintainer");
+  } else if (item.firstTime) {
+    parts.push("1st PR");
+    details.push("First-time contributor");
+  }
+  if (parts.length === 0) return null;
+  return { text: parts.join(" · "), title: details.join(" · ") };
+}
+
+/** Distills `triage_scores.unowned_reason.summary` into a 2-word hint for the Owner column. */
+export function unownedHint(reason: string | null | undefined): { label: string; title: string } | null {
+  const summary = reason?.trim();
+  if (!summary) return null;
+  const lower = summary.toLowerCase();
+  if (lower.includes("nobody is a match")) return { label: "no match", title: summary };
+  if (lower.includes("can't take it right now")) return { label: "at capacity", title: summary };
+  if (lower.includes("assigned on github")) return { label: "GH assignee", title: summary };
+  if (lower.includes("waiting") || lower.includes("not judged") || lower.includes("pending")) {
+    return { label: "pending", title: summary };
+  }
+  return { label: "unmatched", title: summary };
+}
+
+/**
+ * Fresh-activity sub-label for the Age column: shown only when an item is over
+ * 2 days old but had activity within the last 24 hours, so active PRs don't
+ * look abandoned.
+ */
+export function activityNote(
+  ghCreatedAt: string,
+  ghUpdatedAt: string,
+  now: number = Date.now(),
+): { label: string; title: string } | null {
+  const created = Date.parse(ghCreatedAt);
+  const updated = Date.parse(ghUpdatedAt);
+  if (!Number.isFinite(created) || !Number.isFinite(updated)) return null;
+  const createdAge = now - created;
+  const updatedAge = now - updated;
+  if (createdAge < 48 * 3600_000 || updatedAge >= 24 * 3600_000 || updated - created < 12 * 3600_000) {
+    return null;
+  }
+  const age = formatAge(ghUpdatedAt, now);
+  return { label: `upd ${age}`, title: `Updated ${age} ago` };
 }
 
 // --- context line -------------------------------------------------------------

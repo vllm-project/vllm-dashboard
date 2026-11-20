@@ -585,6 +585,17 @@ export function ItemDrawer({
                 </button>
               </div>
             )}
+            {data?.item.kind === "pr" && data.item.files.length > 0 && prFilesUrl(data.item.htmlUrl) && (
+              <a
+                href={prFilesUrl(data.item.htmlUrl)!}
+                target="_blank"
+                rel="noopener noreferrer nofollow"
+                title={`View ${data.item.files.length} changed files on GitHub`}
+                className="dashboard-control hidden h-8 items-center gap-1 rounded-md border border-zinc-200 px-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100 sm:inline-flex dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              >
+                Files <span aria-hidden="true">↗</span>
+              </a>
+            )}
             {githubUrl && (
               <a
                 href={githubUrl}

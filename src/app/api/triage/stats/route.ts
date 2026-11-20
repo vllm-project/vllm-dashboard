@@ -7,7 +7,7 @@ export async function GET(request: Request) {
   const guard = guardTriageRequest(request);
   if (!("login" in guard)) return guard;
   try {
-    return triageJson(await getStats());
+    return triageJson(await getStats(guard.login));
   } catch (error) {
     return triageDbError(error, "stats query");
   }

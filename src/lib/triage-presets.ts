@@ -111,6 +111,7 @@ export function presetFilters(id: QueuePresetId, current: QueueFilters = default
     ...defaults(),
     ...preset.filters,
     q: current.q,
+    mine: current.mine,
     sort: current.sort,
     pageSize: current.pageSize,
     page: 1,
@@ -169,4 +170,43 @@ export function queueViewDescription(filters: QueueFilters): string | null {
   if (filters.review === "merge") return "Approved, conflict-free PRs with successful checks and CI on the observed head, checked within the last hour. Confirm on GitHub before merging.";
   if (filters.review === "blocked") return "PRs waiting on their author: drafts, conflicts, requested changes, or failing checks/CI.";
   return null;
+}
+
+/** Context-aware empty state copy for the active queue view. */
+export function emptyStateCopy(filters: QueueFilters): { title: string; detail?: string } {
+  const preset = activePreset(filters);
+  if (filters.mine) {
+    if (preset === "merge") {
+      return {
+        title: "No PRs in your areas are ready to merge right now",
+        detail: "Shows approved, conflict-free PRs with passing checks refreshed within the last hour.",
+      };
+    }
+    return {
+      title: "No matching items in your areas",
+      detail: "Scoped to the areas and hardware in your maintainer rules.",
+    };
+  }
+  if (preset === "needs-triage" && !filters.q) {
+    return {
+      title: "Nothing needs triage right now",
+      detail: "New issues and PRs show up here a few minutes after they are opened.",
+    };
+  }
+  if (filters.review === "merge") {
+    return {
+      title: "No PRs are ready to merge right now",
+      detail: "Shows approved, conflict-free PRs with passing checks and CI refreshed within the last hour.",
+    };
+  }
+  if (filters.review === "cleanup" || filters.focus === "cleanup") {
+    return {
+      title: "No duplicate or low-effort PRs right now",
+      detail: "Compares non-draft open PRs fixing the same issue alongside low-effort and slop signals.",
+    };
+  }
+  if (preset === "not-acked" && !filters.q) {
+    return { title: "Everything assigned has been acknowledged" };
+  }
+  return { title: "No items match these filters" };
 }
