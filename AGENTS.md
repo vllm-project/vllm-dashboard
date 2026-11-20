@@ -10,9 +10,10 @@
   ```
 - **Production build (`next build`):** run `NEXT_TELEMETRY_DISABLED=1 npm run build` **at most once** right before opening a PR (Vercel also builds a preview deployment automatically on every PR). Do not re-run `next build` just because Next.js prints an upgrade notice to stderr/stdout.
 - **Worktrees:** reuse one persistent worktree (with warm `node_modules` and `.next/cache`) for UI work when possible; avoid hard-linking/copying `node_modules` from scratch on every round.
-- **UI verification & screenshots:**
+- **Screenshots are not needed.** Don't take before/after screenshots for PRs, and don't spin up a local Postgres or dev server just to look at the UI. Reviewers check the **Vercel Preview URL** that every PR gets automatically. Only take screenshots when someone explicitly asks for them.
+- **UI verification (only when asked or truly needed):**
   - Prefer inspecting the **Vercel Preview URL** on real data rather than spinning up a local Postgres instance and running 47+ migrations.
-  - When local visual inspection or before/after screenshots of `/triage` or `/triage/me` are needed, run:
+  - For local visual inspection of `/triage` or `/triage/me`, run:
     ```bash
     npm run dev:triage
     ```
