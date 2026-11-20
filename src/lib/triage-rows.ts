@@ -1,6 +1,6 @@
 import { ciLine, type CiTone, type TriageCi } from "@/lib/triage-ci";
 import { humanizeTag } from "@/lib/triage-factors";
-import type { NestedRow } from "@/lib/triage-groups";
+import { groupBand, type NestedRow } from "@/lib/triage-groups";
 import { severityFlags, type SeverityFlag } from "@/lib/triage-style";
 import type { TriageFacets, TriageQueueItem } from "@/lib/triage-types";
 
@@ -184,4 +184,69 @@ export function linkText(
 ): { verb: "Fixes" | "Fixed by"; links: TriageQueueItem["fixes"] } | null {
   const links = (item.kind === "pr" ? item.fixes : item.fixedBy).filter((link) => !shown.includes(link.itemKey));
   return links.length ? { verb: item.kind === "pr" ? "Fixes" : "Fixed by", links } : null;
+}
+
+// --- group cards ----------------------------------------------------------------
+
+/** "#1", "#1 and #2", "#1, #2 and #3". */
+function numberList(numbers: readonly number[]): string {
+  const parts = numbers.map((n) => `#${n}`);
+  return parts.length <= 1 ? (parts[0] ?? "") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+export type ListBlock<T> =
+  | { kind: "single"; key: string; row: ListRow<T> }
+  | {
+      kind: "group";
+      key: string;
+      /** One stripe for the whole card: the most urgent member's band. */
+      band: string | null;
+      /** For role="group": "Issue #65364 and its fix PR #65365". */
+      label: string;
+      rows: ListRow<T>[];
+    };
+
+/**
+ * The list as drawn: an issue with fix PRs under it becomes one card (one
+ * stripe, no dividers inside); everything else stays a plain row. Rows keep
+ * the `listRows` order, which is also the j/k order.
+ */
+export function listBlocks<T extends TriageQueueItem>(rows: readonly NestedRow<T>[]): ListBlock<T>[] {
+  return rows.map((row) => {
+    const shaped = listRows([row]);
+    if (row.members.length === 0) return { kind: "single", key: row.item.itemKey, row: shaped[0] };
+    const lead = `${row.item.kind === "issue" ? "Issue" : "PR"} #${row.item.number}`;
+    const fixes = row.members.map((member) => member.number);
+    return {
+      kind: "group",
+      key: row.item.itemKey,
+      band: groupBand(row),
+      label: `${lead} and its fix ${fixes.length === 1 ? "PR" : "PRs"} ${numberList(fixes)}`,
+      rows: shaped,
+    };
+  });
+}
+
+export interface FixTarget {
+  itemKey: string;
+  number: number;
+}
+
+/**
+ * What a nested fix PR's label names: "Fix PR for #65364", or "for #a, #b"
+ * when it fixes several issues. The issue it sits under comes first.
+ */
+export function fixTargets(item: Pick<TriageQueueItem, "fixes">, leadKey: string, leadNumber: number): FixTarget[] {
+  const targets: FixTarget[] = [{ itemKey: leadKey, number: leadNumber }];
+  for (const link of item.fixes) {
+    if (!targets.some((target) => target.itemKey === link.itemKey)) {
+      targets.push({ itemKey: link.itemKey, number: link.number });
+    }
+  }
+  return targets;
+}
+
+/** The label text, e.g. "Fix PR for #65364" or "Fix PR for #1, #2". */
+export function fixLabelText(targets: readonly FixTarget[]): string {
+  return `Fix PR for ${targets.map((target) => `#${target.number}`).join(", ")}`;
 }
