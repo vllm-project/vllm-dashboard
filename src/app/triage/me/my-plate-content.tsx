@@ -185,6 +185,7 @@ function MyPlate() {
                 hideOwner
                 activeKey={openItem}
                 onOpen={(entry) => setItem(entry.itemKey)}
+                onOpenKey={setItem}
                 footer={(entry) => <PlateFooter entry={entry} closed={false} onChanged={() => void mutate()} />}
               />
             </ul>
@@ -205,6 +206,7 @@ function MyPlate() {
               hideOwner
               activeKey={openItem}
               onOpen={(entry) => setItem(entry.itemKey)}
+              onOpenKey={setItem}
               footer={(entry) => <PlateFooter entry={entry} closed onChanged={() => void mutate()} />}
             />
           </ul>

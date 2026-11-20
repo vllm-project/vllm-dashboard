@@ -4,6 +4,9 @@ import type { TriageCi } from "./triage-ci";
 import { nestGroups, rowOrder } from "./triage-groups";
 import {
   contextText,
+  fixLabelText,
+  fixTargets,
+  listBlocks,
   impactBadge,
   kindLabel,
   linkText,
@@ -155,4 +158,35 @@ test("groups: every row keeps its own place; fix PRs nest only in the item colum
   assert.equal(linkText(rows[0].item, rows[0].shownLinks), null);
   const fixes = linkText(rows[3].item, rows[3].shownLinks)!;
   assert.deepEqual([fixes.verb, fixes.links.map((l) => l.number)], ["Fixes", [65568]]);
+});
+
+test("group cards: issue + fix PRs become one block; standalone items stay rows", () => {
+  const issue = item(68705, { score: 64, band: "route", fixedBy: [link(68822, "pr")] });
+  const fix = item(68822, { kind: "pr", score: 101, band: "page", fixes: [link(68705)] });
+  const issue2 = item(67454, { score: 75, band: "page", fixedBy: [link(67460, "pr"), link(67461, "pr")] });
+  const fixA = item(67460, { kind: "pr", score: 72, band: "page", fixes: [link(67454), link(67401)] });
+  const fixB = item(67461, { kind: "pr", score: 70, band: "page", fixes: [link(67454)] });
+  const lonePr = item(66920, { kind: "pr", score: 58, band: "route" });
+  const loneIssue = item(64584, { score: 52, band: "route" });
+  const nested = nestGroups([fix, issue, issue2, fixA, fixB, lonePr, loneIssue]);
+  const blocks = listBlocks(nested);
+  assert.deepEqual(blocks.map((b) => b.kind), ["group", "group", "single", "single"]);
+  const [mixed, pair] = blocks as Extract<(typeof blocks)[number], { kind: "group" }>[];
+  // One stripe per card: the most urgent member's band (P0 fix PR under a P1 issue).
+  assert.equal(mixed.band, "page");
+  assert.equal(mixed.label, "Issue #68705 and its fix PR #68822");
+  assert.equal(pair.label, "Issue #67454 and its fix PRs #67460 and #67461");
+  // Members keep their own priority and score.
+  assert.deepEqual(mixed.rows.map((r) => [r.item.band, r.item.score, r.nested]), [["route", 64, false], ["page", 101, true]]);
+  // Card rows plus standalone rows, in order, equal the j/k order.
+  const drawn = blocks.flatMap((b) => (b.kind === "group" ? b.rows : [b.row]).map((r) => r.item.itemKey));
+  assert.deepEqual(drawn, rowOrder(nested));
+});
+
+test("a fix PR's label names its issues, the one it sits under first", () => {
+  const fixA = item(67460, { kind: "pr", fixes: [link(67401), link(67454)] });
+  const targets = fixTargets(fixA, "vllm-project/vllm#67454", 67454);
+  assert.deepEqual(targets.map((t) => t.number), [67454, 67401]);
+  assert.equal(fixLabelText(targets), "Fix PR for #67454, #67401");
+  assert.equal(fixLabelText(fixTargets(item(65365, { kind: "pr", fixes: [link(65364)] }), "vllm-project/vllm#65364", 65364)), "Fix PR for #65364");
 });
