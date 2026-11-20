@@ -36,6 +36,8 @@ from triage.prepass import (
     LOGIN,
     compute_prepass,
     content_hash,
+    core_content_hash,
+    filter_comment_records,
     in_scope,
     prepass_priority,
     whose_move,
@@ -58,6 +60,7 @@ from triage.store import DigestEntry, NewAssignment, PostgresTriageStore, Routin
 
 log = logging.getLogger(__name__)
 CURSOR_OVERLAP = timedelta(minutes=10)
+DEFAULT_REEXTRACT_COOLDOWN = timedelta(hours=12)
 PROFILE_WINDOW = timedelta(days=180)
 # Page-band items opened within this window may exceed a maintainer's weekly
 # capacity; older (backlog) items are spread out under it.
@@ -118,6 +121,9 @@ class IngestHandler:
     buildkite: BuildkiteBuildPort | None = None
     ci_refresh_limit: int = 150
     ci_build_fetch_limit: int = 15
+    # Comment-only updates on an already-extracted item wait this long before
+    # re-queueing extraction (0 disables cooldown).
+    reextract_cooldown: timedelta = DEFAULT_REEXTRACT_COOLDOWN
 
     def __call__(self, command: ScheduledCommand) -> None:
         name = f"github:{self.repo}"
@@ -175,8 +181,10 @@ class IngestHandler:
                 item.files = self.github.pull_files(self.repo, item.number)
             if rereads_comments(item, stored):
                 records = self.github.comment_records(self.repo, item.number)
-                comments_excerpt = "\n\n".join(text for _, _, text in records)[:COMMENTS_LIMIT]
-                # Who wrote the first comments and, on long threads, the latest ones.
+                substantive = filter_comment_records(records)
+                comments_excerpt = "\n\n".join(text for _, _, text in substantive)[:COMMENTS_LIMIT]
+                # Who wrote the first comments and, on long threads, the latest ones
+                # (kept from all human comments so involvement/auto-ack still see short replies).
                 seen = [(login, at) for login, at, _ in records] + self.github.comment_tail(self.repo, item.number)
                 latest: dict[str, datetime] = {}
                 for login, at in seen:
@@ -196,6 +204,7 @@ class IngestHandler:
         # The PR's CI summary counts toward whose move while it is for this head commit.
         ci = stored.ci if stored and stored.ci and item.head_sha and stored.ci.get("head_sha") == item.head_sha else None
         prepass = compute_prepass(item, self.config, now, ci=ci) if scoped else light
+        prepass["core_hash"] = core_content_hash(item)
         if commenters is not None:
             prepass["commenters"] = commenters
         if scoped and commented_at:
@@ -211,6 +220,8 @@ class IngestHandler:
             content_hash=content_hash(item),
             in_scope=scoped,
             comments_excerpt=comments_excerpt,
+            now=now,
+            reextract_cooldown=self.reextract_cooldown,
         )
 
     def _pr_authors(self, numbers: list[int], previous: dict[str, Any]) -> dict[str, str]:

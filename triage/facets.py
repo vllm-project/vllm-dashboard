@@ -8,6 +8,9 @@ are dropped rather than trusted, and free text is length-capped.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Mapping
 from typing import Any
 
 from triage.model import AREAS, HARDWARE, ITEM_TYPES, MODEL_TRAITS, SERVING
@@ -199,3 +202,41 @@ def normalize_facets(raw: Any, *, kind: str) -> dict[str, Any]:
         else 0.5,
         "notes": _text(raw.get("notes"), 500),
     }
+
+
+def routing_facets_fingerprint(facets: Mapping[str, Any] | None) -> str:
+    """Canonical hash of the routing-relevant facets.
+
+    Ignores phrasing drift in free-text `summary`/`notes` and `confidence` so
+    re-extracting an item whose semantic classification (type, areas, hardware,
+    models, serving, severity, fixes_issues) did not change doesn't invalidate
+    existing relevance judgements.
+    """
+    f = facets or {}
+    models = sorted(
+        (str(m.get("name") or "").strip().lower(), str(m.get("family") or "").strip().lower())
+        for m in (f.get("models") or [])
+        if isinstance(m, dict) and (m.get("name") or m.get("family"))
+    )
+    raw_sev = f.get("severity")
+    sev_raw: Mapping[str, Any] = raw_sev if isinstance(raw_sev, Mapping) else {}
+    severity = {
+        k: sev_raw.get(k)
+        for k in ("serving_broken", "crash", "wrong_output", "hang", "perf_regression_pct",
+                  "memory_regression", "security")
+    }
+    pr_raw = f.get("pr") if isinstance(f.get("pr"), Mapping) else None
+    fixes = sorted(
+        {int(n) for n in (pr_raw.get("fixes_issues") or []) if isinstance(n, int) and n > 0}
+    ) if pr_raw else []
+    payload = {
+        "type": f.get("type"),
+        "areas": sorted(set(str(a) for a in (f.get("areas") or []))),
+        "hardware": sorted(set(str(h) for h in (f.get("hardware") or []))),
+        "serving": sorted(set(str(s) for s in (f.get("serving") or []))),
+        "model_traits": sorted(set(str(t) for t in (f.get("model_traits") or []))),
+        "models": models,
+        "severity": severity,
+        "fixes_issues": fixes,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:24]

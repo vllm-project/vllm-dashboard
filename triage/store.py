@@ -20,6 +20,7 @@ from alerting.postgres import PostgresAlertStore
 
 from triage.ci import MAIN_RECENT_DAYS, MainJobs
 from triage.extract import ExtractionTask, LLMResult
+from triage.facets import routing_facets_fingerprint
 from triage.groups import Member
 from triage.relevance import (
     FEEDBACK_LIMIT,
@@ -206,12 +207,37 @@ class PostgresTriageStore(PostgresAlertStore):
         content_hash: str,
         in_scope: bool,
         comments_excerpt: str,
+        now: datetime | None = None,
+        reextract_cooldown: timedelta = timedelta(0),
     ) -> None:
         files = [
             {"path": f.path, "additions": f.additions, "deletions": f.deletions}
             for f in item.files[:MAX_FILES]
         ]
+        cutoff = now - reextract_cooldown if (now is not None and reextract_cooldown > timedelta(0)) else None
         with self._connection_factory() as c:
+            # When an already-extracted item has only comment changes (core_hash
+            # matches) and its latest extraction is still within the cooldown
+            # window, defer re-extraction and keep the stored content_hash so
+            # existing extractions and relevance judgements stay aligned.
+            defer_reextract = False
+            if cutoff is not None and in_scope and prepass.get("core_hash"):
+                prev = c.execute(
+                    """SELECT i.extraction_status, i.content_hash, i.prepass->>'core_hash',
+                              (SELECT max(e.created_at) FROM triage_extractions e WHERE e.item_key = i.item_key)
+                       FROM triage_items i WHERE i.item_key = %s""",
+                    (item.key,),
+                ).fetchone()
+                if (
+                    prev is not None
+                    and prev[0] == "done"
+                    and prev[1] != content_hash
+                    and prev[2] == prepass["core_hash"]
+                    and prev[3] is not None
+                    and prev[3] > cutoff
+                ):
+                    defer_reextract = True
+                    content_hash = str(prev[1])
             c.execute(
                 """
                 INSERT INTO triage_items (
@@ -238,13 +264,15 @@ class PostgresTriageStore(PostgresAlertStore):
                     prepass_priority = EXCLUDED.prepass_priority,
                     in_scope = EXCLUDED.in_scope,
                     content_hash = EXCLUDED.content_hash,
-                    -- New text re-queues extraction; unchanged text keeps its status.
+                    -- New text re-queues extraction; unchanged (or cooldown-deferred) text keeps its status.
                     extraction_status = CASE
                         WHEN NOT EXCLUDED.in_scope THEN 'skipped'
+                        WHEN %s THEN triage_items.extraction_status
                         WHEN triage_items.content_hash <> EXCLUDED.content_hash
                              OR triage_items.extraction_status = 'skipped' THEN 'pending'
                         ELSE triage_items.extraction_status END,
                     extraction_attempts = CASE
+                        WHEN %s THEN triage_items.extraction_attempts
                         WHEN triage_items.content_hash <> EXCLUDED.content_hash THEN 0
                         ELSE triage_items.extraction_attempts END
                 """,
@@ -255,7 +283,7 @@ class PostgresTriageStore(PostgresAlertStore):
                     item.html_url, json.dumps(item.labels), json.dumps(files),
                     item.reactions, item.comment_count, item.created_at, item.updated_at,
                     item.closed_at, json.dumps(prepass), priority, content_hash, in_scope,
-                    in_scope,
+                    in_scope, defer_reextract, defer_reextract,
                 ),
             )
 
@@ -300,6 +328,11 @@ class PostgresTriageStore(PostgresAlertStore):
     ) -> None:
         with self._connection_factory() as c:
             with c.transaction():
+                prev = c.execute(
+                    """SELECT content_hash, facets FROM triage_extractions
+                       WHERE item_key = %s ORDER BY created_at DESC, id DESC LIMIT 1""",
+                    (task.item_key,),
+                ).fetchone()
                 c.execute(
                     """INSERT INTO triage_extractions (item_key, content_hash, prompt_version, model,
                            facets, input_tokens, output_tokens, duration_ms, created_at)
@@ -309,6 +342,22 @@ class PostgresTriageStore(PostgresAlertStore):
                     (task.item_key, task.content_hash, prompt_version, result.model, json.dumps(facets),
                      result.input_tokens, result.output_tokens, result.duration_ms, now),
                 )
+                # Semantic facet-diff gate: if re-extraction produced the same
+                # routing-relevant facets (areas, models, hardware, serving,
+                # type, severity, fixes_issues), carry forward existing
+                # relevance judgements to the new content_hash so Opus isn't
+                # re-called for text/comment churn.
+                if (
+                    prev is not None
+                    and prev[0] != task.content_hash
+                    and isinstance(prev[1], dict)
+                    and routing_facets_fingerprint(prev[1]) == routing_facets_fingerprint(facets)
+                ):
+                    c.execute(
+                        """UPDATE triage_relevance SET content_hash = %s
+                           WHERE item_key = %s AND content_hash = %s""",
+                        (task.content_hash, task.item_key, prev[0]),
+                    )
                 # If the item changed while we read it, leave it pending for another pass.
                 c.execute(
                     """UPDATE triage_items SET
