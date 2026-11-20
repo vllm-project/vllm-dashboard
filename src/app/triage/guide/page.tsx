@@ -196,14 +196,13 @@ export default function TriageGuidePage() {
           rows={[
             ["Ack", "“I’ve got it.” It stays on your list as yours. On an unowned item the button reads Take it and makes it yours."],
             ["Not mine", "It goes to the next best match, if there is one, within a few minutes, and never comes back to you. It doesn’t count against your capacity."],
-            ["Reassign…", "Hand it to a maintainer you choose. Anyone can reassign any open item. The best matches for the item, as Claude judged them, are listed first."],
+            ["Reassign ▾", "Hand it to a maintainer you choose. Anyone can reassign any open item. The best matches for the item, as Claude judged them, are listed first."],
             ["Done", "You’ve dealt with it. It moves to Closed on My list, and Reopen brings it back."],
-            ["Hide ▾ → Drop", "Nobody needs to look at this. Hidden for good: it is never routed to anyone again."],
-            ["Hide ▾ → Slop", "Same as Drop, for low-quality or spam items, and recorded as slop."],
+            ["Hide for everyone", "Nobody needs to look at this (including low-quality or spam items). Hidden for good: it is never routed to anyone again."],
           ]}
         />
         <p>
-          <b>Clicked the wrong one?</b> After Done, Not mine, Reassign, Drop or Slop, an <b>Undo</b> button shows for
+          <b>Clicked the wrong one?</b> After Done, Not mine, Reassign or Hide for everyone, an <b>Undo</b> button shows for
           5 seconds and puts the item back exactly as it was.
         </p>
         <p>
@@ -217,7 +216,7 @@ export default function TriageGuidePage() {
         <p>
           <b>Keyboard.</b> Click a title to open its panel; there, <b>j</b> / <b>k</b> move to the next / previous
           item, <b>a</b> acks, <b>d</b> is Done, <b>n</b> Not mine, <b>r</b> Reassign, <b>o</b> opens it on GitHub
-          and <b>?</b> lists them all. On My list, Done, Not mine, Reassign, Drop and Slop move straight on to the
+          and <b>?</b> lists them all. On My list, Done, Not mine, Reassign and Hide for everyone move straight on to the
           next item.
         </p>
         <p>
@@ -225,7 +224,8 @@ export default function TriageGuidePage() {
           back if it&apos;s reopened). If you comment on it on GitHub, that counts as Ack.
         </p>
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          Drop and Slop hide an item from everyone, so use them only when nobody should pick it up. If one person hides
+          Hide for everyone hides an item from every maintainer, so use it only when nobody should pick it up. It has
+          no keyboard shortcut, so it can&apos;t happen by accident. If one person hides
           a lot of items in a day, the queue shows a warning.
         </p>
       </Section>
