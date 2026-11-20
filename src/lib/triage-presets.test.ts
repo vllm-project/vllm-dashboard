@@ -108,8 +108,8 @@ test("My list quick filters", () => {
     ...overrides,
   });
   assert.equal(parsePlateView("needs-ack"), "needs-ack");
-  assert.equal(parsePlateView("bogus"), "all");
-  assert.equal(parsePlateView(null), "all");
+  assert.equal(parsePlateView("bogus"), "attention");
+  assert.equal(parsePlateView(null), "attention");
   assert.ok(inPlateView(entry(), "all"));
   assert.ok(inPlateView(entry(), "needs-ack"));
   assert.ok(!inPlateView(entry(), "acked"));

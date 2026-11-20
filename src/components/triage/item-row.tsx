@@ -279,6 +279,7 @@ export function ItemRow({
   item,
   onOpen,
   footer,
+  label,
   hideOwner = false,
   nested = false,
   connectsDown = false,
@@ -291,6 +292,7 @@ export function ItemRow({
   item: TriageQueueItem;
   onOpen: () => void;
   footer?: ReactNode;
+  label?: ReactNode;
   hideOwner?: boolean;
   nested?: boolean;
   connectsDown?: boolean;
@@ -374,6 +376,7 @@ export function ItemRow({
             </button>
             {number}
           </div>
+          {label && <div className="mt-1">{label}</div>}
           {/* A fix PR in a card: what's actionable for the PR (its issue row carries impact and context). */}
           {card && nested ? <FixPrStatusLine item={item} /> : <DetailLine item={item} shownLinks={shownLinks} />}
           {!hideOwner && (
@@ -409,6 +412,7 @@ export function GroupedRows<T extends TriageQueueItem>({
   onOpen,
   onOpenKey,
   footer,
+  label,
   hideOwner = false,
   activeKey = null,
 }: {
@@ -417,6 +421,7 @@ export function GroupedRows<T extends TriageQueueItem>({
   onOpen: (item: T) => void;
   onOpenKey?: (itemKey: string) => void;
   footer?: (item: T) => ReactNode;
+  label?: (item: T) => ReactNode;
   hideOwner?: boolean;
   /** The item key whose drawer is open. */
   activeKey?: string | null;
@@ -430,6 +435,7 @@ export function GroupedRows<T extends TriageQueueItem>({
       onOpen={() => onOpen(row.item)}
       onOpenKey={onOpenKey}
       footer={footer?.(row.item)}
+      label={label?.(row.item)}
       hideOwner={hideOwner}
       shownLinks={row.shownLinks}
       active={row.item.itemKey === activeKey}

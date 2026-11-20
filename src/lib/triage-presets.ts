@@ -149,45 +149,8 @@ export function activeFilterCount(filters: QueueFilters): number {
   return count;
 }
 
-// --- My list (/triage/me) quick filters --------------------------------------
-
-export const PLATE_VIEWS = [
-  { id: "all", label: "All" },
-  { id: "needs-ack", label: "Needs ack" },
-  { id: "acked", label: "Acked" },
-  { id: "review", label: "PRs ready to review" },
-  { id: "issues", label: "Issues" },
-] as const;
-
-export type PlateView = (typeof PLATE_VIEWS)[number]["id"];
-
-export function parsePlateView(value: string | null): PlateView {
-  return PLATE_VIEWS.some((view) => view.id === value) ? (value as PlateView) : "all";
-}
-
-export interface PlateEntryLike {
-  kind: "issue" | "pr";
-  state: string;
-  draft: boolean;
-  waitingOn?: "author" | "reviewer" | null;
-  assignment: { status: string };
-}
-
-/** Does a My list entry belong in this quick filter? */
-export function inPlateView(entry: PlateEntryLike, view: PlateView): boolean {
-  switch (view) {
-    case "needs-ack":
-      return entry.assignment.status === "open";
-    case "acked":
-      return entry.assignment.status === "acked";
-    case "review":
-      return entry.kind === "pr" && entry.state === "open" && !entry.draft && entry.waitingOn === "reviewer";
-    case "issues":
-      return entry.kind === "issue";
-    default:
-      return true;
-  }
-}
+// Re-export for callers with existing My list imports.
+export { PLATE_VIEWS, parsePlateView, inPlateView, type PlateView, type PlateEntryLike } from "./triage-my-list";
 
 /** Focus shortcuts start across owners/statuses; users can narrow them afterward. */
 export function focusFilters(focus: QueueFilters["focus"]): Partial<QueueFilters> {

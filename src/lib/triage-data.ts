@@ -147,6 +147,9 @@ function toQueueItem(row: QueueRow): TriageQueueItem {
     assignments: row.assignments ?? [],
     waitingOn:
       row.prepass?.waiting_on === "author" || row.prepass?.waiting_on === "reviewer" ? row.prepass.waiting_on : null,
+    reviewDecision: row.prepass?.review_decision ?? null,
+    mergeReady: row.prepass?.merge_ready === true,
+    mergeCheckedAt: row.prepass?.merge_checked_at ?? null,
     fixes: [],
     fixedBy: [],
   };
