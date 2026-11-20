@@ -363,3 +363,19 @@ test("edited timezone and digest_hour land in the YAML", () => {
   assert.match(text, /^timezone: Europe\/London\ndigest_hour: 0$/m);
   assert.match(text, /^notes: \|\n {2}Send me HiSparse bugs\.$/m);
 });
+
+test("max_notifications_per_day (worker field since #354) is kept, edited and validated", () => {
+  const stored = normalizeRules({ max_notifications_per_day: 3 });
+  assert.equal(stored.max_notifications_per_day, 3);
+  assert.equal(normalizeRules({ max_notifications_per_day: 51 }).max_notifications_per_day, undefined);
+  const base = { minScore: 40, capacityPerWeek: 8, away: [], notifyMode: "immediate", slackUserId: null };
+  const ok = validateMaintainerSettings({ ...base, rules: { max_notifications_per_day: 0 } });
+  assert.ok(ok.ok);
+  if (!ok.ok) return;
+  assert.match(maintainerFileYaml("alice", ok.value), /^notify_mode: immediate\nmax_notifications_per_day: 0$/m);
+  for (const bad of [-1, 51, 2.5, "3", true]) {
+    assert.equal(validateMaintainerSettings({ ...base, rules: { max_notifications_per_day: bad } }).ok, false, String(bad));
+  }
+  const unset = validateMaintainerSettings({ ...base, rules: { max_notifications_per_day: "" } });
+  assert.ok(unset.ok && unset.value.rules.max_notifications_per_day === undefined);
+});

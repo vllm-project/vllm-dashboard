@@ -161,10 +161,22 @@ export function isValidTimeZone(name: unknown): name is string {
 
 /** The default digest hour (local time) when the file sets none; see triage/config/maintainers/README.md. */
 export const DEFAULT_DIGEST_HOUR = 9;
+/** Default and limit for `max_notifications_per_day` (triage/maintainers.py). */
+export const DEFAULT_MAX_NOTIFICATIONS_PER_DAY = 5;
+export const MAX_NOTIFICATIONS_PER_DAY_LIMIT = 50;
+
+function isNotificationCap(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= MAX_NOTIFICATIONS_PER_DAY_LIMIT;
+}
 
 /** language / timezone / digest_hour from a stored rules jsonb: kept when valid, dropped otherwise. */
-function passThrough(value: Record<string, unknown>): Pick<TriageRules, "language" | "timezone" | "digest_hour"> {
+function passThrough(
+  value: Record<string, unknown>,
+): Pick<TriageRules, "language" | "timezone" | "digest_hour" | "max_notifications_per_day"> {
   return {
+    ...(isNotificationCap(value.max_notifications_per_day)
+      ? { max_notifications_per_day: value.max_notifications_per_day }
+      : {}),
     ...(value.language === "vi" ? { language: "vi" as const } : {}),
     ...(typeof value.timezone === "string" && TIMEZONE.test(value.timezone) ? { timezone: value.timezone } : {}),
     ...(Number.isInteger(value.digest_hour) && (value.digest_hour as number) >= 0 && (value.digest_hour as number) <= 23
@@ -279,6 +291,11 @@ export function validateMaintainerSettings(
     return { ok: false, error: "digest_hour must be a whole hour from 0 to 23." };
   }
 
+  const notificationCap = rulesInput.max_notifications_per_day ?? null;
+  if (notificationCap !== null && notificationCap !== "" && !isNotificationCap(notificationCap)) {
+    return { ok: false, error: `max_notifications_per_day must be a whole number from 0 to ${MAX_NOTIFICATIONS_PER_DAY_LIMIT}.` };
+  }
+
   const minScore = input.minScore ?? 40;
   if (typeof minScore !== "number" || !Number.isInteger(minScore) || minScore < 0 || minScore > 1000) {
     return { ok: false, error: "minScore must be an integer between 0 and 1000." };
@@ -328,6 +345,7 @@ export function validateMaintainerSettings(
         ...(rulesInput.language === "vi" ? { language: "vi" as const } : {}),
         ...(typeof timezone === "string" && timezone ? { timezone } : {}),
         ...(typeof digestHour === "number" ? { digest_hour: digestHour } : {}),
+        ...(typeof notificationCap === "number" ? { max_notifications_per_day: notificationCap } : {}),
       },
       minScore,
       capacityPerWeek: capacity,
@@ -400,6 +418,9 @@ export function maintainerFileYaml(login: string, settings: MaintainerSettingsIn
   lines.push(`capacity_per_week: ${settings.capacityPerWeek}`);
   // plainOrQuoted: a bare `off` would be read back as the boolean false.
   lines.push(`notify_mode: ${plainOrQuoted(settings.notifyMode)}`);
+  if (settings.rules.max_notifications_per_day !== undefined) {
+    lines.push(`max_notifications_per_day: ${settings.rules.max_notifications_per_day}`);
+  }
   if (settings.rules.language === "vi") lines.push("language: vi");
   if (settings.rules.timezone) lines.push(`timezone: ${plainOrQuoted(settings.rules.timezone)}`);
   if (settings.rules.digest_hour !== undefined) lines.push(`digest_hour: ${settings.rules.digest_hour}`);

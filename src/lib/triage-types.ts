@@ -92,6 +92,8 @@ export interface TriageRules {
   // Digest delivery (maintainer file fields); kept as-is when the file is regenerated.
   timezone?: string;
   digest_hour?: number;
+  /** Max immediate Slack DMs per local day (0–50; default 5, the rest wait for the digest). */
+  max_notifications_per_day?: number;
 }
 
 export interface TriageAssignmentSummary {

@@ -13,6 +13,8 @@ import {
   maintainerFileYaml,
   isValidTimeZone,
   DEFAULT_DIGEST_HOUR,
+  DEFAULT_MAX_NOTIFICATIONS_PER_DAY,
+  MAX_NOTIFICATIONS_PER_DAY_LIMIT,
   validateMaintainerSettings,
 } from "@/lib/triage-rules";
 import type { TriageMaintainer, TriageRules } from "@/lib/triage-types";
@@ -105,6 +107,8 @@ interface FormState {
   timezone: string;
   /** "" = not set (09:00). */
   digestHour: string;
+  /** "" = not set (5). */
+  maxNotifications: string;
   keep: Pick<TriageRules, "language">;
   minScore: number;
   capacityPerWeek: number;
@@ -127,6 +131,8 @@ function toForm(maintainer: TriageMaintainer): FormState {
     naturalLanguage: maintainer.rules.natural_language,
     timezone: maintainer.rules.timezone ?? "",
     digestHour: maintainer.rules.digest_hour !== undefined ? String(maintainer.rules.digest_hour) : "",
+    maxNotifications:
+      maintainer.rules.max_notifications_per_day !== undefined ? String(maintainer.rules.max_notifications_per_day) : "",
     // Not editable here, but must survive a save (e.g. language: vi).
     keep: maintainer.rules.language ? { language: maintainer.rules.language } : {},
     minScore: maintainer.minScore,
@@ -155,6 +161,7 @@ function toBody(form: FormState) {
       ...form.keep,
       ...(form.timezone ? { timezone: form.timezone } : {}),
       ...(form.digestHour !== "" ? { digest_hour: Number(form.digestHour) } : {}),
+      ...(form.maxNotifications.trim() !== "" ? { max_notifications_per_day: Number(form.maxNotifications) } : {}),
     },
     minScore: form.minScore,
     capacityPerWeek: form.capacityPerWeek,
@@ -329,6 +336,17 @@ function RulesDraft({ data }: { data: RulesResponse }) {
             <select className={INPUT} value={form.notifyMode} onChange={(e) => set("notifyMode", e.target.value as NotifyMode)}>
               {NOTIFY_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
             </select>
+          </Field>
+          <Field label="Max Slack DMs per day" hint={`immediate mode; default ${DEFAULT_MAX_NOTIFICATIONS_PER_DAY}, the rest wait for the digest`}>
+            <input
+              type="number"
+              min={0}
+              max={MAX_NOTIFICATIONS_PER_DAY_LIMIT}
+              className={INPUT}
+              value={form.maxNotifications}
+              placeholder={String(DEFAULT_MAX_NOTIFICATIONS_PER_DAY)}
+              onChange={(e) => set("maxNotifications", e.target.value)}
+            />
           </Field>
           <Field label="Slack user ID" hint="e.g. U0123ABCD">
             <input className={INPUT} value={form.slackUserId} onChange={(e) => set("slackUserId", e.target.value)} />
