@@ -268,3 +268,10 @@ test("planUndo: reassign of an unowned item just deletes the new row", () => {
   const created = undoAssignment({ id: 2, maintainer: "bob", status: "open", assignedBy: "Alice", createdByAction: true, closedAt: null });
   assert.deepEqual(planUndo(row, [created], 0), { ok: true, value: [{ kind: "delete", assignmentId: 2 }] });
 });
+
+test("checkUndo: an action already undone can't be undone again", () => {
+  const result = checkUndo("alice", undoRow({ undone: true }));
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.status, 409);
+  assert.ok(checkUndo("alice", undoRow({ undone: false })).ok);
+});

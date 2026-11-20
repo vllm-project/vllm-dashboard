@@ -45,6 +45,35 @@ import type { NotifyMode } from "@/lib/triage-vocab";
 
 type Db = ReturnType<typeof getDb>;
 
+/**
+ * Whether migration 0048 (`triage_actions.undone_at`) is applied. The
+ * dashboard deploys on merge, possibly before the migration runs, so every
+ * reader checks once (cached; re-checked each minute until it appears) and
+ * leaves the filter out while the column is missing (no row can be undone
+ * then anyway).
+ */
+let undoneColumn: { present: boolean; checkedAt: number } | null = null;
+
+export async function hasUndoneColumn(db: Db): Promise<boolean> {
+  if (undoneColumn && (undoneColumn.present || Date.now() - undoneColumn.checkedAt < 60_000)) {
+    return undoneColumn.present;
+  }
+  const [row] = await db<{ present: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'triage_actions' AND column_name = 'undone_at'
+    ) AS present
+  `;
+  undoneColumn = { present: !!row?.present, checkedAt: Date.now() };
+  return undoneColumn.present;
+}
+
+/** `AND <alias>.undone_at IS NULL` when the column exists, else nothing. */
+function liveAction(db: Db, present: boolean, alias?: string) {
+  if (!present) return db``;
+  return alias ? db`AND ${db(alias)}.undone_at IS NULL` : db`AND undone_at IS NULL`;
+}
+
 interface QueueRow {
   item_key: string;
   repo: string;
@@ -422,6 +451,7 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
     FROM triage_items WHERE item_key = ${itemKey}
   `;
   if (!item) return null;
+  const undoable = await hasUndoneColumn(db);
 
   const [score, extraction, assignments, actions, relevance, links, ci] = await Promise.all([
     db<
@@ -459,9 +489,11 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
         note: string | null;
         source: string;
         created_at: Date;
+        undone_at: Date | null;
       }[]
     >`
-      SELECT id, item_key, assignment_id, actor, action, target, note, source, created_at
+      SELECT id, item_key, assignment_id, actor, action, target, note, source, created_at,
+             ${undoable ? db`undone_at` : db`NULL::timestamptz AS undone_at`}
       FROM triage_actions WHERE item_key = ${itemKey}
       ORDER BY created_at DESC, id DESC LIMIT 200
     `,
@@ -544,7 +576,8 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
           facets: extraction[0]?.facets ?? null,
           relevance: relevanceRows,
           assignments: assignments.map(toAssignment),
-          actions: actions.map((a) => ({ actor: a.actor, action: a.action })),
+          // An undone click never happened, as far as routing is concerned.
+          actions: actions.filter((a) => a.undone_at === null).map((a) => ({ actor: a.actor, action: a.action })),
           linked: [...group.fixes, ...group.fixedBy],
         })))
       : null;
@@ -608,6 +641,7 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
       note: row.note,
       source: row.source,
       createdAt: iso(row.created_at)!,
+      undoneAt: iso(row.undone_at),
     })),
   };
 }
@@ -646,6 +680,7 @@ async function explainItemRouting(
     linked: TriageLinkedItem[];
   },
 ): Promise<WhyUnowned> {
+  const undoable = await hasUndoneColumn(db);
   const [maintainers, load, excerpt, ahead, waiting] = await Promise.all([
     db<(MaintainerRow & { has_profile: boolean })[]>`
       SELECT m.github_login, m.slack_user_id, m.active, m.rules, m.min_score, m.capacity_per_week,
@@ -677,7 +712,7 @@ async function explainItemRouting(
             AND NOT EXISTS (SELECT 1 FROM triage_assignments a WHERE a.item_key = i.item_key
                             AND a.role = 'primary' AND a.status IN ('open', 'acked', 'done'))
             AND NOT EXISTS (SELECT 1 FROM triage_actions a WHERE a.item_key = i.item_key
-                            AND a.action IN ('drop', 'slop'))
+                            AND a.action IN ('drop', 'slop') ${liveAction(db, undoable, "a")})
             AND NOT (COALESCE(i.prepass->>'waiting_on', '') = 'author' AND s.band <> 'page')
         `
       : Promise.resolve([{ n: "0" }]),
@@ -951,6 +986,7 @@ export function suppressionThreshold(env: Record<string, string | undefined> = p
 export async function getStats(): Promise<TriageStats> {
   const db = getDb();
   const threshold = suppressionThreshold();
+  const undoable = await hasUndoneColumn(db);
   const [[row], bands, suppressors, health] = await Promise.all([
     db<
       {
@@ -989,7 +1025,8 @@ export async function getStats(): Promise<TriageStats> {
         (SELECT count(*) FROM triage_assignments
           WHERE assigned_at > now() - interval '7 days') AS assigned_7d,
         (SELECT count(*) FROM triage_actions
-          WHERE action = 'not_mine' AND created_at > now() - interval '7 days') AS not_mine_7d
+          WHERE action = 'not_mine' AND created_at > now() - interval '7 days'
+            ${liveAction(db, undoable)}) AS not_mine_7d
     `,
     db<{ band: string | null; n: string }[]>`
       SELECT s.band, count(*) AS n
@@ -1004,6 +1041,7 @@ export async function getStats(): Promise<TriageStats> {
              count(*) FILTER (WHERE action = 'slop') AS slops
       FROM triage_actions
       WHERE action IN ('drop', 'slop') AND created_at > now() - interval '24 hours'
+        ${liveAction(db, undoable)}
       GROUP BY actor
       HAVING count(*) >= ${threshold}
       ORDER BY count(*) DESC
@@ -1043,6 +1081,7 @@ const EXTRACTION_MAX_ATTEMPTS = 3;
  * (triage-health.ts).
  */
 async function getPipelineHealth(db: Db): Promise<TriagePipelineHealth> {
+  const undoable = await hasUndoneColumn(db);
   const [row] = await db<
     {
       last_labelled_at: Date | null;
@@ -1073,7 +1112,7 @@ async function getPipelineHealth(db: Db): Promise<TriagePipelineHealth> {
           AND NOT EXISTS (SELECT 1 FROM triage_assignments a WHERE a.item_key = i.item_key
                           AND a.role = 'primary' AND a.status IN ('open', 'acked', 'done'))
           AND NOT EXISTS (SELECT 1 FROM triage_actions a WHERE a.item_key = i.item_key
-                          AND a.action IN ('drop', 'slop'))
+                          AND a.action IN ('drop', 'slop') ${liveAction(db, undoable, "a")})
           AND EXISTS (SELECT 1 FROM triage_maintainers m
                       WHERE m.active AND NOT EXISTS (
                         SELECT 1 FROM triage_relevance r
@@ -1298,6 +1337,9 @@ export async function undoTriageAction(
   actionId: number,
 ): Promise<UndoResult<{ itemKeys: string[] }>> {
   const db = getDb();
+  if (!(await hasUndoneColumn(db))) {
+    return { ok: false, status: 503, error: "Undo needs database migration 0048; reopen it instead for now." };
+  }
   return db.begin(async (transaction) => {
     const tx = transaction as unknown as Db;
     const actionRow = async (id: number) => {
@@ -1311,10 +1353,12 @@ export async function undoTriageAction(
           target: string | null;
           source: string;
           age_seconds: number;
+          undone: boolean;
         }[]
       >`
         SELECT id, item_key, assignment_id, actor, action, target, source,
-               EXTRACT(EPOCH FROM (now() - created_at))::float8 AS age_seconds
+               EXTRACT(EPOCH FROM (now() - created_at))::float8 AS age_seconds,
+               undone_at IS NOT NULL AS undone
         FROM triage_actions WHERE id = ${id}
         FOR UPDATE
       `;
@@ -1328,6 +1372,7 @@ export async function undoTriageAction(
             target: row.target,
             source: row.source,
             ageSeconds: Number(row.age_seconds),
+            undone: row.undone,
           } satisfies UndoActionRow)
         : undefined;
     };
@@ -1348,6 +1393,7 @@ export async function undoTriageAction(
         AND f.action = m.action
         AND f.source = m.source
         AND f.note LIKE ${`with #${number}%`}
+        AND f.undone_at IS NULL
       ORDER BY f.id
     `;
     const rows: UndoActionRow[] = [main];
@@ -1377,14 +1423,15 @@ export async function undoTriageAction(
                a.notified_at,
                a.assigned_at = (SELECT created_at FROM triage_actions WHERE id = ${row.id}) AS created_by_action,
                (a.reason ? 'acked_by' OR EXISTS (
-                  SELECT 1 FROM triage_actions t WHERE t.assignment_id = a.id AND t.action = 'ack'
+                  SELECT 1 FROM triage_actions t
+                  WHERE t.assignment_id = a.id AND t.action = 'ack' AND t.undone_at IS NULL
                )) AS was_acked
         FROM triage_assignments a WHERE a.item_key = ${row.itemKey}
         FOR UPDATE OF a
       `;
       const [later] = await tx<{ n: string }[]>`
         SELECT count(*) AS n FROM triage_actions
-        WHERE item_key = ${row.itemKey} AND id > ${row.id}
+        WHERE item_key = ${row.itemKey} AND id > ${row.id} AND undone_at IS NULL
       `;
       const planned = planUndo(
         row,
@@ -1411,8 +1458,8 @@ export async function undoTriageAction(
     }
 
     for (const { row, steps } of plans) {
-      // The action row first: it may reference an assignment deleted below.
-      await tx`DELETE FROM triage_actions WHERE id = ${row.id}`;
+      // Kept for the record, marked undone; every reader skips undone rows.
+      await tx`UPDATE triage_actions SET undone_at = now() WHERE id = ${row.id}`;
       for (const step of steps) {
         if (step.kind === "delete") {
           await tx`DELETE FROM triage_assignments WHERE id = ${step.assignmentId} AND status = 'open'`;

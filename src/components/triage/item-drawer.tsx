@@ -822,9 +822,11 @@ export function ItemDrawer({
                 ) : (
                   <ul className="space-y-1 text-xs">
                     {data.actions.map((action) => (
-                      <li key={action.id}>
-                        <span className="font-medium">{action.actor}</span> <span>{actionText(action.action, action.target)}</span>
+                      <li key={action.id} className={action.undoneAt ? "text-zinc-400 dark:text-zinc-500" : undefined}>
+                        <span className="font-medium">{action.actor}</span>{" "}
+                        <span className={action.undoneAt ? "line-through" : undefined}>{actionText(action.action, action.target)}</span>
                         <span className="text-zinc-500"> {sourceText(action.source)} · {formatAge(action.createdAt)} ago</span>
+                        {action.undoneAt && <span className="text-zinc-500"> · undone</span>}
                         {action.note && <p className="text-zinc-600 dark:text-zinc-400">{action.note}</p>}
                       </li>
                     ))}

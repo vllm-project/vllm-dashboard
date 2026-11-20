@@ -273,10 +273,11 @@ export function memberRequest(
  * Undo (POST /api/triage/actions/undo {actionId}): the dashboard's 5-second
  * "Undo" after a terminal click. It puts things back as if the click never
  * happened: the action row (and the rows of fix PRs that followed it, see
- * GROUP_ACTIONS) is deleted and the assignment returns to open or acked; for
- * reassign, the new owner's row is deleted too. Deleting rather than adding a
- * `reopen` keeps the router and feedback right: an item with a `drop`/`slop`
- * row is never routed again, and `not_mine` rows count against similar items.
+ * GROUP_ACTIONS) gets `undone_at` (migration 0048) and the assignment returns
+ * to open or acked; for reassign, the new owner's row is deleted. The row
+ * stays as a record, but every reader (router drop/slop and not_mine checks,
+ * needs_relevance, feedback, suppression, dashboard stats, "why no owner")
+ * skips undone rows.
  *
  * Only allowed for the person who clicked, from the dashboard, within
  * UNDO_WINDOW_SECONDS, and only while nothing else has happened to the item.
@@ -294,6 +295,8 @@ export interface UndoActionRow {
   source: string;
   /** Seconds since the action, by the database clock. */
   ageSeconds: number;
+  /** Already undone (undone_at set). */
+  undone?: boolean;
 }
 
 export interface UndoAssignmentState extends AssignmentState {
@@ -309,7 +312,7 @@ export type UndoStep =
   | { kind: "restore"; assignmentId: number; status: "open" | "acked" }
   | { kind: "delete"; assignmentId: number };
 
-export type UndoResult<T> = { ok: true; value: T } | { ok: false; status: 400 | 403 | 404 | 409; error: string };
+export type UndoResult<T> = { ok: true; value: T } | { ok: false; status: 400 | 403 | 404 | 409 | 503; error: string };
 
 export function parseUndoRequest(body: unknown): { ok: true; actionId: number } | { ok: false; error: string } {
   const id = body && typeof body === "object" ? Number((body as { actionId?: unknown }).actionId) : NaN;
@@ -319,6 +322,7 @@ export function parseUndoRequest(body: unknown): { ok: true; actionId: number } 
 /** May `login` undo this action row at all? */
 export function checkUndo(login: string, row: UndoActionRow | undefined): UndoResult<UndoActionRow> {
   if (!row) return { ok: false, status: 404, error: "No such action." };
+  if (row.undone) return { ok: false, status: 409, error: "Already undone." };
   if (!sameLogin(row.actor, login)) return { ok: false, status: 403, error: "You can only undo your own actions." };
   if (row.source !== "dashboard") return { ok: false, status: 403, error: "Only dashboard actions can be undone here." };
   if (!UNDOABLE_ACTIONS.includes(row.action)) return { ok: false, status: 400, error: `${row.action} can't be undone.` };

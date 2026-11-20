@@ -428,7 +428,8 @@ class PostgresTriageStore(PostgresAlertStore):
                     removed = c.execute(
                         """DELETE FROM triage_assignments a
                            WHERE a.item_key = ANY(%s) AND a.status = 'open' AND a.assigned_by = 'router'
-                             AND NOT EXISTS (SELECT 1 FROM triage_actions x WHERE x.item_key = a.item_key)""",
+                             AND NOT EXISTS (SELECT 1 FROM triage_actions x WHERE x.item_key = a.item_key
+                                             AND x.undone_at IS NULL)""",
                         (keys,),
                     ).rowcount or 0
         return len(keys), int(removed)
@@ -616,7 +617,8 @@ class PostgresTriageStore(PostgresAlertStore):
                 SELECT i.item_key, i.kind, i.title, i.html_url, s.score, s.band, e.facets, i.prepass,
                        i.files, i.comments_excerpt,
                        COALESCE((SELECT array_agg(DISTINCT a.actor) FROM triage_actions a
-                                 WHERE a.item_key = i.item_key AND a.action = 'not_mine'), '{}'),
+                                 WHERE a.item_key = i.item_key AND a.action = 'not_mine'
+                                   AND a.undone_at IS NULL), '{}'),
                        COALESCE((SELECT jsonb_object_agg(r.maintainer, jsonb_build_object(
                                      'relevance', r.relevance, 'evidence_prs', r.evidence_prs,
                                      'reason', r.reason, 'reason_local', r.reason_local))
@@ -634,7 +636,7 @@ class PostgresTriageStore(PostgresAlertStore):
                   AND NOT EXISTS (SELECT 1 FROM triage_assignments a WHERE a.item_key = i.item_key
                                   AND a.role = 'primary' AND a.status IN ('open', 'acked', 'done'))
                   AND NOT EXISTS (SELECT 1 FROM triage_actions a WHERE a.item_key = i.item_key
-                                  AND a.action IN ('drop', 'slop'))
+                                  AND a.action IN ('drop', 'slop') AND a.undone_at IS NULL)
                   -- routing.waiting_on_author: PRs waiting on their author don't take a slot.
                   AND NOT (COALESCE(i.prepass->>'waiting_on', '') = 'author' AND s.band <> 'page')
                 ORDER BY s.score DESC
@@ -1072,7 +1074,7 @@ class PostgresTriageStore(PostgresAlertStore):
                      AND NOT EXISTS (SELECT 1 FROM triage_assignments o WHERE o.item_key = a.item_key
                                      AND o.id <> a.id AND o.status IN ('acked', 'done'))
                      AND NOT EXISTS (SELECT 1 FROM triage_actions x WHERE x.item_key = a.item_key
-                                     AND x.action IN ('drop', 'slop'))
+                                     AND x.action IN ('drop', 'slop') AND x.undone_at IS NULL)
                      AND NOT {_fixed_by_merged('i')}
                    ORDER BY a.assigned_at, a.id
                    LIMIT %s""",
@@ -1109,7 +1111,7 @@ class PostgresTriageStore(PostgresAlertStore):
         with self._connection_factory() as c:
             rows = c.execute(
                 """SELECT actor, count(*) FILTER (WHERE action = 'drop'), count(*) FILTER (WHERE action = 'slop')
-                   FROM triage_actions WHERE action IN ('drop', 'slop') AND created_at > %s
+                   FROM triage_actions WHERE action IN ('drop', 'slop') AND undone_at IS NULL AND created_at > %s
                    GROUP BY actor HAVING count(*) >= %s ORDER BY count(*) DESC""",
                 (since, threshold),
             ).fetchall()
@@ -1182,6 +1184,7 @@ class PostgresTriageStore(PostgresAlertStore):
                                    SELECT 1 FROM triage_actions a
                                    WHERE a.item_key = s.item_key
                                      AND a.action IN ('drop', 'slop')
+                                     AND a.undone_at IS NULL
                                )
                                AND NOT (COALESCE(i.prepass->>'waiting_on', '') = 'author' AND s.band <> 'page')
                                -- COALESCE: items ingested before gh_assignees existed have
@@ -1271,7 +1274,8 @@ class PostgresTriageStore(PostgresAlertStore):
         declined = c.execute(
             """SELECT a.item_key, i.title, max(a.created_at) AS at
                FROM triage_actions a JOIN triage_items i USING (item_key)
-               WHERE a.action = 'not_mine' AND lower(a.actor) = lower(%s) AND a.created_at >= %s
+               WHERE a.action = 'not_mine' AND a.undone_at IS NULL
+                 AND lower(a.actor) = lower(%s) AND a.created_at >= %s
                GROUP BY a.item_key, i.title ORDER BY at DESC, a.item_key LIMIT %s""",
             (login, since, FEEDBACK_LIMIT),
         ).fetchall()
