@@ -178,6 +178,15 @@ status change:
 The router never re-opens an item that has a `drop` or `slop` action, and
 never routes an item to a maintainer who said `not_mine` for it.
 
+**Undo** (dashboard only, `POST /api/triage/actions/undo`): for 60 seconds the
+person who clicked `not_mine`, `drop`, `slop`, `done` or `reassign` can take
+it back. The click is erased rather than countered: its `triage_actions`
+row(s) (including fix-PR rows written by the same click) are deleted, the
+closed assignment goes back to `acked` (if it had an `ack` action or
+`reason.acked_by`) or `open`, and a reassign's new row is deleted. Refused
+when anything else happened to the item since, the role was refilled, or the
+new owner already acked or was notified.
+
 The route consumer also follows GitHub on every run (`store.follow_github`),
 without `triage_actions` rows (those are what people did):
 
