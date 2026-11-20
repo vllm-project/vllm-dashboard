@@ -223,6 +223,7 @@ class RelevanceTask:
     maintainers: list[str]  # who still needs a judgement for this item
     files: list[str] = field(default_factory=list)
     prepass: dict[str, Any] = field(default_factory=dict)
+    author: str = ""
 
 
 @dataclass(frozen=True)
@@ -258,6 +259,11 @@ def parse_judgments(
     if not isinstance(output, dict) or not isinstance(output.get("judgments"), list):
         raise ExtractionError("relevance output has no judgments")
     wanted = set(task.maintainers)
+    self_pr_num: int | None = None
+    if task.kind == "pr" and "#" in task.item_key:
+        tail = task.item_key.rsplit("#", 1)[-1]
+        if tail.isdigit():
+            self_pr_num = int(tail)
     out: dict[str, Judgment] = {}
     for raw in output["judgments"]:
         if not isinstance(raw, dict):
@@ -267,7 +273,10 @@ def parse_judgments(
         if login not in wanted or level not in RELEVANCE_LEVELS:
             continue
         own = {pr["number"] for pr in profiles[login].prs}
-        evidence = [n for n in raw.get("evidence_prs") or [] if isinstance(n, int) and n in own][:6]
+        evidence = [
+            n for n in raw.get("evidence_prs") or []
+            if isinstance(n, int) and n in own and n != self_pr_num
+        ][:6]
         raw_reason = raw.get("reason")
         reason = raw_reason.strip()[:400] if isinstance(raw_reason, str) else ""
         raw_local = raw.get("reason_local")

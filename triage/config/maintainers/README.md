@@ -39,6 +39,7 @@ github_login: your-login          # must match the file name
 min_score: 40                     # only items scoring at least this (route band 40+, page 70+)
 capacity_per_week: 10             # new P0s, and P0s clearly yours, may exceed it
 notify_mode: digest               # immediate | digest | off  (Slack is off for now)
+max_notifications_per_day: 5      # optional, max immediate Slack DMs per local day (default 5; rest go in daily digest)
 timezone: Europe/London           # optional, IANA name; default UTC
 digest_hour: 9                    # optional, local hour 0-23 for the daily digest; default 9
 away:                             # optional

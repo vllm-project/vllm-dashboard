@@ -34,6 +34,8 @@ class RoutingContext:
     relevance: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     # Opened recently enough that a page-band item may skip the weekly cap.
     fresh: bool = True
+    # GitHub login of the item's author (used to avoid routing a PR to its own author).
+    author: str = ""
 
 
 @dataclass(frozen=True)
@@ -93,11 +95,19 @@ def waiting_on_author(prepass: Mapping[str, Any], band: str) -> bool:
     return prepass.get("waiting_on") == "author" and band != "page"
 
 
+def is_self_pr(login: str, ctx: RoutingContext) -> bool:
+    """True when `ctx` is a PR authored by `login` (PR authors need reviewers,
+    not their own PR routed back to them)."""
+    return ctx.kind == "pr" and bool(ctx.author) and ctx.author.lower() == login.lower()
+
+
 def involvement(login: str, ctx: RoutingContext) -> list[str]:
     """How a maintainer is already part of this item, strongest first:
     the item is assigned to them on GitHub, they wrote a PR the item names
     (e.g. the commit a regression was bisected to), or they have commented
-    on it."""
+    on it. Returns empty for a maintainer's own PR."""
+    if is_self_pr(login, ctx):
+        return []
     me = login.lower()
     out = [GH_ASSIGNED] if me in gh_assignees(ctx.prepass) else []
     out += [
@@ -108,6 +118,22 @@ def involvement(login: str, ctx: RoutingContext) -> list[str]:
     if me in (str(c).lower() for c in ctx.prepass.get("commenters") or []):
         out.append("commented")
     return out
+
+
+def _effective_involvement(
+    login: str, ctx: RoutingContext, *, level: str | None, is_excluded: bool
+) -> list[str]:
+    """Involvement signals that still apply after checking relevance and hard
+    exclusions. Explicit GitHub assignment and authoring a referenced PR always
+    count (and keep any accompanying `"commented"` badge); a passing `"commented"`
+    alone never overrides a `low`/`none` judgement or a hard `exclude` rule."""
+    raw = involvement(login, ctx)
+    strong = [reason for reason in raw if reason != "commented"]
+    if strong:
+        return raw
+    if is_excluded or level in ("low", "none"):
+        return []
+    return raw
 
 
 def _lower(values: Iterable[Any]) -> list[str]:
@@ -197,12 +223,14 @@ def choose_owners(
     for maintainer in maintainers:
         if not maintainer.active or maintainer.github_login in excluded:
             continue
+        if is_self_pr(maintainer.github_login, ctx):
+            continue
         if ctx.score < maintainer.min_score or is_away(maintainer, today):
             continue
-        involved = involvement(maintainer.github_login, ctx)
         judged = ctx.relevance.get(maintainer.github_login) or {}
         level = judged.get("relevance")
         is_excluded = _excluded(maintainer.rules, ctx)
+        involved = _effective_involvement(maintainer.github_login, ctx, level=level, is_excluded=is_excluded)
         relevant = level in ("high", "medium") and not is_excluded
         matched = match_rules(maintainer.rules, ctx)
         current = load.get(maintainer.github_login, 0)
@@ -251,10 +279,18 @@ def _excluded(rules: Mapping[str, Any], ctx: RoutingContext) -> bool:
 def can_follow(maintainer: Maintainer, ctx: RoutingContext, *, excluded: set[str], today: date,
                score: int) -> bool:
     """May this item follow its issue/fix-PR group to `maintainer`
-    (triage/groups.py)? Not if they said "not mine" to it, their file
-    excludes it, they are away or inactive, or the group's highest score
+    (triage/groups.py)? Not if it is their own PR, they said "not mine" to it,
+    their file excludes it, their relevance on it is judged low/none (unless
+    strongly involved), they are away or inactive, or the group's highest score
     (`score`) is under their min_score. Capacity doesn't apply: the group
     already has its slot."""
+    if is_self_pr(maintainer.github_login, ctx):
+        return False
+    judged = ctx.relevance.get(maintainer.github_login) or {}
+    level = judged.get("relevance")
+    strong_involved = [i for i in involvement(maintainer.github_login, ctx) if i != "commented"]
+    if level in ("low", "none") and not strong_involved:
+        return False
     return (
         maintainer.active
         and maintainer.github_login not in excluded
@@ -337,10 +373,12 @@ def explain_unowned(
     lines: list[str] = []
     match_count = 0
     for m in active:
-        involved = involvement(m.github_login, ctx)
+        if is_self_pr(m.github_login, ctx):
+            continue
         judged = ctx.relevance.get(m.github_login) or {}
         level = judged.get("relevance")
         is_excluded = _excluded(m.rules, ctx)
+        involved = _effective_involvement(m.github_login, ctx, level=level, is_excluded=is_excluded)
         relevant = level in ("high", "medium") and not is_excluded
         matched = match_rules(m.rules, ctx)
         if not (involved or relevant or matched):
