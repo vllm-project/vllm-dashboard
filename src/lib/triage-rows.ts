@@ -133,6 +133,16 @@ export function cleanupReasons(cleanup: TriageCleanupInfo | null | undefined): C
  * Compact scan-friendly review-effort summary for PR rows: diff size, whether
  * tests are included, and maintainer / first-time author signal.
  */
+/** PR size bucket (Claude's estimate from lines changed) in plain words. */
+export const PR_SIZE_WORDS: Record<string, string> = {
+  XS: "tiny PR",
+  S: "small PR",
+  M: "medium PR",
+  L: "large PR",
+  XL: "very large PR",
+};
+export const PR_SIZE_HELP = "Size by lines changed: tiny <10, small <50, medium <250, large <1,000, very large 1,000+";
+
 export function prEffortText(
   item: Pick<TriageQueueItem, "kind" | "prSize" | "hasTests" | "isMaintainer" | "firstTime">,
 ): { text: string; title: string } | null {
@@ -141,25 +151,25 @@ export function prEffortText(
   const details: string[] = [];
   const size = item.prSize?.trim().toUpperCase();
   if (size && ["XS", "S", "M", "L", "XL"].includes(size)) {
-    parts.push(size);
-    details.push(`Size ${size}`);
+    parts.push(PR_SIZE_WORDS[size]);
+    details.push(`${PR_SIZE_WORDS[size][0].toUpperCase()}${PR_SIZE_WORDS[size].slice(1)}. ${PR_SIZE_HELP}`);
   }
   if (item.hasTests === true) {
-    parts.push("tests");
-    details.push("Includes tests");
+    parts.push("has tests");
+    details.push("The diff adds or changes tests");
   } else if (item.hasTests === false && (size === "M" || size === "L" || size === "XL")) {
     parts.push("no tests");
-    details.push("No tests seen in diff");
+    details.push("No tests in the diff (shown for medium or larger PRs)");
   }
   if (item.isMaintainer) {
-    parts.push("maintainer");
-    details.push("Author is a maintainer");
+    parts.push("by a maintainer");
+    details.push("The author is a vLLM maintainer");
   } else if (item.firstTime) {
-    parts.push("1st PR");
-    details.push("First-time contributor");
+    parts.push("first-time contributor");
+    details.push("The author's first PR to vLLM");
   }
   if (parts.length === 0) return null;
-  return { text: parts.join(" · "), title: details.join(" · ") };
+  return { text: parts.join(" · "), title: details.join("\n") };
 }
 
 /** Distills `triage_scores.unowned_reason.summary` into a 2-word hint for the Owner column. */
@@ -169,11 +179,11 @@ export function unownedHint(reason: string | null | undefined): { label: string;
   const lower = summary.toLowerCase();
   if (lower.includes("nobody is a match")) return { label: "no match", title: summary };
   if (lower.includes("can't take it right now")) return { label: "at capacity", title: summary };
-  if (lower.includes("assigned on github")) return { label: "GH assignee", title: summary };
+  if (lower.includes("assigned on github")) return { label: "assigned on GitHub", title: summary };
   if (lower.includes("waiting") || lower.includes("not judged") || lower.includes("pending")) {
-    return { label: "pending", title: summary };
+    return { label: "waiting for a match", title: summary };
   }
-  return { label: "unmatched", title: summary };
+  return { label: "no clear owner", title: summary };
 }
 
 /**
@@ -195,7 +205,7 @@ export function activityNote(
     return null;
   }
   const age = formatAge(ghUpdatedAt, now);
-  return { label: `upd ${age}`, title: `Updated ${age} ago` };
+  return { label: `updated ${age} ago`, title: `Last activity on GitHub ${age} ago` };
 }
 
 // --- context line -------------------------------------------------------------

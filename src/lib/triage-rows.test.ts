@@ -261,27 +261,27 @@ test("cleanupReasons explains competing PRs, low effort, and slop signals", () =
 test("prEffortText summarizes PR size, tests, and author trust cleanly", () => {
   assert.equal(prEffortText({ kind: "issue", prSize: "s", hasTests: true }), null);
   assert.deepEqual(prEffortText({ kind: "pr", prSize: "s", hasTests: true, isMaintainer: true }), {
-    text: "S · tests · maintainer",
-    title: "Size S · Includes tests · Author is a maintainer",
+    text: "small PR · has tests · by a maintainer",
+    title: "Small PR. Size by lines changed: tiny <10, small <50, medium <250, large <1,000, very large 1,000+\nThe diff adds or changes tests\nThe author is a vLLM maintainer",
   });
   assert.deepEqual(prEffortText({ kind: "pr", prSize: "xl", hasTests: false, firstTime: true }), {
-    text: "XL · no tests · 1st PR",
-    title: "Size XL · No tests seen in diff · First-time contributor",
+    text: "very large PR · no tests · first-time contributor",
+    title: "Very large PR. Size by lines changed: tiny <10, small <50, medium <250, large <1,000, very large 1,000+\nNo tests in the diff (shown for medium or larger PRs)\nThe author's first PR to vLLM",
   });
-  assert.equal(prEffortText({ kind: "pr", prSize: "s", hasTests: false })?.text, "S");
+  assert.equal(prEffortText({ kind: "pr", prSize: "s", hasTests: false })?.text, "small PR");
 });
 
 test("unownedHint distills verbose router summaries into 2-word hints", () => {
   assert.equal(unownedHint(null), null);
   assert.equal(unownedHint("Nobody is a match: everyone judged is low or none.")?.label, "no match");
   assert.equal(unownedHint("Its only match can't take it right now.")?.label, "at capacity");
-  assert.equal(unownedHint("Assigned on GitHub to alice, who is not in the list.")?.label, "GH assignee");
+  assert.equal(unownedHint("Assigned on GitHub to alice, who is not in the list.")?.label, "assigned on GitHub");
 });
 
 test("activityNote flags fresh updates on older items only", () => {
   const now = Date.parse("2026-11-20T12:00:00Z");
   // Old item updated 2h ago → show activity note
-  assert.equal(activityNote("2026-11-10T12:00:00Z", "2026-11-20T10:00:00Z", now)?.label, "upd 2h");
+  assert.equal(activityNote("2026-11-10T12:00:00Z", "2026-11-20T10:00:00Z", now)?.label, "updated 2h ago");
   // Brand new item updated 1h ago → redundant, omit
   assert.equal(activityNote("2026-11-20T09:00:00Z", "2026-11-20T11:00:00Z", now), null);
   // Old item not updated recently → omit
