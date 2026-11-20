@@ -1,4 +1,13 @@
 import { getDb } from "@/lib/db";
+import {
+  fixtureActiveMaintainers,
+  fixtureItemDetail,
+  fixtureMaintainer,
+  fixtureMyPlate,
+  fixtureQueue,
+  fixtureStats,
+  triageDevFixturesEnabled,
+} from "@/lib/triage-fixtures";
 import { OWNER_NONE, type QueueFilters } from "@/lib/triage-query";
 import {
   GROUP_ACTIONS,
@@ -295,6 +304,7 @@ function latestExtractionJoin(db: Db) {
 }
 
 export async function listQueue(filters: QueueFilters): Promise<TriageQueueResponse> {
+  if (triageDevFixturesEnabled()) return fixtureQueue(filters);
   const db = getDb();
   const realBands = filters.bands.filter((band) => band !== "unscored");
   const includeUnscored = filters.bands.includes("unscored");
@@ -420,6 +430,7 @@ function toAssignment(row: AssignmentRow): TriageAssignment {
 }
 
 export async function getItemDetail(itemKey: string): Promise<TriageItemDetail | null> {
+  if (triageDevFixturesEnabled()) return fixtureItemDetail(itemKey);
   const db = getDb();
   const [item] = await db<
     {
@@ -780,6 +791,7 @@ async function explainItemRouting(
 }
 
 export async function getMyPlate(login: string): Promise<TriageMyPlate> {
+  if (triageDevFixturesEnabled()) return fixtureMyPlate(login);
   const db = getDb();
   type Row = QueueRow & AssignmentRow & { a_item_key: string };
   const rows = await db<Row[]>`
@@ -888,6 +900,7 @@ export async function openAssignmentFor(itemKey: string, login: string): Promise
 export async function listActiveMaintainers(): Promise<
   { githubLogin: string; openAssignments: number; openPrimaries: number }[]
 > {
+  if (triageDevFixturesEnabled()) return fixtureActiveMaintainers();
   const db = getDb();
   const rows = await db<{ github_login: string; open_assignments: string; open_primaries: string }[]>`
     SELECT m.github_login,
@@ -908,6 +921,7 @@ export async function listActiveMaintainers(): Promise<
 }
 
 export async function getMaintainer(login: string): Promise<TriageMaintainer | null> {
+  if (triageDevFixturesEnabled()) return fixtureMaintainer(login);
   const db = getDb();
   const [row] = await db<MaintainerRow[]>`
     SELECT github_login, slack_user_id, active, rules, min_score, capacity_per_week,
@@ -984,6 +998,7 @@ export function suppressionThreshold(env: Record<string, string | undefined> = p
 }
 
 export async function getStats(): Promise<TriageStats> {
+  if (triageDevFixturesEnabled()) return fixtureStats();
   const db = getDb();
   const threshold = suppressionThreshold();
   const undoable = await hasUndoneColumn(db);
