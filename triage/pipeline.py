@@ -371,6 +371,8 @@ class RouteHandler:
         by_login = {m.github_login: m for m in maintainers}
         load = self.store.maintainer_load(since=week_ago(now))
         judged_by = {m.github_login for m in maintainers}
+        if hasattr(self.store, "sync_needs_relevance"):
+            self.store.sync_needs_relevance(active_maintainers=judged_by)
         rows = self.store.routing_candidates(limit=self.route_limit)
         partners = partner_map(self.store.fix_links(open_only=True))
         groups = _Groups(partners, self.store.group_members(partners), {r.item_key: r for r in rows})
@@ -385,6 +387,8 @@ class RouteHandler:
                         row, maintainers, by_login, load, judged_by, now, strong_only=strong_only,
                         partial=partial, groups=groups, routed=routed,
                     )
+        if routed and hasattr(self.store, "sync_needs_relevance"):
+            self.store.sync_needs_relevance(active_maintainers=judged_by)
         if partial:
             missing = Counter(login for logins in partial.values() for login in logins)
             log.warning(

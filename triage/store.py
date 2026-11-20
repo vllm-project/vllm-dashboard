@@ -27,6 +27,8 @@ from triage.relevance import (
     Judgment,
     MaintainerProfile,
     RelevanceTask,
+    invalidation_hash,
+    path_prefixes,
     profile_hash,
 )
 from triage.model import Item, Maintainer, Score
@@ -910,9 +912,67 @@ class PostgresTriageStore(PostgresAlertStore):
             ).fetchall()
         return {r[0]: r[1] for r in rows}
 
+    def sync_needs_relevance(self, *, active_maintainers: Iterable[str]) -> int:
+        """Keep `triage_scores.needs_relevance` in step with routing eligibility.
+
+        True iff the item is open, in scope, page/route band, has no open/acked/done
+        primary owner, has no drop/slop action, is not waiting on its author
+        (for non-page band), and is not assigned on GitHub exclusively to people
+        outside `active_maintainers`.
+
+        Maintained by `triage-route` so `relevance_queue` (running under the
+        restricted `triage_extractor` role) skips owned/suppressed items without
+        needing read access to `triage_assignments` or `triage_actions`.
+        """
+        logins = sorted({m.lower() for m in active_maintainers})
+        with self._connection_factory() as c:
+            updated = c.execute(
+                """
+                WITH target AS (
+                    SELECT s.item_key,
+                           (
+                               i.in_scope
+                               AND i.state = 'open'
+                               AND s.band IN ('page', 'route')
+                               AND NOT EXISTS (
+                                   SELECT 1 FROM triage_assignments a
+                                   WHERE a.item_key = s.item_key
+                                     AND a.role = 'primary'
+                                     AND a.status IN ('open', 'acked', 'done')
+                               )
+                               AND NOT EXISTS (
+                                   SELECT 1 FROM triage_actions a
+                                   WHERE a.item_key = s.item_key
+                                     AND a.action IN ('drop', 'slop')
+                               )
+                               AND NOT (COALESCE(i.prepass->>'waiting_on', '') = 'author' AND s.band <> 'page')
+                               AND NOT (
+                                   jsonb_typeof(i.prepass->'gh_assignees') = 'array'
+                                   AND jsonb_array_length(i.prepass->'gh_assignees') > 0
+                                   AND NOT EXISTS (
+                                       SELECT 1
+                                       FROM jsonb_array_elements_text(i.prepass->'gh_assignees') AS g(login)
+                                       WHERE lower(g.login) = ANY(%s)
+                                   )
+                               )
+                           ) AS want
+                    FROM triage_scores s
+                    JOIN triage_items i ON i.item_key = s.item_key
+                )
+                UPDATE triage_scores s
+                SET needs_relevance = target.want
+                FROM target
+                WHERE s.item_key = target.item_key
+                  AND s.needs_relevance IS DISTINCT FROM target.want
+                """,
+                (logins,),
+            ).rowcount
+        return int(updated or 0)
+
     def save_profile(self, login: str, prs: list[dict[str, Any]], *, now: datetime) -> None:
         """Store a maintainer's rebuilt profile, with a snapshot of what they
-        recently did with items routed to them (see maintainer_feedback)."""
+        recently did with items routed to them (see maintainer_feedback) and
+        directory prefixes touched by their authored PRs."""
         with self._connection_factory() as c:
             row = c.execute(
                 """SELECT COALESCE(rules->>'natural_language', ''), COALESCE(rules->>'language', 'en')
@@ -921,14 +981,39 @@ class PostgresTriageStore(PostgresAlertStore):
             ).fetchone()
             notes, language = (row[0], row[1]) if row else ("", "en")
             feedback = self._maintainer_feedback(c, login, now=now)
+            authored_paths = self._authored_paths(c, login)
             c.execute(
-                """INSERT INTO triage_maintainer_profiles (github_login, prs, profile_hash, built_at, feedback)
-                   VALUES (%s, %s::jsonb, %s, %s, %s::jsonb)
+                """INSERT INTO triage_maintainer_profiles (github_login, prs, profile_hash, built_at,
+                       feedback, authored_paths)
+                   VALUES (%s, %s::jsonb, %s, %s, %s::jsonb, %s::jsonb)
                    ON CONFLICT (github_login) DO UPDATE SET prs = EXCLUDED.prs,
                        profile_hash = EXCLUDED.profile_hash, built_at = EXCLUDED.built_at,
-                       feedback = EXCLUDED.feedback""",
-                (login, json.dumps(prs), profile_hash(prs, notes, language, feedback), now, json.dumps(feedback)),
+                       feedback = EXCLUDED.feedback, authored_paths = EXCLUDED.authored_paths""",
+                (login, json.dumps(prs), profile_hash(prs, notes, language, feedback), now,
+                 json.dumps(feedback), json.dumps(authored_paths)),
             )
+
+    @staticmethod
+    def _authored_paths(c: Any, login: str, *, limit: int = 30) -> dict[str, int]:
+        """Top directory prefixes touched by PRs authored by `login` in `triage_items`."""
+        rows = c.execute(
+            """SELECT files FROM triage_items
+               WHERE kind = 'pr' AND lower(author) = lower(%s)
+                 AND jsonb_typeof(files) = 'array' AND jsonb_array_length(files) > 0
+               ORDER BY gh_created_at DESC LIMIT 200""",
+            (login,),
+        ).fetchall()
+        counts: dict[str, int] = {}
+        for (files,) in rows:
+            seen_in_pr: set[str] = set()
+            for entry in files or []:
+                path = entry.get("path") if isinstance(entry, dict) else None
+                if isinstance(path, str) and path:
+                    seen_in_pr.update(path_prefixes(path))
+            for prefix in seen_in_pr:
+                counts[prefix] = counts.get(prefix, 0) + 1
+        top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+        return dict(top)
 
     def maintainer_feedback(self, login: str, *, now: datetime) -> dict[str, list[dict[str, Any]]]:
         with self._connection_factory() as c:
@@ -963,32 +1048,42 @@ class PostgresTriageStore(PostgresAlertStore):
         }
 
     def maintainer_profiles(self) -> list[MaintainerProfile]:
-        """Active maintainers' profiles; the hash also covers their current
-        notes, so editing notes re-queues their judgements."""
+        """Active maintainers' profiles. `policy_hash` covers prompt version,
+        notes and language so daily PR/feedback refreshes update context for
+        new items without invalidating existing judgements."""
         with self._connection_factory() as c:
             rows = c.execute(
                 """SELECT m.github_login, p.prs, COALESCE(m.rules->>'natural_language', ''),
-                          COALESCE(m.rules->>'language', 'en'), p.feedback
+                          COALESCE(m.rules->>'language', 'en'), p.feedback, p.authored_paths, m.rules
                    FROM triage_maintainers m JOIN triage_maintainer_profiles p USING (github_login)
                    WHERE m.active ORDER BY m.github_login"""
             ).fetchall()
         return [
-            MaintainerProfile(r[0], list(r[1]), r[2], profile_hash(list(r[1]), r[2], r[3], dict(r[4])), r[3],
-                              dict(r[4]))
+            MaintainerProfile(
+                r[0],
+                list(r[1]),
+                r[2],
+                profile_hash(list(r[1]), r[2], r[3], dict(r[4])),
+                r[3],
+                dict(r[4]),
+                policy_hash=invalidation_hash(r[2], r[3]),
+                authored_paths={str(k): int(v) for k, v in (r[5] or {}).items()},
+                rules=dict(r[6] or {}),
+            )
             for r in rows
         ]
 
     def relevance_queue(self, *, limit: int, min_score: int) -> list[RelevanceTask]:
-        """Open, extracted items scoring >= min_score with at least one active
-        maintainer whose judgement is missing or stale (item text changed or
-        that maintainer's profile changed)."""
-        profiles = {p.login: p.profile_hash for p in self.maintainer_profiles()}
+        """Open, extracted, routable items (`s.needs_relevance`) scoring >=
+        min_score with at least one active maintainer whose judgement is
+        missing or whose policy (`notes`, `language`, `PROMPT_VERSION`) changed."""
+        profiles = {p.login: p.effective_policy_hash for p in self.maintainer_profiles()}
         if not profiles:
             return []
         with self._connection_factory() as c:
             rows = c.execute(
                 """
-                SELECT i.item_key, i.kind, i.title, e.facets, i.content_hash,
+                SELECT i.item_key, i.kind, i.title, e.facets, i.content_hash, i.files, i.prepass,
                        COALESCE((SELECT jsonb_object_agg(r.maintainer, r.profile_hash)
                                  FROM triage_relevance r
                                  WHERE r.item_key = i.item_key AND r.content_hash = i.content_hash),
@@ -997,16 +1092,19 @@ class PostgresTriageStore(PostgresAlertStore):
                 JOIN triage_scores s USING (item_key)
                 JOIN triage_extractions e ON e.id = s.extraction_id
                 WHERE i.in_scope AND i.state = 'open' AND s.score >= %s
+                  AND s.needs_relevance
                   AND e.content_hash = i.content_hash
                 ORDER BY s.score DESC, i.gh_created_at DESC
                 """,
                 (min_score,),
             ).fetchall()
         tasks: list[RelevanceTask] = []
-        for key, kind, title, facets, chash, judged in rows:
+        for key, kind, title, facets, chash, files, prepass, judged in rows:
             todo = [login for login, h in profiles.items() if judged.get(login) != h]
             if todo:
-                tasks.append(RelevanceTask(key, kind, title, dict(facets), chash, todo))
+                paths = [f["path"] for f in (files or []) if isinstance(f, dict) and f.get("path")]
+                tasks.append(RelevanceTask(key, kind, title, dict(facets), chash, todo, files=paths,
+                                           prepass=dict(prepass or {})))
                 if len(tasks) >= limit:
                     break
         return tasks
@@ -1029,7 +1127,7 @@ class PostgresTriageStore(PostgresAlertStore):
                                profile_hash = EXCLUDED.profile_hash, model = EXCLUDED.model,
                                created_at = EXCLUDED.created_at""",
                         (task.item_key, j.maintainer, j.relevance, json.dumps(j.evidence_prs), j.reason,
-                         j.reason_local, task.content_hash, profiles[j.maintainer].profile_hash, model, now),
+                         j.reason_local, task.content_hash, profiles[j.maintainer].effective_policy_hash, model, now),
                     )
 
     # --- maintainers (synced from triage/config/maintainers/*.yaml) --------
