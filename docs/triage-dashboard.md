@@ -77,7 +77,7 @@ section tab row.
   user is an **active** member of `TRIAGE_MAINTAINER_TEAM`, or listed in
   `TRIAGE_ALLOWED_LOGINS`. The GitHub token is used for that one check and
   never stored. The session is an HMAC-SHA256-signed cookie holding only
-  `{login, exp}` (HttpOnly, Secure in production, SameSite=Lax, 7 days).
+  `{login, exp}` (HttpOnly, Secure in production, SameSite=Lax, 12 hours).
 - Mutating routes (`POST /api/triage/actions`,
   `POST /api/triage/rules/preview`, `POST /api/triage/auth/logout`) also
   require a same-origin `Origin` header (or `Sec-Fetch-Site: same-origin`).

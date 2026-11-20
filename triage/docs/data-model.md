@@ -8,7 +8,7 @@ host, and the dashboard (`src/app/triage`). Tables are defined in
 
 ```
 GitHub ──(worker: triage-ingest, every 5 min)──► triage_items (+ prepass)
-triage_items ──(extractor host: triage-extract, Claude Code)──► triage_extractions
+triage_items ──(extractor host: vllm-triage extract, Claude Code)──► triage_extractions
 triage_items + latest extraction ──(worker: triage-route)──► triage_scores
 triage_scores ≥ route threshold ──(worker: triage-route)──► triage_assignments
                                                          └─► alerting_notification_outbox (alert_path='triage')
@@ -151,9 +151,9 @@ values and config keys keep the original names.
 `breakdown` is an ordered list whose points sum to `score`:
 
 ```json
-[{"factor": "severity.serving_broken", "points": 40},
- {"factor": "model_tier.tier1", "points": 20, "detail": "Qwen3-235B-A22B"},
- {"factor": "social.reactions", "points": 3, "detail": "12 reactions"}]
+[{"factor": "severity.serving_broken", "points": 58, "detail": "50 base; model tier1 x1; hw tier1 x1; config default x1.15"},
+ {"factor": "popularity.model.tier1", "points": 6, "detail": "qwen3-235b-a22b"},
+ {"factor": "social", "points": 3, "detail": "4 reactions, 2 comments"}]
 ```
 
 ## Assignment status and actions
@@ -236,7 +236,7 @@ no rules, and are never touched by the sync.
   "keywords": ["expert parallel"],            // case-insensitive substring of title/summary
   "types": ["bug", "regression", "perf_regression"],  // empty = any
   "exclude": {"types": ["question", "docs"], "areas": [], "hardware": []},
-  "natural_language": "anything about EP load balancing"  // informational in v1
+  "natural_language": "anything about EP load balancing"  // the file's `notes`; Claude reads it for relevance
 }
 ```
 
