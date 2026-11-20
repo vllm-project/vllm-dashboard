@@ -661,6 +661,8 @@ function Queue() {
     triageFetcher,
     { keepPreviousData: true },
   );
+  // Showing the previous view's rows while this view's request is in flight.
+  const stale = Boolean(data) && isLoading;
   const { data: stats, mutate: mutateStats } = useSWR<TriageStats>("/api/triage/stats", triageFetcher, {
     refreshInterval: 120_000,
   });
@@ -854,6 +856,14 @@ function Queue() {
         <KindLegend />
         <ItemListHeader />
         {!data && isLoading && <RowSkeleton />}
+        {/* keepPreviousData keeps the last view's rows while a new view loads; dim them and
+            say so, so they can't be mistaken for the new view's results. */}
+        {stale && (
+          <p role="status" className="border-b border-zinc-200 bg-zinc-50 px-4 py-2 text-xs text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/60 dark:text-zinc-400">
+            Loading{preset ? ` ${QUEUE_PRESETS.find((p) => p.id === preset)?.label ?? ""}` : ""}…
+          </p>
+        )}
+        <div aria-busy={stale || undefined} className={stale ? "pointer-events-none select-none opacity-40 transition-opacity" : "transition-opacity"}>
         {data && data.items.length === 0 && (
           <EmptyState
             title={isDefaultFilters(filters) ? "Nothing needs triage right now" : "No items match these filters"}
@@ -892,8 +902,9 @@ function Queue() {
             <GroupedRows rows={rows} rowKey={(item) => item.itemKey} activeKey={openItem} onOpen={(item) => openRow(item.itemKey)} onOpenKey={openRow} />
           </ul>
         )}
+        </div>
 
-        {data && data.total > data.pageSize && (
+        {data && !stale && data.total > data.pageSize && (
           <div className="flex items-center justify-between border-t border-zinc-200 px-4 py-2 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
             <span className="tabular-nums">
               {(data.page - 1) * data.pageSize + 1}–{Math.min(data.page * data.pageSize, data.total)} of {data.total}
