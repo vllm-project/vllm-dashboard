@@ -9,6 +9,7 @@ import {
 import { isValidLogin } from "@/lib/triage-auth";
 
 export const QUEUE_STATUSES = ["any", "unassigned", "open", "acked", "closed"] as const;
+export const QUEUE_REVIEWS = ["ready", "merge", "cleanup"] as const;
 export const QUEUE_SORTS = ["score", "age", "updated"] as const;
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 200;
@@ -30,12 +31,12 @@ export interface QueueFilters {
   owner: string | null;
   status: (typeof QUEUE_STATUSES)[number];
   /**
-   * `review=ready`: open, non-draft PRs whose move is the reviewers'
-   * (`prepass.waiting_on = "reviewer"`, so CI isn't failing on the PR's own
-   * account, no conflicts, no changes requested; see `whose_move` in
-   * triage/prepass.py).
+   * PR workflow stage filter:
+   * - `ready`: open, non-draft PRs waiting on reviewers (not yet approved)
+   * - `merge`: approved open, non-draft PRs with passing CI and no conflicts
+   * - `cleanup`: competing duplicate fix PRs (2+ open PRs fixing the same issue) or low-effort PRs
    */
-  review: "ready" | null;
+  review: (typeof QUEUE_REVIEWS)[number] | null;
   q: string | null;
   state: "open" | "all";
   includeOutOfScope: boolean;
@@ -95,7 +96,7 @@ export function parseQueueFilters(params: URLSearchParams): QueueFilters {
     model: text(params.get("model")),
     owner: owner === OWNER_NONE ? OWNER_NONE : owner && isValidLogin(owner) ? owner : null,
     status: isOneOf(QUEUE_STATUSES, status) ? status : "any",
-    review: params.get("review") === "ready" ? "ready" : null,
+    review: isOneOf(QUEUE_REVIEWS, params.get("review")) ? (params.get("review") as QueueFilters["review"]) : null,
     q: text(params.get("q"), 200),
     state: params.get("state") === "all" ? "all" : "open",
     includeOutOfScope: params.get("scope") === "all",
@@ -143,7 +144,7 @@ function literalParams(filters: Partial<QueueFilters>): URLSearchParams {
   if (filters.model) params.set("model", filters.model);
   if (filters.owner) params.set("owner", filters.owner);
   if (filters.status && filters.status !== "any") params.set("status", filters.status);
-  if (filters.review === "ready") params.set("review", "ready");
+  if (filters.review) params.set("review", filters.review);
   if (filters.q) params.set("q", filters.q);
   if (filters.state === "all") params.set("state", "all");
   if (filters.includeOutOfScope) params.set("scope", "all");

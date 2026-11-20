@@ -29,6 +29,14 @@ test("fixtureQueue filters by owner, kind, bands, and search", () => {
   assert.ok(readyPrs.items.length >= 2);
   assert.ok(readyPrs.items.every((item) => item.kind === "pr" && item.waitingOn === "reviewer"));
 
+  const mergePrs = fixtureQueue(parseQueueFilters(new URLSearchParams("kind=pr&review=merge&bands=page,route,watch,ignore,unscored")));
+  assert.equal(mergePrs.items.length, 1);
+  assert.equal(mergePrs.items[0].number, 65365);
+
+  const cleanupPrs = fixtureQueue(parseQueueFilters(new URLSearchParams("kind=pr&review=cleanup&bands=page,route,watch,ignore,unscored")));
+  assert.ok(cleanupPrs.items.length >= 2);
+  assert.ok(cleanupPrs.items.some((item) => item.number === 67131));
+
   const stats = fixtureStats();
   assert.equal(stats.unowned, unowned.total);
   assert.ok(fixtureActiveMaintainers().length >= 3);

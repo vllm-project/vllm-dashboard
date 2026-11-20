@@ -66,6 +66,10 @@ export interface TriagePrepass {
   waiting_on?: "author" | "reviewer";
   /** Why it waits on the author: draft, ci_failing, merge_conflict, changes_requested. */
   waiting_reasons?: string[];
+  /** GitHub PR reviewDecision: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED. */
+  review_decision?: string;
+  /** GitHub PR mergeable state: MERGEABLE, CONFLICTING, UNKNOWN. */
+  mergeable?: string;
   /** Checks failing on the PR's head commit (GraphQL ingest only). */
   failing_checks?: string[];
   /** Failed CI jobs that aren't failing on main, when that makes it the author's move (`ci_pr_failures`). */

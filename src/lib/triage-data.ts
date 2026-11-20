@@ -344,10 +344,7 @@ export async function listQueue(filters: QueueFilters): Promise<TriageQueueRespo
                            AND lower(a.maintainer) = lower(${filters.owner}))`
         : db``}
     ${statusFilter(db, filters.status)}
-    ${filters.review === "ready"
-      ? db`AND i.kind = 'pr' AND i.state = 'open' AND NOT i.draft
-           AND i.prepass->>'waiting_on' = 'reviewer'`
-      : db``}
+    ${reviewFilter(db, filters.review)}
     ${filters.q
       ? db`AND (i.title ILIKE ${"%" + escapeLike(filters.q) + "%"}
                OR e.facets->>'summary' ILIKE ${"%" + escapeLike(filters.q) + "%"}
@@ -390,6 +387,52 @@ function statusFilter(db: Db, status: QueueFilters["status"]) {
       return db`AND EXISTS (SELECT 1 FROM triage_assignments a WHERE a.item_key = i.item_key)
                 AND NOT EXISTS (SELECT 1 FROM triage_assignments a
                                 WHERE a.item_key = i.item_key AND a.status IN ('open', 'acked'))`;
+    default:
+      return db``;
+  }
+}
+
+function reviewFilter(db: Db, review: QueueFilters["review"]) {
+  switch (review) {
+    case "ready":
+      return db`AND i.kind = 'pr' AND i.state = 'open' AND NOT i.draft
+                AND i.prepass->>'waiting_on' = 'reviewer'
+                AND COALESCE(i.prepass->>'review_decision', '') <> 'APPROVED'`;
+    case "merge":
+      return db`AND i.kind = 'pr' AND i.state = 'open' AND NOT i.draft
+                AND i.prepass->>'waiting_on' = 'reviewer'
+                AND i.prepass->>'review_decision' = 'APPROVED'
+                AND COALESCE(i.prepass->>'mergeable', '') <> 'CONFLICTING'
+                AND EXISTS (SELECT 1 FROM triage_pr_ci c
+                            WHERE c.item_key = i.item_key AND c.state = 'passed')`;
+    case "cleanup":
+      return db`AND i.kind = 'pr' AND i.state = 'open'
+                AND (
+                  COALESCE((e.facets->'pr'->>'low_effort')::boolean, false)
+                  OR i.item_key IN (
+                    WITH pr_fixes AS (
+                      SELECT p.item_key AS pr_key, p.repo || '#' || f.num AS issue_key
+                      FROM triage_items p
+                      LEFT JOIN LATERAL (
+                        SELECT x.facets FROM triage_extractions x WHERE x.item_key = p.item_key
+                        ORDER BY x.created_at DESC, x.id DESC LIMIT 1
+                      ) pe ON true
+                      CROSS JOIN LATERAL jsonb_array_elements_text(
+                        (CASE WHEN jsonb_typeof(p.prepass->'fixes_issues') = 'array'
+                              THEN p.prepass->'fixes_issues' ELSE '[]'::jsonb END)
+                        || (CASE WHEN jsonb_typeof(pe.facets->'pr'->'fixes_issues') = 'array'
+                                 THEN pe.facets->'pr'->'fixes_issues' ELSE '[]'::jsonb END)
+                      ) AS f(num)
+                      WHERE p.kind = 'pr' AND p.state = 'open'
+                        AND f.num ~ '^[0-9]{1,9}$'
+                    ),
+                    dupes AS (
+                      SELECT issue_key FROM pr_fixes
+                      GROUP BY issue_key HAVING count(DISTINCT pr_key) >= 2
+                    )
+                    SELECT pr_fixes.pr_key FROM pr_fixes JOIN dupes USING (issue_key)
+                  )
+                )`;
     default:
       return db``;
   }
