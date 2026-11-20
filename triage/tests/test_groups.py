@@ -122,7 +122,7 @@ def test_digest_shows_a_group_as_one_item_with_one_set_of_buttons() -> None:
         assert not actions
         assert items[0]["accessory"]["options"][0]["value"] == "ack|vllm-project/vllm#65385"
         text = items[0]["text"]["text"]
-        assert text.split("\n")[-1].startswith(f"{word} <{GH}pull/67812|#67812> · ")
+        assert text.split("\n")[-1].startswith(f"{word} <{GH}pull/67812|#67812>")
         assert "ci.vllm.ai/triage?item=" in text
         assert "65385, which you own" not in text and "mục bạn đang phụ trách" not in text
     # Counts are in groups: one P0 (the issue's group) and one P1.
@@ -151,7 +151,7 @@ def test_reminders_fold_into_groups_too() -> None:
                                 waiting=waiting, waiting_total=2).payload
     texts = [b.get("text", {}).get("text", "") for b in payload["blocks"]]
     assert payload["text"] == "Triage digest: 1 P1"
-    assert any(f"\n↳ Fix <{GH}pull/2|#2> · ❔ check PR status · ⚪ CI unknown" in t for t in texts)
+    assert any(f"\n↳ Fix <{GH}pull/2|#2>" in t for t in texts)
     assert sum("accessory" in b for b in payload["blocks"]) == 1
 
 

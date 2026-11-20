@@ -395,7 +395,7 @@ def test_still_waiting_reminders_in_the_digest(store: PostgresTriageStore, datab
     assert delivery_id == f"triage:digest:r:{NOW.date().isoformat()}"
     items = [b for b in payload["blocks"] if "accessory" in b]
     assert {b["block_id"] for b in items} == {f"triage:item:vllm-project/vllm#{n}" for n in (601, 602, 608)}
-    assert all("needs your ack" in b["text"]["text"] for b in items)
+    assert all("needs your ack" not in b["text"]["text"] for b in items)
     assert payload["text"] == "Triage digest: 3 P0"
     # The new item is marked notified; reminders keep their first notified_at.
     assert notified_at(database_url, fresh) == NOW
@@ -1078,7 +1078,7 @@ def test_the_digest_shows_a_group_as_one_item(store: PostgresTriageStore, databa
     [(_, _, _, payload)] = outbox(database_url)
     items = [b for b in payload["blocks"] if str(b.get("block_id", "")).startswith("triage:item:")]
     assert [b["block_id"] for b in items] == ["triage:item:vllm-project/vllm#830", "triage:item:vllm-project/vllm#832"]
-    assert "↳ Fix <https://github.com/vllm-project/vllm/issues/831|#831> · 👀 ready for review · ⚪ CI unknown" in items[0]["text"]["text"]
+    assert "↳ Fix <https://github.com/vllm-project/vllm/issues/831|#831>" in items[0]["text"]["text"]
     assert payload["text"] == "Triage digest: 2 P1"
     assert store.unnotified_assignments("d") == []
 

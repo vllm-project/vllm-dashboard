@@ -722,7 +722,7 @@ def test_vietnamese_digest_is_friendly_grouped_and_keeps_titles() -> None:
     text = items[0]["text"]["text"]
     assert text.startswith("*<https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2366694|[Bugfix] Restore exact division")
     assert "<https://github.com/vllm-project/vllm/pull/66694|#66694>" in text
-    assert "chờ bạn nhận" in text and "💡 _Vì sao quan trọng: an English summary_" in text
+    assert "chờ bạn nhận" not in text and "_an English summary_" in text
     assert "triage/config/maintainers/gau-nernst.yaml|Tùy chỉnh>" in blocks[-1]["elements"][0]["text"]
 
 
@@ -855,7 +855,7 @@ def test_vietnamese_reminder_only_digest() -> None:
     blocks = payload["blocks"]
     items = [b for b in blocks if "accessory" in b]
     assert len(items) == 1
-    assert "2 tuần · 🔔 chờ bạn nhận" in items[0]["text"]["text"]
+    assert "2 tuần" in items[0]["text"]["text"]
     assert payload["text"] == "Digest triage: 1 P0"
     assert "Mở toàn bộ danh sách" in blocks[1]["text"]["text"]
     # Every Vietnamese string has an English twin and the same placeholders.

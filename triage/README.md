@@ -339,21 +339,20 @@ Every route run, before routing (`store.follow_github`):
   sections. At most five groups are shown, with at most three per priority;
   overflow counts link to the full list, also linked at the top. Item titles
   open triage; `#number` opens GitHub. A quiet line shows the extracted symptom,
-  item age (not assignment age), and acknowledgement status. Colored emoji
-  distinguish symptoms, action states and CI. An italic "why it matters" line
-  uses the extracted summary, capped at 180 characters; absent summaries are omitted.
+  item age (not assignment age), and colored symptom cues. A short italic line
+  uses the extracted summary, capped at 180 characters, without a label or icon;
+  absent summaries are omitted.
 - **Groups.** An issue and its assigned fix PRs form one entry, at the band of
   its most urgent assigned member. Digests also show linked fixes that are
   unassigned, drafts, closed or merged, as context only: they do not change
   routing, notification eligibility or the group's priority. Up to three fix
-  PRs share a line with their review/merge state and CI; additional fixes link
+  PR numbers share a line with GitHub links; additional fixes link
   to the issue. "Still waiting" skips issues whose fix PR has merged.
-- **CI.** Digests show a result only when the CI record matches the observed
-  PR head; otherwise they say "CI unknown". Closed and merged PRs omit CI.
-  "Ready to merge" requires a readiness check within the last hour. Statuses
-  describe the stored snapshot at send time, not live-updating GitHub state.
+- **CI.** Digests show "✅ CI passed" only for open PRs with a passing CI record
+  matching the observed head. Failed, pending, unknown or mismatched results
+  add no text. This describes the stored snapshot at send time.
 - **Actions.** Each digest group has one ⋯ menu: Ack / Not mine / Open in
-  dashboard. Ack becomes Done and updates the status line. Actions cover the
+  dashboard. Ack becomes Done and adds a confirmation line. Actions cover the
   issue and fix PRs assigned to the clicker, not unassigned contextual fixes.
   Immediate DMs retain Ack / Not mine / Reassign / Open buttons and "why you".
   Slack posts clicks to `https://ci.vllm.ai/api/triage/slack/interactions`.

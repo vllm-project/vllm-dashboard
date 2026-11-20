@@ -56,21 +56,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "more_waiting": "…and {n} more overdue items · <{url}|Open full list>",
         "more_fixes": "…and {n} more fix PRs · <{url}|View issue>",
         "compact_fix": "↳ Fix {ref}",
-        "why_matters": "Why it matters",
-        "needs_ack": "🔔 needs your ack",
-        "acked": "✅ acked",
+        "ci_passed": "✅ CI passed",
         "done": "Done",
-        "merged": "🟣 merged",
-        "closed": "⚫ closed",
-        "draft": "📝 draft",
-        "waiting_author": "🟡 waiting on author",
-        "ready_review": "👀 ready for review",
-        "ready_merge": "🟢 ready to merge",
-        "approved": "✅ approved",
-        "check_status": "❔ check PR status",
-        "ci_unknown": "⚪ CI unknown",
-        "ci_in_progress": "🔵 CI running",
-        "ci_failed_main": "🔴 CI ✗ (also on main)",
         "age_minutes": "{n}m",
         "age_hours": "{n}h",
         "age_days": "{n}d",
@@ -120,21 +107,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "more_waiting": "…và {n} mục quá hạn khác · <{url}|Mở toàn bộ danh sách>",
         "more_fixes": "…và {n} PR sửa lỗi khác · <{url}|Xem issue>",
         "compact_fix": "↳ Bản sửa {ref}",
-        "why_matters": "Vì sao quan trọng",
-        "needs_ack": "🔔 chờ bạn nhận",
-        "acked": "✅ đã nhận",
+        "ci_passed": "✅ CI đạt",
         "done": "Hoàn thành",
-        "merged": "🟣 đã hợp nhất",
-        "closed": "⚫ đã đóng",
-        "draft": "📝 bản nháp",
-        "waiting_author": "🟡 chờ tác giả",
-        "ready_review": "👀 sẵn sàng review",
-        "ready_merge": "🟢 sẵn sàng hợp nhất",
-        "approved": "✅ đã duyệt",
-        "check_status": "❔ kiểm tra trạng thái PR",
-        "ci_unknown": "⚪ chưa rõ CI",
-        "ci_in_progress": "🔵 CI đang chạy",
-        "ci_failed_main": "🔴 CI ✗ (cũng lỗi trên main)",
         "age_minutes": "{n} phút",
         "age_hours": "{n} giờ",
         "age_days": "{n} ngày",
@@ -467,46 +441,14 @@ def _symptom(entry: DigestEntry, lang: str) -> str:
     return ""
 
 
-def _pr_status(entry: DigestEntry, now: datetime, lang: str) -> str:
-    if entry.state in ("merged", "closed"):
-        return _t(lang, entry.state)
-    if entry.draft:
-        return _t(lang, "draft")
-    prepass = entry.prepass
-    if prepass.get("waiting_on") == "author":
-        return _t(lang, "waiting_author")
-    checked = prepass.get("merge_checked_at")
-    try:
-        fresh = isinstance(checked, str) and 0 <= (now - datetime.fromisoformat(checked)).total_seconds() < 3600
-    except (ValueError, TypeError):
-        fresh = False
-    if prepass.get("waiting_on") == "reviewer":
-        ci = entry.ci or {}
-        if (prepass.get("merge_ready") is True and fresh and prepass.get("head_sha")
-                and ci.get("head_sha") == prepass["head_sha"] and ci.get("state") == "passed"):
-            return _t(lang, "ready_merge")
-        if prepass.get("review_decision") == "APPROVED":
-            return _t(lang, "approved")
-        return _t(lang, "ready_review")
-    return _t(lang, "check_status")
-
-
 def _compact_ci(entry: DigestEntry, lang: str) -> str:
-    if entry.state != "open":
-        return ""
+    """Only advertise a confirmed pass for this open PR's observed head."""
     ci = entry.ci or {}
     head = entry.prepass.get("head_sha")
-    if not head or ci.get("head_sha") != head:
-        return _t(lang, "ci_unknown")
-    state = ci.get("state")
-    if state == "passed":
-        return "✅ CI ✓"
-    if state == "failed" or ci.get("jobs_failed", 0):
-        if ci.get("main_known") and ci.get("jobs_failed", 0) and ci.get("jobs_failed_pr_only") == 0:
-            return _t(lang, "ci_failed_main")
-        return "🔴 CI ✗"
-    return _t(lang, {"running": "ci_in_progress", "not_started": "ci_not_started",
-                    "canceled": "ci_canceled"}.get(str(state), "ci_unknown"))
+    if (entry.state == "open" and head and ci.get("head_sha") == head
+            and ci.get("state") == "passed"):
+        return _t(lang, "ci_passed")
+    return ""
 
 
 def _digest_section(
@@ -514,12 +456,7 @@ def _digest_section(
 ) -> dict[str, Any]:
     # The title opens triage; only the plain number opens GitHub.
     number = entry.item_key.rsplit("#", 1)[-1]
-    status = _t(lang, "needs_ack" if entry.assignment_status == "open" else "acked")
-    if entry.state != "open":
-        status = _t(lang, "merged" if entry.state == "merged" else "closed")
-    elif entry.kind == "pr":
-        status += " · " + _pr_status(entry, now, lang)
-    metadata = [_link(entry.html_url, f"#{number}"), _symptom(entry, lang), _age(entry, now, lang), status]
+    metadata = [_link(entry.html_url, f"#{number}"), _symptom(entry, lang), _age(entry, now, lang)]
     if entry.kind == "pr":
         metadata.append(_compact_ci(entry, lang))
     lines = [f"*{_link(_item_url(entry.item_key), entry.title)}*", " · ".join(p for p in metadata if p)]
@@ -528,7 +465,7 @@ def _digest_section(
     if len(impact) > 180:
         impact = impact[:177].rsplit(" ", 1)[0].rstrip(".,;:") + "…"
     if impact:
-        lines.append(f"💡 _{_t(lang, 'why_matters')}: {safe_slack_mrkdwn(impact)}_")
+        lines.append(f"_{safe_slack_mrkdwn(impact)}_")
     # Context can include a merged or unassigned fix that isn't a notification.
     linked = {f.item_key: f for f in fixes}
     linked.update({f.item_key: f for f in entry.related_fixes})
@@ -537,7 +474,7 @@ def _digest_section(
     for fix in fix_entries[:DIGEST_MAX_FIXES]:
         ref = _link(fix.html_url, "#" + fix.item_key.rsplit("#", 1)[-1])
         parts.append(" · ".join(p for p in [
-            _t(lang, "compact_fix", ref=ref), _pr_status(fix, now, lang), _compact_ci(fix, lang),
+            _t(lang, "compact_fix", ref=ref), _compact_ci(fix, lang),
         ] if p))
     if parts:
         lines.append("   ·   ".join(parts))
