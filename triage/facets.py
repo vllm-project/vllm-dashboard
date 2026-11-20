@@ -13,9 +13,10 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from triage.incidents import INCIDENT_SCHEMA, normalize_incident
 from triage.model import AREAS, HARDWARE, ITEM_TYPES, MODEL_TRAITS, SERVING
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2-incident-evidence"
 
 _STR = {"type": "string"}
 _BOOL = {"type": "boolean"}
@@ -32,9 +33,10 @@ FACETS_SCHEMA: dict[str, Any] = {
     "required": [
         "type", "summary", "models", "model_traits", "hardware", "serving",
         "areas", "severity", "default_config", "versions", "has_repro", "pr",
-        "slop_signals", "confidence", "notes",
+        "slop_signals", "confidence", "notes", "incident",
     ],
     "properties": {
+        "incident": INCIDENT_SCHEMA,
         "type": {"type": "string", "enum": list(ITEM_TYPES)},
         "summary": {"type": "string", "maxLength": 240},
         "models": {
@@ -135,7 +137,7 @@ def _enum_values(value: Any, allowed: tuple[str, ...]) -> list[str]:
     return list(seen)
 
 
-def normalize_facets(raw: Any, *, kind: str) -> dict[str, Any]:
+def normalize_facets(raw: Any, *, kind: str, source: str | None = None) -> dict[str, Any]:
     """Validate and canonicalise model output; raise FacetsError if unusable."""
     if not isinstance(raw, dict):
         raise FacetsError("facets must be an object")
@@ -169,6 +171,7 @@ def normalize_facets(raw: Any, *, kind: str) -> dict[str, Any]:
         }
     confidence = raw.get("confidence")
     return {
+        "incident": normalize_incident(raw.get("incident"), source=source),
         "type": item_type,
         "summary": _text(raw.get("summary"), 240),
         "models": models[:8],

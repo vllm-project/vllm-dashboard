@@ -1,3 +1,5 @@
+import { p0Ineligibility, needsIncidentVerification, type TriageIncident } from "./triage-incidents";
+
 /**
  * The scoring numbers the "Scoring guidelines" page shows, mirrored from
  * triage/config/scoring.yaml and triage/config/tiers.yaml (the router's
@@ -7,15 +9,9 @@
  */
 
 export const SCORING = {
-  version: "2026-11-20.1",
+  version: "2026-11-20.2",
   scope: { max_age_days: 30 },
   thresholds: { page: 70, route: 40, watch: 20 },
-  p0: {
-    min_confidence: 0.7,
-    symptoms: ["serving_broken", "wrong_output", "security"],
-    shared_areas: ["frontend_api", "tokenizer"],
-    cpu_hardware: ["CPU_x86", "CPU_arm", "Apple"],
-  },
   severity: {
     serving_broken: 50,
     security: 50,
@@ -30,13 +26,13 @@ export const SCORING = {
   },
   reach: {
     model: { tier1: 1.0, tier2: 0.8, other: 0.6, unknown: 0.75 },
-    hardware: { tier1: 1.0, tier2: 0.8, cpu: 0.35, other: 0.55, unknown: 0.85 },
+    hardware: { tier1: 1.0, tier2: 0.8, other: 0.55, unknown: 0.85 },
     config: { default: 1.15, exotic: 0.55, unknown: 0.9 },
   },
   type: { regression: 12, perf_regression: 10, bug: 3, ci: 4, performance: 0, feature: 0, spam: -100 },
   popularity: {
     model: { tier1: 6, tier2: 3, other: 0 },
-    hardware: { tier1: 3, tier2: 1, cpu: 0, other: 0 },
+    hardware: { tier1: 3, tier2: 1, other: 0 },
   },
   recency: { affects_latest_release: 10, affects_main: 4 },
   evidence: { has_repro: 4, low_confidence: -6 },
@@ -112,6 +108,7 @@ export interface ExampleInput {
   hasRepro?: boolean;
   confidence?: number;
   areas?: string[];
+  incident?: TriageIncident;
   reactions?: number;
   comments?: number;
 }
@@ -172,25 +169,16 @@ export function scoreExample(input: ExampleInput): { score: number; band: "page"
   const social = reactions * SCORING.social.per_reaction + comments * SCORING.social.per_comment;
   if (social >= 1) add("social", Math.min(SCORING.social.cap, social), `${reactions} reactions, ${comments} comments`);
 
-  // Mirror the incident gate used by Python; these examples have no linked issue.
-  let reason: string | null = null;
-  if (!isDefect) reason = "P0 requires a defect, not a feature or question";
-  else if ((input.confidence ?? 0.8) < SCORING.p0.min_confidence || !input.hasRepro)
-    reason = "P0 requires a reproduction and confident evidence";
-  else if (!(SCORING.p0.symptoms as readonly string[]).includes(input.severity ?? ""))
-    reason = "P0 requires serving failure, wrong output, or a security defect";
-  else if (!input.latestRelease && !input.affectsMain)
-    reason = "P0 requires evidence that main or the latest release is affected";
-  else if (input.severity !== "security") {
-    if (input.hardwareTier === "cpu") reason = "CPU-backend-only defects are P1/P2 by default";
-    else if (input.config !== "default") reason = "P0 requires impact on a default serving configuration";
-    else if (!(input.areas ?? []).some((a) => (SCORING.p0.shared_areas as readonly string[]).includes(a)) &&
-        (input.modelTier !== "tier1" || input.hardwareTier !== "tier1"))
-      reason = "P0 requires a primary model/GPU serving path or a shared API/tokenizer defect";
+  const reason = p0Ineligibility(input.type, input.incident);
+  const beforePolicy = factors.reduce((sum, f) => sum + f.points, 0);
+  if (reason === null) {
+    const detail = input.incident?.reason || "Critical active incident supported by impact, exposure and mitigation evidence";
+    factors.push({ factor: "policy.p0_incident", points: Math.max(0, SCORING.thresholds.page - beforePolicy), detail });
+  } else if (beforePolicy >= SCORING.thresholds.page) {
+    add("policy.p0_cap", SCORING.thresholds.page - 1 - beforePolicy, reason);
+  } else if (needsIncidentVerification(input.type, input.incident, input.severity === "security")) {
+    factors.push({ factor: "policy.needs_verification", points: Math.max(0, SCORING.thresholds.route - beforePolicy), detail: reason });
   }
-  const beforeCap = factors.reduce((sum, f) => sum + f.points, 0);
-  if (reason && beforeCap >= SCORING.thresholds.page)
-    add("policy.p0_cap", SCORING.thresholds.page - 1 - beforeCap, reason);
   const raw = factors.reduce((sum, factor) => sum + factor.points, 0);
   if (raw < 0) factors.push({ factor: "floor", points: -raw });
   const score = Math.max(0, raw);
@@ -210,6 +198,17 @@ export const WORKED_EXAMPLE: ExampleInput = {
   config: "default",
   latestRelease: "0.27.1",
   hasRepro: true,
+  incident: {
+    impact: "outage", exposure: "broad_supported", affected_context: "supported_release",
+    verification: "reproduced", mitigation: "none", status: "active",
+    reason: "Normal traffic fails across supported deployments; tested recovery options have failed.",
+    evidence: {
+      impact: "All normal requests fail.", exposure: "Multiple supported deployments are affected.",
+      current: "The supported release is failing in production today.",
+      verification: "We reproduced the failure and captured server errors.",
+      mitigation: "Rollback and fallback configurations failed to restore service.",
+    },
+  },
 };
 
 /** The contrast example: the same symptom on a niche setup with unusual flags. */

@@ -13,6 +13,7 @@ from fnmatch import fnmatch
 from typing import Any
 
 from triage.config import TriageConfig
+from triage.incidents import needs_verification, p0_ineligibility
 from triage.model import Band, Score, ScoreFactor
 
 _BANDS: tuple[Band, ...] = ("page", "route", "watch")
@@ -49,41 +50,6 @@ def band_for(score: int, thresholds: Mapping[str, int]) -> Band:
         if score >= thresholds[band]:
             return band
     return "ignore"
-
-
-def cpu_backend_only(facets: Mapping[str, Any], config: TriageConfig) -> bool:
-    """CPU in a reproduction alone is not proof of a CPU-backend defect."""
-    hardware = set(facets.get("hardware") or [])
-    return ("cpu" in (facets.get("areas") or []) and bool(hardware)
-            and hardware <= set(config.scoring["p0"]["cpu_hardware"]))
-
-
-def p0_ineligibility(facets: Mapping[str, Any], config: TriageConfig) -> str | None:
-    """Conservative incident eligibility from extracted facts, never social points."""
-    policy = config.scoring["p0"]
-    severity = facets.get("severity") or {}
-    if facets.get("type") not in config.scoring["severity"]["defect_types"]:
-        return "P0 requires a defect, not a feature or question"
-    if float(facets.get("confidence") or 0) < policy["min_confidence"] or not facets.get("has_repro"):
-        return "P0 requires a reproduction and confident evidence"
-    if not any(severity.get(flag) for flag in policy["symptoms"]):
-        return "P0 requires serving failure, wrong output, or a security defect"
-    versions = facets.get("versions") or {}
-    if not (versions.get("affects_main") or versions.get("affects_latest_release")):
-        return "P0 requires evidence that main or the latest release is affected"
-    if severity.get("security"):
-        return None  # Security is not discounted by backend reach or configuration.
-    if cpu_backend_only(facets, config):
-        return "CPU-backend-only defects are P1/P2 by default"
-    if facets.get("default_config") is not True:
-        return "P0 requires impact on a default serving configuration"
-    if set(facets.get("areas") or []) & set(policy["shared_areas"]):
-        return None  # A CPU reproduction can expose a shared API/tokenizer defect.
-    model, _ = model_tier(facets, config.tiers)
-    hardware, _ = hardware_tier(list(facets.get("hardware") or []), config.tiers)
-    if model != "tier1" or hardware != "tier1":
-        return "P0 requires a primary model/GPU serving path or a shared API/tokenizer defect"
-    return None
 
 
 def score_item(
@@ -132,8 +98,6 @@ def score_item(
     tier, model = model_tier(facets, config.tiers)
     hw = list(facets.get("hardware") or []) or list(prepass.get("hardware_hints") or [])
     hw_tier, hw_name = hardware_tier(hw, config.tiers) if hw else ("unknown", None)
-    if cpu_backend_only(facets, config):
-        hw_tier = "cpu"
     default_config = facets.get("default_config")
     config_key = "default" if default_config is True else "exotic" if default_config is False else "unknown"
 
@@ -184,20 +148,19 @@ def score_item(
 
     _social(add, reactions, comment_count, weights["social"])
 
-    inherited = False
     if kind == "pr":
         pr_w = weights["pr"]
         pr = facets.get("pr") or {}
-        fixes = set(pr.get("fixes_issues") or []) | set(prepass.get("linked_issues") or [])
+        fixes = set(pr.get("fixes_issues") or []) | set(prepass.get("fixes_issues") or [])
         best = max(
             ((n, s) for n, s in (linked_issue_scores or {}).items() if n in fixes),
             key=lambda pair: pair[1],
             default=None,
         )
         if best is not None:
-            inherited = True
             factors.clear()  # The incident score replaces the PR score, not another bonus.
             add("pr.fixes_issue", best[1] * pr_w["fixes_issue_fraction"], f"#{best[0]} scored {best[1]}")
+            return _finish(factors, config)  # Readiness never changes incident priority.
         if pr.get("hot_path"):
             add("pr.hot_path", pr_w["hot_path"])
         if pr.get("has_tests"):
@@ -214,11 +177,20 @@ def score_item(
         slop_w = weights["slop"]
         add("slop", max(slop_w["cap"], slop_w["per_signal"] * len(signals)), ", ".join(signals[:4]))
 
-    reason = None if inherited else p0_ineligibility(facets, config)
+    reason = p0_ineligibility(facets)
     total = sum(f.points for f in factors)
-    ceiling = weights["thresholds"]["page"] - 1
-    if reason and total > ceiling:
-        add("policy.p0_cap", ceiling - total, reason)
+    page = weights["thresholds"]["page"]
+    if reason is None:
+        # Keep a zero-point explanation when arithmetic already exceeds 70.
+        explanation = (facets["incident"].get("reason")
+                       or "Critical active incident supported by impact, exposure and mitigation evidence")
+        factors.append(ScoreFactor("policy.p0_incident", max(0, page - total), explanation))
+    elif total >= page:
+        add("policy.p0_cap", page - 1 - total, reason)
+    elif needs_verification(facets):
+        # Credible serious reports with missing facts must remain visible for review.
+        factors.append(ScoreFactor("policy.needs_verification",
+                                   max(0, weights["thresholds"]["route"] - total), reason))
     return _finish(factors, config)
 
 

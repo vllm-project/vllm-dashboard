@@ -87,8 +87,9 @@ flowchart LR
     no linked issue (`pr_maintainer_unlinked`), and anything older than the
     window (`too_old`). "Maintainer" means GitHub's author association is
     OWNER, MEMBER or COLLABORATOR.
-  - Each route run takes items out of scope as they age past the window and
-    deletes router assignments on them that nobody acted on.
+  - Each route run takes ordinary items out of scope as they age past the window and
+    deletes router assignments on them that nobody acted on. Open P0 incidents and
+    P0 fix PRs are retained; ingest also preserves that exception on later updates.
 - **Prepass** (deterministic, `prepass.py`): areas from changed paths and labels
   (`config/areas.yaml`, seeded from vLLM's mergify rules), linked issues,
   hardware and model mentions, commenters, GitHub assignees, the authors of
@@ -147,7 +148,7 @@ held exits without doing anything. It logs to `~/.local/state/vllm-triage/extrac
   locale, `TMPDIR`, `XDG_*`, `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_OAUTH_TOKEN`
   reach the process. `DATABASE_URL`, cloud credentials and `ANTHROPIC_API_KEY`
   never do, so usage always lands on the Claude plan.
-- **Model:** `TRIAGE_MODEL` (default `sonnet`). Prompt version `v1`
+- **Model:** `TRIAGE_MODEL` (default `sonnet`). Prompt version `v2-incident-evidence`
   (`facets.PROMPT_VERSION`).
 - **Queue:** in-scope items with status `pending`/`failed`, highest
   `prepass_priority` first (crash/regression keywords, hardware and model
@@ -182,18 +183,18 @@ reach = model tier × hardware tier × config      # e.g. 1.0 × 1.0 × 1.15
   half for standalone PRs (`pr_fraction: 0.5`).
 - **Reach**: model tier1/tier2/other/unknown ×1.0/0.8/0.6/0.75; hardware
   ×1.0/0.8/0.55/0.85; default config ×1.15, exotic ×0.55, unknown ×0.9. Tier
-  lists are in `config/tiers.yaml`. CPU-backend-only defects instead use
-  hardware ×0.35 and no hardware popularity bonus. This requires a `cpu`
-  area and an exclusively CPU/Apple hardware list; a CPU reproduction alone
-  does not establish CPU-backend-only impact.
+  lists are in `config/tiers.yaml`. These are rough ranking heuristics, not
+  evidence of actual exposure. CPU, GPU and optional features use the same P0 gate.
 - **Additive**: type (regression +12, perf_regression +10, ci +4, bug +3,
   spam −100 and band P3), popularity (model +6/+3, hardware +3/+1), affects
   the latest release +10 (or main +4), has a repro +4, low extraction
   confidence −6, social 0.5 per reaction + 0.4 per comment (cap 15).
 - **PRs**: a fix inherits 100% of the best open, in-scope issue scored with
   the current policy, replacing its own score rather than adding to it.
-  Tests, small size and hot-path labels add no impact points. Draft −15,
-  low effort −25, and large/extra-large size −2/−4 still apply.
+  Tests, small size and hot-path labels add no impact points. Linked fixes retain
+  the incident score regardless of draft, CI, size or quality; review readiness
+  is shown separately. Draft −15, low effort −25, and large/extra-large size −2/−4
+  still rank standalone PRs without qualifying incident evidence.
 - **Slop**: −10 per LLM-reported signal, at most −40.
 
 | Band (stored) | Shown as | Score | What happens |
@@ -203,22 +204,38 @@ reach = model tier × hardware tier × config      # e.g. 1.0 × 1.0 × 1.15
 | `watch` | **P2** | 20–39 | dashboard only |
 | `ignore` | **P3** | < 20, or spam | dashboard only, collapsed |
 
-**P0 eligibility.** Reaching 70 points is necessary but not sufficient.
-A defect needs a reproduction, extraction confidence ≥0.7, evidence it
-still affects main or the latest release, and serving failure, wrong output
-or security impact. Except for security, it must affect a default setup on
-a tier-1 model and GPU or shared API/tokenizer code. CPU-backend-only defects
-are P1/P2 by default; security remains eligible regardless of hardware.
-Unknown impact/configuration does not establish a release blocker. Items
-failing the gate are capped at 69 with a `policy.p0_cap` explanation. Linked
-fixes inherit the incident's already-gated score before quality penalties.
-These are conservative automated criteria, not proof of fleet-wide impact.
+**P0 eligibility.** P0 means interrupt normal work to contain an active critical
+incident. It is an evidence decision, not a points threshold. See the full
+[incident policy](docs/incident-policy.md) and `incidents.py`.
+
+The extracted `incident` assessment must establish critical impact, broad supported
+exposure or an identified critical deployment, affected users on a supported
+release/production deployment, concrete failure evidence or confirmation, and no
+safe practical mitigation. All five evidence excerpts must occur in the supplied
+report; missing/invalid excerpts cannot qualify. The model assesses report evidence;
+the bot does not independently run reproductions or verify claims.
+
+Qualifying incidents receive a `policy.p0_incident` adjustment to at least 70.
+Everything else is capped at 69 (`policy.p0_cap`); potentially critical reports with
+incomplete evidence are at least P1 (`policy.needs_verification`). The policy reason
+and evidence appear in the drawer. Hardware, default flags, popularity and extraction
+confidence cannot establish P0. Main-only release blockers are identified separately.
+Acknowledgment changes ownership state, not the incident's assessed state.
+
+**Policy rollout.** Deploy both the worker and extractor. Prompt version
+`v2-incident-evidence` adds the incident fields in existing JSON; no SQL migration is
+needed. The extraction lease requeues completed open in-scope reports missing the
+current prompt version in bounded batches, under the existing daily/token budgets.
+Failures retain retry limits. Existing symptom-only extractions cannot establish P0
+and remain ordinary P1/P2/P3 until reassessed; do not interpret the transitional P0
+count as proof that all emergencies disappeared. Review serious pending reports.
 
 **Re-scoring.** `triage-route` re-scores an in-scope item when it has no score,
 has a new extraction, changed on GitHub, the config version changed, or (for a
 PR) an issue it links or fixes was scored after it. The config version is
 `scoring.yaml` `version` + `tiers.yaml` `version`: bump it when you change
-weights, and the next run re-scores every open item with no LLM calls.
+weights, and the next run re-scores every open item with no LLM calls. A prompt/schema
+change additionally requires the budgeted reassessment described above.
 `/triage/scoring` mirrors these numbers (`src/lib/triage-scoring-config.ts`,
 with a test that fails if they drift).
 

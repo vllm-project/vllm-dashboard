@@ -1,3 +1,4 @@
+import type { TriageIncident } from "@/lib/triage-incidents";
 import type { TriageCi } from "@/lib/triage-ci";
 import type { WhyUnowned } from "@/lib/triage-why-unowned";
 import type {
@@ -6,8 +7,9 @@ import type {
   TriageAction,
 } from "@/lib/triage-vocab";
 
-/** LLM facets (prompt v1). Every field is optional on read: rows are untrusted. */
+/** LLM facets (including legacy rows). Every field is optional on read: rows are untrusted. */
 export interface TriageFacets {
+  incident?: TriageIncident;
   type?: string;
   summary?: string;
   models?: { name?: string; family?: string }[];

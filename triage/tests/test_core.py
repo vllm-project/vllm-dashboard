@@ -150,13 +150,13 @@ def test_breakdown_always_sums_to_score() -> None:
         assert s.score >= 0
 
 
-def test_serving_broken_popular_model_pages() -> None:
+def test_serving_broken_popular_model_needs_incident_evidence() -> None:
     s = _score(facets(
         type="regression", severity={"serving_broken": True, "crash": True},
         models=[{"name": "Qwen3-235B-A22B", "family": "qwen3"}], hardware=["B200"],
         default_config=True, has_repro=True, versions={"affects_latest_release": True},
     ))
-    assert s.band == "page"
+    assert s.band == "route"
     factors = [f.factor for f in s.breakdown]
     assert "severity.serving_broken" in factors and "severity.crash" not in factors
 
@@ -166,7 +166,7 @@ def test_exotic_setup_scales_severity_down() -> None:
     default = _score(facets(**common, hardware=["H100"], default_config=True, has_repro=True,
                             versions={"affects_latest_release": True}))
     exotic = _score(facets(**common, hardware=["CPU_x86"], default_config=False))
-    assert default.band == "page" and exotic.band in ("watch", "ignore")
+    assert default.band == "route" and exotic.band in ("watch", "ignore")
 
 
 def test_feature_on_popular_model_is_not_routed() -> None:

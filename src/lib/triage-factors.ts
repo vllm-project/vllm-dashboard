@@ -215,6 +215,8 @@ export function describeFactor(factor: string, detail?: string | null, points = 
       return out("pr", cleanCode(factor));
     }
     case "policy":
+      if (tail === "p0_incident") return out("evidence", "P0: critical active incident");
+      if (tail === "needs_verification") return out("evidence", "Needs incident verification");
       return out("penalty", "Below P0: incident criteria not met");
     case "slop": {
       const tags = (detail ?? "").split(",").map((tag) => tag.trim()).filter(Boolean).map(humanizeTag);

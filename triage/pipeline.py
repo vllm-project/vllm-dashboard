@@ -194,9 +194,11 @@ class IngestHandler:
         authors: set[int] = set()
         for item in batch:
             light = compute_prepass(item, self.config, now)
-            if not in_scope(light["scope_reason"]):
-                continue
             stored = states[item.key]
+            retained = (light["scope_reason"] == "too_old" and stored
+                        and stored.active_incident and item.state == "open")
+            if not in_scope(light["scope_reason"]) and not retained:
+                continue
             if item.kind == "pr":
                 files.append(item.number)
             if rereads_comments(item, stored):
@@ -208,9 +210,10 @@ class IngestHandler:
     def _ingest(self, item: Item, stored: StoredItemState | None = _UNREAD) -> None:
         now = self.clock.now()
         light = compute_prepass(item, self.config, now)
-        scoped = in_scope(light["scope_reason"])
         if stored is _UNREAD:
             stored = self.store.item_state(item.key)
+        retained = bool(stored and stored.active_incident and item.state == "open" and light["scope_reason"] == "too_old")
+        scoped = in_scope(light["scope_reason"]) or retained
         comments_excerpt = stored.comments_excerpt if stored else ""
         diff_excerpt = stored.diff_excerpt if stored else ""
         diff_head_sha = stored.diff_head_sha if stored else None
@@ -261,6 +264,8 @@ class IngestHandler:
         # The PR's CI summary counts toward whose move while it is for this head commit.
         ci = stored.ci if stored and stored.ci and item.head_sha and stored.ci.get("head_sha") == item.head_sha else None
         prepass = compute_prepass(item, self.config, now, ci=ci) if scoped else light
+        if retained:
+            prepass["scope_reason"] = "active_incident"
         prepass["core_hash"] = core_content_hash(item)
         if commenters is not None:
             prepass["commenters"] = commenters
@@ -375,8 +380,8 @@ class RouteHandler:
         now = self.clock.now()
         warnings: list[str] = []
         warnings.extend(self._sync_maintainers())
-        # Items leave triage as they age past the window; unacted router
-        # assignments on them go too (acked/done ones stay in people's history).
+        # Ordinary items leave triage as they age past the window; open P0s stay.
+        # Unacted router assignments go too; acknowledged ones remain in history.
         self.store.expire_out_of_window(now - timedelta(days=self.config.max_age_days))
         # Before routing, so closed items free capacity and reopened ones get
         # their owner back instead of a new one.

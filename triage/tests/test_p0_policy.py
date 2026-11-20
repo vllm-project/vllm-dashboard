@@ -1,10 +1,14 @@
-"""Incident eligibility, narrow backend reach, and non-additive fix priority."""
+"""Critical incident evidence, backend neutrality, and fix inheritance."""
 from copy import deepcopy
 
 import pytest
 
 from triage.config import default_config
+from triage.facets import normalize_facets
+from triage.incidents import CRITICAL_IMPACTS, EVIDENCE_KEYS, normalize_incident
 from triage.scoring import score_item
+
+from triage.tests.incident_fixture import INCIDENT, REPORT
 
 
 def defect(**changes):
@@ -25,72 +29,94 @@ def score(facets, **changes):
     return result
 
 
-def test_cpu_deepseek_incident_and_fix_no_longer_page():
-    cpu = defect(hardware=["CPU_x86"], areas=["cpu", "attention"])
-    incident = score(cpu)
-    assert (incident.score, incident.band) == (52, "route")
-    fix = score({**cpu, "pr": {"fixes_issues": [65364], "has_tests": True,
-                              "hot_path": True, "size": "s"}},
-                kind="pr", linked_issue_scores={65364: incident.score})
-    assert (fix.score, fix.band) == (52, "route")
-    assert [f.factor for f in fix.breakdown] == ["pr.fixes_issue"]
+@pytest.mark.parametrize("hardware", [["CPU_x86"], ["CPU_arm"], ["A100"], ["H100"], ["MI300X"], ["TPU"], []])
+@pytest.mark.parametrize("default_config", [True, False, None])
+def test_all_backends_and_supported_configurations_use_the_same_incident_gate(hardware, default_config):
+    result = score(defect(hardware=hardware, default_config=default_config,
+                          models=[], incident=INCIDENT))
+    assert result.band == "page"
+    assert result.breakdown[-1].factor == "policy.p0_incident"
+
+
+@pytest.mark.parametrize("impact", sorted(CRITICAL_IMPACTS))
+def test_outages_correctness_security_unusable_service_and_distribution_can_page(impact):
+    # No old severity flag, popularity, latest-release boolean or repro bonus is required.
+    result = score(defect(severity={}, has_repro=False, versions={}, models=[], hardware=[],
+                          incident={**INCIDENT, "impact": impact}))
+    assert (result.score, result.band) == (70, "page")
 
 
 @pytest.mark.parametrize("changes", [
-    {"has_repro": False}, {"confidence": 0.5}, {"versions": {}},
-    {"default_config": False}, {"default_config": None},
-    {"hardware": []}, {"models": []}, {"severity": {"crash": True}},
-    {"type": "feature"},
+    {"exposure": "limited"}, {"exposure": "unknown"}, {"impact": "limited"},
+    {"affected_context": "main_only", "release_blocker": True}, {"affected_context": "unknown"},
+    {"verification": "unverified"}, {"verification": "unknown"},
+    {"mitigation": "available"}, {"mitigation": "unknown"},
+    {"status": "mitigated"}, {"status": "resolved"}, {"status": "unknown"},
 ])
-def test_popularity_cannot_replace_incident_evidence(changes):
-    result = score(defect(**changes), reactions=1000)
-    assert result.band != "page"
-    assert result.score < 70
-
-
-def test_clear_primary_serving_regression_pages():
-    assert score(defect()).band == "page"
-
-
-def test_cpu_cannot_page_through_social_points():
-    result = score(defect(hardware=["CPU_arm"], areas=["cpu"]), reactions=1000)
+def test_each_missing_criterion_prevents_p0_even_with_popularity(changes):
+    result = score(defect(incident={**INCIDENT, **changes}), reactions=1000)
     assert result.band == "route"
+    assert result.score == 69
 
 
-def test_shared_frontend_cpu_reproduction_is_not_cpu_backend_only():
-    result = score(defect(hardware=["CPU_x86"], areas=["frontend_api"]), reactions=1000)
-    assert result.band == "page"
-    assert "hw tier2" in result.breakdown[0].detail
+@pytest.mark.parametrize("key", EVIDENCE_KEYS)
+def test_each_criterion_requires_an_excerpt(key):
+    incident = deepcopy(INCIDENT)
+    incident["evidence"][key] = ""
+    result = score(defect(incident=incident))
+    assert result.band == "route"
+    assert key in result.breakdown[-1].detail
 
 
-def test_multi_backend_issue_not_restricted_to_cpu():
-    assert score(defect(hardware=["CPU_x86", "H100"], areas=["cpu", "attention"])).band == "page"
-
-
-def test_security_exception_does_not_discount_cpu_or_exotic_config():
-    result = score(defect(hardware=["CPU_arm"], areas=["cpu"], default_config=False,
-                          severity={"security": True}), reactions=1000)
-    assert result.band == "page"
-    assert result.breakdown[0].points == 50
-
-
-def test_cap_has_explanation_and_preserves_score_sum():
-    result = score(defect(has_repro=False), reactions=1000)
+def test_legacy_popular_default_repro_is_insufficient():
+    result = score(defect(), reactions=1000)
     assert (result.score, result.band) == (69, "route")
     assert result.breakdown[-1].factor == "policy.p0_cap"
-    assert "reproduction" in result.breakdown[-1].detail
 
 
-def test_ready_fix_of_p1_does_not_become_p0():
-    f = defect(pr={"fixes_issues": [1], "has_tests": True, "hot_path": True, "size": "xs"})
-    result = score(f, kind="pr", reactions=1000, linked_issue_scores={1: 69})
-    assert (result.score, result.band) == (69, "route")
-    assert score(f, kind="pr", draft=True, linked_issue_scores={1: 80}).score == 65
+def test_uncertain_serious_report_stays_in_review_queue():
+    result = score(defect(models=[], hardware=[], severity={}, versions={}, has_repro=False,
+                          incident={**INCIDENT, "mitigation": "unknown"}))
+    assert (result.score, result.band) == (40, "route")
+    assert result.breakdown[-1].factor == "policy.needs_verification"
 
 
-def test_tests_small_size_and_hot_path_do_not_raise_standalone_impact():
-    f = defect(pr={"size": "m"})
-    plain = score(f, kind="pr")
-    ready = deepcopy(f)
-    ready["pr"] = {"size": "xs", "hot_path": True, "has_tests": True}
-    assert score(ready, kind="pr").score == plain.score
+def test_security_does_not_require_public_exploit_or_default_configuration():
+    result = score(defect(has_repro=False, hardware=["CPU_arm"], default_config=False,
+                          incident={**INCIDENT, "impact": "serious_security", "verification": "security_advisory"}))
+    assert result.band == "page"
+
+
+def test_security_advisory_does_not_prove_nonsecurity_outage():
+    assert score(defect(incident={**INCIDENT, "verification": "security_advisory"})).band != "page"
+
+
+@pytest.mark.parametrize("item_type", ["feature", "question", "spam"])
+def test_conflicting_nondefect_classification_cannot_page(item_type):
+    assert score(defect(type=item_type, incident=INCIDENT), reactions=1000).band != "page"
+
+
+@pytest.mark.parametrize("draft", [True, False])
+def test_fix_inherits_incident_without_readiness_quality_or_social_adjustments(draft):
+    f = defect(pr={"fixes_issues": [1], "has_tests": True, "hot_path": True,
+                   "size": "xl", "low_effort": True}, slop_signals=["no_testing"])
+    for value in (52, 69, 80):
+        result = score(f, kind="pr", draft=draft, reactions=1000, linked_issue_scores={1: value})
+        assert result.score == value
+        assert [f.factor for f in result.breakdown] == ["pr.fixes_issue"]
+
+
+def test_related_issue_does_not_confer_incident_priority():
+    result = score(defect(pr={}), kind="pr", prepass={"linked_issues": [1]}, linked_issue_scores={1: 95})
+    assert result.band != "page"
+    assert all(f.factor != "pr.fixes_issue" for f in result.breakdown)
+
+
+def test_incident_normalization_rejects_unknown_enums_and_unquoted_evidence():
+    valid = normalize_incident(INCIDENT, source=REPORT)
+    assert valid == INCIDENT
+    invalid = normalize_incident({**INCIDENT, "impact": "P0", "exposure": "lots", "evidence": {"impact": "invented"}}, source=REPORT)
+    assert invalid["impact"] == invalid["exposure"] == "unknown"
+    assert not any(invalid["evidence"].values())
+    facets = normalize_facets(defect(incident=INCIDENT), kind="issue", source="A completely unrelated report")
+    assert score(facets).band != "page"

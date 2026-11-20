@@ -50,6 +50,7 @@ test("worked example: serving broken on DeepSeek, H100, default flags → 83, P0
       { factor: "popularity.hardware.tier1", points: 3, detail: "H100" },
       { factor: "recency.affects_latest_release", points: 10, detail: "0.27.1" },
       { factor: "evidence.has_repro", points: 4 },
+      { factor: "policy.p0_incident", points: 0, detail: WORKED_EXAMPLE.incident?.reason },
     ],
   });
 });
@@ -115,19 +116,25 @@ test("thresholds give the P-levels in order", () => {
   assert.ok(page > route && route > watch && watch > 0);
 });
 
-test("CPU backend example is P1, while shared CPU reproductions retain their reach", () => {
-  const cpu = scoreExample({ ...WORKED_EXAMPLE, type: "regression", hardwareTier: "cpu", hardware: "CPU_x86" });
-  assert.equal(cpu.score, 52);
-  assert.equal(cpu.band, "route");
-  const shared = scoreExample({ ...WORKED_EXAMPLE, type: "regression", hardwareTier: "tier2",
-    hardware: "CPU_x86", areas: ["frontend_api"] });
-  assert.equal(shared.band, "page");
+test("all backends can qualify with critical incident evidence", () => {
+  const cpu = scoreExample({ ...WORKED_EXAMPLE, hardwareTier: "tier2", hardware: "CPU_x86", config: "exotic" });
+  assert.equal(cpu.band, "page");
+  assert.equal(cpu.score, 70);
+  const missing = scoreExample({ ...WORKED_EXAMPLE, incident: undefined, reactions: 1000 });
+  assert.equal(missing.band, "route");
+  assert.equal(missing.score, 69);
 });
 
-test("the guide explains the P0 cap when reproduction evidence is missing", () => {
-  const result = scoreExample({ ...WORKED_EXAMPLE, hasRepro: false, reactions: 1000 });
-  assert.equal(result.score, 69);
-  assert.equal(result.band, "route");
-  assert.equal(result.factors.at(-1)?.factor, "policy.p0_cap");
-  assert.equal(result.factors.reduce((sum, f) => sum + f.points, 0), result.score);
+test("practical mitigation or main-only impact prevents P0", () => {
+  for (const changes of [{ mitigation: "available" }, { affected_context: "main_only", release_blocker: true }]) {
+    const result = scoreExample({ ...WORKED_EXAMPLE, incident: { ...WORKED_EXAMPLE.incident, ...changes } });
+    assert.equal(result.band, "route");
+    assert.equal(result.factors.at(-1)?.factor, "policy.p0_cap");
+  }
+});
+
+test("low-ranked but potentially critical reports need verification", () => {
+  const result = scoreExample({ ...NICHE_EXAMPLE, incident: { ...WORKED_EXAMPLE.incident, mitigation: "unknown" } });
+  assert.equal(result.score, 40);
+  assert.equal(result.factors.at(-1)?.factor, "policy.needs_verification");
 });

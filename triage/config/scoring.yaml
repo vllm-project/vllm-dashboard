@@ -1,5 +1,5 @@
-# Impact scoring. Every change here bumps `version`; the router re-scores all
-# open items when the version changes, without any new LLM calls.
+# Queue ranking plus incident priority. Every change here bumps `version`;
+# the router re-scores open items. New incident fields require re-extraction.
 #
 #   score = severity x reach  +  additive factors, clamped at 0
 #
@@ -7,11 +7,10 @@
 # a popular model with default flags on H100 is worth far more than the same
 # symptom on an unusual setup, and a feature request on a popular model is
 # not urgent just because the model is popular.
-version: "2026-11-20.1"
+version: "2026-11-20.2"
 
-# Only issues and PRs opened within this many days are triaged (labelled,
-# scored, routed). Older ones are recorded but skipped, and items leave the
-# queue as they age past it. Not part of the score, so no version bump needed.
+# Normal intake window. Open P0 incidents and their P0 fixes remain in scope
+# beyond it. Not part of the score, so no version bump needed.
 scope:
   max_age_days: 30
 
@@ -20,13 +19,9 @@ thresholds:
   route: 40    # routed + daily digest
   watch: 20    # dashboard only
 
-# P0 is an incident gate as well as a score threshold. Failure to meet the
-# gate caps the score at page - 1, with an explicit breakdown adjustment.
-p0:
-  min_confidence: 0.7
-  symptoms: [serving_broken, wrong_output, security]
-  shared_areas: [frontend_api, tokenizer]
-  cpu_hardware: [CPU_x86, CPU_arm, Apple]
+# P0 is established by triage/incidents.py from explicit impact, exposure,
+# current-user, verification, and mitigation evidence. Unknowns stay below P0.
+# Points rank ordinary work; hardware, popularity, and readiness cannot page.
 
 # The largest one applies (a crash that breaks serving is not double counted).
 # Security is not scaled by reach.
@@ -40,7 +35,7 @@ severity:
   perf_regression_per_10pct: 9
   perf_regression_cap: 40
   # A standalone PR gets partial severity; a linked fix instead inherits
-  # its issue impact before draft/quality penalties.
+  # its issue impact unchanged by draft/quality penalties.
   pr_fraction: 0.5
   # Issue types whose severity flags count (feature requests and RFCs that
   # mention a symptom are not incidents).
@@ -49,7 +44,7 @@ severity:
 reach:
   # other: a model is named but matches no tier in tiers.yaml; unknown: none is named.
   model: {tier1: 1.0, tier2: 0.8, other: 0.6, unknown: 0.75}
-  hardware: {tier1: 1.0, tier2: 0.8, cpu: 0.35, other: 0.55, unknown: 0.85}
+  hardware: {tier1: 1.0, tier2: 0.8, other: 0.55, unknown: 0.85}
   config: {default: 1.15, exotic: 0.55, unknown: 0.9}
 
 # Additive points that do not depend on severity.
@@ -64,7 +59,7 @@ type:
 
 popularity:             # small: popular model alone does not make it urgent
   model: {tier1: 6, tier2: 3, other: 0}
-  hardware: {tier1: 3, tier2: 1, cpu: 0, other: 0}
+  hardware: {tier1: 3, tier2: 1, other: 0}
 
 recency:
   affects_latest_release: 10
