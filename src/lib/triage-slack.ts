@@ -175,6 +175,25 @@ function menuOpenOnly(accessory: Record<string, unknown>): Record<string, unknow
   return open.length ? { ...accessory, options: open } : null;
 }
 
+/** Only the compact digest's metadata line contains these status tokens. */
+function digestStatusAfterAction(block: Block, action: SlackClickAction): Block {
+  const text = block.text as { type?: string; text?: string } | undefined;
+  if (text?.type !== "mrkdwn" || typeof text.text !== "string") return block;
+  const lines = text.text.split("\n");
+  if (!/^<https:\/\/github\.com\/[^|]+\|#\d+> · /.test(lines[1] ?? "")) return block;
+  const labels = {
+    ack: ["✅ acked", "✅ đã nhận"],
+    done: ["🏁 done", "🏁 đã hoàn thành"],
+    not_mine: ["↩️ awaiting reroute", "↩️ chờ chuyển người phụ trách"],
+    reassign: ["➡️ reassigned", "➡️ đã chuyển người phụ trách"],
+  }[action];
+  lines[1] = lines[1].split(" · ").map((part) =>
+    ["needs your ack", "acked", "🔔 needs your ack", "✅ acked", ":bell: needs your ack", ":white_check_mark: acked"].includes(part) ? labels[0]
+      : ["chờ bạn nhận", "đã nhận", "🔔 chờ bạn nhận", "✅ đã nhận", ":bell: chờ bạn nhận", ":white_check_mark: đã nhận"].includes(part) ? labels[1] : part,
+  ).join(" · ");
+  return { ...block, text: { ...text, text: lines.join("\n") } };
+}
+
 /**
  * The message after a click. Ack is not the end: Ack becomes "Done" and Not
  * mine / Reassign / Open stay, under a one-line result. Done, Not mine and
@@ -219,7 +238,7 @@ export function blocksAfterAction(
     if (block.block_id === `triage:item:${itemKey}` && block.accessory && typeof block.accessory === "object") {
       const accessory = block.accessory as Record<string, unknown>;
       const next = action === "ack" ? menuAfterAck(accessory, itemKey, lang) : menuOpenOnly(accessory);
-      const rest = { ...block };
+      const rest = { ...digestStatusAfterAction(block, action) };
       if (next) rest.accessory = next;
       else delete rest.accessory;
       out.push(rest);
