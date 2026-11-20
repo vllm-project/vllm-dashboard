@@ -1,3 +1,4 @@
+import { PR_SIZE_WORDS } from "./triage-rows";
 import { humanizeTag } from "@/lib/triage-factors";
 import { typeLabel, type ChipKind } from "@/lib/triage-style";
 import type { TriageFacets } from "@/lib/triage-types";
@@ -86,14 +87,14 @@ export function llmFacts(facets: TriageFacets | null | undefined): LlmFact[] {
     const fixes = (Array.isArray(f.pr.fixes_issues) ? f.pr.fixes_issues : []).filter((n) => Number.isInteger(n));
     const positive = [
       fixes.length ? `fixes ${fixes.map((n) => `#${n}`).join(", ")}` : null,
-      f.pr.size ? `${f.pr.size.toUpperCase()} size` : null,
+      f.pr.size ? (PR_SIZE_WORDS[f.pr.size.toUpperCase()] ?? `${f.pr.size.toUpperCase()} size`) : null,
       f.pr.hot_path ? "touches code on every request" : null,
       f.pr.has_tests ? "has tests" : null,
       f.pr.low_effort ? "looks low-effort" : null,
     ].filter((part): part is string => part !== null);
     const all = [
       fixes.length ? `fixes ${fixes.map((n) => `#${n}`).join(", ")}` : "no linked issue",
-      f.pr.size ? `${f.pr.size.toUpperCase()} size` : null,
+      f.pr.size ? (PR_SIZE_WORDS[f.pr.size.toUpperCase()] ?? `${f.pr.size.toUpperCase()} size`) : null,
       f.pr.hot_path ? "touches code on every request" : null,
       f.pr.has_tests ? "has tests" : "no tests",
       f.pr.low_effort ? "looks low-effort" : null,
