@@ -1,16 +1,24 @@
 # Kevin Luu. Drafted 2026-11-12 from their vLLM history; edit freely.
-# See gau-nernst.yaml for how this file is used.
+# See README.md in this folder for how this file is used.
 github_login: khluu
 slack_user_id: U07QCLE6Y8P
 min_score: 40
-capacity_per_week: 10
-notify_mode: digest
+capacity_per_week: 25
+notify_mode: immediate
+max_notifications_per_day: 5
 timezone: America/Los_Angeles
 
 notes: |
   I own vLLM CI, build and release infrastructure: Buildkite pipelines and
-  test jobs, CI images and caching, Docker/release image publishing, wheels and
-  installation problems, the ci-selector, flaky or hanging CI tests, and test
-  isolation (GPU state leaking between tests).
-  Send me CI failures and build/install/release breakage on any hardware.
-  Don't send me model or kernel bugs unless they come from CI or packaging.
+  test jobs, CI images and caching, Docker/release image publishing, wheels,
+  requirements/lockfiles and installation problems, the ci-selector, flaky or
+  hanging CI tests, and test isolation (GPU state leaking between tests).
+  Send me CI failures, build/install/release breakage on any hardware, and
+  missing or mispinned runtime dependencies, lockfiles, or Docker/wheel
+  packaging problems.
+  Don't send me model or kernel bugs unless they come from CI or packaging,
+  PRs that only add or touch CI test triggers as part of a model/kernel bugfix,
+  runtime import guards or attention/kernel backend auto-selection (unless
+  packaging or wheels are broken), or hardware-specific ROCm/AMD CI test
+  failures that belong to AMD maintainers (AndreasKaratzas) unless Buildkite,
+  image, or caching infra itself is broken.

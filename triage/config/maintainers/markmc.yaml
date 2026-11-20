@@ -1,10 +1,11 @@
 # Mark McLoughlin. Beta tester; drafted 2026-11-18 from their vLLM history (7 PRs
 # authored, 56 reviewed since May). Edit freely; see README.md in this folder.
 github_login: markmc
-# slack_user_id: U07QRTKEGG6   # found in vllm-dev Slack; Kevin to confirm before it's used
+slack_user_id: U07QRTKEGG6
 min_score: 40
-capacity_per_week: 5
-notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+capacity_per_week: 25
+notify_mode: immediate
+max_notifications_per_day: 5
 timezone: Europe/London
 
 notes: |
@@ -14,4 +15,5 @@ notes: |
   JSON logging, request-log correlation, OpenTelemetry and trace context.
   Send me wrong, missing or exploding metrics (cardinality), logging bugs,
   and observability feature requests.
-  Don't send me model, kernel or hardware bugs.
+  Don't send me model, kernel, hardware, or frontend API bugs unless metrics,
+  logging, or OpenTelemetry are affected.

@@ -1,25 +1,34 @@
 # Robert Shaw. Beta tester; drafted 2026-11-18 from their vLLM history (67 PRs
 # authored, 126 reviewed since May). Edit freely; see README.md in this folder.
 github_login: robertgshaw2-redhat
-# slack_user_id: U07QM85EQR4   # found in vllm-dev Slack; Kevin to confirm before it's used
+slack_user_id: U07QM85EQR4
 min_score: 40
-capacity_per_week: 10
-notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+capacity_per_week: 25
+notify_mode: immediate
+max_notifications_per_day: 5
 timezone: America/New_York
 
 notes: |
   I work on the API frontend: the OpenAI-compatible server and the Anthropic
-  Messages API (/v1/messages): chat templates and renderers, reasoning and
-  thinking (reasoning effort, stop strings after reasoning), tool use and
-  tool_reference, request validation and error responses, and the Rust
-  frontend. Also request-level metrics (success, failure, abort counters), P/D
-  disaggregation with NIXL, KV offload, HiSparse capacity, the scheduler's long
-  prefill threshold, startup memory profiling, and DeepSeek-V4.1 serving.
-  I review MoE refactors and DeepEP work.
+  Messages API (/v1/messages): shared chat template handling and renderers,
+  reasoning and thinking (reasoning effort, thinking budgets, stop strings
+  after reasoning), tool use and tool_reference, request validation and error
+  responses, and the Rust frontend. Also request-level metrics (success,
+  failure, abort counters), KV offload scheduling/deadlocks, P/D NIXL
+  handshake and capacity metrics (core NIXL lease/lifetime bugs belong to
+  njhill), HiSparse capacity, the scheduler's long prefill threshold, startup
+  memory profiling, and DeepSeek-V4.1 serving.
   Send me API compatibility bugs (OpenAI or Anthropic clients, Claude Code),
   Anthropic Messages API issues, reasoning/thinking handling in the shared
   frontend (reasoning effort, thinking budgets, stop strings), tool_choice /
-  tool_reference plumbing, DeepSeek-V4.1 rendering and tool calls, P/D with NIXL
-  and KV offload bugs, and DP supervisor startup.
-  Don't send me extensible KV cache regressions, ROCm-only problems, kernel
-  numerics or quantization kernel bugs.
+  tool_reference plumbing, DeepSeek-V4.1 rendering and tool calls, KV offload
+  and P/D NIXL handshake/capacity bugs, and DP supervisor startup.
+  Don't send me model-specific chat templates or per-model reasoning/tool
+  parser helpers (e.g. Gemma4, Qwen, Llama — only shared frontend plumbing and
+  DeepSeek-V4.1 rendering), extensible KV cache regressions, ROCm-only
+  problems, MoE backend selection, kernel numerics, or quantization kernel
+  bugs.
+
+rules:
+  exclude:
+    hardware: [MI300X, MI325X, MI355X, other_amd, TPU, Gaudi, XPU]

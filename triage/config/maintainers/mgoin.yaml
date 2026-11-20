@@ -1,24 +1,32 @@
 # Michael Goin. Beta tester; drafted 2026-11-18 from their vLLM history (190 PRs
 # authored, 195 reviewed since May). Edit freely; see README.md in this folder.
 github_login: mgoin
-# slack_user_id: U07R5UL028Z   # found in vllm-dev Slack; Kevin to confirm before it's used
+slack_user_id: U07R5UL028Z
 min_score: 40
-capacity_per_week: 10
-notify_mode: "off"         # no Slack yet: items show on the dashboard (My list) only
+capacity_per_week: 25
+notify_mode: immediate
+max_notifications_per_day: 5
 timezone: America/New_York
 
 notes: |
   I work on quantization and kernels: Humming kernels, Marlin, LUT-B, MXFP4,
   MXFP8, NVFP4 and FP8 linear and MoE paths, linear-kernel selection, Triton
-  FP8 MoE, DeepGEMM MoE, and fused SiLU+quant ops. Also build and dependency
-  bumps for kernel libraries (DeepGEMM, FlashInfer, vllm-flash-attn,
-  humming-kernels), wheel size, spec decode (DFlash, DSpark, adaptive
-  verification), Model Runner V2 performance, DeepSeek-V4.1 Hopper
-  performance, and new model support.
+  FP8 MoE, DeepGEMM MoE, FlashInfer CUTLASS / b12x / TRT-LLM NVFP4 and FP8 MoE
+  backend selection, and fused SiLU+quant ops. Also build and dependency bumps
+  for kernel libraries (DeepGEMM, FlashInfer, vllm-flash-attn, humming-kernels),
+  wheel size, spec decode (DFlash, DSpark, adaptive verification), Model Runner
+  V2 performance, DeepSeek-V4.1 Hopper performance, and new model quantization
+  and Hopper kernel bring-up.
   Send me quantization accuracy or crash bugs in the CUDA linear and MoE
   paths I work on (Humming, Marlin, LUT-B, MXFP4/MXFP8/NVFP4/FP8, Triton FP8
-  MoE, DeepGEMM MoE), quantized checkpoint loading for compressed-tensors and
-  ModelOpt formats, kernel library build or version problems, and spec decode
-  bugs in DFlash, DSpark, MTP drafts or adaptive verification.
+  MoE, DeepGEMM MoE, FlashInfer CUTLASS/b12x/TRT-LLM MoE), quantized checkpoint
+  loading for compressed-tensors and ModelOpt formats, kernel library build or
+  version problems, and spec decode bugs in DFlash, DSpark, MTP drafts or
+  adaptive verification.
   Don't send me ROCm-, XPU- or CPU-specific kernel bugs, torchao/GPTQ/AutoRound
-  loaders, structured output, or offload bugs.
+  loaders, frontend or API endpoints (including /v1/decisions and /v1/systemone),
+  structured output, or offload bugs.
+
+rules:
+  exclude:
+    hardware: [MI300X, MI325X, MI355X, other_amd, TPU, Gaudi, XPU, CPU_x86, CPU_arm, Apple]

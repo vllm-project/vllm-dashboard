@@ -1,14 +1,23 @@
 # Andreas Karatzas (AMD). Drafted 2026-11-12 from their vLLM history; edit freely.
-# See gau-nernst.yaml for how this file is used.
+# See README.md in this folder for how this file is used.
 github_login: AndreasKaratzas
+# slack_user_id: ...        # TODO: add AndreasKaratzas Slack user ID to enable DMs
 min_score: 40
-capacity_per_week: 10
-notify_mode: digest
+capacity_per_week: 25
+notify_mode: immediate
+max_notifications_per_day: 5
 
 notes: |
-  I work on vLLM on AMD GPUs (MI355X/MI300X, gfx950/gfx942): ROCm kernels and
-  backends (AITER, ROCM_AITER_MLA and sparse MLA, FP8/MXFP4 MoE on ROCm),
-  Mamba/GDN on ROCm, DeepSeek-V4.x / GLM / Qwen3.5 / MiniMax-M3 on AMD, and the
-  AMD CI mirrors of the NVIDIA test jobs.
+  I work on vLLM on AMD GPUs (MI355X/MI300X, gfx950/gfx942, RDNA): ROCm kernels
+  and backends (AITER, ROCM_AITER_MLA and sparse MLA, FP8/MXFP4/WNA16/AWQ/LUT-B
+  quantization and MoE routing on ROCm), Mamba/GDN on ROCm, ROCm sleep mode and
+  cuMem, DeepSeek-V4.x (including AMD VL/Engram wrappers) / GLM / Qwen3.5 /
+  MiniMax-M3 on AMD, and the AMD CI mirrors of the NVIDIA test jobs.
   Send me anything that fails or regresses on AMD hardware, and ROCm CI.
-  Don't send me NVIDIA-only kernel issues.
+  Don't send me NVIDIA-only kernel issues, NVIDIA/generic model loaders,
+  generic Mamba dtype defaults, or MoRIIO connector security/cross-tenant
+  disclosure bugs (I maintain MoRIIO CI, not MoRIIO security).
+
+rules:
+  exclude:
+    hardware: [H100, H200, B200, B300, GB200, GB300, A100, L40S, L4, RTX, other_nvidia, TPU, Gaudi, XPU, CPU_x86, CPU_arm, Apple]
