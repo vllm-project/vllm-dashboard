@@ -20,6 +20,7 @@ import { groupBand, nestGroups, rowOrder } from "@/lib/triage-groups";
 import { listPosition, stepItem } from "@/lib/triage-keys";
 import { QUEUE_PRESETS, focusFilters, queueViewDescription, activeFilterCount, activePreset, parseQueueLocation, presetFilters, type QueuePresetId } from "@/lib/triage-presets";
 import { useTriageLogin } from "@/components/triage/use-triage-session";
+import { useCollapsedBands } from "@/lib/use-collapsed-bands";
 import { useLocationHash } from "@/lib/use-location-hash";
 import { itemFromLocation, percent, triageFetcher } from "@/lib/triage-format";
 import { OWNER_NONE, queueFiltersToParams, type QueueFilters } from "@/lib/triage-query";
@@ -664,7 +665,12 @@ function Queue() {
     refreshInterval: 120_000,
   });
   const [search, setSearch] = useState(formatSearchInput(filters.q, filters.model));
-  const [showP3, setShowP3] = useState(() => filters.bands.includes("ignore"));
+  // Which priority groups are folded: P3 by default, remembered per browser.
+  const { collapsed: collapsedBands, toggle: toggleGroup, expand: expandGroup } = useCollapsedBands(
+    "triage.queue.collapsed",
+    BAND_ORDER,
+  );
+  const isCollapsed = (band: BandKey) => collapsedBands.includes(band);
   const [statsOpen, setStatsOpen] = useState(false);
   useEffect(() => {
     try {
@@ -696,11 +702,11 @@ function Queue() {
 
   const update = useCallback(
     (patch: Partial<QueueFilters>, extra: Record<string, string | null> = {}) => {
-      if (patch.bands?.includes("ignore")) setShowP3(true);
+      if (patch.bands?.includes("ignore")) expandGroup("ignore");
       const item = "item" in extra ? extra.item : openItem;
       replaceFilters({ ...filters, page: 1, ...patch }, item ?? null);
     },
-    [filters, openItem, replaceFilters],
+    [expandGroup, filters, openItem, replaceFilters],
   );
 
   // Search applies as you type (debounced) and immediately on Enter.
@@ -727,13 +733,13 @@ function Queue() {
     const bands = filters.bands.includes(band)
       ? filters.bands.filter((value) => value !== band)
       : [...filters.bands, band];
-    if (band === "ignore" && !filters.bands.includes("ignore")) setShowP3(true);
+    if (band === "ignore" && !filters.bands.includes("ignore")) expandGroup("ignore");
     update({ bands: bands.length > 0 ? bands : filters.bands });
   }
 
   function pickPreset(id: QueuePresetId) {
     const next = presetFilters(id, filters);
-    if (next.bands.includes("ignore")) setShowP3(true);
+    if (next.bands.includes("ignore")) expandGroup("ignore");
     replaceFilters(next, openItem);
   }
 
@@ -748,9 +754,9 @@ function Queue() {
   const groups = data && grouped ? groupByPriority(rows, groupBand) : [];
   const openRow = (itemKey: string) => update({ page: filters.page }, { item: itemKey });
   const lastOnPage = data && data.page < totalPages ? data.items[data.items.length - 1]?.band : undefined;
-  // j / k walk the rows as drawn (a collapsed P3 group is skipped).
+  // j / k walk the rows as drawn (collapsed groups are skipped).
   const order = grouped
-    ? groups.filter((group) => group.band !== "ignore" || showP3).flatMap((group) => rowOrder(group.items))
+    ? groups.filter((group) => !isCollapsed(group.band)).flatMap((group) => rowOrder(group.items))
     : rowOrder(rows);
   const prevKey = openItem ? stepItem(order, openItem, -1) : null;
   const nextKey = openItem ? stepItem(order, openItem, 1) : null;
@@ -764,7 +770,7 @@ function Queue() {
         statsOpen={statsOpen}
         onToggleStats={toggleStats}
         onPickBand={(band) => {
-          if (band === "ignore") setShowP3(true);
+          if (band === "ignore") expandGroup("ignore");
           update({ bands: [band], status: "any" });
         }}
         onPickUnowned={() => update({ bands: ["page", "route"], owner: OWNER_NONE, status: "any" })}
@@ -776,7 +782,7 @@ function Queue() {
           <StatStrip
             stats={stats}
             onPickBand={(band) => {
-              if (band === "ignore") setShowP3(true);
+              if (band === "ignore") expandGroup("ignore");
               update({ bands: [band], status: "any" });
             }}
             onPickUnowned={() => update({ bands: ["page", "route"], owner: OWNER_NONE, status: "any" })}
@@ -863,14 +869,14 @@ function Queue() {
         )}
         {data && data.items.length > 0 && grouped &&
           groups.map((group) => {
-            const collapsed = group.band === "ignore" && !showP3;
+            const collapsed = isCollapsed(group.band);
             return (
               <section key={group.band} aria-label={`${BAND_STYLES[group.band].label} items`}>
                 <PriorityGroupHeader
                   band={group.band}
                   count={group.items.reduce((n, row) => n + 1 + row.members.length, 0)}
-                  collapsed={group.band === "ignore" ? collapsed : undefined}
-                  onToggle={group.band === "ignore" ? () => setShowP3((value) => !value) : undefined}
+                  collapsed={collapsed}
+                  onToggle={() => toggleGroup(group.band)}
                   note={group.band === lastOnPage ? "continues on the next page" : undefined}
                 />
                 {!collapsed && (
