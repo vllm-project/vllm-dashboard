@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Sequence
-from datetime import timezone
+from datetime import timedelta, timezone
 
 from alerting.commands import ScheduledCommand
 from alerting.full_ci import BuildkiteRestClient
@@ -66,10 +66,12 @@ def build_runtime(consumer: str) -> tuple[AlertingRuntime, ScheduledCommand]:
         # The alerting worker's read-only Buildkite token, for PR CI status
         # (triage/ci.py); without it, CI status is not tracked.
         buildkite_token = os.environ.get("BUILDKITE_TOKEN")
+        cooldown_hours = float(os.environ.get("TRIAGE_REEXTRACT_COOLDOWN_HOURS", "12"))
         handler = IngestHandler(
             store=store, github=ingest_client(_required_environment("GITHUB_TOKEN")),
             config=config, clock=clock,
             buildkite=BuildkiteRestClient(token=buildkite_token) if buildkite_token else None,
+            reextract_cooldown=timedelta(hours=max(0.0, cooldown_hours)),
         )
     elif consumer == "triage-route":
         token = os.environ.get("GITHUB_TOKEN")

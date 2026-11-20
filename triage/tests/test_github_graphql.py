@@ -305,7 +305,7 @@ class MemoryStore:
                                row["comments_excerpt"], row["prepass"]) if row else None
 
     def upsert_item(self, item: Any, *, prepass: dict[str, Any], priority: int, content_hash: str,
-                    in_scope: bool, comments_excerpt: str) -> None:
+                    in_scope: bool, comments_excerpt: str, **_: Any) -> None:
         self.rows[item.key] = {"content_hash": content_hash, "comment_count": item.comment_count,
                                "updated_at": item.updated_at, "files": [f.path for f in item.files],
                                "comments_excerpt": comments_excerpt, "prepass": prepass, "in_scope": in_scope}

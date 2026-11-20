@@ -76,6 +76,15 @@ _ENV_SECTION = re.compile(r"(?i)(collect_env|your current environment|PyTorch ve
 _REPRO_SECTION = re.compile(r"(?i)(```|steps to reproduce|minimal reproduc|how to reproduce|vllm serve )")
 _TEST_PLAN = re.compile(r"(?is)##\s*Test Plan\s*(.*?)(?:\n##\s|\Z)")
 _BOT_LOGINS = re.compile(r"(?i)(\[bot\]$|^dependabot|^renovate|^github-actions|^mergify)")
+_EXTRA_BOT_LOGINS = frozenset({"copilot", "vllm-bot", "mergify", "codecov", "coderabbitai", "greptile-apps"})
+_SLASH_CMD_LINE = re.compile(r"^\s*/[a-z][a-z0-9_-]*(?:\s+.*)?$", re.IGNORECASE)
+_NOISE_PHRASES = frozenset({
+    "+1", "1", "bump", "ping", "ptal", "following", "same", "same here",
+    "me too", "any update", "any updates", "thanks", "thank you", "thx",
+    "lgtm", "done", "fixed", "rebased", "merged main", "updated", "up",
+})
+_SIGNAL_REF = re.compile(r"(#\d+|https?://|`)")
+_NON_WORD_SPACE = re.compile(r"[^\w\s+]+")
 # A GitHub user login, as _COMMENTER reads it (bots, "name[bot]", are not).
 LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 
@@ -88,6 +97,50 @@ AUTHOR_CHECKS = frozenset({"pre-commit", "DCO"})
 # "ci_pr_failures": its finished Buildkite build has failures main doesn't
 # have (triage/ci.py, CI_PR_ONLY_FAILURES_WAIT_ON_AUTHOR).
 WAITING_REASONS = ("draft", "ci_failing", "ci_pr_failures", "merge_conflict", "changes_requested")
+
+
+def is_noise_comment(login: str, body: str) -> bool:
+    """True for bot comments and low-signal chatter ('+1', 'bump', '/ci run',
+    short replies with no refs/links/code) that shouldn't invalidate content_hash."""
+    if _BOT_LOGINS.search(login) or login.lower() in _EXTRA_BOT_LOGINS:
+        return True
+    # Strip quoted lines and blank lines.
+    lines = [line.strip() for line in body.splitlines() if line.strip() and not line.lstrip().startswith(">")]
+    if not lines:
+        return True
+    if all(_SLASH_CMD_LINE.match(line) for line in lines):
+        return True
+    cleaned = " ".join(lines).strip()
+    norm = _NON_WORD_SPACE.sub(" ", cleaned.lower()).strip()
+    norm = " ".join(norm.split())
+    if not norm or norm in _NOISE_PHRASES:
+        return True
+    if len(cleaned) < 20 and not _SIGNAL_REF.search(cleaned):
+        return True
+    return False
+
+
+def filter_comment_records(records: list[tuple[str, Any, str]]) -> list[tuple[str, Any, str]]:
+    """Keep only substantive comments for extraction & content_hash."""
+    out: list[tuple[str, Any, str]] = []
+    for login, created_at, text in records:
+        _, sep, body = text.partition("]: ")
+        raw_body = body if sep else text
+        if not is_noise_comment(login, raw_body):
+            out.append((login, created_at, text))
+    return out
+
+
+def core_content_hash(item: Item) -> str:
+    """Hash of title, body and changed files only (no comments)."""
+    digest = hashlib.sha256()
+    for part in (item.title, item.body[:BODY_LIMIT]):
+        digest.update(part.encode())
+        digest.update(b"\0")
+    for change in item.files[:MAX_FILES]:
+        digest.update(change.path.encode())
+        digest.update(b"\n")
+    return digest.hexdigest()[:32]
 
 
 def content_hash(item: Item) -> str:

@@ -1213,3 +1213,86 @@ def test_relevance_skips_owned_items_and_survives_daily_pr_refresh(
     route(ScheduledCommand("triage_route", NOW + timedelta(minutes=10)))
     queued = store.relevance_queue(limit=10, min_score=40)
     assert len(queued) == 1 and queued[0].maintainers == ["gau-nernst"]
+
+
+def test_comment_churn_cooldown_and_semantic_facet_gate(
+    store: PostgresTriageStore, database_url: str
+) -> None:
+    from triage.pipeline import IngestHandler
+    from triage.relevance import run_relevance
+
+    class CommentGitHub(FakeGitHub):
+        def __init__(self, comments: list[tuple[str, datetime | None, str]]) -> None:
+            super().__init__({})
+            self.records = comments
+
+        def comment_records(self, repo: str, number: int) -> list[tuple[str, datetime | None, str]]:
+            return list(self.records)
+
+    gh = CommentGitHub([
+        ("bob", NOW - timedelta(minutes=30), "[bob (NONE)]: +1"),
+        ("mergify[bot]", NOW - timedelta(minutes=20), "[mergify[bot] (NONE)]: Merge conflict detected."),
+    ])
+    clock = FixedClock(NOW)
+    handler = IngestHandler(
+        store=store, github=gh, config=default_config(), clock=clock,  # type: ignore[arg-type]
+        reextract_cooldown=timedelta(hours=12),
+    )
+    handler._ingest(issue(1801, "DeepSeek startup crash", comment_count=2))
+    state = store.item_state("vllm-project/vllm#1801")
+    assert state is not None
+    # Noise comments stripped from comments_excerpt, while human commenter bob is preserved.
+    assert state.comments_excerpt == ""
+    assert "bob" in state.prepass["commenters"]
+
+    # Extract + score + judge relevance once (returns 'none' so item remains unowned for re-judge tests).
+    seed(store, [{"github_login": "gau-nernst", "notes": "FP8 kernels"}])
+    run_extraction(store, FakeBackend({"DeepSeek": SEVERE}), budget=Budget(), now=NOW, workers=1)
+    RouteHandler(store=store, config=default_config(), clock=clock, delivery_mode=DeliveryMode.SHADOW,
+                 github=FakeProfiles())(ScheduledCommand("triage_route", NOW))  # type: ignore[arg-type]
+
+    class Judge:
+        calls = 0
+
+        def complete(self, *, system: str, prompt: str, schema: dict[str, Any]) -> LLMResult:
+            Judge.calls += 1
+            return LLMResult(output={"judgments": [
+                {"github_login": "gau-nernst", "relevance": "none", "evidence_prs": [], "reason": "unrelated"},
+            ]}, model="fake")
+
+    assert run_relevance(store, Judge(), now=NOW, min_score=40).judged == 1
+    assert Judge.calls == 1
+
+    # 1 hour later: substantive comment arrives -> within 12h cooldown, so extraction stays 'done'.
+    gh.records.append(("carol", NOW + timedelta(hours=1),
+                       "[carol (NONE)]: Also reproduced on 8xB200 with vLLM 0.12.0 FP8."))
+    clock.value = NOW + timedelta(hours=1)
+    handler._ingest(issue(1801, "DeepSeek startup crash", comment_count=3))
+    with psycopg.connect(database_url) as c:
+        assert c.execute("SELECT extraction_status FROM triage_items WHERE item_key = 'vllm-project/vllm#1801'").fetchone()[0] == "done"
+
+    # 13 hours later: cooldown elapsed -> comment change re-queues extraction.
+    clock.value = NOW + timedelta(hours=13)
+    handler._ingest(issue(1801, "DeepSeek startup crash", comment_count=3))
+    with psycopg.connect(database_url) as c:
+        assert c.execute("SELECT extraction_status FROM triage_items WHERE item_key = 'vllm-project/vllm#1801'").fetchone()[0] == "pending"
+
+    # Re-extraction yields slightly reworded summary but same routing facets -> relevance carries forward!
+    reworded = {**SEVERE, "summary": "DeepSeek-V3.1 startup failure on B200 (0.12)"}
+    run_extraction(store, FakeBackend({"DeepSeek": reworded}), budget=Budget(), now=clock.value, workers=1)
+    RouteHandler(store=store, config=default_config(), clock=clock, delivery_mode=DeliveryMode.SHADOW,
+                 github=FakeProfiles())(ScheduledCommand("triage_route", clock.value))  # type: ignore[arg-type]
+    assert run_relevance(store, Judge(), now=clock.value, min_score=40).judged == 0
+    assert Judge.calls == 1
+
+    # Body edit (core_hash change) bypasses cooldown immediately, and changed area invalidates relevance.
+    clock.value = NOW + timedelta(hours=14)
+    handler._ingest(issue(1801, "DeepSeek startup crash", body="Updated repro details " + "z" * 200, comment_count=3))
+    with psycopg.connect(database_url) as c:
+        assert c.execute("SELECT extraction_status FROM triage_items WHERE item_key = 'vllm-project/vllm#1801'").fetchone()[0] == "pending"
+    changed_facets = {**SEVERE, "areas": ["attention"]}
+    run_extraction(store, FakeBackend({"DeepSeek": changed_facets}), budget=Budget(), now=clock.value, workers=1)
+    RouteHandler(store=store, config=default_config(), clock=clock, delivery_mode=DeliveryMode.SHADOW,
+                 github=FakeProfiles())(ScheduledCommand("triage_route", clock.value))  # type: ignore[arg-type]
+    assert run_relevance(store, Judge(), now=clock.value, min_score=40).judged == 1
+    assert Judge.calls == 2
