@@ -331,8 +331,9 @@ export function ItemRow({
       data-nested={nested || undefined}
       aria-current={active || undefined}
       className={`relative cursor-pointer py-2.5 transition-colors ${
-        // In a card: 1rem minus the card's margin and border, so every cell lines up with standalone rows.
-        card ? "px-[9px] hover:bg-zinc-100/70 dark:hover:bg-zinc-800/50" : `px-4 hover:bg-zinc-50 dark:hover:bg-zinc-900/70 ${style.row}`
+        // Cards span the full width (no side margin/border), so card rows use the same
+        // padding as standalone rows and every stripe and cell lines up.
+        card ? "px-4 hover:bg-zinc-100/70 dark:hover:bg-zinc-800/50" : `px-4 hover:bg-zinc-50 dark:hover:bg-zinc-900/70 ${style.row}`
       } ${active ? "!bg-zinc-100 dark:!bg-zinc-800/70" : ""}`}
       onClick={onOpen}
     >
@@ -455,7 +456,7 @@ export function GroupedRows<T extends TriageQueueItem>({
             role="group"
             aria-label={block.label}
             data-group={block.key}
-            className="relative mx-1.5 my-2 overflow-hidden rounded-lg !border border-zinc-200 bg-zinc-50/60 dark:border-zinc-700/80 dark:bg-zinc-900/40"
+            className="relative my-2 overflow-hidden !border-y border-zinc-200 bg-zinc-50/60 dark:border-zinc-700/80 dark:bg-zinc-900/40"
           >
             {stripe && <span aria-hidden="true" className={`absolute inset-y-0 left-0 z-[1] w-1 ${stripe}`} />}
             <ul>
