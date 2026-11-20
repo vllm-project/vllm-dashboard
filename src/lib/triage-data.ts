@@ -10,6 +10,8 @@ import {
   type PlanResult,
 } from "@/lib/triage-actions";
 import { matchRules, normalizeRules } from "@/lib/triage-rules";
+import { toTriageCi, type TriageCi } from "@/lib/triage-ci";
+import { hasPostgresErrorCode } from "@/lib/postgres-errors";
 import {
   commentersFromExcerpt,
   explainUnowned,
@@ -216,6 +218,33 @@ function queueSelect(db: Db) {
   `;
 }
 
+/**
+ * CI status of these PRs (triage_pr_ci, see triage/ci.py), by item key. A
+ * separate query so lists keep working before migration 0044 is applied.
+ */
+async function ciByItem(db: Db, itemKeys: string[]): Promise<Map<string, TriageCi>> {
+  const out = new Map<string, TriageCi>();
+  if (itemKeys.length === 0) return out;
+  try {
+    const rows = await db<Record<string, unknown>[]>`
+      SELECT * FROM triage_pr_ci WHERE item_key IN ${db(itemKeys)}
+    `;
+    for (const row of rows) {
+      const ci = toTriageCi(row);
+      if (ci) out.set(String(row.item_key), ci);
+    }
+  } catch (error) {
+    if (!hasPostgresErrorCode(error, "42P01")) throw error; // undefined_table: not migrated yet
+  }
+  return out;
+}
+
+/** Adds `ci` to the open PRs of a queue-shaped list. */
+async function withCi<T extends TriageQueueItem>(db: Db, items: T[]): Promise<T[]> {
+  const ci = await ciByItem(db, items.filter((i) => i.kind === "pr" && i.state === "open").map((i) => i.itemKey));
+  return items.map((item) => ({ ...item, ci: ci.get(item.itemKey) ?? null }));
+}
+
 function latestExtractionJoin(db: Db) {
   return db`
     LEFT JOIN triage_scores s ON s.item_key = i.item_key
@@ -290,7 +319,7 @@ export async function listQueue(filters: QueueFilters): Promise<TriageQueueRespo
     LIMIT ${filters.pageSize} OFFSET ${(filters.page - 1) * filters.pageSize}
   `;
   return {
-    items: await withGroupLinks(db, rows.map(toQueueItem)),
+    items: await withCi(db, await withGroupLinks(db, rows.map(toQueueItem))),
     total: rows.length > 0 ? Number(rows[0].total) : 0,
     page: filters.page,
     pageSize: filters.pageSize,
@@ -382,7 +411,7 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
   `;
   if (!item) return null;
 
-  const [score, extraction, assignments, actions, relevance, links] = await Promise.all([
+  const [score, extraction, assignments, actions, relevance, links, ci] = await Promise.all([
     db<
       {
         score: number;
@@ -449,6 +478,7 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
                r.maintainer
     `,
     groupLinks(db, [itemKey]),
+    item.kind === "pr" ? ciByItem(db, [itemKey]) : Promise.resolve(new Map<string, TriageCi>()),
   ]);
   const group = links.get(itemKey) ?? { fixes: [], fixedBy: [] };
 
@@ -500,6 +530,7 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
     whyUnowned,
     fixes: group.fixes,
     fixedBy: group.fixedBy,
+    ci: ci.get(itemKey) ?? null,
     item: {
       itemKey: item.item_key,
       repo: item.repo,
@@ -713,7 +744,7 @@ export async function getMyPlate(login: string): Promise<TriageMyPlate> {
     ...entry,
     ...(links.get(entry.itemKey) ?? { fixes: [], fixedBy: [] }),
   });
-  return { login, open: open.map(attach), recentlyClosed: recentlyClosed.map(attach) };
+  return { login, open: await withCi(db, open.map(attach)), recentlyClosed: recentlyClosed.map(attach) };
 }
 
 interface MaintainerRow {

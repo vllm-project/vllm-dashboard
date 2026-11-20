@@ -84,6 +84,8 @@ class Item:
     review_decision: str | None = None
     mergeable: str | None = None
     failing_checks: list[str] | None = None
+    # GraphQL only: the head commit (its stored CI counts while it matches).
+    head_sha: str | None = None
 
     @property
     def key(self) -> str:

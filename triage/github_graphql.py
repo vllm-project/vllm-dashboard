@@ -12,9 +12,10 @@ queries instead of one request per item:
      of in-scope PRs, the first 30 comments of in-scope items whose comment
      count changed (plus who wrote the latest 30, for long threads), and the
      authors of PRs the items name (aliased fields).
-  3. `pr_statuses`: one query per 25 PRs re-reads whose move it is;
-     check results and merge conflicts change without bumping a PR's
-     updatedAt, so the cursor alone would not see them.
+  3. `pr_statuses`: one query per 25 PRs re-reads whose move it is, and
+     the head commit with the Buildkite build its status points at (for
+     triage/ci.py); check results and merge conflicts change without
+     bumping a PR's updatedAt, so the cursor alone would not see them.
 
 Issues come from repository.issues(filterBy: {since}) and PRs from
 repository.pullRequests ordered by UPDATED_AT descending, read until the
@@ -46,6 +47,7 @@ from triage.github import (
     PrStatus,
     _parse_time,
 )
+from triage.ci import BUILDKITE_CONTEXT, build_number_from_url
 from triage.model import FileChange, Item
 
 GRAPHQL_URL = "https://api.github.com/graphql"
@@ -74,7 +76,9 @@ _COMMON = f"""
 """
 _PR_STATUS = f"""
   state isDraft mergeable reviewDecision
-  commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ state
+  commits(last: 1) {{ nodes {{ commit {{ oid
+    status {{ contexts {{ context state targetUrl }} }}
+    statusCheckRollup {{ state
     contexts(first: {MAX_CHECKS}) {{ nodes {{ __typename
       ... on CheckRun {{ name conclusion }}
       ... on StatusContext {{ context state }} }} }} }} }} }} }}
@@ -158,6 +162,22 @@ def failing_checks(commits: dict[str, Any] | None) -> list[str]:
     return [name for name in failed if name not in passed]
 
 
+def head_commit(commits: dict[str, Any] | None) -> tuple[str | None, str | None]:
+    """(head commit sha, URL of the Buildkite build its `buildkite/ci...`
+    status points at, or None when Buildkite hasn't started one)."""
+    nodes = (commits or {}).get("nodes") or []
+    commit = ((nodes[0] or {}).get("commit") or {}) if nodes else {}
+    build_url: str | None = None
+    best = -1
+    for context in ((commit.get("status") or {}).get("contexts")) or []:
+        if not context or not str(context.get("context") or "").startswith(BUILDKITE_CONTEXT):
+            continue
+        number = build_number_from_url(context.get("targetUrl"))
+        if number is not None and number > best:
+            best, build_url = number, str(context["targetUrl"])
+    return (str(commit["oid"]) if commit.get("oid") else None), build_url
+
+
 def _state(node: dict[str, Any]) -> Literal["open", "closed", "merged"]:
     state = str(node.get("state") or "").lower()
     return cast(Literal["open", "closed", "merged"], state if state in ("open", "merged") else "closed")
@@ -198,6 +218,7 @@ def item_from_node(repo: str, node: dict[str, Any], kind: Literal["issue", "pr"]
         item.review_decision = node.get("reviewDecision")
         item.mergeable = node.get("mergeable")
         item.failing_checks = failing_checks(node.get("commits"))
+        item.head_sha = head_commit(node.get("commits"))[0]
     return item
 
 
@@ -414,10 +435,12 @@ class GraphQLGitHubClient:
             for n in chunk:
                 node = repository.get(f"n{n}")
                 if node:
+                    head_sha, build_url = head_commit(node.get("commits"))
                     out[n] = PrStatus(
                         state=_state(node), draft=bool(node.get("isDraft")),
                         review_decision=node.get("reviewDecision"), mergeable=node.get("mergeable"),
                         failing_checks=failing_checks(node.get("commits")),
+                        head_sha=head_sha, ci_build_url=build_url,
                     )
         return out
 

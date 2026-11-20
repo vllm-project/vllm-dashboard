@@ -38,11 +38,14 @@ dashboard / Slack ──► triage_actions + triage_assignments.status
                                         // same comments; kept until comments are re-read
   "gh_assignees": ["gau-nernst"],       // the item's assignees on GitHub
   // Open PRs only: whose move it is (prepass.whose_move). "author" when it is
-  // a draft, pre-commit or DCO fails, it has merge conflicts, or changes were
-  // requested; the router holds P1 PRs waiting on their author (not P0).
+  // a draft, pre-commit or DCO fails, its finished CI build fails jobs main
+  // doesn't share (`ci_pr_failures`, see triage_pr_ci below), it has merge
+  // conflicts, or changes were requested; the router holds P1 PRs waiting on
+  // their author (not P0).
   "waiting_on": "author" | "reviewer",
-  "waiting_reasons": ["draft", "ci_failing", "merge_conflict", "changes_requested"],
-  "failing_checks": ["pre-run-check"]   // checks failing on the head commit (GraphQL ingest only)
+  "waiting_reasons": ["draft", "ci_failing", "ci_pr_failures", "merge_conflict", "changes_requested"],
+  "failing_checks": ["pre-run-check"],  // checks failing on the head commit (GraphQL ingest only)
+  "ci_pr_only_jobs": [":github: GitHub pre-commit check"]  // with ci_pr_failures: up to 3 of those jobs
 }
 ```
 
@@ -56,6 +59,33 @@ author.
 
 `in_scope` is false for `pr_maintainer_unlinked` and `bot`; those items are
 stored but not extracted, scored or routed.
+
+## `triage_pr_ci` (migration 0044, `triage/ci.py`)
+
+CI of open in-scope P0-P2 PRs, one row per PR, for the dashboard (drawer
+"CI" section, row badge), Slack item lines and whose move. The ingest run
+re-reads the GitHub status of PRs that are due (P0/P1 every 10 minutes, P2
+every hour; `store.CI_REFRESH`) in the same batched query as the waiting
+PRs: the head commit, and the Buildkite build its `buildkite/ci/pr` status
+links. No such status means `not_started` (nobody ran `/ci run` on that
+commit). The build is fetched from Buildkite (one REST call, jobs embedded,
+at most 15 per run) only while it is new or unfinished; a finished build is
+kept and only re-marked against main.
+
+Counts are over script jobs, latest attempt each: `passed`, `running`
+(anything unfinished, including queued), `failed` (failed or timed out, not
+soft-failed). Jobs that never ran (`waiting_failed`, `broken`, `skipped`,
+`canceled`, ...) are not counted. Each failed job is keyed as Main CI keys it
+(`step:<step key>|name:<step name>`, shards folded) and marked against
+`alerting_main_ci_job_states` / `alerting_main_ci_job_alerts`: `on_main`
+(failing on main now), `recent_on_main` (failed on main in the last 7 days,
+not now: flaky), or neither (`jobs_failed_pr_only`, unless it lost its
+agent). When Main CI hasn't scanned for an hour, or its tables can't be
+read, `main_known` is false and no failure is called the PR's.
+
+Whose move: with `CI_PR_ONLY_FAILURES_WAIT_ON_AUTHOR` (on), a finished
+(`failed`) build with `jobs_failed_pr_only > 0` makes the PR the author's
+move (`ci_pr_failures`). Running builds and failures main shares don't.
 
 ## `triage_extractions.facets` (LLM output, prompt version `v1`)
 

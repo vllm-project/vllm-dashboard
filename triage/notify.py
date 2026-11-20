@@ -85,6 +85,13 @@ STRINGS: dict[str, dict[str, str]] = {
         "waiting_title": "⏳ Still waiting ({n})",
         "waiting_age": "assigned {d} days ago",
         "waiting_more": "…and {m} more waiting on <{url}|My list>.",
+        "ci_not_started": "CI: not started",
+        "ci_canceled": "CI: canceled",
+        "ci_running": "{n} running",
+        "ci_all_main": "also failing on main",
+        "ci_some_main": "{m} also failing on main",
+        "ci_recent_main": "{r} flaky on main",
+        "ci_none_main": "only on this PR",
     },
     "vi": {
         "authored": "bạn đã viết #{n}, PR được nhắc tới trong mục này",
@@ -122,6 +129,13 @@ STRINGS: dict[str, dict[str, str]] = {
         "waiting_title": "⏳ Vẫn đang chờ bạn ({n})",
         "waiting_age": "đã giao {d} ngày trước",
         "waiting_more": "…và {m} mục đang chờ khác trong <{url}|My list>.",
+        "ci_not_started": "CI: chưa chạy",
+        "ci_canceled": "CI: đã hủy",
+        "ci_running": "{n} đang chạy",
+        "ci_all_main": "cũng lỗi trên main",
+        "ci_some_main": "{m} cũng lỗi trên main",
+        "ci_recent_main": "{r} chập chờn trên main",
+        "ci_none_main": "chỉ lỗi ở PR này",
     },
 }
 _LEVELS_VI = {"high": "cao", "medium": "trung bình"}
@@ -206,8 +220,42 @@ def _why_source(main: DigestEntry, fixes: list[DigestEntry]) -> DigestEntry:
 
 
 def _fix_lines(fixes: list[DigestEntry], lang: str) -> list[str]:
+    """"↳ fix: #123 title", then the fix PR's CI when known."""
     return [_t(lang, "fix_line", link=_link(f.html_url, f"#{f.item_key.rsplit('#', 1)[-1]} {f.title}"))
+            + (f" · {ci_fragment(f.ci, lang)}" if f.ci else "")
             for f in fixes]
+def ci_fragment(ci: dict[str, Any] | None, lang: str = "en") -> str:
+    """The PR's CI in a few plain words: "CI: 38/41 ✓, 1 ✗ (also failing on
+    main)"; "flaky on main": failed on main in the last MAIN_RECENT_DAYS but
+    not now. Counts only; job names stay on the dashboard."""
+    if not ci:
+        return ""
+    state = ci.get("state")
+    if state == "not_started":
+        return _t(lang, "ci_not_started")
+    if state == "canceled":
+        return _t(lang, "ci_canceled")
+    total, passed = int(ci.get("jobs_total") or 0), int(ci.get("jobs_passed") or 0)
+    running, failed = int(ci.get("jobs_running") or 0), int(ci.get("jobs_failed") or 0)
+    parts = [f"{passed}/{total} ✓"]
+    if running:
+        parts.append(_t(lang, "ci_running", n=running))
+    if failed:
+        on_main = int(ci.get("jobs_failed_on_main") or 0)
+        recent = int(ci.get("jobs_failed_recent_on_main") or 0)
+        notes: list[str] = []
+        if ci.get("main_known"):
+            if on_main >= failed:
+                notes.append(_t(lang, "ci_all_main"))
+            else:
+                if on_main:
+                    notes.append(_t(lang, "ci_some_main", m=on_main))
+                if recent:
+                    notes.append(_t(lang, "ci_recent_main", r=recent))
+                if not notes:
+                    notes.append(_t(lang, "ci_none_main"))
+        parts.append(f"{failed} ✗" + (f" ({', '.join(notes)})" if notes else ""))
+    return "CI: " + ", ".join(parts)
 
 
 def _item_line(
@@ -226,6 +274,8 @@ def _item_line(
     parts = [f"{prefix}*{_link(entry.html_url, f'#{number} {entry.title}')}*", *_fix_lines(fixes, lang)]
     if summary and entry.summary:
         parts.append(f"_{safe_slack_mrkdwn(entry.summary[:240])}_")
+    if entry.ci:
+        parts.append(ci_fragment(entry.ci, lang))
     source = _why_source(entry, fixes)
     why = _why(source, lang, in_group=bool(fixes))
     if why:
@@ -358,6 +408,8 @@ def _waiting_line(entry: DigestEntry, now: datetime, lang: str, fixes: list[Dige
     line = f"{level}*{_link(entry.html_url, f'#{number} {entry.title}')}*"
     if entry.assigned_at is not None:
         line += f" · _{_t(lang, 'waiting_age', d=max(0, (now - entry.assigned_at).days))}_"
+    if entry.ci:
+        line += f" · {ci_fragment(entry.ci, lang)}"
     return "\n".join([line, *_fix_lines(fixes or [], lang)])
 
 

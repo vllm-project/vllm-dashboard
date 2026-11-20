@@ -1,3 +1,4 @@
+import { jobLabel } from "@/lib/triage-ci";
 import { matchRules } from "@/lib/triage-rules";
 import { priorityLabel } from "@/lib/triage-style";
 import type { TriageFacets, TriagePrepass, TriageRules } from "@/lib/triage-types";
@@ -10,7 +11,10 @@ import type { TriageFacets, TriagePrepass, TriageRules } from "@/lib/triage-type
  *   - `routing_candidates` in triage/store.py (open, in scope, P0/P1,
  *     labelled, no open/acked/done primary, never dropped or slopped);
  *   - `_route_one` in triage/pipeline.py (hold back PRs waiting on their
- *     author unless P0, see `waiting_on_author` in triage/routing.py; leave
+ *     author unless P0, see `waiting_on_author` in triage/routing.py; whose
+ *     move it is comes from `whose_move` in triage/prepass.py, which counts
+ *     a finished CI build failing on jobs main doesn't fail, see
+ *     `ciWaitsOnAuthor` in triage-ci.ts; leave
  *     items assigned on GitHub to someone outside triage; wait up to
  *     RELEVANCE_GRACE for relevance
  *     judgements from every active maintainer unless one is already involved,
@@ -145,9 +149,12 @@ export function waitingOnAuthor(prepass: TriagePrepass, band: string | null): bo
  */
 export function waitingReasonsText(prepass: TriagePrepass): string {
   const checks = strings(prepass.failing_checks).filter((c) => AUTHOR_CHECKS.includes(c));
+  // `ci_pr_only_jobs`: failed Buildkite jobs not failing on main (`ci_waits_on_author` in triage/ci.py).
+  const ciJobs = strings(prepass.ci_pr_only_jobs).map(jobLabel);
   const words: Record<string, string> = {
     draft: "it's a draft",
     ci_failing: `CI is failing${checks.length ? ` (${checks.join(", ")})` : ""}`,
+    ci_pr_failures: `CI fails on jobs that pass on main${ciJobs.length ? ` (${ciJobs.join(", ")})` : ""}`,
     merge_conflict: "it has merge conflicts",
     changes_requested: "a reviewer requested changes",
   };

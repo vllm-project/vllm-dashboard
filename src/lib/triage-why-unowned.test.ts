@@ -391,3 +391,32 @@ test("an issue whose fix is merged says it's waiting for GitHub to close it", ()
   assert.match(why.lines[0], /^Its fix #67812 is merged, so it should close once GitHub closes it/);
   assert.doesNotMatch(explainUnowned(input({ state: "closed", linked: [linked(67812, "pr", null, { state: "merged" })] })).lines.join(), /merged/);
 });
+
+test("a P1 PR whose CI fails on jobs main doesn't fail waits on its author", () => {
+  const prepass = {
+    commenters: [],
+    waiting_on: "author" as const,
+    waiting_reasons: ["ci_pr_failures"],
+    failing_checks: [],
+    ci_pr_only_jobs: [":github: GitHub pre-commit check", ":nvidia: (H200) LoRA"],
+  };
+  assert.equal(
+    explainUnowned(input({ band: "route", score: 60, prepass })).summary,
+    "Waiting on the author: CI fails on jobs that pass on main (GitHub pre-commit check, (H200) LoRA). " +
+      "The router holds P1 PRs until it's the reviewers' move, then routes them.",
+  );
+  assert.equal(waitingReasonsText({ waiting_reasons: ["ci_pr_failures", "merge_conflict"] }),
+    "CI fails on jobs that pass on main and it has merge conflicts");
+});
+
+test("a fix PR whose CI fails only on this PR waits on its author even when its issue has an owner", () => {
+  // Same order as _route_one: waiting_on_author (which includes the CI rule) before group_owner.
+  const prepass = { commenters: [], waiting_on: "author" as const, waiting_reasons: ["ci_pr_failures"], ci_pr_only_jobs: [":nvidia: LoRA"] };
+  const why = explainUnowned(input({ band: "route", score: 52, prepass, linked: [linked(65385, "issue", "gau-nernst")] }));
+  assert.match(why.summary, /^Waiting on the author: CI fails on jobs that pass on main \(LoRA\)/);
+  assert.equal(why.pending, false);
+  // Once main shares the failures it's the reviewers' move, and the group rule applies.
+  const fixed = explainUnowned(input({ band: "route", score: 52, relevance: [], prepass: { commenters: [], waiting_on: "reviewer", waiting_reasons: [] },
+    linked: [linked(65385, "issue", "gau-nernst")] }));
+  assert.match(fixed.summary, /^It fixes #65385, which gau-nernst owns/);
+});

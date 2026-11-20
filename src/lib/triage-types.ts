@@ -1,3 +1,4 @@
+import type { TriageCi } from "@/lib/triage-ci";
 import type { WhyUnowned } from "@/lib/triage-why-unowned";
 import type {
   AssignmentStatus,
@@ -67,6 +68,8 @@ export interface TriagePrepass {
   waiting_reasons?: string[];
   /** Checks failing on the PR's head commit (GraphQL ingest only). */
   failing_checks?: string[];
+  /** Failed CI jobs that aren't failing on main, when that makes it the author's move (`ci_pr_failures`). */
+  ci_pr_only_jobs?: string[];
 }
 
 export interface TriageBreakdownEntry {
@@ -140,6 +143,8 @@ export interface TriageQueueItem {
   fixes: TriageLinkedItem[];
   /** Issues: the PRs that fix it. */
   fixedBy: TriageLinkedItem[];
+  /** Open PRs: CI of the head commit (triage_pr_ci); null/absent when not tracked. */
+  ci?: TriageCi | null;
 }
 
 export interface TriageQueueResponse {
@@ -218,6 +223,8 @@ export interface TriageItemDetail {
   fixes: TriageLinkedItem[];
   /** Issues: the PRs that fix it. */
   fixedBy: TriageLinkedItem[];
+  /** PRs: CI of the head commit (triage_pr_ci); null when not tracked. */
+  ci: TriageCi | null;
 }
 
 export interface TriageRelevance {

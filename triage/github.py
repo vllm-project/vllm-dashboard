@@ -47,6 +47,10 @@ class PrStatus:
     review_decision: str | None
     mergeable: str | None
     failing_checks: list[str]
+    # Head commit, and the Buildkite build its `buildkite/ci...` status links
+    # (None: no build started for it yet).
+    head_sha: str | None = None
+    ci_build_url: str | None = None
 
 
 class IngestClient(Protocol):

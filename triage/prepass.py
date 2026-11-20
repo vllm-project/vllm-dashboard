@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import re
 from typing import Any
 
+from triage.ci import ci_waits_on_author, pr_only_job_names
 from triage.config import TriageConfig
 from triage.model import MAINTAINER_ASSOCIATIONS, Item
 
@@ -84,7 +85,9 @@ LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 # ("buildkite/ci/pr...") are often red for reasons outside the PR.
 AUTHOR_CHECKS = frozenset({"pre-commit", "DCO"})
 # Why a PR waits on its author, in the order the dashboard lists them.
-WAITING_REASONS = ("draft", "ci_failing", "merge_conflict", "changes_requested")
+# "ci_pr_failures": its finished Buildkite build has failures main doesn't
+# have (triage/ci.py, CI_PR_ONLY_FAILURES_WAIT_ON_AUTHOR).
+WAITING_REASONS = ("draft", "ci_failing", "ci_pr_failures", "merge_conflict", "changes_requested")
 
 
 def content_hash(item: Item) -> str:
@@ -192,16 +195,20 @@ def in_scope(reason: str) -> bool:
 
 
 def whose_move(
-    *, draft: bool, review_decision: str | None, mergeable: str | None, failing_checks: list[str] | None
+    *, draft: bool, review_decision: str | None, mergeable: str | None, failing_checks: list[str] | None,
+    ci: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Whose move an open PR is: "author" when it is a draft, a check the
-    author must fix is failing (AUTHOR_CHECKS), it has merge conflicts, or a
-    reviewer requested changes; "reviewer" otherwise. `failing_checks` None
-    means the client could not read checks/reviews (REST): draft only."""
+    author must fix is failing (AUTHOR_CHECKS), its finished CI build has
+    failures main doesn't have (`ci`, the head commit's summary from
+    triage/ci.py), it has merge conflicts, or a reviewer requested changes;
+    "reviewer" otherwise. `failing_checks` None means the client could not
+    read checks/reviews (REST): draft only. `ci` None: CI not known."""
     failing = list(failing_checks or [])
     reasons = {
         "draft": draft,
         "ci_failing": any(name in AUTHOR_CHECKS for name in failing),
+        "ci_pr_failures": ci_waits_on_author(ci),
         "merge_conflict": mergeable == "CONFLICTING",
         "changes_requested": review_decision == "CHANGES_REQUESTED",
     }
@@ -211,12 +218,17 @@ def whose_move(
     }
     if failing_checks is not None:
         out["failing_checks"] = failing[:10]
+    if ci is not None:
+        out["ci_pr_only_jobs"] = pr_only_job_names(ci) if reasons["ci_pr_failures"] else []
     return out
 
 
-def compute_prepass(item: Item, config: TriageConfig, now: datetime | None = None) -> dict[str, Any]:
+def compute_prepass(
+    item: Item, config: TriageConfig, now: datetime | None = None, *, ci: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """`now` enables the age limit (config.max_age_days); without it (e.g.
-    offline backtests) every item is judged on content alone."""
+    offline backtests) every item is judged on content alone. `ci`: the PR's
+    stored CI summary for its current head commit, if any."""
     text = f"{item.title}\n{item.body}"
     areas: set[str] = set()
     for change in item.files:
@@ -253,7 +265,7 @@ def compute_prepass(item: Item, config: TriageConfig, now: datetime | None = Non
         "gh_assignees": list(item.assignees),
         **(
             whose_move(draft=item.draft, review_decision=item.review_decision,
-                       mergeable=item.mergeable, failing_checks=item.failing_checks)
+                       mergeable=item.mergeable, failing_checks=item.failing_checks, ci=ci)
             if item.kind == "pr" and item.state == "open" else {}
         ),
     }

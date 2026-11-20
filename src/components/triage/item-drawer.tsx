@@ -16,6 +16,8 @@ import {
 } from "@/components/triage/badges";
 import { isUnrouted, priorityLabel, typeLabel } from "@/lib/triage-style";
 import { ActionButtons } from "@/components/triage/action-buttons";
+import { CiSection } from "@/components/triage/ci-status";
+import { ciLine } from "@/lib/triage-ci";
 import { ScoreBreakdown } from "@/components/triage/score-breakdown";
 import { humanizeTag } from "@/lib/triage-factors";
 import { actionText, extractionText, percentText, scopeText, sourceText, yesNo } from "@/lib/triage-words";
@@ -412,6 +414,12 @@ export function ItemDrawer({
                   </div>
                 </div>
               </div>
+
+              {data.ci && (
+                <Disclosure title="CI" meta={ciLine(data.ci)} defaultOpen={data.item.state === "open"}>
+                  <CiSection ci={data.ci} />
+                </Disclosure>
+              )}
 
               <Disclosure title="Score" meta={data.score ? `${data.score.score} points · ${data.score.breakdown.length} factors` : "not scored yet"} defaultOpen>
                 {data.score ? (

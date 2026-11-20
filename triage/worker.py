@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from datetime import timezone
 
 from alerting.commands import ScheduledCommand
+from alerting.full_ci import BuildkiteRestClient
 from alerting.ports import AlertPath, DeliveryMode
 from alerting.runtime import AlertingRuntime, ProcessStatus
 from alerting.worker import SystemClock, _delivery_mode, _record_failure, _required_environment, _slack
@@ -62,9 +63,13 @@ def build_runtime(consumer: str) -> tuple[AlertingRuntime, ScheduledCommand]:
     config = default_config()
     command_type = CONSUMERS[consumer]
     if consumer == "triage-ingest":
+        # The alerting worker's read-only Buildkite token, for PR CI status
+        # (triage/ci.py); without it, CI status is not tracked.
+        buildkite_token = os.environ.get("BUILDKITE_TOKEN")
         handler = IngestHandler(
             store=store, github=ingest_client(_required_environment("GITHUB_TOKEN")),
             config=config, clock=clock,
+            buildkite=BuildkiteRestClient(token=buildkite_token) if buildkite_token else None,
         )
     elif consumer == "triage-route":
         token = os.environ.get("GITHUB_TOKEN")
