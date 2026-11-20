@@ -100,12 +100,24 @@ def _extract(args: argparse.Namespace) -> int:
         max_tokens_per_day=args.max_tokens_per_day,
     )
     backend = build_backend(role="extract", backend=args.backend, model=args.model, base_url=args.base_url)
+    started = datetime.now(timezone.utc)
     result = run_extraction(
         store,
         backend,
         budget=budget,
-        now=datetime.now(timezone.utc),
+        now=started,
         workers=args.workers,
+    )
+    warnings = list(result.errors[:5])
+    if result.stopped_reason:
+        warnings.append(result.stopped_reason)
+    store.record_run(
+        consumer="triage-extract",
+        started_at=started,
+        finished_at=datetime.now(timezone.utc),
+        status="error" if (result.failed and not result.extracted) else ("warning" if warnings else "ok"),
+        summary={"extracted": result.extracted, "failed": result.failed, "stopped_reason": result.stopped_reason},
+        warnings=warnings,
     )
     print(json.dumps({"extracted": result.extracted, "failed": result.failed,
                       "stopped_reason": result.stopped_reason}))
@@ -119,10 +131,22 @@ def _relevance(args: argparse.Namespace) -> int:
 
     store = PostgresTriageStore(os.environ["DATABASE_URL"])
     backend = build_backend(role="relevance", backend=args.backend, model=args.model, base_url=args.base_url)
+    started = datetime.now(timezone.utc)
     result = run_relevance(
-        store, backend, now=datetime.now(timezone.utc),
+        store, backend, now=started,
         min_score=args.min_score, limit=args.limit, workers=args.workers,
         shortlist_min=args.shortlist_min,
+    )
+    warnings = list(result.errors[:5])
+    if result.stopped_reason:
+        warnings.append(result.stopped_reason)
+    store.record_run(
+        consumer="triage-relevance",
+        started_at=started,
+        finished_at=datetime.now(timezone.utc),
+        status="error" if (result.failed and not result.judged) else ("warning" if warnings else "ok"),
+        summary={"judged": result.judged, "failed": result.failed, "stopped_reason": result.stopped_reason},
+        warnings=warnings,
     )
     print(json.dumps({"judged": result.judged, "failed": result.failed,
                       "stopped_reason": result.stopped_reason, "errors": result.errors[:3]}))

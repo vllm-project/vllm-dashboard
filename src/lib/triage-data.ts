@@ -511,9 +511,21 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
   }));
 
   const openOwners = assignments.filter((a) => a.status === "open" || a.status === "acked");
+  let persistedReason: WhyUnowned | null = null;
+  if (openOwners.length === 0 && score[0]) {
+    try {
+      const [reasonRow] = await db<{ unowned_reason: unknown }[]>`
+        SELECT unowned_reason FROM triage_scores WHERE item_key = ${itemKey}
+      `;
+      persistedReason = parsePersistedUnownedReason(reasonRow?.unowned_reason);
+    } catch {
+      // Gracefully tolerate missing `unowned_reason` column before migration 0047 is applied.
+    }
+  }
   const whyUnowned =
     openOwners.length === 0
-      ? await explainItemRouting(db, {
+      ? (persistedReason ??
+        (await explainItemRouting(db, {
           itemKey,
           item,
           score: score[0] ?? null,
@@ -522,7 +534,7 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
           assignments: assignments.map(toAssignment),
           actions: actions.map((a) => ({ actor: a.actor, action: a.action })),
           linked: [...group.fixes, ...group.fixedBy],
-        })
+        })))
       : null;
 
   return {
@@ -586,6 +598,14 @@ export async function getItemDetail(itemKey: string): Promise<TriageItemDetail |
       createdAt: iso(row.created_at)!,
     })),
   };
+}
+
+function parsePersistedUnownedReason(raw: unknown): WhyUnowned | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as { summary?: unknown; lines?: unknown; pending?: unknown };
+  if (typeof obj.summary !== "string" || !obj.summary.trim()) return null;
+  const lines = Array.isArray(obj.lines) ? obj.lines.filter((l): l is string => typeof l === "string") : [];
+  return { summary: obj.summary, lines, pending: Boolean(obj.pending) };
 }
 
 /**
@@ -1047,6 +1067,23 @@ async function getPipelineHealth(db: Db): Promise<TriagePipelineHealth> {
       ) AS last_label_error
   `;
   const expires = process.env.TRIAGE_CLAUDE_LOGIN_EXPIRES?.trim();
+  let workerWarnings24h = 0;
+  let latestWorkerWarning: string | null = null;
+  try {
+    const [runRow] = await db<{ warn_runs: string; latest_warning: string | null }[]>`
+      SELECT
+        (SELECT count(*) FROM triage_runs
+          WHERE status IN ('warning', 'error') AND finished_at > now() - interval '24 hours') AS warn_runs,
+        (SELECT warnings->>0 FROM triage_runs
+          WHERE status IN ('warning', 'error') AND jsonb_array_length(warnings) > 0
+            AND finished_at > now() - interval '24 hours'
+          ORDER BY finished_at DESC LIMIT 1) AS latest_warning
+    `;
+    workerWarnings24h = Number(runRow?.warn_runs ?? 0);
+    latestWorkerWarning = runRow?.latest_warning ?? null;
+  } catch {
+    // Gracefully tolerate missing `triage_runs` table before migration 0047 is applied.
+  }
   return {
     lastLabelledAt: iso(row.last_labelled_at),
     lastJudgedAt: iso(row.last_judged_at),
@@ -1058,6 +1095,8 @@ async function getPipelineHealth(db: Db): Promise<TriagePipelineHealth> {
     labelGaveUp: Number(row.label_gave_up),
     lastLabelError: row.last_label_error,
     loginExpiresOn: expires && /^\d{4}-\d{2}-\d{2}$/.test(expires) ? expires : null,
+    workerWarnings24h,
+    latestWorkerWarning,
   };
 }
 

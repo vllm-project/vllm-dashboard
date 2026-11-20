@@ -101,16 +101,46 @@ def _load_entry(name: str, text: str, problems: list[str]) -> dict[str, Any] | N
 
 def parse_maintainer_files(files: dict[str, str]) -> list[Maintainer]:
     """Validate a set of `<login>.yaml` files; raise listing every problem."""
-    problems: list[str] = []
-    entries = []
-    for name in sorted(files):
-        entry = _load_entry(name, files[name], problems)
-        if entry is not None:
-            entries.append(entry)
-    maintainers = _parse_entries(entries, problems)
+    maintainers, problems, _ = parse_maintainer_files_partial(files)
     if problems:
         raise MaintainersFileError(problems)
     return maintainers
+
+
+def parse_maintainer_files_partial(files: dict[str, str]) -> tuple[list[Maintainer], list[str], set[str]]:
+    """Validate each `<login>.yaml` file independently.
+
+    Returns `(valid_maintainers, problems, broken_stems)` so one malformed file
+    does not block syncing every other maintainer's valid rules. `broken_stems`
+    holds the lower-cased filename stems that failed validation so the caller
+    can keep their last good DB rows instead of deactivating them.
+    """
+    valid: list[Maintainer] = []
+    problems: list[str] = []
+    broken_stems: set[str] = set()
+    seen: set[str] = set()
+    for name in sorted(files):
+        stem = name.rsplit("/", 1)[-1].removesuffix(".yaml")
+        file_problems: list[str] = []
+        entry = _load_entry(name, files[name], file_problems)
+        if entry is None:
+            problems.extend(file_problems)
+            broken_stems.add(stem.lower())
+            continue
+        parsed = _parse_entries([entry], file_problems)
+        if file_problems or not parsed:
+            problems.extend(file_problems)
+            broken_stems.add(stem.lower())
+            continue
+        maintainer = parsed[0]
+        key = maintainer.github_login.lower()
+        if key in seen:
+            problems.append(f"{maintainer.github_login}: listed twice")
+            broken_stems.add(stem.lower())
+            continue
+        seen.add(key)
+        valid.append(maintainer)
+    return valid, problems, broken_stems
 
 
 def load_local_dir(directory: Path = LOCAL_DIR) -> dict[str, str]:

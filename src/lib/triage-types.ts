@@ -303,4 +303,8 @@ export interface TriagePipelineHealth {
   lastLabelError: string | null;
   /** TRIAGE_CLAUDE_LOGIN_EXPIRES (YYYY-MM-DD) when set: when the extractor host's Claude login runs out. */
   loginExpiresOn: string | null;
+  /** Worker runs in the last 24h that recorded warnings or errors (`triage_runs`). */
+  workerWarnings24h?: number;
+  /** Most recent non-fatal worker warning message, if any. */
+  latestWorkerWarning?: string | null;
 }

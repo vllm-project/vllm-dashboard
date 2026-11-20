@@ -6,6 +6,8 @@ import { PUT as putRules } from "./rules/route";
 import { POST as previewRules } from "./rules/preview/route";
 import { GET as login } from "./auth/login/route";
 import { GET as callback } from "./auth/callback/route";
+import { POST as webhook } from "./webhook/route";
+import { createHmac } from "node:crypto";
 import { signSession } from "@/lib/triage-auth";
 
 const SECRET = "s".repeat(40);
@@ -171,5 +173,26 @@ test("Slack interactions: 404 when off, 503 unconfigured, 401 unsigned", async (
   });
   await withEnv({ ...ENABLED, SLACK_SIGNING_SECRET: "s3cret-s3cret-s3cret" }, async () => {
     assert.equal((await slack(req())).status, 401);
+  });
+});
+
+test("GitHub webhook: 404 when off, 503 unconfigured, 401 bad signature, 200 on signed ping", async () => {
+  const secret = "whsec-test-secret";
+  const body = JSON.stringify({ zen: "Keep it logically awesome." });
+  const sig = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  const req = (headers: Record<string, string> = {}) =>
+    new Request("https://ci.vllm.ai/api/triage/webhook", { method: "POST", body, headers });
+
+  await withEnv({ ...ENABLED, TRIAGE_ENABLED: undefined }, async () => {
+    assert.equal((await webhook(req())).status, 404);
+  });
+  await withEnv({ ...ENABLED, GITHUB_WEBHOOK_SECRET: undefined }, async () => {
+    assert.equal((await webhook(req())).status, 503);
+  });
+  await withEnv({ ...ENABLED, GITHUB_WEBHOOK_SECRET: secret }, async () => {
+    assert.equal((await webhook(req({ "x-github-event": "ping" }))).status, 401);
+    const res = await webhook(req({ "x-github-event": "ping", "x-hub-signature-256": sig }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true, pong: true });
   });
 });

@@ -1346,3 +1346,81 @@ def test_pr_diff_excerpt_cached_by_head_sha_and_leased_to_extractor(
     restricted = PostgresTriageStore(extractor_role_url(database_url))
     tasks = restricted.lease_extraction_batch(limit=5, now=NOW, lease_until=NOW + timedelta(minutes=30), max_attempts=3)
     assert len(tasks) == 1 and "+new_v2" in tasks[0].diff_excerpt
+
+
+def test_partial_maintainer_sync_persisted_unowned_reason_runs_and_webhook_queue(
+    store: PostgresTriageStore, database_url: str
+) -> None:
+    from triage.pipeline import IngestHandler
+
+    # 1. Partial maintainer sync: a broken file keeps that maintainer's old row while updating valid files.
+    initial = {
+        "alice.yaml": "github_login: alice\nrules: {areas: [moe]}\n",
+        "bob.yaml": "github_login: bob\nrules: {hardware: [B200]}\n",
+    }
+    mixed = {
+        "alice.yaml": "github_login: alice\nrules: {areas: [not-an-area]}\n",  # broken!
+        "bob.yaml": "github_login: bob\nrules: {hardware: [B200, GB200]}\n",   # valid update!
+    }
+    sources = iter([initial, mixed])
+    route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
+                         delivery_mode=DeliveryMode.SHADOW, maintainers_source=lambda: next(sources))
+    route(ScheduledCommand("triage_route", NOW))
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=5)))
+    by_login = {m.github_login: m for m in store.active_maintainers()}
+    assert by_login["alice"].rules["areas"] == ["moe"]  # preserved!
+    assert by_login["bob"].rules["hardware"] == ["B200", "GB200"]  # updated!
+
+    # Run telemetry recorded the warning in triage_runs.
+    with psycopg.connect(database_url) as c:
+        run_row = c.execute(
+            "SELECT status, warnings FROM triage_runs WHERE consumer = 'triage-route' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert run_row is not None and run_row[0] == "warning" and "alice" in run_row[1][0]
+
+    # 2. Unowned reason persisted on triage_scores for unowned P0/P1 items and cleared when assigned.
+    ingest(store, issue(2001, "TPU issue nobody matches"))
+    tpu_facets = {**SEVERE, "areas": ["tpu"], "hardware": ["TPU"], "models": [{"name": "DeepSeek-V3.1", "family": "deepseek"}]}
+    run_extraction(store, FakeBackend({"TPU": tpu_facets}), budget=Budget(), now=NOW, workers=1)
+    route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW)
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=10)))
+    with psycopg.connect(database_url) as c:
+        reason = c.execute(
+            "SELECT unowned_reason FROM triage_scores WHERE item_key = 'vllm-project/vllm#2001'"
+        ).fetchone()[0]
+    assert isinstance(reason, dict) and "Nobody is a match" in reason["summary"]
+
+    # 3. Webhook queue drain ingests queued items without waiting for cursor poll.
+    store.enqueue_webhook_item("vllm-project/vllm", 2050, "issue", "issues.opened", now=NOW)
+
+    class WebhookGitHub(FakeGitHub):
+        def __init__(self) -> None:
+            super().__init__({})
+            self.fetched_numbers: list[int] = []
+
+        def updated_items(self, repo: str, since: datetime, *, max_items: int) -> list[Item]:
+            return []
+
+        def prefetch(self, repo: str, *, files: list[int], comments: list[int], authors: list[int]) -> None:
+            return None
+
+        def items_by_numbers(self, repo: str, numbers: list[int]) -> list[Item]:
+            self.fetched_numbers.extend(numbers)
+            return [issue(n, f"Webhook issue {n}") for n in numbers]
+
+    wh_gh = WebhookGitHub()
+    IngestHandler(
+        store=store, github=wh_gh, config=default_config(), clock=FixedClock(NOW), poll_cursor=False  # type: ignore[arg-type]
+    )(ScheduledCommand("triage_ingest", NOW))
+    assert wh_gh.fetched_numbers == [2050]
+    assert store.item_state("vllm-project/vllm#2050") is not None
+    assert store.claim_webhook_queue("vllm-project/vllm") == []
+
+    # 4. Restricted triage_extractor role can INSERT into triage_runs (and still cannot SELECT it).
+    role_url = extractor_role_url(database_url)
+    PostgresTriageStore(role_url).record_run(
+        consumer="triage-extract", started_at=NOW, finished_at=NOW, status="ok", summary={"extracted": 1}
+    )
+    with psycopg.connect(role_url, autocommit=True) as c:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            c.execute("SELECT * FROM triage_runs")
