@@ -3,6 +3,7 @@ import test from "node:test";
 import type { TriageCi } from "./triage-ci";
 import { nestGroups, rowOrder } from "./triage-groups";
 import {
+  cleanupReasons,
   contextText,
   fixLabelText,
   fixTargets,
@@ -232,4 +233,24 @@ test("a fix PR's label names its issues, the one it sits under first", () => {
   assert.deepEqual(targets.map((t) => t.number), [67454, 67401]);
   assert.equal(fixLabelText(targets), "PR · fix for #67454, #67401");
   assert.equal(fixLabelText(fixTargets(item(65365, { kind: "pr", fixes: [link(65364)] }), "vllm-project/vllm#65364", 65364)), "PR · fix for #65364");
+});
+
+test("cleanupReasons explains competing PRs, low effort, and slop signals", () => {
+  assert.deepEqual(cleanupReasons(null), []);
+  const reasons = cleanupReasons({
+    lowEffort: true,
+    slopSignals: ["ai_boilerplate", "no_tests"],
+    competesWith: [
+      {
+        issueNumber: 68833,
+        prs: [{ itemKey: "vllm-project/vllm#68924", number: 68924, htmlUrl: "https://github.com/vllm-project/vllm/pull/68924" }],
+      },
+    ],
+  });
+  assert.equal(reasons.length, 3);
+  assert.equal(reasons[0].label, "Competes on #68833:");
+  assert.deepEqual(reasons[0].peers?.map((p) => p.number), [68924]);
+  assert.equal(reasons[1].label, "Low effort");
+  assert.equal(reasons[2].label, "Slop: AI boilerplate +1");
+  assert.match(reasons[2].title, /no tests/);
 });

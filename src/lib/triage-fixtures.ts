@@ -447,15 +447,18 @@ export function fixtureQueue(filters: QueueFilters): TriageQueueResponse {
     }
     if (filters.review === "cleanup" || filters.focus === "cleanup") {
       if (item.kind !== "pr" || item.state !== "open") return false;
-      const hasCompetingPr = item.fixes.some((issue) =>
-        FIXTURE_ITEMS.some(
-          (other) =>
-            other.kind === "pr" &&
-            other.state === "open" &&
-            other.itemKey !== item.itemKey &&
-            other.fixes.some((f) => f.itemKey === issue.itemKey),
-        ),
-      );
+      const hasCompetingPr =
+        !item.draft &&
+        item.fixes.some((issue) =>
+          FIXTURE_ITEMS.some(
+            (other) =>
+              other.kind === "pr" &&
+              other.state === "open" &&
+              !other.draft &&
+              other.itemKey !== item.itemKey &&
+              other.fixes.some((f) => f.itemKey === issue.itemKey),
+          ),
+        );
       if (!LOW_EFFORT_FIXTURE_KEYS.has(item.itemKey) && item.number !== 68823 && !hasCompetingPr) return false;
     }
     if (filters.review === "blocked" && (item.kind !== "pr" || item.state !== "open" || item.waitingOn !== "author")) return false;
@@ -485,8 +488,31 @@ export function fixtureQueue(filters: QueueFilters): TriageQueueResponse {
     return (b.score ?? -1) - (a.score ?? -1);
   });
   const start = (filters.page - 1) * filters.pageSize;
+  const pageItems = sorted.slice(start, start + filters.pageSize);
+  const cleanupActive = filters.review === "cleanup" || filters.focus === "cleanup";
+  const items = cleanupActive
+    ? pageItems.map((item) => {
+        const competesWith = item.draft
+          ? []
+          : item.fixes
+              .map((issue) => ({
+                issueNumber: issue.number,
+                prs: FIXTURE_ITEMS.filter(
+                  (other) =>
+                    other.kind === "pr" &&
+                    other.state === "open" &&
+                    !other.draft &&
+                    other.itemKey !== item.itemKey &&
+                    other.fixes.some((f) => f.itemKey === issue.itemKey),
+                ).map((other) => ({ itemKey: other.itemKey, number: other.number, htmlUrl: other.htmlUrl })),
+              }))
+              .filter((group) => group.prs.length > 0);
+        const lowEffort = LOW_EFFORT_FIXTURE_KEYS.has(item.itemKey) || item.number === 68823;
+        return { ...item, cleanup: { lowEffort, slopSignals: [], competesWith } };
+      })
+    : pageItems;
   return {
-    items: sorted.slice(start, start + filters.pageSize),
+    items,
     total: sorted.length,
     page: filters.page,
     pageSize: filters.pageSize,

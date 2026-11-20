@@ -463,7 +463,7 @@ function PresetBar({ active, onPick }: { active: QueuePresetId | null; onPick: (
             aria-pressed={on}
             title={preset.title}
             onClick={() => onPick(preset.id)}
-            className={`dashboard-control whitespace-nowrap px-2.5 text-xs font-medium ${
+            className={`dashboard-control whitespace-nowrap px-2 text-xs font-medium ${
               index > 0 ? "border-l border-zinc-200 dark:border-zinc-700" : ""
             } ${
               on
@@ -510,7 +510,7 @@ function FiltersPopover({
   }, [open]);
 
   return (
-    <div ref={root} className="relative">
+    <div ref={root} className="relative shrink-0">
       <button
         ref={trigger}
         type="button"
@@ -790,13 +790,13 @@ function Queue() {
 
       {/* overflow-clip, not overflow-hidden: hidden would make this box the sticky container and stop the group headers sticking. */}
       <div className="overflow-clip rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-        <div className="flex flex-wrap items-center gap-2 border-b border-zinc-200 bg-zinc-50/60 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900/40">
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-zinc-200 bg-zinc-50/60 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900/40">
           <div className="scrollbar-hidden -mx-1 max-w-full overflow-x-auto px-1">
             <PresetBar active={preset} onPick={pickPreset} />
           </div>
           <form
             role="search"
-            className="relative min-w-[10rem] flex-[1_1_12rem]"
+            className="relative min-w-[7.5rem] flex-[1_1_8rem]"
             onSubmit={(event) => {
               event.preventDefault();
               applySearch(search);
@@ -820,19 +820,19 @@ function Queue() {
             href="/triage/scoring"
             title="How is this scored?"
             aria-label="How is this scored?"
-            className="dashboard-control inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-zinc-600 underline-offset-2 hover:text-zinc-950 hover:underline dark:text-zinc-300 dark:hover:text-zinc-50"
+            className="dashboard-control inline-flex h-8 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs font-medium text-zinc-600 underline-offset-2 hover:text-zinc-950 hover:underline dark:text-zinc-300 dark:hover:text-zinc-50"
           >
             <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
               <circle cx="8" cy="8" r="6.25" />
               <path d="M6.4 6.2a1.7 1.7 0 113.1 1c-.6.5-1.5.8-1.5 1.8M8 11.2v.1" strokeLinecap="round" />
             </svg>
-            <span className="hidden lg:inline">How is this scored?</span>
+            <span className="hidden 2xl:inline">How is this scored?</span>
           </Link>
           {!isDefaultFilters(filters) && (
             <button
               type="button"
               onClick={clearFilters}
-              className="dashboard-control h-8 rounded-md px-2 text-xs font-medium text-zinc-500 underline-offset-2 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
+              className="dashboard-control h-8 shrink-0 whitespace-nowrap rounded-md px-2 text-xs font-medium text-zinc-500 underline-offset-2 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
             >
               Reset
             </button>

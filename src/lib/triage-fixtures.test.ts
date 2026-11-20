@@ -49,6 +49,8 @@ test("new views filter fixtures rather than silently showing the full queue", ()
   const query = (extra: string) => fixtureQueue(parseQueueFilters(new URLSearchParams(`bands=page,route,watch,ignore,unscored&${extra}`)));
   assert.deepEqual(query("review=merge").items.map((i) => i.number), [65365]);
   assert.deepEqual(new Set(query("focus=cleanup").items.map((i) => i.number)), new Set([68597, 68822, 68823, 67131]));
+  const dupe = query("review=cleanup").items.find((i) => i.number === 68597);
+  assert.deepEqual(dupe?.cleanup?.competesWith[0]?.prs.map((p) => p.number), [67131]);
   assert.ok(query("review=blocked").items.every((i) => i.waitingOn === "author"));
   assert.ok(query("focus=has-fix").items.every((i) => i.kind === "issue" && i.fixedBy.some((pr) => pr.state === "open")));
   assert.deepEqual(new Set(query("focus=stale").items.map((i) => i.number)), new Set([65364, 67454]));

@@ -292,6 +292,59 @@ async function withCi<T extends TriageQueueItem>(db: Db, items: T[]): Promise<T[
   return items.map((item) => ({ ...item, ci: ci.get(item.itemKey) ?? null }));
 }
 
+/**
+ * Adds Close / dedup reasons (competing non-draft open PRs, low effort, slop
+ * signals) to a cleanup-filtered list so each row explains why it is listed.
+ */
+async function withCleanupInfo(
+  db: Db,
+  rows: readonly QueueRow[],
+  items: TriageQueueItem[],
+): Promise<TriageQueueItem[]> {
+  if (items.length === 0) return items;
+  const keys = items.map((item) => item.itemKey);
+  const peerRows = await db<{
+    pr_key: string;
+    issue_number: number;
+    other_key: string;
+    other_number: number;
+    other_url: string;
+  }[]>`
+    ${queueFocusCte(db, "cleanup")}
+    SELECT a.pr_key, a.issue_number::int AS issue_number,
+           b.pr_key AS other_key, o.number AS other_number, o.html_url AS other_url
+    FROM open_fix_links a
+    JOIN open_fix_links b
+      ON a.repo = b.repo AND a.issue_number = b.issue_number AND a.pr_key <> b.pr_key
+    JOIN triage_items o ON o.item_key = b.pr_key
+    WHERE a.pr_key IN ${db(keys)} AND NOT a.draft AND NOT b.draft
+    ORDER BY a.issue_number::int, o.number
+  `;
+  const peersByPr = new Map<string, Map<number, { itemKey: string; number: number; htmlUrl: string }[]>>();
+  for (const row of peerRows) {
+    let byIssue = peersByPr.get(row.pr_key);
+    if (!byIssue) {
+      byIssue = new Map();
+      peersByPr.set(row.pr_key, byIssue);
+    }
+    const list = byIssue.get(row.issue_number) ?? [];
+    list.push({ itemKey: row.other_key, number: Number(row.other_number), htmlUrl: row.other_url });
+    byIssue.set(row.issue_number, list);
+  }
+  const facetsByKey = new Map(rows.map((row) => [row.item_key, row.facets ?? {}]));
+  return items.map((item) => {
+    const facets = facetsByKey.get(item.itemKey) ?? {};
+    const lowEffort = facets.pr?.low_effort === true;
+    const slopSignals = strings(facets.slop_signals);
+    const byIssue = peersByPr.get(item.itemKey);
+    const competesWith = byIssue
+      ? [...byIssue.entries()].map(([issueNumber, prs]) => ({ issueNumber, prs }))
+      : [];
+    if (!lowEffort && slopSignals.length === 0 && competesWith.length === 0) return item;
+    return { ...item, cleanup: { lowEffort, slopSignals, competesWith } };
+  });
+}
+
 function latestExtractionJoin(db: Db) {
   return db`
     LEFT JOIN triage_scores s ON s.item_key = i.item_key
@@ -368,8 +421,13 @@ export async function listQueue(filters: QueueFilters): Promise<TriageQueueRespo
     ${order}
     LIMIT ${filters.pageSize} OFFSET ${(filters.page - 1) * filters.pageSize}
   `;
+  const baseItems = await withCi(db, await withGroupLinks(db, rows.map(toQueueItem)));
+  const items =
+    filters.review === "cleanup" || filters.focus === "cleanup"
+      ? await withCleanupInfo(db, rows, baseItems)
+      : baseItems;
   return {
-    items: await withCi(db, await withGroupLinks(db, rows.map(toQueueItem))),
+    items,
     total: rows.length > 0 ? Number(rows[0].total) : 0,
     page: filters.page,
     pageSize: filters.pageSize,
