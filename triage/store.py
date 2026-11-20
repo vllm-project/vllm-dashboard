@@ -1103,7 +1103,10 @@ class PostgresTriageStore(PostgresAlertStore):
                                      AND a.action IN ('drop', 'slop')
                                )
                                AND NOT (COALESCE(i.prepass->>'waiting_on', '') = 'author' AND s.band <> 'page')
-                               AND NOT (
+                               -- COALESCE: items ingested before gh_assignees existed have
+                               -- no such key; jsonb_typeof(NULL) = 'array' is NULL, which
+                               -- would make `want` NULL and violate NOT NULL.
+                               AND NOT COALESCE((
                                    jsonb_typeof(i.prepass->'gh_assignees') = 'array'
                                    AND jsonb_array_length(i.prepass->'gh_assignees') > 0
                                    AND NOT EXISTS (
@@ -1111,7 +1114,7 @@ class PostgresTriageStore(PostgresAlertStore):
                                        FROM jsonb_array_elements_text(i.prepass->'gh_assignees') AS g(login)
                                        WHERE lower(g.login) = ANY(%s)
                                    )
-                               )
+                               ), false)
                            ) AS want
                     FROM triage_scores s
                     JOIN triage_items i ON i.item_key = s.item_key
