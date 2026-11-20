@@ -62,7 +62,9 @@ test("every page is linked from exactly one section", () => {
 
 test("Triage routes resolve to the Triage section and Queue is exact-match", async () => {
   const navigation = await import("./dashboard-navigation");
-  assert.equal(navigation.sectionForPathname("/triage/me")?.label, "Triage");
+  for (const path of ["/triage/me", "/triage/guide", "/triage/scoring"]) {
+    assert.equal(navigation.sectionForPathname(path)?.label, "Triage");
+  }
   const [queue, me] = navigation.TRIAGE_SECTION.links;
   assert.equal(navigation.navItemActive("/triage", queue), true);
   assert.equal(navigation.navItemActive("/triage/me", queue), false);

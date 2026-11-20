@@ -436,8 +436,10 @@ Next.js on Vercel, at [ci.vllm.ai/triage](https://ci.vllm.ai/triage). It
 deploys on merge to `main`.
 
 - **Tabs:** Queue (`/triage`), My list (`/triage/me`), Configure rules
-  (`/triage/rules`, draft and preview; nothing is saved), Scoring guidelines
-  (`/triage/scoring`), How it works (`/triage/guide`).
+  (`/triage/rules`, draft and preview; nothing is saved).
+- **Header reference links:** How it works (`/triage/guide`) and Scoring
+  guidelines (`/triage/scoring`), above the tabs. The item drawer also links
+  to scoring guidelines from its score breakdown.
 - **Queue rows:** a CI pill on open P0–P2 PRs ("CI ✓", "CI 20/41", "CI 3 ✗",
   "CI 3 ✗ (main)", "CI not run"). A fix PR is nested under its issue
   ("↳ fix"); other rows say "Fixes #N" / "Fixed by #N". My list nests fix PRs the same way.

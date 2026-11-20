@@ -18,6 +18,8 @@ export interface DashboardSection {
   label: string;
   description: string;
   links: readonly DashboardNavEntry[];
+  /** Reference pages shown beside the section heading, outside the tabs. */
+  referenceLinks?: readonly DashboardNavItem[];
 }
 
 export function isNavGroup(entry: DashboardNavEntry): entry is DashboardNavGroup {
@@ -26,9 +28,12 @@ export function isNavGroup(entry: DashboardNavEntry): entry is DashboardNavGroup
 
 /** Every page a section links to, groups flattened, in order. */
 export function sectionPages(section: DashboardSection): DashboardNavItem[] {
-  return section.links.flatMap((entry) =>
-    isNavGroup(entry) ? [...entry.links] : [entry],
-  );
+  return [
+    ...section.links.flatMap((entry) =>
+      isNavGroup(entry) ? [...entry.links] : [entry],
+    ),
+    ...(section.referenceLinks ?? []),
+  ];
 }
 
 export const DASHBOARD_SECTIONS = [
@@ -91,8 +96,10 @@ export const TRIAGE_SECTION = {
     { href: "/triage", label: "Queue", exact: true },
     { href: "/triage/me", label: "My list" },
     { href: "/triage/rules", label: "Configure rules" },
-    { href: "/triage/scoring", label: "Scoring guidelines" },
+  ],
+  referenceLinks: [
     { href: "/triage/guide", label: "How it works" },
+    { href: "/triage/scoring", label: "Scoring guidelines" },
   ],
 } as const satisfies DashboardSection;
 
