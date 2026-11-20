@@ -338,7 +338,7 @@ Every route run, before routing (`store.follow_github`):
 - **Compact digests.** New assignments and overdue reminders share priority
   sections. Every P0 group is shown. Lower priorities retain a compact budget
   (at most three per priority), with overflow links to the full list. Large
-  digests continue in additional messages, queued together atomically. Item titles
+  digests continue in additional messages, queued together atomically. Bulleted item titles
   open triage; `#number` opens GitHub. A quiet line shows the extracted symptom,
   item age (not assignment age), and colored symptom cues. A short italic line
   uses the extracted summary, capped at 180 characters, without a label or icon;

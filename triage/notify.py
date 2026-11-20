@@ -460,7 +460,7 @@ def _digest_section(
     metadata = [_link(entry.html_url, f"#{number}"), _symptom(entry, lang), _age(entry, now, lang)]
     if entry.kind == "pr":
         metadata.append(_compact_ci(entry, lang))
-    lines = [f"*{_link(_item_url(entry.item_key), entry.title)}*", " · ".join(p for p in metadata if p)]
+    lines = [f"• *{_link(_item_url(entry.item_key), entry.title)}*", " · ".join(p for p in metadata if p)]
     # Use the extracted summary, not an invented impact claim. Keep one quiet line.
     impact = " ".join(entry.summary.split())
     if len(impact) > 180:

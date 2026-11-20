@@ -31,7 +31,7 @@ def test_title_and_number_destinations_state_and_age() -> None:
                                ("vi", "⚠️ kết quả sai", "33 giờ")]:
         item = next(b for b in render([ISSUE, FIX], lang) if "accessory" in b)
         lines = item["text"]["text"].split("\n")
-        assert lines[0] == "*<https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2368575|Responses API loses history>*"
+        assert lines[0] == "• *<https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2368575|Responses API loses history>*"
         assert lines[1] == f"<https://github.com/vllm-project/vllm/issues/68575|#68575> · {symptom} · {age}"
         assert ("✅ CI passed" if lang == "en" else "✅ CI đạt") in lines[2]
         assert "View in triage" not in item["text"]["text"] and "↗" not in item["text"]["text"]

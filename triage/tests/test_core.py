@@ -720,7 +720,7 @@ def test_vietnamese_digest_is_friendly_grouped_and_keeps_titles() -> None:
     assert [o["text"]["text"] for o in items[0]["accessory"]["options"]] == [
         "Nhận việc", "Không phải của tôi", "Mở trên dashboard"]
     text = items[0]["text"]["text"]
-    assert text.startswith("*<https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2366694|[Bugfix] Restore exact division")
+    assert text.startswith("• *<https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2366694|[Bugfix] Restore exact division")
     assert "<https://github.com/vllm-project/vllm/pull/66694|#66694>" in text
     assert "chờ bạn nhận" not in text and "_an English summary_" in text
     assert "triage/config/maintainers/gau-nernst.yaml|Tùy chỉnh>" in blocks[-1]["elements"][0]["text"]
