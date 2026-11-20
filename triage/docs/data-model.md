@@ -45,6 +45,12 @@ dashboard / Slack ──► triage_actions + triage_assignments.status
   "waiting_on": "author" | "reviewer",
   "waiting_reasons": ["draft", "ci_failing", "ci_pr_failures", "merge_conflict", "changes_requested"],
   "failing_checks": ["pre-run-check"],  // checks failing on the head commit (GraphQL ingest only)
+  "merge_ready": false,             // approved + mergeable + successful checks + CI on the same head
+  "merge_checked_at": "2026-11-20T12:00:00+00:00", // readiness expires after one hour in the queue
+  "review_decision": "APPROVED",    // null when unknown (e.g. REST ingest)
+  "mergeable": "MERGEABLE",
+  "checks_state": "SUCCESS",        // aggregate head-commit rollup, not just absence of failures
+  "head_sha": "abc123",
   "ci_pr_only_jobs": [":github: GitHub pre-commit check"]  // with ci_pr_failures: up to 3 of those jobs
 }
 ```

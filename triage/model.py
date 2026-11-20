@@ -85,6 +85,7 @@ class Item:
     mergeable: str | None = None
     failing_checks: list[str] | None = None
     # GraphQL only: the head commit (its stored CI counts while it matches).
+    checks_state: str | None = None
     head_sha: str | None = None
     # Budgeted PR diff excerpt (populated during ingest, cached per head_sha).
     diff_excerpt: str = ""

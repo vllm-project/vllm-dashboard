@@ -440,6 +440,24 @@ deploys on merge to `main`.
 - **Header reference links:** How it works (`/triage/guide`) and Scoring
   guidelines (`/triage/scoring`), above the tabs. The item drawer also links
   to scoring guidelines from its score breakdown.
+- **Queue views:** Needs triage, Not acked, Ready to review, Ready to merge,
+  Close / dedup, All. Close / dedup includes every priority, including P3/unscored:
+  open PRs sharing a fix target with another open PR, or flagged with
+  `pr.low_effort` / `slop_signals`. These are review candidates, not confirmed
+  duplicates. Link matching uses both prepass and extracted fix references.
+- **Quick views in Filters:** Fires (serving broken, security, or regression
+  signals), Has fix PR (open P0/P1 issues with an open fix PR), Stale (>3d),
+  and Waiting on author / CI. Quick views clear owner/status constraints;
+  further filters can narrow them. Stale means unowned for over 3 days since
+  becoming routable, or a primary assignment unacked for over 3 days.
+- **Ready to merge:** non-draft PRs with approved reviews, known
+  mergeability, a successful GitHub check rollup, and passed Buildkite CI
+  for the same observed head. The snapshot expires after one hour. Missing
+  data never counts as ready; GitHub remains the final merge authority.
+  Deploy the updated ingest worker to populate the new JSON prepass fields
+  on subsequent ingest/status refresh runs; no migration or re-extraction is
+  needed. Until then this view is empty. The existing CI refresh cadence and
+  budgets apply, so a stale/unrefreshed PR can be omitted conservatively.
 - **Queue rows:** a CI pill on open P0–P2 PRs ("CI ✓", "CI 20/41", "CI 3 ✗",
   "CI 3 ✗ (main)", "CI not run"). A fix PR is nested under its issue
   ("↳ fix"); other rows say "Fixes #N" / "Fixed by #N". My list nests fix PRs the same way.

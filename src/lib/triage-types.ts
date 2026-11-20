@@ -64,12 +64,16 @@ export interface TriagePrepass {
   referenced_pr_authors?: Record<string, string>;
   /** Open PRs: whose move it is (`whose_move` in triage/prepass.py). */
   waiting_on?: "author" | "reviewer";
+  merge_ready?: boolean;
+  merge_checked_at?: string | null;
+  checks_state?: string | null;
+  head_sha?: string | null;
   /** Why it waits on the author: draft, ci_failing, merge_conflict, changes_requested. */
   waiting_reasons?: string[];
   /** GitHub PR reviewDecision: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED. */
-  review_decision?: string;
+  review_decision?: string | null;
   /** GitHub PR mergeable state: MERGEABLE, CONFLICTING, UNKNOWN. */
-  mergeable?: string;
+  mergeable?: string | null;
   /** Checks failing on the PR's head commit (GraphQL ingest only). */
   failing_checks?: string[];
   /** Failed CI jobs that aren't failing on main, when that makes it the author's move (`ci_pr_failures`). */
