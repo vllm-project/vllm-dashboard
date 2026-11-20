@@ -3,6 +3,11 @@
 Uses the issues endpoint (which lists PRs too) ordered by update time, then
 fetches changed files for in-scope PRs and the first comments of items that
 have any. Needs only a read-only token; never writes.
+
+Ingest uses the GraphQL client (github_graphql.py) by default, which does the
+same work in a few batched queries; this one stays for TRIAGE_GITHUB_API=rest
+(a quick rollback), the backtest, and maintainer profiles (search API).
+Both implement `IngestClient`.
 """
 
 from __future__ import annotations
@@ -10,8 +15,9 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -24,8 +30,60 @@ MAX_FILE_PAGES = 3
 MAX_COMMENTS = 30
 
 
+# (login, created_at, text as stored: "[login (ASSOCIATION)]: body")
+CommentRecord = tuple[str, datetime | None, str]
+
+
 class GitHubError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class PrStatus:
+    """Whose move it is on a PR, as of now (see prepass.whose_move)."""
+
+    state: Literal["open", "closed", "merged"]
+    draft: bool
+    review_decision: str | None
+    mergeable: str | None
+    failing_checks: list[str]
+
+
+class IngestClient(Protocol):
+    """What IngestHandler needs from GitHub."""
+
+    # True when items carry review decision, mergeability and failing checks,
+    # and pr_statuses() works (GraphQL only).
+    reads_pr_status: bool
+
+    def updated_items(self, repo: str, since: datetime, *, max_items: int) -> list[Item]:
+        """Issues and PRs updated at or after `since`, oldest first, at most
+        `max_items` (the oldest ones, so the cursor still advances)."""
+        ...
+
+    def prefetch(self, repo: str, *, files: list[int], comments: list[int], authors: list[int]) -> None:
+        """Fetch in one go what pull_files/comment_records/pull_authors will be
+        asked for next. A no-op where each call is its own request anyway."""
+        ...
+
+    def pull_files(self, repo: str, number: int) -> list[FileChange]: ...
+
+    def comment_records(self, repo: str, number: int) -> list[CommentRecord]:
+        """The first MAX_COMMENTS comments, oldest first."""
+        ...
+
+    def comment_tail(self, repo: str, number: int) -> list[tuple[str, datetime | None]]:
+        """(login, created_at) of the latest comments, for threads longer than
+        MAX_COMMENTS; may be empty."""
+        ...
+
+    def pull_authors(self, repo: str, numbers: list[int]) -> dict[int, str]:
+        """Authors of those numbers that are PRs."""
+        ...
+
+    def pr_statuses(self, repo: str, numbers: list[int]) -> dict[int, PrStatus]:
+        """Current status of open PRs; empty unless reads_pr_status."""
+        ...
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -35,10 +93,13 @@ def _parse_time(value: str | None) -> datetime | None:
 
 
 class GitHubClient:
+    reads_pr_status = False
+
     def __init__(self, token: str, *, timeout: float = 30.0, min_remaining: int = 200) -> None:
         self._token = token
         self._timeout = timeout
         self._min_remaining = min_remaining
+        self.calls = 0
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         url = f"{API}{path}"
@@ -55,6 +116,7 @@ class GitHubClient:
         )
         for attempt in range(4):
             try:
+                self.calls += 1
                 with urlopen(request, timeout=self._timeout) as response:
                     remaining = int(response.headers.get("X-RateLimit-Remaining", "5000"))
                     body = json.loads(response.read())
@@ -110,6 +172,12 @@ class GitHubClient:
                 return
             page += 1
 
+    def updated_items(self, repo: str, since: datetime, *, max_items: int) -> list[Item]:
+        return [item_from_raw(repo, raw) for raw in self.issues_updated_since(repo, since, max_items=max_items)]
+
+    def prefetch(self, repo: str, *, files: list[int], comments: list[int], authors: list[int]) -> None:
+        return None
+
     def pull_files(self, repo: str, number: int) -> list[FileChange]:
         files: list[FileChange] = []
         for page in range(1, MAX_FILE_PAGES + 1):
@@ -158,7 +226,21 @@ class GitHubClient:
         login = (pull.get("user") or {}).get("login")
         return login if isinstance(login, str) else None
 
-    def comment_records(self, repo: str, number: int) -> list[tuple[str, datetime | None, str]]:
+    def pull_authors(self, repo: str, numbers: list[int]) -> dict[int, str]:
+        out: dict[int, str] = {}
+        for number in numbers:
+            author = self.pull_author(repo, number)
+            if author is not None:
+                out[number] = author
+        return out
+
+    def comment_tail(self, repo: str, number: int) -> list[tuple[str, datetime | None]]:
+        return []
+
+    def pr_statuses(self, repo: str, numbers: list[int]) -> dict[int, PrStatus]:
+        return {}
+
+    def comment_records(self, repo: str, number: int) -> list[CommentRecord]:
         """(login, created_at, text as stored) for the first MAX_COMMENTS comments."""
         batch = self._get(f"/repos/{repo}/issues/{number}/comments", {"per_page": MAX_COMMENTS}) or []
         out = []

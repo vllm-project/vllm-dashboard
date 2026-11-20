@@ -9,8 +9,10 @@ import type { TriageFacets, TriagePrepass, TriageRules } from "@/lib/triage-type
  * read. It mirrors, and must be kept in step with:
  *   - `routing_candidates` in triage/store.py (open, in scope, P0/P1,
  *     labelled, no open/acked/done primary, never dropped or slopped);
- *   - `_route_one` in triage/pipeline.py (leave items assigned on GitHub to
- *     someone outside triage; wait up to RELEVANCE_GRACE for relevance
+ *   - `_route_one` in triage/pipeline.py (hold back PRs waiting on their
+ *     author unless P0, see `waiting_on_author` in triage/routing.py; leave
+ *     items assigned on GitHub to someone outside triage; wait up to
+ *     RELEVANCE_GRACE for relevance
  *     judgements from every active maintainer unless one is already involved,
  *     then route among those judged);
  *   - `choose_owners` / `_excluded` / `involvement` / `assigned_elsewhere` in
@@ -107,6 +109,31 @@ export function commentersFromExcerpt(text: string): string[] {
 
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+/** `AUTHOR_CHECKS` in triage/prepass.py: checks whose failure is the PR author's to fix. */
+export const AUTHOR_CHECKS = ["pre-commit", "DCO"];
+
+/** `waiting_on_author` in routing.py: a PR waiting on its author isn't routed unless it's P0. */
+export function waitingOnAuthor(prepass: TriagePrepass, band: string | null): boolean {
+  return prepass.waiting_on === "author" && band !== "page";
+}
+
+/**
+ * Why a PR waits on its author (`prepass.waiting_reasons`, from `whose_move`
+ * in triage/prepass.py), in words: "CI is failing (pre-commit)".
+ */
+export function waitingReasonsText(prepass: TriagePrepass): string {
+  const checks = strings(prepass.failing_checks).filter((c) => AUTHOR_CHECKS.includes(c));
+  const words: Record<string, string> = {
+    draft: "it's a draft",
+    ci_failing: `CI is failing${checks.length ? ` (${checks.join(", ")})` : ""}`,
+    merge_conflict: "it has merge conflicts",
+    changes_requested: "a reviewer requested changes",
+  };
+  const parts = strings(prepass.waiting_reasons).map((r) => words[r] ?? r.replace(/_/g, " "));
+  if (parts.length <= 1) return parts[0] ?? "";
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }
 
 /** `gh_assignees` in routing.py: the item's GitHub assignees, lower case. */
@@ -261,6 +288,12 @@ export function explainUnowned(input: WhyUnownedInput): WhyUnowned {
     );
   }
   if (!input.labelled) return done("Waiting for Claude to label it; routing starts after that.");
+  if (waitingOnAuthor(input.prepass, input.band)) {
+    const why = waitingReasonsText(input.prepass);
+    return done(
+      `Waiting on the author${why ? `: ${why}` : ""}. The router holds P1 PRs until it's the reviewers' move, then routes them.`,
+    );
+  }
   // From here on the item is one of the router's candidates; the router only
   // reads the top ROUTE_LIMIT of those each run.
   const position = input.queuePosition ?? 0;

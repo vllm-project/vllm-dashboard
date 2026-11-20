@@ -18,7 +18,8 @@ from alerting.runtime import AlertingRuntime, ProcessStatus
 from alerting.worker import SystemClock, _delivery_mode, _record_failure, _required_environment, _slack
 
 from triage.config import default_config
-from triage.github import GitHubClient
+from triage.github import GitHubClient, IngestClient
+from triage.github_graphql import GraphQLGitHubClient
 from triage.maintainers import fetch_main_files
 from triage.pipeline import DigestHandler, IngestHandler, RouteHandler
 from triage.store import PostgresTriageStore
@@ -43,6 +44,17 @@ def triage_delivery_mode() -> DeliveryMode:
     return _delivery_mode()
 
 
+def ingest_client(token: str) -> IngestClient:
+    """TRIAGE_GITHUB_API=rest switches ingest back to the REST client (one
+    request per PR's files, comments and named PR); default graphql."""
+    api = os.environ.get("TRIAGE_GITHUB_API", "graphql").strip().lower()
+    if api == "rest":
+        return GitHubClient(token)
+    if api != "graphql":
+        raise ValueError(f"TRIAGE_GITHUB_API must be 'graphql' or 'rest', not {api!r}")
+    return GraphQLGitHubClient(token)
+
+
 def build_runtime(consumer: str) -> tuple[AlertingRuntime, ScheduledCommand]:
     clock = SystemClock()
     store = PostgresTriageStore(_required_environment("DATABASE_URL"))
@@ -51,7 +63,7 @@ def build_runtime(consumer: str) -> tuple[AlertingRuntime, ScheduledCommand]:
     command_type = CONSUMERS[consumer]
     if consumer == "triage-ingest":
         handler = IngestHandler(
-            store=store, github=GitHubClient(_required_environment("GITHUB_TOKEN")),
+            store=store, github=ingest_client(_required_environment("GITHUB_TOKEN")),
             config=config, clock=clock,
         )
     elif consumer == "triage-route":

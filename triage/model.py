@@ -75,6 +75,15 @@ class Item:
     is_bot: bool = False
     # GitHub logins the item is assigned to on GitHub.
     assignees: list[str] = field(default_factory=list)
+    # Pull requests only, and only from the GraphQL client (None/empty from
+    # REST): issues the PR closes when merged ("Development" sidebar), the
+    # review decision (APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED),
+    # mergeable (MERGEABLE, CONFLICTING, UNKNOWN) and the names of checks
+    # failing on the head commit. Together they say whose move it is.
+    closing_issues: list[int] = field(default_factory=list)
+    review_decision: str | None = None
+    mergeable: str | None = None
+    failing_checks: list[str] | None = None
 
     @property
     def key(self) -> str:

@@ -21,7 +21,7 @@ import { humanizeTag } from "@/lib/triage-factors";
 import { actionText, extractionText, percentText, scopeText, sourceText, yesNo } from "@/lib/triage-words";
 import { describeReason, formatAge, triageFetcher } from "@/lib/triage-format";
 import type { TriageAssignment, TriageItemDetail, TriageRelevance } from "@/lib/triage-types";
-import type { WhyUnowned } from "@/lib/triage-why-unowned";
+import { waitingReasonsText, type WhyUnowned } from "@/lib/triage-why-unowned";
 
 /** A collapsible detail section; the summary at the top of the drawer stays open. */
 function Disclosure({
@@ -201,6 +201,13 @@ function QuickSignals({ prepass }: { prepass: TriageItemDetail["item"]["prepass"
         <Row label="Why it's triaged">{scopeText(prepass.scope_reason) ?? "—"}</Row>
         <Row label="Code areas (from files)"><Chips kind="area" values={(prepass.areas ?? []).map(humanizeTag)} max={10} /></Row>
         <Row label="Linked issues">{prepass.linked_issues?.length ? prepass.linked_issues.map((n) => `#${n}`).join(", ") : "none"}</Row>
+        {prepass.waiting_on && (
+          <Row label="Whose move">
+            {prepass.waiting_on === "author"
+              ? `The author's${waitingReasonsText(prepass) ? `: ${waitingReasonsText(prepass)}` : ""}`
+              : "The reviewers'"}
+          </Row>
+        )}
         <Row label="Hardware mentioned"><Chips kind="hardware" values={prepass.hardware_hints ?? []} max={10} /></Row>
         <Row label="Models mentioned"><Chips kind="model" values={prepass.model_hints ?? []} max={10} /></Row>
         <Row label="Author">

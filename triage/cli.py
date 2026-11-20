@@ -6,6 +6,7 @@
   vllm-triage extract          (extractor host: one budgeted run against Postgres)
   vllm-triage relevance        (extractor host: judge routable items against maintainer profiles)
   vllm-triage sync-maintainers (sync config/maintainers/*.yaml into the database now)
+  vllm-triage github-check     [--minutes 30]  (read-only: can this token run the GraphQL ingest?)
 
 Worker consumers (ingest/route/digest) run through `python -m triage.worker`.
 """
@@ -59,6 +60,30 @@ def _backtest(args: argparse.Namespace) -> int:
         print(json.dumps(stats))
     else:
         print(json.dumps(backtest.write_report(out_dir, config), indent=2))
+    return 0
+
+
+def _github_check(args: argparse.Namespace) -> int:
+    """The GraphQL ingest's queries for the last few minutes, without a
+    database: shows the token can read everything ingest needs (files,
+    comments, checks, reviews) and what it costs."""
+    from datetime import timedelta
+
+    from triage.github_graphql import GraphQLGitHubClient
+
+    repo = "vllm-project/vllm"
+    client = GraphQLGitHubClient(_github_token())
+    items = client.updated_items(repo, datetime.now(timezone.utc) - timedelta(minutes=args.minutes), max_items=1000)
+    prs = [i.number for i in items if i.kind == "pr"]
+    client.prefetch(repo, files=prs[:25], comments=[i.number for i in items if i.comment_count][:25], authors=[])
+    statuses = client.pr_statuses(repo, prs[:25])
+    print(json.dumps({
+        "items": len(items), "prs": len(prs),
+        "prs_with_files": sum(1 for n in prs[:25] if client.pull_files(repo, n)),
+        "pr_statuses": len(statuses),
+        "prs_with_failing_checks": sum(1 for s in statuses.values() if s.failing_checks),
+        "queries": client.calls, "points": client.cost,
+    }))
     return 0
 
 
@@ -142,6 +167,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     sync = sub.add_parser("sync-maintainers")
     sync.add_argument("--dir")
 
+    check = sub.add_parser("github-check")
+    check.add_argument("--minutes", type=int, default=30)
+
     args = parser.parse_args(argv)
     if args.command == "backtest":
         return _backtest(args)
@@ -149,6 +177,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _extract(args)
     if args.command == "relevance":
         return _relevance(args)
+    if args.command == "github-check":
+        return _github_check(args)
     return _sync(args)
 
 

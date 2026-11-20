@@ -11,6 +11,8 @@ import {
   type RelevanceLevel,
   type RoutingMaintainer,
   type WhyUnownedInput,
+  waitingOnAuthor,
+  waitingReasonsText,
 } from "./triage-why-unowned";
 
 const NOW = new Date("2026-11-18T12:00:00Z");
@@ -309,4 +311,37 @@ test("a GitHub assignee who is a maintainer is involved, ranks first, and skips 
 test("closed on GitHub while owned, then reopened: the assignment comes back", () => {
   const why = explainUnowned(input({ doneBy: "mgoin", doneOnGithub: true }));
   assert.match(why.summary, /closed on GitHub while mgoin owned it; their assignment comes back/);
+});
+
+test("a P1 PR waiting on its author says so; a P0 one is routed anyway", () => {
+  const prepass = { commenters: [], waiting_on: "author" as const, waiting_reasons: ["ci_failing"], failing_checks: ["pre-run-check", "pre-commit"] };
+  const why = explainUnowned(input({ band: "route", score: 60, prepass }));
+  assert.equal(
+    why.summary,
+    "Waiting on the author: CI is failing (pre-commit). The router holds P1 PRs until it's the reviewers' move, then routes them.",
+  );
+  assert.equal(why.pending, false);
+  // P0: the hold doesn't apply, so the usual explanation follows.
+  assert.doesNotMatch(explainUnowned(input({ band: "page", prepass })).summary, /Waiting on the author/);
+  // The reviewers' move: not held.
+  assert.doesNotMatch(
+    explainUnowned(input({ band: "route", score: 60, prepass: { commenters: [], waiting_on: "reviewer", waiting_reasons: [] } })).summary,
+    /Waiting on the author/,
+  );
+  // Closed and unlabelled items explain that first, as the router checks them first.
+  assert.match(explainUnowned(input({ band: "route", prepass, labelled: false })).summary, /Waiting for Claude to label it/);
+});
+
+test("waiting reasons in words, as whose_move lists them", () => {
+  assert.equal(waitingReasonsText({ waiting_reasons: ["draft"] }), "it's a draft");
+  assert.equal(
+    waitingReasonsText({ waiting_reasons: ["draft", "ci_failing", "merge_conflict", "changes_requested"], failing_checks: ["DCO"] }),
+    "it's a draft, CI is failing (DCO), it has merge conflicts and a reviewer requested changes",
+  );
+  assert.equal(waitingReasonsText({ waiting_reasons: ["ci_failing"], failing_checks: ["docs/readthedocs.org:vllm"] }), "CI is failing");
+  assert.equal(waitingReasonsText({}), "");
+  assert.equal(waitingOnAuthor({ waiting_on: "author" }, "route"), true);
+  assert.equal(waitingOnAuthor({ waiting_on: "author" }, "page"), false);
+  assert.equal(waitingOnAuthor({ waiting_on: "reviewer" }, "route"), false);
+  assert.equal(waitingOnAuthor({}, "route"), false);
 });

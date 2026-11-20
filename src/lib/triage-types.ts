@@ -59,6 +59,12 @@ export interface TriagePrepass {
   commenters?: string[];
   /** Authors of PRs the item names, by PR number. */
   referenced_pr_authors?: Record<string, string>;
+  /** Open PRs: whose move it is (`whose_move` in triage/prepass.py). */
+  waiting_on?: "author" | "reviewer";
+  /** Why it waits on the author: draft, ci_failing, merge_conflict, changes_requested. */
+  waiting_reasons?: string[];
+  /** Checks failing on the PR's head commit (GraphQL ingest only). */
+  failing_checks?: string[];
 }
 
 export interface TriageBreakdownEntry {
