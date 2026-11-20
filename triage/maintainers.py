@@ -34,7 +34,7 @@ _SLACK_USER = re.compile(r"^[UW][A-Z0-9]{6,}$")
 _TOP_KEYS = {
     "github_login", "slack_user_id", "min_score", "capacity_per_week",
     "notify_mode", "away", "rules", "active", "notes", "language",
-    "timezone", "digest_hour",
+    "timezone", "digest_hour", "max_notifications_per_day",
 }
 _RULE_KEYS = {"areas", "hardware", "models", "paths", "keywords", "types", "exclude", "natural_language"}
 _EXCLUDE_KEYS = {"types", "areas", "hardware"}
@@ -249,6 +249,12 @@ def _parse_entries(entries: list[Any], problems: list[str]) -> list[Maintainer]:
                 problems.append(f"{where}.digest_hour: must be an hour 0-23")
             else:
                 rules["digest_hour"] = digest_hour
+        max_notifs = entry.get("max_notifications_per_day")
+        if max_notifs is not None:
+            if isinstance(max_notifs, bool) or not isinstance(max_notifs, int) or not 0 <= max_notifs <= 50:
+                problems.append(f"{where}.max_notifications_per_day: must be an integer 0-50")
+            else:
+                rules["max_notifications_per_day"] = max_notifs
         out.append(Maintainer(
             github_login=login,
             slack_user_id=slack if isinstance(slack, str) else None,

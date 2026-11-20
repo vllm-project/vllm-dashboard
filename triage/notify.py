@@ -68,6 +68,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "open": "Open in dashboard",
         "page_primary": "Triage: P0 item for you",
         "page_backup": "Triage: you are backup on a P0 item",
+        "route_primary": "Triage: P1 item for you",
+        "route_backup": "Triage: you are backup on a P1 item",
         "digest_header": "📬 Daily triage digest · {date}",
         "digest_text": "Triage digest: {counts}",
         "digest_hello": "Hi <@{slack}> 👋 Today you have {parts}. <{url}|📋 Open your list>",
@@ -112,6 +114,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "open": "Mở trên dashboard",
         "page_primary": "Triage: một P0 thuộc mảng của bạn",
         "page_backup": "Triage: bạn là người dự phòng cho một P0",
+        "route_primary": "Triage: một P1 thuộc mảng của bạn",
+        "route_backup": "Triage: bạn là người dự phòng cho một P1",
         "digest_header": "📬 Digest triage hằng ngày · {date}",
         "digest_text": "Digest triage: {counts}",
         "digest_hello": "Chào <@{slack}> 👋 Hôm nay bạn có {parts} nhé. <{url}|📋 Mở danh sách của bạn>",
@@ -368,7 +372,9 @@ def page_dm(
 ) -> NotificationIntent:
     """The immediate DM; with `fixes`, `entry` is the group's issue and the
     fix PRs routed with it are listed under it."""
-    header = _t(lang, "page_primary" if role == "primary" else "page_backup")
+    band = group_band(entry, fixes or [])
+    key = ("page_" if band == "page" else "route_") + ("primary" if role == "primary" else "backup")
+    header = _t(lang, key)
     return NotificationIntent(
         delivery_id=f"triage:page:{assignment_key}",
         alert_ref=entry.item_key,

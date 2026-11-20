@@ -47,6 +47,7 @@ from triage.relevance import profile_is_stale
 from triage.routing import (
     Candidate,
     RoutingContext,
+    _excluded,
     assigned_elsewhere,
     can_follow,
     choose_owners,
@@ -54,6 +55,8 @@ from triage.routing import (
     gh_assignees,
     group_owner,
     involvement,
+    is_self_pr,
+    match_rules,
     waiting_on_author,
 )
 from triage.scoring import score_item
@@ -450,12 +453,50 @@ class RouteHandler:
             out |= set(facets["pr"].get("fixes_issues") or [])
         return out
 
+    def _reconcile_stale_assignments(self, by_login: dict[str, Maintainer], now: datetime) -> int:
+        """Revoke open (un-acked) router-created assignments that are no longer
+        valid: self-authored PRs, inactive maintainers, hard-excluded items, or
+        items whose current relevance dropped to `low`/`none` without strong
+        involvement or an explicit rule match."""
+        if not hasattr(self.store, "open_router_assignments") or not hasattr(self.store, "revoke_assignments"):
+            return 0
+        revocations: list[tuple[int, str]] = []
+        for assignment_id, login, _role, row in self.store.open_router_assignments():
+            ctx = self._context(row, now)
+            maintainer = by_login.get(login)
+            if maintainer is None:
+                revocations.append((assignment_id, "maintainer inactive"))
+                continue
+            if is_self_pr(login, ctx):
+                revocations.append((assignment_id, "self-authored PR"))
+                continue
+            strong_inv = [i for i in involvement(login, ctx) if i != "commented"]
+            if _excluded(maintainer.rules, ctx) and not strong_inv:
+                revocations.append((assignment_id, "excluded by maintainer rules"))
+                continue
+            judged = ctx.relevance.get(login) or {}
+            level = judged.get("relevance")
+            if level in ("none", "low") and not strong_inv and not match_rules(maintainer.rules, ctx):
+                revocations.append((assignment_id, f"relevance dropped to {level}"))
+        revoked = self.store.revoke_assignments(revocations, now=now)
+        if revoked:
+            log.info("triage: revoked %d stale open router assignment(s)", revoked)
+        return revoked
+
     def _route(self, now: datetime) -> tuple[int, list[str]]:
         maintainers = self.store.active_maintainers()
         if not maintainers:
             return 0, []
         by_login = {m.github_login: m for m in maintainers}
+        self._reconcile_stale_assignments(by_login, now)
         load = self.store.maintainer_load(since=week_ago(now))
+        notified_today = (
+            self.store.immediate_notifications_since(
+                {m.github_login: maintainer_local_day_start(m, now) for m in maintainers}
+            )
+            if hasattr(self.store, "immediate_notifications_since")
+            else {}
+        )
         judged_by = {m.github_login for m in maintainers}
         if hasattr(self.store, "sync_needs_relevance"):
             self.store.sync_needs_relevance(active_maintainers=judged_by)
@@ -471,7 +512,7 @@ class RouteHandler:
                 if row.item_key not in routed:
                     routed |= self._route_one(
                         row, maintainers, by_login, load, judged_by, now, strong_only=strong_only,
-                        partial=partial, groups=groups, routed=routed,
+                        partial=partial, groups=groups, routed=routed, notified_today=notified_today,
                     )
         if routed and hasattr(self.store, "sync_needs_relevance"):
             self.store.sync_needs_relevance(active_maintainers=judged_by)
@@ -482,7 +523,11 @@ class RouteHandler:
                 if row.item_key in routed:
                     continue
                 ctx = self._context(row, now)
-                missing = judged_by - set(row.relevance) if self.github is not None else set()
+                missing = (
+                    {m for m in judged_by if m not in row.relevance and not is_self_pr(m, ctx)}
+                    if self.github is not None
+                    else set()
+                )
                 reasons[row.item_key] = explain_unowned(
                     ctx,
                     maintainers,
@@ -511,11 +556,12 @@ class RouteHandler:
         self, row: RoutingRow, maintainers: list[Maintainer], by_login: dict[str, Maintainer],
         load: dict[str, int], judged_by: set[str], now: datetime, *, strong_only: bool,
         partial: dict[str, set[str]] | None = None, groups: _Groups | None = None,
-        routed: set[str] | None = None,
+        routed: set[str] | None = None, notified_today: dict[str, int] | None = None,
     ) -> set[str]:
         """Route one item (and the members of its issue/fix-PR group that
         follow it); returns the keys routed."""
         groups = groups or _Groups()
+        notified_today = notified_today if notified_today is not None else {}
         # A PR waiting on its author (draft, failing pre-commit/DCO, merge
         # conflict, changes requested) isn't routed: there's nothing for a
         # reviewer to do yet. It stays on the dashboard, and is routed once
@@ -533,7 +579,8 @@ class RouteHandler:
         follow = group_owner(ctx, linked, by_login, load=load, excluded=excluded, today=now.date())
         if follow is not None:
             candidate, member = follow
-            self._commit(row, [candidate], [], by_login, maintainers, now, grouped_with=member.item_key)
+            self._commit(row, [candidate], [], by_login, maintainers, now, grouped_with=member.item_key,
+                         notified_today=notified_today)
             groups.owned({row.item_key}, candidate.maintainer.github_login)
             return {row.item_key}
         # Wait for relevance judgements unless someone is already involved,
@@ -546,8 +593,10 @@ class RouteHandler:
         people = {str(c).lower() for c in row.prepass.get("commenters") or []}
         people |= {str(a).lower() for a in (row.prepass.get("referenced_pr_authors") or {}).values()}
         people |= gh_assignees(row.prepass)
+        if row.kind == "pr" and row.author:
+            people.discard(row.author.lower())
         involved = bool(people & {login.lower() for login in judged_by})
-        missing = judged_by - set(row.relevance)
+        missing = {m for m in judged_by if m not in row.relevance and not is_self_pr(m, ctx)}
         if self.github is not None and missing and not involved:
             if not relevance_grace_over(row, now):
                 return set()
@@ -565,7 +614,8 @@ class RouteHandler:
             return set()
         primary = by_login[owners[0].maintainer.github_login]
         followers = self._followers(row, primary, groups, judged_by, now, routed or set(), ctx.score)
-        self._commit(row, owners, followers, by_login, maintainers, now, band=ctx.band)
+        self._commit(row, owners, followers, by_login, maintainers, now, band=ctx.band,
+                     notified_today=notified_today)
         # One slot for the whole group: followers don't count (store.maintainer_load).
         load[primary.github_login] = load.get(primary.github_login, 0) + 1
         keys = {row.item_key, *(f.item_key for f, _ in followers)}
@@ -580,6 +630,7 @@ class RouteHandler:
             facets=row.facets, prepass=row.prepass, files=row.files,
             relevance=row.relevance,
             fresh=row.created_at is None or now - row.created_at <= FRESH_WINDOW,
+            author=row.author,
         )
 
     def _followers(
@@ -613,11 +664,16 @@ class RouteHandler:
         self, row: RoutingRow, owners: list[Candidate], followers: list[tuple[RoutingRow, Member]],
         by_login: dict[str, Maintainer], maintainers: list[Maintainer], now: datetime, *,
         band: str | None = None, grouped_with: str | None = None,
+        notified_today: dict[str, int] | None = None,
     ) -> None:
         """Store the assignments for `row` (and its followers, primary only)
         and queue the immediate DM: one per owner, showing the whole group
-        when followers come along (the issue first, its fix PRs under it)."""
+        when followers come along (the issue first, its fix PRs under it).
+        At most `max_notifications_per_day` (default 5) immediate DMs go out
+        per maintainer per local day; overflow items stay unnotified and roll
+        into that maintainer's single daily digest DM."""
         band = band or row.band
+        notified_today = notified_today if notified_today is not None else {}
         assignments: list[NewAssignment] = []
         follower_notified = False
         for index, candidate in enumerate(owners):
@@ -625,7 +681,9 @@ class RouteHandler:
             maintainer = by_login[candidate.maintainer.github_login]
             notification = None
             wants_now = band == "page" or maintainer.notify_mode == "immediate"
-            if wants_now and maintainer.notify_mode != "off" and maintainer.slack_user_id:
+            sent_today = notified_today.get(maintainer.github_login, 0)
+            under_daily_cap = sent_today < max_notifications_per_day(maintainer)
+            if wants_now and maintainer.notify_mode != "off" and maintainer.slack_user_id and under_daily_cap:
                 lang = str(maintainer.rules.get("language") or "en")
                 entries = [self._entry(row, candidate.reasons, maintainer)]
                 if role == "primary":
@@ -642,12 +700,15 @@ class RouteHandler:
                     reassign_to=[m.github_login for m in maintainers if m.github_login != maintainer.github_login],
                     lang=lang, fixes=fixes,
                 )
+                notified_today[maintainer.github_login] = sent_today + 1
                 follower_notified = follower_notified or role == "primary"
             reason: dict[str, Any] = {
                 "matched": candidate.reasons,
                 "why": str((row.relevance.get(maintainer.github_login) or {}).get("reason") or ""),
                 "load": candidate.load, "capacity": maintainer.capacity_per_week,
             }
+            if notification is not None:
+                reason["notified_via"] = "immediate"
             if grouped_with and role == "primary":
                 reason["grouped_with"] = grouped_with
             assignments.append(NewAssignment(maintainer=maintainer.github_login, role=role, reason=reason,
@@ -696,6 +757,9 @@ def relevance_grace_over(row: RoutingRow, now: datetime) -> bool:
 # Maintainers get their digest at this local hour unless their file sets
 # `digest_hour`; with no `timezone` it is UTC.
 DEFAULT_DIGEST_HOUR = 9
+# Maximum immediate Slack DMs per maintainer per local day; overflow items
+# roll into the maintainer's single daily digest DM.
+DEFAULT_MAX_NOTIFICATIONS_PER_DAY = 5
 # The team channel digest goes out once a day at this UTC hour (as before).
 TEAM_DIGEST_HOUR_UTC = 15
 
@@ -710,6 +774,17 @@ def maintainer_local_time(maintainer: Maintainer, now: datetime) -> datetime:
         except (ZoneInfoNotFoundError, ValueError):
             log.warning("triage: unknown timezone %r for %s; using UTC", name, maintainer.github_login)
     return now.astimezone(tz)
+
+
+def maintainer_local_day_start(maintainer: Maintainer, now: datetime) -> datetime:
+    """Midnight at the start of the maintainer's current local day (as UTC)."""
+    local = maintainer_local_time(maintainer, now)
+    return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+
+def max_notifications_per_day(maintainer: Maintainer) -> int:
+    cap = maintainer.rules.get("max_notifications_per_day")
+    return cap if isinstance(cap, int) and not isinstance(cap, bool) and cap >= 0 else DEFAULT_MAX_NOTIFICATIONS_PER_DAY
 
 
 def digest_hour(maintainer: Maintainer) -> int:

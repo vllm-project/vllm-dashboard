@@ -79,6 +79,20 @@ def test_timezone_and_digest_hour_are_validated_and_kept_in_rules() -> None:
     assert "a.timezone: must be an IANA time zone name like Europe/London" in exc.value.problems
 
 
+def test_max_notifications_per_day_validation() -> None:
+    [m] = parse_maintainer_files({"x.yaml": "github_login: x\nmax_notifications_per_day: 5\n"})
+    assert m.rules["max_notifications_per_day"] == 5
+    [zero] = parse_maintainer_files({"z.yaml": "github_login: z\nmax_notifications_per_day: 0\n"})
+    assert zero.rules["max_notifications_per_day"] == 0
+    with pytest.raises(MaintainersFileError) as exc:
+        parse_maintainer_files({
+            "a.yaml": "github_login: a\nmax_notifications_per_day: -1\n",
+            "b.yaml": "github_login: b\nmax_notifications_per_day: 51\n",
+            "c.yaml": "github_login: c\nmax_notifications_per_day: true\n",
+        })
+    assert len(exc.value.problems) == 3
+
+
 def test_checked_in_time_zones() -> None:
     zones = {m.github_login: m.rules.get("timezone") for m in parse_maintainer_files(load_local_dir(LOCAL_DIR))}
     assert zones["gau-nernst"] == "Asia/Ho_Chi_Minh" and zones["khluu"] == "America/Los_Angeles"

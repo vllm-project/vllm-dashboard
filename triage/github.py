@@ -214,7 +214,7 @@ class GitHubClient:
         out: list[dict[str, Any]] = []
         day = since.astimezone(timezone.utc).strftime("%Y-%m-%d")
         for kind, query in (
-            ("authored", f"repo:{repo} is:pr author:{login} created:>={day}"),
+            ("authored", f"repo:{repo} is:pr is:merged author:{login} created:>={day}"),
             ("reviewed", f"repo:{repo} is:pr reviewed-by:{login} -author:{login} created:>={day}"),
         ):
             got = 0

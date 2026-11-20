@@ -126,6 +126,7 @@ class RoutingRow:
     # band and its first extraction. Routing waits for relevance judgements
     # for a grace period counted from here. None: unknown, no wait.
     waiting_since: datetime | None = None
+    author: str = ""
 
 
 @dataclass(frozen=True)
@@ -624,7 +625,8 @@ class PostgresTriageStore(PostgresAlertStore):
                                 '{}'::jsonb),
                        i.gh_created_at,
                        GREATEST(s.routable_since,
-                                (SELECT min(x.created_at) FROM triage_extractions x WHERE x.item_key = i.item_key))
+                                (SELECT min(x.created_at) FROM triage_extractions x WHERE x.item_key = i.item_key)),
+                       COALESCE(i.author, '')
                 FROM triage_items i
                 JOIN triage_scores s ON s.item_key = i.item_key
                 JOIN triage_extractions e ON e.id = s.extraction_id
@@ -645,10 +647,89 @@ class PostgresTriageStore(PostgresAlertStore):
                 item_key=r[0], kind=r[1], title=r[2], html_url=r[3], score=r[4], band=r[5],
                 facets=dict(r[6]), prepass=_with_commenters(dict(r[7]), r[9]),
                 files=[f["path"] for f in r[8]], excluded=frozenset(r[10]),
-                relevance=dict(r[11]), created_at=r[12], waiting_since=r[13],
+                relevance=dict(r[11]), created_at=r[12], waiting_since=r[13], author=str(r[14] or ""),
             )
             for r in rows
         ]
+
+    def open_router_assignments(self) -> list[tuple[int, str, str, RoutingRow]]:
+        """Open (un-acked) router-created assignments on open items, with their
+        current item/relevance context so the router can revoke stale ones."""
+        with self._connection_factory() as c:
+            rows = c.execute(
+                """
+                SELECT a.id, a.maintainer, a.role,
+                       i.item_key, i.kind, i.title, i.html_url,
+                       COALESCE(s.score, a.score_at_assign), COALESCE(s.band, 'route'),
+                       COALESCE(e.facets, '{}'::jsonb), i.prepass, i.files, i.comments_excerpt,
+                       COALESCE((SELECT jsonb_object_agg(r.maintainer, jsonb_build_object(
+                                     'relevance', r.relevance, 'evidence_prs', r.evidence_prs,
+                                     'reason', r.reason, 'reason_local', r.reason_local))
+                                 FROM triage_relevance r
+                                 WHERE r.item_key = i.item_key AND r.content_hash = i.content_hash),
+                                '{}'::jsonb),
+                       i.gh_created_at, COALESCE(i.author, '')
+                FROM triage_assignments a
+                JOIN triage_items i ON i.item_key = a.item_key
+                LEFT JOIN triage_scores s ON s.item_key = i.item_key
+                LEFT JOIN triage_extractions e ON e.id = s.extraction_id
+                WHERE a.status = 'open' AND a.assigned_by = 'router' AND i.state = 'open'
+                ORDER BY a.id
+                """
+            ).fetchall()
+        return [
+            (
+                int(r[0]),
+                str(r[1]),
+                str(r[2]),
+                RoutingRow(
+                    item_key=r[3], kind=r[4], title=r[5], html_url=r[6], score=int(r[7]), band=str(r[8]),
+                    facets=dict(r[9]), prepass=_with_commenters(dict(r[10]), r[12]),
+                    files=[f["path"] for f in r[11]], excluded=frozenset(),
+                    relevance=dict(r[13]), created_at=r[14], waiting_since=None, author=str(r[15] or ""),
+                ),
+            )
+            for r in rows
+        ]
+
+    def revoke_assignments(self, revocations: list[tuple[int, str]], *, now: datetime) -> int:
+        """Close stale open router assignments as `'reassigned'` (freeing the
+        unique open slot and capacity) while preserving audit history."""
+        if not revocations:
+            return 0
+        count = 0
+        with self._connection_factory() as c:
+            with c.transaction():
+                for assignment_id, why in revocations:
+                    patch = json.dumps({"revoked_by": "router", "revoked_reason": why})
+                    count += int(
+                        c.execute(
+                            """UPDATE triage_assignments
+                               SET status = 'reassigned', closed_at = %s,
+                                   reason = reason || %s::jsonb
+                               WHERE id = %s AND status = 'open' AND assigned_by = 'router'""",
+                            (now, patch, assignment_id),
+                        ).rowcount
+                        or 0
+                    )
+        return count
+
+    def immediate_notifications_since(self, cutoffs: dict[str, datetime]) -> dict[str, int]:
+        """How many immediate Slack DMs each maintainer already received since
+        their local day start (`cutoffs[login]`)."""
+        if not cutoffs:
+            return {}
+        out: dict[str, int] = {}
+        with self._connection_factory() as c:
+            for login, since in cutoffs.items():
+                row = c.execute(
+                    """SELECT count(*) FROM triage_assignments
+                       WHERE maintainer = %s AND notified_at >= %s
+                         AND reason->>'notified_via' = 'immediate'""",
+                    (login, since),
+                ).fetchone()
+                out[login] = int(row[0]) if row else 0
+        return out
 
     # --- issue + fix PR groups (triage/groups.py) ---------------------------
 
@@ -1244,6 +1325,7 @@ class PostgresTriageStore(PostgresAlertStore):
             rows = c.execute(
                 """
                 SELECT i.item_key, i.kind, i.title, e.facets, i.content_hash, i.files, i.prepass,
+                       COALESCE(i.author, ''),
                        COALESCE((SELECT jsonb_object_agg(r.maintainer, r.profile_hash)
                                  FROM triage_relevance r
                                  WHERE r.item_key = i.item_key AND r.content_hash = i.content_hash),
@@ -1259,12 +1341,16 @@ class PostgresTriageStore(PostgresAlertStore):
                 (min_score,),
             ).fetchall()
         tasks: list[RelevanceTask] = []
-        for key, kind, title, facets, chash, files, prepass, judged in rows:
-            todo = [login for login, h in profiles.items() if judged.get(login) != h]
+        for key, kind, title, facets, chash, files, prepass, author, judged in rows:
+            author_lower = str(author or "").lower()
+            todo = [
+                login for login, h in profiles.items()
+                if judged.get(login) != h and not (kind == "pr" and author_lower and login.lower() == author_lower)
+            ]
             if todo:
                 paths = [f["path"] for f in (files or []) if isinstance(f, dict) and f.get("path")]
                 tasks.append(RelevanceTask(key, kind, title, dict(facets), chash, todo, files=paths,
-                                           prepass=dict(prepass or {})))
+                                           prepass=dict(prepass or {}), author=str(author or "")))
                 if len(tasks) >= limit:
                     break
         return tasks

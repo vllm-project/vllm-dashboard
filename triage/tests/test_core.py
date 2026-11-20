@@ -317,7 +317,112 @@ def test_a_clear_match_p0_is_not_blocked_by_capacity() -> None:
     assert owners("high") == ["full"]                    # old P0, clear match: still theirs
     assert owners("medium") == []                        # weaker match waits for capacity
     assert owners("high", band="route", score=60) == []  # P1s always respect capacity
-    assert owners("low", prepass={"commenters": ["full"]}) == ["full"]  # involvement is clear too
+    # Strong involvement overrides capacity, even when relevance is low; a passing comment does not.
+    assert owners("low", prepass={"referenced_pr_authors": {"61343": "full"}}) == ["full"]
+    assert owners("low", prepass={"commenters": ["full"]}) == []
+    assert owners("medium", prepass={"commenters": ["full"]}) == ["full"]
+
+
+def test_self_authored_pr_is_never_routed_to_author() -> None:
+    from triage.groups import Member
+    from triage.routing import can_follow, explain_unowned
+
+    alice = Maintainer(github_login="alice", rules={"keywords": ["security"]})
+    bob = Maintainer(github_login="bob")
+    ctx = RoutingContext(
+        item_key="r#100", kind="pr", title="[Security] Harden parser", score=60, band="route",
+        facets=facets(areas=["frontend_api"]),
+        prepass={"commenters": ["alice"], "gh_assignees": ["alice"]},
+        files=[],
+        relevance={"alice": {"relevance": "high", "evidence_prs": [100]}, "bob": {"relevance": "medium"}},
+        author="Alice",
+    )
+    owners = choose_owners(ctx, [alice, bob], load={}, excluded=set(), today=date(2026, 11, 20))
+    assert [o.maintainer.github_login for o in owners] == ["bob"]
+    assert not can_follow(alice, ctx, excluded=set(), today=date(2026, 11, 20), score=60)
+    # Even if nobody else matches, self-author is never reported as a blocked match.
+    unowned = explain_unowned(ctx, [alice], load={}, excluded=set(), today=date(2026, 11, 20))
+    assert "Nobody is a match" in unowned["summary"]
+    # Issues authored by a maintainer can still be routed to them (only PRs skip their author).
+    issue_ctx = RoutingContext(
+        item_key="r#101", kind="issue", title="Security report", score=60, band="route",
+        facets=facets(areas=["frontend_api"]), prepass={}, files=[],
+        relevance={"alice": {"relevance": "high"}}, author="alice",
+    )
+    assert [o.maintainer.github_login for o in choose_owners(
+        issue_ctx, [alice], load={}, excluded=set(), today=date(2026, 11, 20)
+    )] == ["alice"]
+    # can_follow rejects low/none relevance on the follower unless strongly involved.
+    follower_ctx = RoutingContext(
+        item_key="r#102", kind="pr", title="Save sharded state", score=45, band="route",
+        facets=facets(areas=["model_loading"]), prepass={"commenters": ["bob"]}, files=[],
+        relevance={"bob": {"relevance": "none"}}, author="someone-else",
+    )
+    assert not can_follow(bob, follower_ctx, excluded=set(), today=date(2026, 11, 20), score=54)
+    _ = Member  # keep import exercised
+
+
+def test_commented_alone_does_not_override_low_or_exclude() -> None:
+    alice = Maintainer(github_login="alice", rules={"exclude": {"hardware": ["MI355X"]}})
+    bob = Maintainer(github_login="bob")
+    ctx_low = RoutingContext(
+        item_key="r#200", kind="pr", title="Fix b12x scale", score=63, band="route",
+        facets=facets(areas=["moe"], hardware=["RTX"]),
+        prepass={"commenters": ["alice"]}, files=[],
+        relevance={"alice": {"relevance": "low"}, "bob": {"relevance": "medium"}},
+        author="contrib",
+    )
+    owners = choose_owners(ctx_low, [alice, bob], load={}, excluded=set(), today=date(2026, 11, 20))
+    assert [o.maintainer.github_login for o in owners] == ["bob"]
+
+    ctx_excl = RoutingContext(
+        item_key="r#201", kind="pr", title="ROCm fix", score=63, band="route",
+        facets=facets(areas=["rocm"], hardware=["MI355X"]),
+        prepass={"commenters": ["alice"]}, files=[], relevance={}, author="contrib",
+    )
+    assert choose_owners(ctx_excl, [alice], load={}, excluded=set(), today=date(2026, 11, 20)) == []
+
+
+def test_page_dm_header_distinguishes_p0_and_p1() -> None:
+    from alerting.ports import DeliveryMode
+    from triage.notify import page_dm
+    from triage.store import DigestEntry
+
+    p1 = DigestEntry(1, "vllm-project/vllm#10", "P1 bug", "https://github.com/vllm-project/vllm/issues/10",
+                     55, "route", "summary", ["relevance:high"])
+    dm = page_dm(assignment_key="k", maintainer_slack="U1234567", entry=p1, role="primary", mode=DeliveryMode.SHADOW)
+    assert "P1" in dm.payload["blocks"][0]["text"]["text"]
+    assert "P0" not in dm.payload["blocks"][0]["text"]["text"]
+
+
+def test_parse_judgments_strips_self_pr_evidence_and_github_uses_is_merged(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+    from datetime import datetime, timezone
+    from triage.github import GitHubClient
+    from triage.relevance import MaintainerProfile, RelevanceTask, parse_judgments
+
+    profile = MaintainerProfile("alice", [{"number": 67303, "kind": "authored", "title": "own"},
+                                          {"number": 60000, "kind": "authored", "title": "other"}], "", "h")
+    task = RelevanceTask("vllm-project/vllm#67303", "pr", "own", {}, "c", ["alice"], author="alice")
+    [j] = parse_judgments(
+        {"judgments": [{"github_login": "alice", "relevance": "high", "evidence_prs": [67303, 60000], "reason": "r"}]},
+        task, {"alice": profile},
+    )
+    assert j.evidence_prs == [60000]
+
+    queries: list[str] = []
+
+    class FakeGH(GitHubClient):
+        def __init__(self) -> None:
+            pass
+
+        def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+            queries.append(str((params or {}).get("q") or ""))
+            return {"items": []}
+
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    FakeGH().maintainer_prs("vllm-project/vllm", "alice", since=datetime(2026, 5, 1, tzinfo=timezone.utc))
+    assert any("is:merged" in q and "author:alice" in q for q in queries)
 
 
 def test_hardware_exclude_only_drops_items_entirely_about_that_hardware() -> None:

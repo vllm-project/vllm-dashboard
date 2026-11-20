@@ -1446,3 +1446,86 @@ def test_partial_maintainer_sync_persisted_unowned_reason_runs_and_webhook_queue
     with psycopg.connect(role_url, autocommit=True) as c:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             c.execute("SELECT * FROM triage_runs")
+
+
+def test_reconcile_revokes_stale_and_self_pr_and_daily_dm_cap(
+    store: PostgresTriageStore, database_url: str
+) -> None:
+    from triage.relevance import Judgment, RelevanceTask
+    from triage.store import NewAssignment
+
+    seed(store, [
+        {"github_login": "alice", "slack_user_id": "U0000000001", "notify_mode": "immediate",
+         "capacity_per_week": 20, "digest_hour": NOW.hour, "max_notifications_per_day": 5,
+         "rules": {"areas": ["moe"]}},
+        {"github_login": "bob", "slack_user_id": "U0000000002", "notify_mode": "digest",
+         "capacity_per_week": 20, "rules": {"areas": ["frontend_api"]}},
+    ])
+    # 1. Self-authored PR: relevance_queue skips author, and an existing stale open self-PR assignment is revoked.
+    ingest(store, issue(3001, "Alice own PR", kind="pr", author="alice", author_association="CONTRIBUTOR", labels=["bug"]))
+    ingest(store, issue(3002, "Stale relevance issue", author="contrib"))
+    run_extraction(store, FakeBackend({"Alice own": SEVERE, "Stale": SEVERE}), budget=Budget(), now=NOW, workers=1)
+    route = RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW)
+    route._rescore(NOW)
+
+    # Seed profiles so relevance_queue runs.
+    store.save_profile("alice", [], now=NOW)
+    store.save_profile("bob", [], now=NOW)
+    store.sync_needs_relevance(active_maintainers={"alice", "bob"})
+    q = {t.item_key: t.maintainers for t in store.relevance_queue(limit=20, min_score=40)}
+    assert "alice" not in q["vllm-project/vllm#3001"] and "bob" in q["vllm-project/vllm#3001"]
+
+    # Simulate stale open router assignments: alice owns her own PR #3001 and owns #3002 whose rel dropped to none.
+    store.commit_assignments("vllm-project/vllm#3001", 80, [NewAssignment("alice", "primary", {}, None)], now=NOW)
+    store.commit_assignments("vllm-project/vllm#3002", 80, [NewAssignment("alice", "primary", {}, None)], now=NOW)
+    profiles = {p.login: p for p in store.maintainer_profiles()}
+    ch3002 = store.item_state("vllm-project/vllm#3002").content_hash  # type: ignore[union-attr]
+    store.save_relevance(
+        RelevanceTask("vllm-project/vllm#3002", "issue", "Stale", SEVERE, ch3002, ["alice", "bob"]),
+        [Judgment("alice", "none", [], "excluded"), Judgment("bob", "high", [], "his code")],
+        profiles=profiles, model="fake", now=NOW,
+    )
+    # Remove alice's broad moe rule so #3002 doesn't match via rule after relevance drops to none.
+    seed(store, [
+        {"github_login": "alice", "slack_user_id": "U0000000001", "notify_mode": "immediate",
+         "capacity_per_week": 20, "digest_hour": NOW.hour, "max_notifications_per_day": 5,
+         "rules": {"areas": ["quantization"]}},
+        {"github_login": "bob", "slack_user_id": "U0000000002", "notify_mode": "digest",
+         "capacity_per_week": 20, "rules": {"areas": ["frontend_api"]}},
+    ])
+    route(ScheduledCommand("triage_route", NOW))
+    with psycopg.connect(database_url) as c:
+        a3001 = c.execute(
+            "SELECT maintainer, status, reason->>'revoked_reason' FROM triage_assignments "
+            "WHERE item_key = 'vllm-project/vllm#3001' ORDER BY id"
+        ).fetchall()
+        a3002 = c.execute(
+            "SELECT maintainer, status, reason->>'revoked_reason' FROM triage_assignments "
+            "WHERE item_key = 'vllm-project/vllm#3002' ORDER BY id"
+        ).fetchall()
+    assert a3001 == [("alice", "reassigned", "self-authored PR")]
+    assert a3002[0] == ("alice", "reassigned", "relevance dropped to none")
+    assert ("bob", "open", None) in a3002
+
+    # 2. Daily immediate Slack DM cap: 7 routed P1 items for alice -> 5 immediate DMs + 2 in daily digest.
+    quant_facets = {**SEVERE, "type": "bug", "areas": ["quantization"], "hardware": ["B200"], "default_config": False,
+                    "has_repro": False,
+                    "severity": {**SEVERE["severity"], "serving_broken": False, "crash": False, "wrong_output": True}}
+    for n in range(3010, 3017):
+        ingest(store, issue(n, f"Quant bug {n}"))
+    run_extraction(store, FakeBackend({"Quant bug": quant_facets}), budget=Budget(), now=NOW, workers=1)
+    route(ScheduledCommand("triage_route", NOW + timedelta(minutes=5)))
+
+    dms = [row for row in outbox(database_url) if row[0].startswith("triage:page:") and row[2] == "U0000000001"]
+    assert len(dms) == 5
+    assert all("P1" in row[3]["blocks"][0]["text"]["text"] for row in dms)
+    unnotified = store.unnotified_assignments("alice")
+    assert len(unnotified) == 2
+
+    # Daily digest picks up the remaining 2 overflow items in a single digest DM.
+    DigestHandler(store=store, clock=FixedClock(NOW), delivery_mode=DeliveryMode.SHADOW, team_channel=None)(
+        ScheduledCommand("triage_digest", NOW)
+    )
+    digests = [row for row in outbox(database_url) if row[0].startswith("triage:digest:alice:")]
+    assert len(digests) == 1
+    assert store.unnotified_assignments("alice") == []
