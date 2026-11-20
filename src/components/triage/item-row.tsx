@@ -153,7 +153,8 @@ function DetailLine({
   const impact = impactBadge(item);
   const ci = rowCiChip(item.ci);
   const effort = prEffortText(item);
-  const context = contextText(item);
+  // One context value on the row (model, else area, else hardware); the rest on hover.
+  const context = contextText(item, 1);
   const links = linkText(item, shownLinks);
   if (!status && cleanup.length === 0 && !impact && !ci && !effort && !context.text && !links) return null;
   const parts: ReactNode[] = [];
@@ -168,7 +169,7 @@ function DetailLine({
     parts.push(
       <span key="context" className="min-w-0 truncate" title={[context.text, ...context.hidden].join(" · ")}>
         {context.text}
-        {context.more > 0 && <span className="text-zinc-400 dark:text-zinc-500"> · +{context.more}</span>}
+        {context.more > 0 && <span className="text-zinc-400 dark:text-zinc-500"> +{context.more}</span>}
       </span>,
     );
   }
@@ -189,7 +190,8 @@ function DetailLine({
   }
   const afterStatus = cleanup.length > 0 || impact || ci || parts.length > 0;
   return (
-    <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+    // One line, never wraps: badges keep their size, context truncates with "…".
+    <div className="mt-1 flex min-w-0 flex-nowrap items-center gap-x-2 overflow-hidden whitespace-nowrap text-xs text-zinc-500 dark:text-zinc-400">
       {status}
       {status && afterStatus && DOT}
       {cleanup.map((reason, index) => (
