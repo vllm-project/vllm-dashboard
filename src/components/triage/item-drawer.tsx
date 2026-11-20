@@ -138,7 +138,7 @@ function EvidenceList({ evidence }: { evidence: TriageRelevance["evidence"] }) {
   );
 }
 
-/** The router's reason for one owner, in one line, for the summary. */
+/** Prefer the recorded assignment reason over a newer relevance assessment. */
 function oneLineWhy(reason: Record<string, unknown>, judgement: TriageRelevance | undefined): string {
   if (typeof reason.manual === "string") return `${reason.manual} by ${String(reason.by ?? "someone")}`;
   if (typeof reason.why === "string" && reason.why) return reason.why;
@@ -159,21 +159,39 @@ const STATUS_TEXT: Record<string, string> = {
 
 function OwnerSummary({ assignment, judgement }: { assignment: TriageAssignment; judgement: TriageRelevance | undefined }) {
   return (
-    <li className="flex items-center gap-2.5" title={oneLineWhy(assignment.reason, judgement)}>
-      <Avatar login={assignment.maintainer} size={24} />
-      <p className="flex min-w-0 flex-wrap items-center gap-x-2 text-sm">
-        <span className="font-semibold text-zinc-900 dark:text-zinc-100">{assignment.maintainer}</span>
-        <span className="rounded bg-zinc-100 px-1.5 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-          {assignment.role === "primary" ? "primary" : "backup"}
-        </span>
-        <span
-          className={`text-xs ${assignment.status === "acked" ? "text-emerald-700 dark:text-emerald-400" : "text-zinc-500 dark:text-zinc-400"}`}
-        >
-          {assignment.status === "acked" ? "✓ " : ""}
-          {STATUS_TEXT[assignment.status] ?? assignment.status}
-          {assignment.status === "acked" && assignment.reason.acked_by === "github_comment" ? " (GitHub)" : ""}
-        </span>
-      </p>
+    <li className="space-y-2">
+      <div className="flex items-center gap-2.5">
+        <Avatar login={assignment.maintainer} size={24} />
+        <p className="flex min-w-0 flex-wrap items-center gap-x-2 text-sm">
+          <span className="font-semibold text-zinc-900 dark:text-zinc-100">{assignment.maintainer}</span>
+          <span className="rounded bg-zinc-100 px-1.5 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+            {assignment.role === "primary" ? "primary" : "backup"}
+          </span>
+          <span
+            className={`text-xs ${assignment.status === "acked" ? "text-emerald-700 dark:text-emerald-400" : "text-zinc-500 dark:text-zinc-400"}`}
+          >
+            {assignment.status === "acked" ? "✓ " : ""}
+            {STATUS_TEXT[assignment.status] ?? assignment.status}
+            {assignment.status === "acked" && assignment.reason.acked_by === "github_comment" ? " (GitHub)" : ""}
+          </span>
+        </p>
+      </div>
+      <div className="space-y-1 text-xs leading-relaxed">
+        <p className="text-zinc-600 dark:text-zinc-300">
+          <span className="font-medium text-zinc-700 dark:text-zinc-200">Why chosen: </span>
+          {oneLineWhy(assignment.reason, judgement)}
+        </p>
+        {judgement && (
+          <>
+            <p className="flex flex-wrap items-center gap-1.5 text-zinc-500 dark:text-zinc-400">
+              {judgement.current ? "Current relevance" : "Previous relevance"}
+              <RelevanceBadge level={judgement.relevance} />
+              {!judgement.current && <span>Reassessment pending</span>}
+            </p>
+            <EvidenceList evidence={judgement.evidence} />
+          </>
+        )}
+      </div>
     </li>
   );
 }
