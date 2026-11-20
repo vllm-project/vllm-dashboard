@@ -29,6 +29,13 @@ export interface QueueFilters {
    */
   owner: string | null;
   status: (typeof QUEUE_STATUSES)[number];
+  /**
+   * `review=ready`: open, non-draft PRs whose move is the reviewers'
+   * (`prepass.waiting_on = "reviewer"`, so CI isn't failing on the PR's own
+   * account, no conflicts, no changes requested; see `whose_move` in
+   * triage/prepass.py).
+   */
+  review: "ready" | null;
   q: string | null;
   state: "open" | "all";
   includeOutOfScope: boolean;
@@ -71,6 +78,7 @@ export function parseQueueFilters(params: URLSearchParams): QueueFilters {
     model: text(params.get("model")),
     owner: owner === OWNER_NONE ? OWNER_NONE : owner && isValidLogin(owner) ? owner : null,
     status: isOneOf(QUEUE_STATUSES, status) ? status : "any",
+    review: params.get("review") === "ready" ? "ready" : null,
     q: text(params.get("q"), 200),
     state: params.get("state") === "all" ? "all" : "open",
     includeOutOfScope: params.get("scope") === "all",
@@ -95,6 +103,7 @@ export function queueFiltersToParams(filters: Partial<QueueFilters>): URLSearchP
   if (filters.model) params.set("model", filters.model);
   if (filters.owner) params.set("owner", filters.owner);
   if (filters.status && filters.status !== "any") params.set("status", filters.status);
+  if (filters.review === "ready") params.set("review", "ready");
   if (filters.q) params.set("q", filters.q);
   if (filters.state === "all") params.set("state", "all");
   if (filters.includeOutOfScope) params.set("scope", "all");

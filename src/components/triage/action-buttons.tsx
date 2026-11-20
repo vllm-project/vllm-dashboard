@@ -2,7 +2,9 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import useSWR from "swr";
+import { Kbd } from "@/components/triage/keyboard-help";
 import { useUndoToast } from "@/components/triage/undo-toast";
+import { drawerCommand } from "@/lib/triage-keys";
 import { sendJson, triageFetcher } from "@/lib/triage-format";
 import { reassignOptions, type ReassignCandidate } from "@/lib/triage-reassign";
 import type { TriageRelevance } from "@/lib/triage-types";
@@ -22,8 +24,13 @@ interface Props {
   relevance?: readonly Pick<TriageRelevance, "maintainer" | "relevance">[];
   /** Who holds it now; left out of the Reassign list. */
   owners?: readonly string[];
-  /** After any action succeeds (e.g. to move on to the next item). */
-  onActed?: (action: TriageAction) => void;
+  /**
+   * After any action succeeds (e.g. to move on to the next item).
+   * `alsoApplied`: fix PRs the same click changed (an issue's group).
+   */
+  onActed?: (action: TriageAction, alsoApplied: readonly string[]) => void;
+  /** Single-key shortcuts (a / d / n / r) and their hints: the drawer's buttons only. */
+  keyboard?: boolean;
 }
 
 /** Actions that close the viewer's assignment (or move it away): they get the Undo toast. */
@@ -145,8 +152,9 @@ function HideMenu({ disabled, onPick }: { disabled: boolean; onPick: (action: "d
   );
 }
 
-export function ActionButtons({ itemKey, assignmentId, mode, onDone, relevance = [], owners = [], onActed }: Props) {
+export function ActionButtons({ itemKey, assignmentId, mode, onDone, relevance = [], owners = [], onActed, keyboard = false }: Props) {
   const [busy, setBusy] = useState(false);
+  const select = useRef<HTMLSelectElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [reassigning, setReassigning] = useState(false);
   const [target, setTarget] = useState("");
@@ -162,7 +170,7 @@ export function ActionButtons({ itemKey, assignmentId, mode, onDone, relevance =
     setBusy(true);
     setError(null);
     try {
-      const result = await sendJson<{ actionId?: number }>("/api/triage/actions", "POST", {
+      const result = await sendJson<{ actionId?: number; alsoApplied?: string[] }>("/api/triage/actions", "POST", {
         itemKey,
         action,
         assignmentId,
@@ -178,7 +186,7 @@ export function ActionButtons({ itemKey, assignmentId, mode, onDone, relevance =
         });
       }
       onDone();
-      onActed?.(action);
+      onActed?.(action, Array.isArray(result.alsoApplied) ? result.alsoApplied : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -188,26 +196,56 @@ export function ActionButtons({ itemKey, assignmentId, mode, onDone, relevance =
 
   const working = mode === "open" || mode === "acked";
 
+  // Latest state for the key handler without re-subscribing on every render.
+  const keyState = useRef({ busy, mode, working, act });
+  useEffect(() => {
+    keyState.current = { busy, mode, working, act };
+  });
+  useEffect(() => {
+    if (!keyboard) return;
+    const onKey = (event: KeyboardEvent) => {
+      const command = drawerCommand(event);
+      const { busy: isBusy, mode: current, working: canWork, act: run } = keyState.current;
+      if (!command || isBusy) return;
+      if (command === "ack" && (current === "open" || current === "unassigned")) {
+        event.preventDefault();
+        void run("ack");
+      } else if ((command === "done" || command === "not_mine") && canWork) {
+        event.preventDefault();
+        void run(command);
+      } else if (command === "reassign" && current !== "closed") {
+        event.preventDefault();
+        setReassigning(true);
+        window.requestAnimationFrame(() => select.current?.focus());
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [keyboard]);
+
+  const hint = (key: string) => (keyboard ? <Kbd className="ml-0.5">{key}</Kbd> : null);
+  const titled = (text: string, key: string) => (keyboard ? `${text} (${key})` : text);
+
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-1.5">
         {mode === "open" && (
-          <button type="button" className={PRIMARY} disabled={busy} onClick={() => act("ack")} title="Tell everyone you're on it">
-            Ack
+          <button type="button" className={PRIMARY} disabled={busy} onClick={() => act("ack")} title={titled("Tell everyone you're on it", "a")}>
+            Ack{hint("a")}
           </button>
         )}
         {mode === "unassigned" && (
-          <button type="button" className={PRIMARY} disabled={busy} onClick={() => act("ack")} title="Become its owner">
-            Take it
+          <button type="button" className={PRIMARY} disabled={busy} onClick={() => act("ack")} title={titled("Become its owner", "a")}>
+            Take it{hint("a")}
           </button>
         )}
         {working && (
           <>
-            <button type="button" className={SECONDARY} disabled={busy} onClick={() => act("done")}>
-              Done
+            <button type="button" className={SECONDARY} disabled={busy} onClick={() => act("done")} title={titled("You've dealt with it", "d")}>
+              Done{hint("d")}
             </button>
-            <button type="button" className={SECONDARY} disabled={busy} onClick={() => act("not_mine")} title="Send it to someone else">
-              Not mine
+            <button type="button" className={SECONDARY} disabled={busy} onClick={() => act("not_mine")} title={titled("Send it to someone else", "n")}>
+              Not mine{hint("n")}
             </button>
           </>
         )}
@@ -217,9 +255,10 @@ export function ActionButtons({ itemKey, assignmentId, mode, onDone, relevance =
             className={SECONDARY}
             disabled={busy}
             aria-expanded={reassigning}
+            title={titled("Hand it to someone you choose", "r")}
             onClick={() => setReassigning((value) => !value)}
           >
-            Reassign…
+            Reassign…{hint("r")}
           </button>
         )}
         {working && <HideMenu disabled={busy} onPick={(action) => void act(action)} />}
@@ -232,6 +271,7 @@ export function ActionButtons({ itemKey, assignmentId, mode, onDone, relevance =
       {reassigning && (
         <div className="flex flex-wrap items-center gap-1.5">
           <select
+            ref={select}
             aria-label="Reassign to"
             value={target}
             onChange={(event) => setTarget(event.target.value)}

@@ -106,6 +106,8 @@ function toQueueItem(row: QueueRow): TriageQueueItem {
         ? facets.severity
         : null,
     assignments: row.assignments ?? [],
+    waitingOn:
+      row.prepass?.waiting_on === "author" || row.prepass?.waiting_on === "reviewer" ? row.prepass.waiting_on : null,
     fixes: [],
     fixedBy: [],
   };
@@ -303,6 +305,10 @@ export async function listQueue(filters: QueueFilters): Promise<TriageQueueRespo
                            AND lower(a.maintainer) = lower(${filters.owner}))`
         : db``}
     ${statusFilter(db, filters.status)}
+    ${filters.review === "ready"
+      ? db`AND i.kind = 'pr' AND i.state = 'open' AND NOT i.draft
+           AND i.prepass->>'waiting_on' = 'reviewer'`
+      : db``}
     ${filters.q
       ? db`AND (i.title ILIKE ${"%" + escapeLike(filters.q) + "%"}
                OR e.facets->>'summary' ILIKE ${"%" + escapeLike(filters.q) + "%"}

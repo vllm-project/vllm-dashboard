@@ -207,6 +207,12 @@ export default function TriageGuidePage() {
           5 seconds and puts the item back exactly as it was.
         </p>
         <p>
+          <b>Keyboard.</b> Click a title to open its panel; there, <b>j</b> / <b>k</b> move to the next / previous
+          item, <b>a</b> acks, <b>d</b> is Done, <b>n</b> Not mine, <b>r</b> Reassign, <b>o</b> opens it on GitHub
+          and <b>?</b> lists them all. On My list, Done, Not mine, Reassign, Drop and Slop move straight on to the
+          next item.
+        </p>
+        <p>
           <b>GitHub counts too.</b> If the item is closed or merged on GitHub, it&apos;s marked Done for you (and comes
           back if it&apos;s reopened). If you comment on it on GitHub, that counts as Ack.
         </p>
