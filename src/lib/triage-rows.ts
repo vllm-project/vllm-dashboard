@@ -147,29 +147,32 @@ export function prEffortText(
   item: Pick<TriageQueueItem, "kind" | "prSize" | "hasTests" | "isMaintainer" | "firstTime">,
 ): { text: string; title: string } | null {
   if (item.kind !== "pr") return null;
-  const parts: string[] = [];
+  // The row shows only flags that change what a reviewer does: a first-time
+  // author, a large/very large diff, or no tests on a medium+ diff. Normal PRs
+  // (small/medium, with tests, by a regular contributor) show nothing; the
+  // tooltip always has every fact.
+  const flags: string[] = [];
   const details: string[] = [];
   const size = item.prSize?.trim().toUpperCase();
-  if (size && ["XS", "S", "M", "L", "XL"].includes(size)) {
-    parts.push(PR_SIZE_WORDS[size]);
-    details.push(`${PR_SIZE_WORDS[size][0].toUpperCase()}${PR_SIZE_WORDS[size].slice(1)}. ${PR_SIZE_HELP}`);
+  if (size && size in PR_SIZE_WORDS) {
+    const words = PR_SIZE_WORDS[size];
+    if (size === "L" || size === "XL") flags.push(words);
+    details.push(`${words[0].toUpperCase()}${words.slice(1)}. ${PR_SIZE_HELP}`);
   }
   if (item.hasTests === true) {
-    parts.push("has tests");
     details.push("The diff adds or changes tests");
   } else if (item.hasTests === false && (size === "M" || size === "L" || size === "XL")) {
-    parts.push("no tests");
-    details.push("No tests in the diff (shown for medium or larger PRs)");
+    flags.push("no tests");
+    details.push("No tests in the diff (flagged for medium or larger PRs)");
   }
   if (item.isMaintainer) {
-    parts.push("by a maintainer");
     details.push("The author is a vLLM maintainer");
   } else if (item.firstTime) {
-    parts.push("first-time contributor");
+    flags.push("first-time contributor");
     details.push("The author's first PR to vLLM");
   }
-  if (parts.length === 0) return null;
-  return { text: parts.join(" · "), title: details.join("\n") };
+  if (flags.length === 0) return null;
+  return { text: flags.join(" · "), title: details.join("\n") };
 }
 
 /** Distills `triage_scores.unowned_reason.summary` into a 2-word hint for the Owner column. */
@@ -227,7 +230,8 @@ export function contextText(
   const seen = new Set<string>();
   const values: string[] = [];
   // Model names stay as written ("DeepSeek-V4-Flash"); tags read as words ("CPU_x86" → "CPU x86").
-  const all = [...item.hardware.map(plain), ...item.models.map((m) => m.trim()), ...item.areas.map(plain)];
+  // Most useful for "is this mine?" first: model, then area, then hardware.
+  const all = [...item.models.map((m) => m.trim()), ...item.areas.map(plain), ...item.hardware.map(plain)];
   for (const value of all) {
     const key = value.toLowerCase();
     if (!value || seen.has(key)) continue;

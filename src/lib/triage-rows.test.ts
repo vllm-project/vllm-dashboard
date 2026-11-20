@@ -117,13 +117,15 @@ test("CI only when actionable", () => {
   assert.match(failed.title, /^CI: /);
 });
 
-test("context is one plain line: hardware · model · area, then +N", () => {
+test("context lists model, then area, then hardware; rows show one plus +N", () => {
   const line = contextText({ hardware: ["CPU_x86"], models: ["DeepSeek-V4-Flash"], areas: ["cpu"] });
-  assert.deepEqual(line, { text: "CPU x86 · DeepSeek-V4-Flash · cpu", more: 0, hidden: [] });
-  const long = contextText({ hardware: ["B200", "H100"], models: ["Qwen3-235B"], areas: ["moe", "kv_cache"] });
-  assert.equal(long.text, "B200 · H100 · Qwen3-235B");
-  assert.equal(long.more, 2);
-  assert.deepEqual(long.hidden, ["moe", "kv cache"]);
+  assert.deepEqual(line, { text: "DeepSeek-V4-Flash · cpu · CPU x86", more: 0, hidden: [] });
+  const row = contextText({ hardware: ["B200", "H100"], models: ["Qwen3-235B"], areas: ["moe", "kv_cache"] }, 1);
+  assert.equal(row.text, "Qwen3-235B");
+  assert.equal(row.more, 4);
+  assert.deepEqual(row.hidden, ["moe", "kv cache", "B200", "H100"]);
+  // No model: the area comes first.
+  assert.equal(contextText({ hardware: ["H100"], models: [], areas: ["frontend_api"] }, 1).text, "frontend api");
   assert.equal(contextText({ hardware: [], models: [], areas: ["moe", "MoE"] }).text, "moe");
   assert.equal(contextText({ hardware: [], models: [], areas: [] }).text, "");
 });
@@ -258,17 +260,17 @@ test("cleanupReasons explains competing PRs, low effort, and slop signals", () =
   assert.match(reasons[2].title, /no tests/);
 });
 
-test("prEffortText summarizes PR size, tests, and author trust cleanly", () => {
+test("prEffortText shows only reviewer-relevant flags; the tooltip has every fact", () => {
   assert.equal(prEffortText({ kind: "issue", prSize: "s", hasTests: true }), null);
-  assert.deepEqual(prEffortText({ kind: "pr", prSize: "s", hasTests: true, isMaintainer: true }), {
-    text: "small PR · has tests · by a maintainer",
-    title: "Small PR. Size by lines changed: tiny <10, small <50, medium <250, large <1,000, very large 1,000+\nThe diff adds or changes tests\nThe author is a vLLM maintainer",
-  });
-  assert.deepEqual(prEffortText({ kind: "pr", prSize: "xl", hasTests: false, firstTime: true }), {
-    text: "very large PR · no tests · first-time contributor",
-    title: "Very large PR. Size by lines changed: tiny <10, small <50, medium <250, large <1,000, very large 1,000+\nNo tests in the diff (shown for medium or larger PRs)\nThe author's first PR to vLLM",
-  });
-  assert.equal(prEffortText({ kind: "pr", prSize: "s", hasTests: false })?.text, "small PR");
+  // A normal PR (small, with tests, by a maintainer) shows nothing on the row.
+  assert.equal(prEffortText({ kind: "pr", prSize: "s", hasTests: true, isMaintainer: true }), null);
+  assert.equal(prEffortText({ kind: "pr", prSize: "m", hasTests: true }), null);
+  assert.equal(prEffortText({ kind: "pr", prSize: "s", hasTests: false }), null); // small PRs needn't have tests
+  const flagged = prEffortText({ kind: "pr", prSize: "xl", hasTests: false, firstTime: true });
+  assert.equal(flagged?.text, "very large PR · no tests · first-time contributor");
+  assert.match(flagged?.title ?? "", /^Very large PR\. Size by lines changed: tiny <10/);
+  assert.match(flagged?.title ?? "", /The author's first PR to vLLM/);
+  assert.equal(prEffortText({ kind: "pr", prSize: "s", hasTests: true, firstTime: true })?.text, "first-time contributor");
 });
 
 test("unownedHint distills verbose router summaries into 2-word hints", () => {
