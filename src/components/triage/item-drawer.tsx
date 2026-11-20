@@ -159,24 +159,21 @@ const STATUS_TEXT: Record<string, string> = {
 
 function OwnerSummary({ assignment, judgement }: { assignment: TriageAssignment; judgement: TriageRelevance | undefined }) {
   return (
-    <li className="flex gap-2.5">
-      <Avatar login={assignment.maintainer} size={28} />
-      <div className="min-w-0">
-        <p className="flex flex-wrap items-center gap-x-2 text-sm">
-          <span className="font-semibold text-zinc-900 dark:text-zinc-100">{assignment.maintainer}</span>
-          <span className="rounded bg-zinc-100 px-1.5 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-            {assignment.role === "primary" ? "primary" : "backup"}
-          </span>
-          <span
-            className={`text-xs ${assignment.status === "acked" ? "text-emerald-700 dark:text-emerald-400" : "text-zinc-500 dark:text-zinc-400"}`}
-          >
-            {assignment.status === "acked" ? "✓ " : ""}
-            {STATUS_TEXT[assignment.status] ?? assignment.status}
-            {assignment.status === "acked" && assignment.reason.acked_by === "github_comment" ? " (commented on GitHub)" : ""}
-          </span>
-        </p>
-        <p className="mt-0.5 line-clamp-2 text-xs text-zinc-600 dark:text-zinc-400">{oneLineWhy(assignment.reason, judgement)}</p>
-      </div>
+    <li className="flex items-center gap-2.5" title={oneLineWhy(assignment.reason, judgement)}>
+      <Avatar login={assignment.maintainer} size={24} />
+      <p className="flex min-w-0 flex-wrap items-center gap-x-2 text-sm">
+        <span className="font-semibold text-zinc-900 dark:text-zinc-100">{assignment.maintainer}</span>
+        <span className="rounded bg-zinc-100 px-1.5 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+          {assignment.role === "primary" ? "primary" : "backup"}
+        </span>
+        <span
+          className={`text-xs ${assignment.status === "acked" ? "text-emerald-700 dark:text-emerald-400" : "text-zinc-500 dark:text-zinc-400"}`}
+        >
+          {assignment.status === "acked" ? "✓ " : ""}
+          {STATUS_TEXT[assignment.status] ?? assignment.status}
+          {assignment.status === "acked" && assignment.reason.acked_by === "github_comment" ? " (GitHub)" : ""}
+        </span>
+      </p>
     </li>
   );
 }
@@ -541,24 +538,29 @@ export function ItemDrawer({
               type="button"
               onClick={showScore}
               aria-controls="triage-drawer-score"
-              className="dashboard-control rounded text-sm tabular-nums text-zinc-600 underline-offset-2 hover:underline dark:text-zinc-300"
+              className="dashboard-control shrink-0 whitespace-nowrap rounded text-sm tabular-nums text-zinc-600 underline-offset-2 hover:underline dark:text-zinc-300"
               title="Show the score breakdown"
             >
-              score <span className="font-semibold text-zinc-900 dark:text-zinc-100">{data.score.score}</span>
+              <span className="font-semibold text-zinc-900 dark:text-zinc-100">{data.score.score}</span>{" "}
+              <span className="text-xs text-zinc-400 dark:text-zinc-500">pts</span>
             </button>
           )}
-          <span className="ml-1 hidden items-center gap-1.5 text-xs font-medium text-zinc-600 sm:inline-flex dark:text-zinc-300">
+          <span
+            className="ml-0.5 hidden shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-zinc-600 sm:inline-flex dark:text-zinc-300"
+            title={data ? kindHeading(data.item.kind, number) : `#${number}`}
+            aria-label={data ? kindHeading(data.item.kind, number) : `#${number}`}
+          >
             {data && <KindIcon kind={data.item.kind} draft={data.item.draft} state={data.item.state} />}
-            {data ? kindHeading(data.item.kind, number) : `#${number}`}
+            #{number}
           </span>
-          <div className="ml-auto flex items-center gap-1">
+          <div className="ml-auto flex shrink-0 items-center gap-1">
             {nav && (
               <div className="flex items-center" role="group" aria-label="Move through the list">
                 <button
                   type="button"
                   onClick={() => nav.onPrev?.()}
                   disabled={!nav.onPrev}
-                  className={`${HEADER_BUTTON} w-8`}
+                  className={`${HEADER_BUTTON} w-7`}
                   aria-label="Previous item (k)"
                   title="Previous item (k)"
                 >
@@ -567,7 +569,7 @@ export function ItemDrawer({
                   </svg>
                 </button>
                 {nav.position && (
-                  <span className="min-w-[3.5rem] text-center text-[11px] tabular-nums text-zinc-500 dark:text-zinc-400" aria-live="polite">
+                  <span className="min-w-[3rem] whitespace-nowrap text-center text-[11px] tabular-nums text-zinc-500 dark:text-zinc-400" aria-live="polite">
                     {nav.position.index + 1} / {nav.position.total}
                   </span>
                 )}
@@ -575,7 +577,7 @@ export function ItemDrawer({
                   type="button"
                   onClick={() => nav.onNext?.()}
                   disabled={!nav.onNext}
-                  className={`${HEADER_BUTTON} w-8`}
+                  className={`${HEADER_BUTTON} w-7`}
                   aria-label="Next item (j)"
                   title="Next item (j)"
                 >
@@ -591,7 +593,7 @@ export function ItemDrawer({
                 target="_blank"
                 rel="noopener noreferrer nofollow"
                 title={`View ${data.item.files.length} changed files on GitHub`}
-                className="dashboard-control hidden h-8 items-center gap-1 rounded-md border border-zinc-200 px-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100 sm:inline-flex dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                className="dashboard-control hidden h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-zinc-200 px-2 text-xs font-medium text-zinc-700 hover:bg-zinc-100 sm:inline-flex dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
               >
                 Files <span aria-hidden="true">↗</span>
               </a>
@@ -602,16 +604,16 @@ export function ItemDrawer({
                 target="_blank"
                 rel="noopener noreferrer nofollow"
                 title="Open on GitHub (o)"
-                className="dashboard-control inline-flex h-8 items-center gap-1.5 rounded-md border border-zinc-300 px-2.5 text-xs font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                className="dashboard-control inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-zinc-300 px-2.5 text-xs font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-100 dark:hover:bg-zinc-800"
               >
-                Open on GitHub <span aria-hidden="true">↗</span>
+                GitHub <span aria-hidden="true">↗</span>
                 <Kbd className="hidden sm:inline-flex">o</Kbd>
               </a>
             )}
             <button
               type="button"
               onClick={() => setHelpOpen(true)}
-              className={`${HEADER_BUTTON} w-8 text-sm font-semibold`}
+              className={`${HEADER_BUTTON} w-7 text-sm font-semibold`}
               aria-label="Keyboard shortcuts (?)"
               title="Keyboard shortcuts (?)"
             >
@@ -621,7 +623,7 @@ export function ItemDrawer({
           <button
             type="button"
             onClick={onClose}
-            className="dashboard-control inline-flex h-8 w-8 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+            className="dashboard-control inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
             aria-label="Close (Esc)"
             title="Close (Esc)"
           >
@@ -649,8 +651,14 @@ export function ItemDrawer({
                   <GithubLink href={data.item.htmlUrl}>{data.item.title}</GithubLink>
                 </h2>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  {data.item.state} · by {data.item.author} ({data.item.authorAssociation.toLowerCase()}) · opened{" "}
-                  {formatAge(data.item.ghCreatedAt)} ago · {data.item.commentCount} comments · {data.item.reactions} reactions
+                  {data.item.draft ? "draft · " : data.item.state !== "open" ? `${data.item.state} · ` : ""}
+                  by {data.item.author}
+                  {data.item.authorAssociation && data.item.authorAssociation !== "NONE"
+                    ? ` (${data.item.authorAssociation.toLowerCase()})`
+                    : ""}{" "}
+                  · {formatAge(data.item.ghCreatedAt)} ago
+                  {data.item.commentCount > 0 ? ` · ${data.item.commentCount} ${data.item.commentCount === 1 ? "comment" : "comments"}` : ""}
+                  {data.item.reactions > 0 ? ` · ${data.item.reactions} ${data.item.reactions === 1 ? "reaction" : "reactions"}` : ""}
                 </p>
                 {(facets.type || (facets.severity && Object.keys(facets.severity).length > 0)) && (
                   <div className="flex flex-wrap items-center gap-2">
@@ -710,12 +718,9 @@ export function ItemDrawer({
                       relevance={data.relevance}
                       owners={openAssignments.map((assignment) => assignment.maintainer)}
                     />
-                    {!mineOpen && openAssignments.length > 0 && (
-                      <p className="mt-1.5 text-[11px] text-zinc-500">You can reassign it; the other actions are for the owner.</p>
-                    )}
                     {data.item.kind === "issue" && data.fixedBy.some((link) => link.state === "open") && (
                       <p className="mt-1.5 text-[11px] text-zinc-500">
-                        Ack, Not mine, Done and Reassign here also apply to its fix PRs held by the same person.
+                        Actions here also apply to its fix PRs held by the same owner.
                       </p>
                     )}
                   </div>
@@ -723,7 +728,11 @@ export function ItemDrawer({
               </div>
 
               {data.ci && (
-                <Disclosure title="CI" meta={ciLine(data.ci)} defaultOpen={data.item.state === "open"}>
+                <Disclosure
+                  title="CI"
+                  meta={ciLine(data.ci)}
+                  defaultOpen={data.item.state === "open" && (data.ci.state === "failed" || data.ci.state === "running")}
+                >
                   <CiSection ci={data.ci} />
                 </Disclosure>
               )}
@@ -733,7 +742,7 @@ export function ItemDrawer({
               <Disclosure
                 id="triage-drawer-score"
                 title="Score"
-                meta={data.score ? `${data.score.score} points · ${data.score.breakdown.length} factors` : "not scored yet"}
+                meta={data.score ? `${data.score.score} pts · ${data.score.breakdown.length} factors` : "not scored yet"}
                 open={scoreOpen}
                 onToggle={setScoreOpen}
               >
@@ -755,84 +764,64 @@ export function ItemDrawer({
                 )}
               </Disclosure>
 
-              {data.assignments.length > 0 && (
-                <Disclosure title="Why these owners" meta="router reasons and evidence">
-                  <ul className="space-y-3 text-xs">
-                    {data.assignments.map((assignment) => (
-                      <li key={assignment.id} className="space-y-1">
-                        <p className="text-zinc-500">
-                          <span className="font-medium text-zinc-800 dark:text-zinc-200">{assignment.maintainer}</span> ·{" "}
-                          {assignment.role === "primary" ? "primary owner" : "backup"} · {STATUS_TEXT[assignment.status] ?? assignment.status} ·
-                          assigned {assignment.assignedBy === "router" ? "by the router" : `by ${assignment.assignedBy}`}{" "}
-                          {formatAge(assignment.assignedAt)} ago, when it scored {assignment.scoreAtAssign}
-                        </p>
-                        <WhyThisPerson
-                          reason={assignment.reason}
-                          judgement={data.relevance.find((r) => r.maintainer === assignment.maintainer)}
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                </Disclosure>
-              )}
-
-              {data.relevance.length > 0 && (
+              {(data.assignments.length > 0 || data.relevance.length > 0) && (
                 <Disclosure
-                  title="Who it's for"
-                  meta={`${data.relevance.filter((r) => r.relevance === "high" || r.relevance === "medium").length} of ${data.relevance.length} maintainers relevant`}
+                  title="Routing"
+                  meta={
+                    data.relevance.length > 0
+                      ? `${data.relevance.filter((r) => r.relevance === "high" || r.relevance === "medium").length} of ${data.relevance.length} relevant`
+                      : "owner history"
+                  }
                 >
-                  <p className="mb-2 text-xs text-zinc-500">
-                    How well this matches each maintainer&apos;s recent work, judged by Claude from their last 6 months of PRs
-                    and their notes. Only <b>high</b> and <b>medium</b> are routed; hover a level for what it means.
-                  </p>
-                  <ul className="space-y-2 text-xs">
-                    {data.relevance.map((r) => (
-                      <li key={r.maintainer} className="space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <RelevanceBadge level={r.relevance} />
-                          <span className="font-medium text-zinc-800 dark:text-zinc-200">{r.maintainer}</span>
-                          {!r.current && (
-                            <span className="text-[10px] text-amber-700 dark:text-amber-400">the item changed since; it will be judged again</span>
-                          )}
-                        </div>
-                        {r.reason && <p className="text-zinc-600 dark:text-zinc-300">{r.reason}</p>}
-                        <EvidenceList evidence={r.evidence} />
-                      </li>
-                    ))}
-                  </ul>
+                  <div className="space-y-4 text-xs">
+                    {data.assignments.length > 0 && (
+                      <ul className="space-y-3">
+                        {data.assignments.map((assignment) => (
+                          <li key={assignment.id} className="space-y-1">
+                            <p className="text-zinc-500">
+                              <span className="font-medium text-zinc-800 dark:text-zinc-200">{assignment.maintainer}</span> ·{" "}
+                              {assignment.role === "primary" ? "primary" : "backup"} · {STATUS_TEXT[assignment.status] ?? assignment.status} ·{" "}
+                              {assignment.assignedBy === "router" ? "routed" : `assigned by ${assignment.assignedBy}`}{" "}
+                              {formatAge(assignment.assignedAt)} ago (score {assignment.scoreAtAssign})
+                            </p>
+                            <WhyThisPerson
+                              reason={assignment.reason}
+                              judgement={data.relevance.find((r) => r.maintainer === assignment.maintainer)}
+                            />
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {data.relevance.length > 0 && (
+                      <div className="space-y-2 border-t border-zinc-100 pt-3 first:border-t-0 first:pt-0 dark:border-zinc-800">
+                        <p className="font-semibold text-zinc-700 dark:text-zinc-300">Maintainer matches</p>
+                        <ul className="space-y-2">
+                          {data.relevance.map((r) => (
+                            <li key={r.maintainer} className="space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <RelevanceBadge level={r.relevance} />
+                                <span className="font-medium text-zinc-800 dark:text-zinc-200">{r.maintainer}</span>
+                                {!r.current && (
+                                  <span className="text-[10px] text-amber-700 dark:text-amber-400">re-judging</span>
+                                )}
+                              </div>
+                              {r.reason && <p className="text-zinc-600 dark:text-zinc-300">{r.reason}</p>}
+                              <EvidenceList evidence={r.evidence} />
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
                 </Disclosure>
               )}
 
-              <Disclosure
-                title="What the LLM read"
-                meta={data.extraction ? `${data.extraction.model} · ${formatAge(data.extraction.createdAt)} ago` : extractionText(data.item.extractionStatus)}
-              >
-                {data.extraction ? (
-                  <LlmFactsList
-                    facets={facets}
-                    readBy={`${data.extraction.model} · prompt ${data.extraction.promptVersion}${
-                      typeof facets.confidence === "number" ? ` · ${percentText(facets.confidence)} sure` : ""
-                    }`}
-                  />
-                ) : (
-                  <p className="text-xs text-zinc-500">
-                    Not read yet: {extractionText(data.item.extractionStatus)}
-                    {data.item.extractionError ? ` (${data.item.extractionError})` : ""}.
-                  </p>
-                )}
-              </Disclosure>
-
-              <Disclosure
-                title="Quick signals (before the LLM)"
-                meta={data.item.files.length > 0 ? `${data.item.files.length} changed files` : undefined}
-              >
-                <QuickSignals prepass={data.item.prepass} />
-              </Disclosure>
-
-              <Disclosure title="History" meta={data.actions.length ? `${data.actions.length} ${data.actions.length === 1 ? "action" : "actions"}` : "nothing yet"} defaultOpen={data.actions.length > 0}>
-                {data.actions.length === 0 ? (
-                  <p className="text-xs text-zinc-500">Nobody has acted on this yet.</p>
-                ) : (
+              {data.actions.length > 0 && (
+                <Disclosure
+                  title="History"
+                  meta={`${data.actions.length} ${data.actions.length === 1 ? "action" : "actions"}`}
+                  defaultOpen
+                >
                   <ul className="space-y-1 text-xs">
                     {data.actions.map((action) => (
                       <li key={action.id} className={action.undoneAt ? "text-zinc-400 dark:text-zinc-500" : undefined}>
@@ -844,7 +833,35 @@ export function ItemDrawer({
                       </li>
                     ))}
                   </ul>
-                )}
+                </Disclosure>
+              )}
+
+              <Disclosure
+                title="Diagnostics"
+                meta={data.extraction ? `${data.extraction.model} · ${formatAge(data.extraction.createdAt)} ago` : extractionText(data.item.extractionStatus)}
+              >
+                <div className="space-y-4">
+                  <div>
+                    <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">LLM extraction</p>
+                    {data.extraction ? (
+                      <LlmFactsList
+                        facets={facets}
+                        readBy={`${data.extraction.model} · prompt ${data.extraction.promptVersion}${
+                          typeof facets.confidence === "number" ? ` · ${percentText(facets.confidence)} sure` : ""
+                        }`}
+                      />
+                    ) : (
+                      <p className="text-xs text-zinc-500">
+                        Not read yet: {extractionText(data.item.extractionStatus)}
+                        {data.item.extractionError ? ` (${data.item.extractionError})` : ""}.
+                      </p>
+                    )}
+                  </div>
+                  <div className="border-t border-zinc-100 pt-3 dark:border-zinc-800">
+                    <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Prepass signals</p>
+                    <QuickSignals prepass={data.item.prepass} />
+                  </div>
+                </div>
               </Disclosure>
               <div className="h-6" />
             </>
