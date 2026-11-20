@@ -40,6 +40,7 @@ from triage.prepass import (
     core_content_hash,
     filter_comment_records,
     in_scope,
+    merge_readiness,
     prepass_priority,
     whose_move,
 )
@@ -334,6 +335,10 @@ class IngestHandler:
                 ci = None  # a newer commit: its CI isn't known yet
             fields = whose_move(draft=status.draft, review_decision=status.review_decision,
                                 mergeable=status.mergeable, failing_checks=status.failing_checks, ci=ci)
+            fields.update(merge_readiness(
+                draft=status.draft, review_decision=status.review_decision, mergeable=status.mergeable,
+                checks_state=status.checks_state, head_sha=status.head_sha, ci=ci, now=now,
+            ))
             if any(prepass.get(k) != v for k, v in fields.items()):
                 self.store.update_prepass(item_key, fields)
         if ci_due:

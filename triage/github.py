@@ -50,6 +50,7 @@ class PrStatus:
     failing_checks: list[str]
     # Head commit, and the Buildkite build its `buildkite/ci...` status links
     # (None: no build started for it yet).
+    checks_state: str | None = None
     head_sha: str | None = None
     ci_build_url: str | None = None
 

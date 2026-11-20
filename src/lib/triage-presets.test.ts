@@ -122,3 +122,20 @@ test("My list quick filters", () => {
   assert.ok(inPlateView(entry({ kind: "issue" }), "issues"));
   assert.ok(!inPlateView(entry(), "issues"));
 });
+
+test("quick views round-trip and reset owner/status constraints", async () => {
+  const { focusFilters } = await import("./triage-presets");
+  const { queueFiltersToParams } = await import("./triage-query");
+  for (const focus of ["fires", "has-fix", "stale"] as const) {
+    const filters = { ...parse("owner=alice&status=acked"), ...focusFilters(focus) };
+    assert.equal(filters.owner, null);
+    assert.equal(filters.status, "any");
+    assert.deepEqual(parse(queueFiltersToParams(filters).toString()), filters);
+    assert.equal(activePreset(filters), null);
+    assert.ok(activeFilterCount(filters) > 0);
+    assert.equal(presetFilters("review", filters).focus, null);
+  }
+  assert.equal(parse("focus=bogus&review=bogus").focus, null);
+  assert.equal(parse("review=merge").review, "merge");
+  assert.equal(parse("review=blocked").review, "blocked");
+});

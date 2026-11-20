@@ -375,7 +375,7 @@ def test_an_ingest_run_is_two_queries_and_the_hash_survives_a_reread(fake: Any) 
     assert store.rows[f"{REPO}#301"]["prepass"]["commenters"] == ["mgoin", "someone"]
 
 
-def test_waiting_prs_are_rechecked_and_only_changes_written(fake: Any) -> None:
+def test_waiting_prs_are_rechecked_with_readiness_timestamp(fake: Any) -> None:
     fake(lambda q, v: {"repository": {"issues": {"pageInfo": {}, "nodes": []},
                                       "pullRequests": {"pageInfo": {}, "nodes": []}}} if "filterBy" in q else {
         "repository": {
@@ -392,8 +392,14 @@ def test_waiting_prs_are_rechecked_and_only_changes_written(fake: Any) -> None:
                      ("k2", 2, still), ("k3", 3, still)]
     IngestHandler(store=store, github=GraphQLGitHubClient("t"), config=default_config(),  # type: ignore[arg-type]
                   clock=Clock())(ScheduledCommand("triage_ingest", NOW))
-    assert store.prepass_updates == [("k1", {"waiting_on": "reviewer", "waiting_reasons": [], "mergeable": "MERGEABLE",
-                                             "failing_checks": []})]
+    updates = dict(store.prepass_updates)
+    assert set(updates) == {"k1", "k2"}  # closed PRs are not refreshed
+    assert updates["k1"]["waiting_on"] == "reviewer"
+    assert updates["k1"]["waiting_reasons"] == []
+    assert updates["k2"]["waiting_on"] == "author"
+    for fields in updates.values():
+        assert fields["merge_ready"] is False
+        assert fields["merge_checked_at"] == NOW.isoformat()
 
 
 def test_the_api_switch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -451,3 +457,36 @@ def test_ingest_keeps_the_ci_verdict_only_for_the_same_head_commit(fake: Any) ->
     pushed = run("def")  # a new commit: its CI isn't known yet
     assert (pushed["waiting_on"], pushed["waiting_reasons"]) == ("reviewer", [])
     assert "ci_pr_only_jobs" not in pushed
+
+
+def test_merge_readiness_requires_current_successful_head() -> None:
+    from triage.prepass import merge_readiness
+
+    kwargs: dict[str, Any] = dict(
+        draft=False, review_decision="APPROVED", mergeable="MERGEABLE",
+        checks_state="SUCCESS", head_sha="abc", ci={"head_sha": "abc", "state": "passed"}, now=NOW,
+    )
+    assert merge_readiness(**kwargs)["merge_ready"] is True
+    assert merge_readiness(**kwargs)["merge_checked_at"] == NOW.isoformat()
+    for patch in [
+        {"draft": True}, {"review_decision": None}, {"review_decision": "CHANGES_REQUESTED"},
+        {"mergeable": "UNKNOWN"}, {"mergeable": "CONFLICTING"}, {"checks_state": None},
+        {"checks_state": "PENDING"}, {"checks_state": "FAILURE"}, {"head_sha": None},
+        {"ci": None}, {"ci": {"head_sha": "old", "state": "passed"}},
+        {"ci": {"head_sha": "abc", "state": "running"}},
+    ]:
+        assert merge_readiness(**(kwargs | patch))["merge_ready"] is False, patch
+
+
+def test_aggregate_checks_are_persisted_in_prepass() -> None:
+    node = pr_node(7, 3)
+    node["reviewDecision"] = "APPROVED"
+    node["mergeable"] = "MERGEABLE"
+    node["commits"] = {"nodes": [{"commit": {"oid": "abc", "statusCheckRollup": {"state": "SUCCESS"}}}]}
+    item = item_from_node(REPO, node, "pr")
+    assert item.checks_state == "SUCCESS"
+    prepass = compute_prepass(item, default_config(), NOW, ci={"head_sha": "abc", "state": "passed"})
+    assert prepass["merge_ready"] is True
+    assert prepass["head_sha"] == "abc"
+    assert prepass["review_decision"] == "APPROVED"
+    assert github_graphql.checks_state(None) is None

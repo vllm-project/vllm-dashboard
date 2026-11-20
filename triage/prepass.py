@@ -287,6 +287,26 @@ def whose_move(
     return out
 
 
+def merge_readiness(
+    *, draft: bool, review_decision: str | None, mergeable: str | None,
+    checks_state: str | None, head_sha: str | None, ci: dict[str, Any] | None,
+    now: datetime | None,
+) -> dict[str, Any]:
+    """Conservative observed readiness, not permission to bypass GitHub merge rules."""
+    return {
+        "merge_ready": bool(
+            not draft and review_decision == "APPROVED" and mergeable == "MERGEABLE"
+            and checks_state == "SUCCESS" and head_sha and ci
+            and ci.get("head_sha") == head_sha and ci.get("state") == "passed"
+        ),
+        "merge_checked_at": now.isoformat() if now else None,
+        "review_decision": review_decision,
+        "mergeable": mergeable,
+        "checks_state": checks_state,
+        "head_sha": head_sha,
+    }
+
+
 def compute_prepass(
     item: Item, config: TriageConfig, now: datetime | None = None, *, ci: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -330,6 +350,9 @@ def compute_prepass(
         **(
             whose_move(draft=item.draft, review_decision=item.review_decision,
                        mergeable=item.mergeable, failing_checks=item.failing_checks, ci=ci)
+            | merge_readiness(draft=item.draft, review_decision=item.review_decision,
+                              mergeable=item.mergeable, checks_state=item.checks_state,
+                              head_sha=item.head_sha, ci=ci, now=now)
             if item.kind == "pr" and item.state == "open" else {}
         ),
     }

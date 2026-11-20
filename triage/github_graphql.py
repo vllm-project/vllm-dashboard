@@ -163,6 +163,14 @@ def failing_checks(commits: dict[str, Any] | None) -> list[str]:
     return [name for name in failed if name not in passed]
 
 
+def checks_state(commits: dict[str, Any] | None) -> str | None:
+    """Aggregate check state; missing and pending must never look successful."""
+    nodes = (commits or {}).get("nodes") or []
+    commit = ((nodes[0] or {}).get("commit") or {}) if nodes else {}
+    state = (commit.get("statusCheckRollup") or {}).get("state")
+    return str(state) if state is not None else None
+
+
 def head_commit(commits: dict[str, Any] | None) -> tuple[str | None, str | None]:
     """(head commit sha, URL of the Buildkite build its `buildkite/ci...`
     status points at, or None when Buildkite hasn't started one)."""
@@ -219,6 +227,7 @@ def item_from_node(repo: str, node: dict[str, Any], kind: Literal["issue", "pr"]
         item.review_decision = node.get("reviewDecision")
         item.mergeable = node.get("mergeable")
         item.failing_checks = failing_checks(node.get("commits"))
+        item.checks_state = checks_state(node.get("commits"))
         item.head_sha = head_commit(node.get("commits"))[0]
     return item
 
@@ -441,6 +450,7 @@ class GraphQLGitHubClient:
                         state=_state(node), draft=bool(node.get("isDraft")),
                         review_decision=node.get("reviewDecision"), mergeable=node.get("mergeable"),
                         failing_checks=failing_checks(node.get("commits")),
+                        checks_state=checks_state(node.get("commits")),
                         head_sha=head_sha, ci_build_url=build_url,
                     )
         return out

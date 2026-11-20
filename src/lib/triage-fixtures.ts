@@ -307,7 +307,7 @@ const FIXTURE_ITEMS: readonly TriageQueueItem[] = [
   // and two standalone items, so group cards can be checked against plain rows.
   fixtureItem(68705, "issue", "[Bug]: Llama-4 Maverick returns empty tool calls with the pythonic parser", 64, "route", {
     areas: ["tool_calling", "frontend_api"], models: ["Llama-4-Maverick"], hardware: ["H100"],
-    severity: { wrong_output: true }, fixedBy: [linkTo(68822, "pr", 101, "page")],
+    severity: { wrong_output: true }, fixedBy: [linkTo(68822, "pr", 101, "page"), linkTo(68823, "pr", 10, "ignore")],
   }),
   fixtureItem(68822, "pr", "[Bugfix][Frontend] Pythonic tool parser: keep calls when content is empty", 101, "page", {
     areas: ["tool_calling"], models: ["Llama-4-Maverick"], severity: { wrong_output: true, serving_broken: true },
@@ -325,6 +325,9 @@ const FIXTURE_ITEMS: readonly TriageQueueItem[] = [
   }),
   fixtureItem(66920, "pr", "[Perf] Faster top-k/top-p sampling with fused kernel", 58, "route", {
     areas: ["sampling", "kernels"], hardware: ["B200"], waitingOn: "reviewer", ci: fixtureCi("failed", 2),
+  }),
+  fixtureItem(68823, "pr", "[Bugfix] Alternative fix for empty tool calls", 10, "ignore", {
+    fixes: [linkTo(68705, "issue", 64, "route")], waitingOn: "author",
   }),
   fixtureItem(64584, "issue", "[Bug]: Gemma 3 vision encoder OOM at 32k context", 52, "route", {
     areas: ["multimodal", "memory"], models: ["gemma-3-27b"], hardware: ["H100"], severity: { memory_regression: true },
@@ -442,7 +445,7 @@ export function fixtureQueue(filters: QueueFilters): TriageQueueResponse {
     if (filters.review === "merge" && (item.kind !== "pr" || item.draft || item.waitingOn !== "reviewer" || !APPROVED_FIXTURE_KEYS.has(item.itemKey) || item.ci?.state !== "passed")) {
       return false;
     }
-    if (filters.review === "cleanup") {
+    if (filters.review === "cleanup" || filters.focus === "cleanup") {
       if (item.kind !== "pr" || item.state !== "open") return false;
       const hasCompetingPr = item.fixes.some((issue) =>
         FIXTURE_ITEMS.some(
@@ -453,8 +456,18 @@ export function fixtureQueue(filters: QueueFilters): TriageQueueResponse {
             other.fixes.some((f) => f.itemKey === issue.itemKey),
         ),
       );
-      if (!LOW_EFFORT_FIXTURE_KEYS.has(item.itemKey) && !hasCompetingPr) return false;
+      if (!LOW_EFFORT_FIXTURE_KEYS.has(item.itemKey) && item.number !== 68823 && !hasCompetingPr) return false;
     }
+    if (filters.review === "blocked" && (item.kind !== "pr" || item.state !== "open" || item.waitingOn !== "author")) return false;
+    if (filters.focus && item.state !== "open") return false;
+    if (filters.focus === "fires" && !(
+      item.severity?.serving_broken || item.severity?.security || item.severity?.memory_regression
+      || (item.severity?.perf_regression_pct ?? 0) > 0 || item.type === "regression" || item.type === "perf_regression"
+    )) return false;
+    if (filters.focus === "has-fix" && (item.kind !== "issue" || !["page", "route"].includes(item.band ?? "")
+      || !item.fixedBy.some((pr) => pr.state === "open"))) return false;
+    // Synthetic waiting times: these two items became routable / were assigned four days ago.
+    if (filters.focus === "stale" && ![65364, 67454].includes(item.number)) return false;
     if (
       q &&
       !item.title.toLowerCase().includes(q) &&

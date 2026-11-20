@@ -47,13 +47,13 @@ export const QUEUE_PRESETS: readonly QueuePreset[] = [
   {
     id: "merge",
     label: "Ready to merge",
-    title: "Approved open PRs with passing CI and no merge conflicts",
+    title: "Approved, conflict-free PRs with successful checks and CI on the observed head, checked within the last hour. Confirm on GitHub before merging.",
     filters: { bands: [...TRIAGE_BANDS], kind: "pr", review: "merge" },
   },
   {
     id: "cleanup",
     label: "Close / dedup",
-    title: "Competing duplicate fix PRs (2+ open PRs fixing the same issue) and low-effort PRs",
+    title: "Open PRs with competing fixes or low-effort signals. Review candidates, not confirmed duplicates.",
     filters: { bands: [...TRIAGE_BANDS], kind: "pr", review: "cleanup" },
   },
   {
@@ -90,7 +90,7 @@ export function parseQueueLocation(params: URLSearchParams): QueueFilters {
 }
 
 /** Filters the presets set; search, sort and paging are left alone. */
-const PRESET_FIELDS = ["bands", "kind", "area", "hardware", "model", "owner", "status", "review", "state", "includeOutOfScope"] as const;
+const PRESET_FIELDS = ["bands", "kind", "area", "hardware", "model", "owner", "status", "review", "focus", "state", "includeOutOfScope"] as const;
 
 /** Literal defaults: P0–P2, anyone, open (not the landing view). */
 function defaults(): QueueFilters {
@@ -143,7 +143,7 @@ export function activeFilterCount(filters: QueueFilters): number {
   if (activePreset(filters) !== null) return filters.sort !== base.sort ? 1 : 0;
   let count = 0;
   if (!sameValue(filters.bands, [...DEFAULT_QUEUE_BANDS])) count++;
-  for (const field of ["kind", "area", "hardware", "model", "owner", "status", "review", "state", "sort"] as const) {
+  for (const field of ["kind", "area", "hardware", "model", "owner", "status", "review", "focus", "state", "sort"] as const) {
     if (!sameValue(filters[field], base[field])) count++;
   }
   return count;
@@ -187,4 +187,23 @@ export function inPlateView(entry: PlateEntryLike, view: PlateView): boolean {
     default:
       return true;
   }
+}
+
+/** Focus shortcuts start across owners/statuses; users can narrow them afterward. */
+export function focusFilters(focus: QueueFilters["focus"]): Partial<QueueFilters> {
+  return {
+    focus, owner: null, status: "any", review: null, state: "open",
+    kind: focus === "has-fix" ? "issue" : focus === "cleanup" ? "pr" : null,
+    bands: focus === "has-fix" || focus === "stale" ? [...LANDING_BANDS] : [...TRIAGE_BANDS],
+  };
+}
+
+export function queueViewDescription(filters: QueueFilters): string | null {
+  if (filters.review === "cleanup" || filters.focus === "cleanup") return "Competing fixes or low-effort signals across all priorities. Review each PR before closing; these are not confirmed duplicates.";
+  if (filters.focus === "fires") return "Open items flagged as serving broken, security, or regressions.";
+  if (filters.focus === "has-fix") return "Open P0/P1 issues with an open fix PR.";
+  if (filters.focus === "stale") return "Open P0/P1 items unowned for over 3 days since becoming routable, or unacked for over 3 days since assignment.";
+  if (filters.review === "merge") return "Approved, conflict-free PRs with successful checks and CI on the observed head, checked within the last hour. Confirm on GitHub before merging.";
+  if (filters.review === "blocked") return "PRs waiting on their author: drafts, conflicts, requested changes, or failing checks/CI.";
+  return null;
 }

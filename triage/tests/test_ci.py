@@ -315,12 +315,18 @@ def test_ingest_refreshes_ci_and_whose_move() -> None:
     # k1 fails a job main doesn't: the author's move. k2 (CI not started)
     # gets the new, empty ci_pr_only_jobs once. k5 isn't due a CI check and
     # has no CI row, so only its GitHub state counts (no longer a draft).
-    assert sorted(store.prepass_updates) == [
-        ("k1", {"waiting_on": "author", "waiting_reasons": ["ci_pr_failures"], "mergeable": "MERGEABLE",
-                "failing_checks": [], "ci_pr_only_jobs": [":github: GitHub pre-commit check"]}),
-        ("k2", {"waiting_on": "reviewer", "waiting_reasons": [], "mergeable": "MERGEABLE",
-                "failing_checks": [], "ci_pr_only_jobs": []}),
-        ("k5", {"waiting_on": "reviewer", "waiting_reasons": [], "mergeable": "MERGEABLE", "failing_checks": []}),
+    def move_updates() -> list[tuple[str, dict[str, Any]]]:
+        keys = {"waiting_on", "waiting_reasons", "failing_checks", "ci_pr_only_jobs"}
+        return [(key, {k: v for k, v in fields.items() if k in keys}) for key, fields in store.prepass_updates]
+
+    assert all(fields["merge_ready"] is False for _, fields in store.prepass_updates)
+    assert all(fields["merge_checked_at"] == NOW.isoformat() for _, fields in store.prepass_updates)
+    assert sorted(move_updates()) == [
+        ("k1", {"waiting_on": "author", "waiting_reasons": ["ci_pr_failures"], "failing_checks": [],
+                "ci_pr_only_jobs": [":github: GitHub pre-commit check"]}),
+        ("k2", {"waiting_on": "reviewer", "waiting_reasons": [], "failing_checks": [], "ci_pr_only_jobs": []}),
+        ("k3", {"waiting_on": "reviewer", "waiting_reasons": [], "failing_checks": []}),
+        ("k5", {"waiting_on": "reviewer", "waiting_reasons": [], "failing_checks": []}),
     ]
 
     # Next run: k1's finished build isn't fetched again; main now fails pre-commit too.
@@ -333,8 +339,8 @@ def test_ingest_refreshes_ci_and_whose_move() -> None:
     handler(ScheduledCommand("triage_ingest", NOW))
     assert buildkite.fetched == [104586, 9]
     assert store.ci["k1"]["jobs_failed_on_main"] == 4
-    assert store.prepass_updates == [("k1", {"waiting_on": "reviewer", "waiting_reasons": [], "mergeable": "MERGEABLE",
-                                             "failing_checks": [], "ci_pr_only_jobs": []})]
+    assert move_updates() == [("k1", {"waiting_on": "reviewer", "waiting_reasons": [], "failing_checks": [],
+                                             "ci_pr_only_jobs": []})]
 
     # A new commit: the stored CI is for the old one and doesn't count.
     store.prepass_updates.clear()
@@ -375,3 +381,25 @@ def test_ci_on_grouped_digest_lines() -> None:
     line = _item_line(issue, fixes=[fix])
     assert "↳ fix: <https://github.com/vllm-project/vllm/pull/101|#101 Fix crash> · CI: 41/41 ✓" in line
     assert "· CI: 41/41 ✓" in _waiting_line(issue, NOW, "vi", fixes=[fix])
+
+
+def test_status_refresh_records_readiness_and_invalidates_it_on_new_head() -> None:
+    from dataclasses import replace
+
+    store = Store()
+    store.due = [("k1", 1, {})]
+    approved = replace(status(), review_decision="APPROVED", checks_state="SUCCESS")
+    github = GitHub({1: approved})
+    handler = IngestHandler(
+        store=store, github=github, config=default_config(),  # type: ignore[arg-type]
+        clock=type("C", (), {"now": staticmethod(lambda: NOW)})(),
+        buildkite=Buildkite({104586: build("passed", [job("unit", "passed")])}),
+    )
+    handler(ScheduledCommand("triage_ingest", NOW))
+    assert dict(store.prepass_updates)["k1"]["merge_ready"] is True
+    store.prepass_updates.clear()
+    github.statuses = {1: replace(approved, head_sha="f" * 40, ci_build_url=None)}
+    handler(ScheduledCommand("triage_ingest", NOW))
+    fields = dict(store.prepass_updates)["k1"]
+    assert fields["head_sha"] == "f" * 40
+    assert fields["merge_ready"] is False

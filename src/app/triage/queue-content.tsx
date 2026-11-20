@@ -17,7 +17,7 @@ import {
 } from "@/components/triage/item-row";
 import { groupBand, nestGroups, rowOrder } from "@/lib/triage-groups";
 import { listPosition, stepItem } from "@/lib/triage-keys";
-import { QUEUE_PRESETS, activeFilterCount, activePreset, parseQueueLocation, presetFilters, type QueuePresetId } from "@/lib/triage-presets";
+import { QUEUE_PRESETS, focusFilters, queueViewDescription, activeFilterCount, activePreset, parseQueueLocation, presetFilters, type QueuePresetId } from "@/lib/triage-presets";
 import { useTriageLogin } from "@/components/triage/use-triage-session";
 import { useLocationHash } from "@/lib/use-location-hash";
 import { itemFromLocation, percent, triageFetcher } from "@/lib/triage-format";
@@ -584,6 +584,7 @@ function FiltersPopover({
               <option value="ready">Ready to review</option>
               <option value="merge">Ready to merge</option>
               <option value="cleanup">Close / dedup</option>
+              {filters.review === "blocked" && <option value="blocked">Waiting on author / CI</option>}
             </FieldSelect>
             <FieldSelect label="Sort" value={filters.sort} onChange={(value) => onChange({ sort: value as QueueFilters["sort"] })}>
               <option value="score">By priority</option>
@@ -593,6 +594,17 @@ function FiltersPopover({
           </div>
           <div className="flex flex-wrap gap-2">
             <Toggle on={filters.state === "all"} label="Closed too" onClick={() => onChange({ state: filters.state === "all" ? "open" : "all" })} />
+            <Toggle on={filters.review === "blocked"} label="Waiting on author / CI" onClick={() => onChange({ ...focusFilters(null), kind: "pr", review: filters.review === "blocked" ? null : "blocked" })} />
+          </div>
+          <div className="space-y-1">
+            <p className={PANEL_LABEL}>Quick views · across owners and statuses</p>
+            <div className="flex flex-wrap gap-2">
+              {([
+                ["fires", "Fires"], ["has-fix", "Has fix PR"], ["stale", "Stale (>3d)"],
+              ] as const).map(([focus, label]) => (
+                <Toggle key={focus} on={filters.focus === focus} label={label} onClick={() => onChange(focusFilters(filters.focus === focus ? null : focus))} />
+              ))}
+            </div>
           </div>
           <div className="flex items-center justify-between border-t border-zinc-100 pt-2 dark:border-zinc-800">
             <button
@@ -651,7 +663,7 @@ function Queue() {
     refreshInterval: 120_000,
   });
   const [search, setSearch] = useState(formatSearchInput(filters.q, filters.model));
-  const [showP3, setShowP3] = useState(false);
+  const [showP3, setShowP3] = useState(() => filters.bands.includes("ignore"));
   const [statsOpen, setStatsOpen] = useState(false);
   useEffect(() => {
     try {
@@ -683,6 +695,7 @@ function Queue() {
 
   const update = useCallback(
     (patch: Partial<QueueFilters>, extra: Record<string, string | null> = {}) => {
+      if (patch.bands?.includes("ignore")) setShowP3(true);
       const item = "item" in extra ? extra.item : openItem;
       replaceFilters({ ...filters, page: 1, ...patch }, item ?? null);
     },
@@ -768,6 +781,10 @@ function Queue() {
             onPickUnowned={() => update({ bands: ["page", "route"], owner: OWNER_NONE, status: "any" })}
           />
         </div>
+      )}
+
+      {queueViewDescription(filters) && (
+        <p className="text-xs text-zinc-500 dark:text-zinc-400" role="status">{queueViewDescription(filters)}</p>
       )}
 
       {/* overflow-clip, not overflow-hidden: hidden would make this box the sticky container and stop the group headers sticking. */}

@@ -9,7 +9,7 @@ import {
 import { isValidLogin } from "@/lib/triage-auth";
 
 export const QUEUE_STATUSES = ["any", "unassigned", "open", "acked", "closed"] as const;
-export const QUEUE_REVIEWS = ["ready", "merge", "cleanup"] as const;
+export const QUEUE_REVIEWS = ["ready", "merge", "cleanup", "blocked"] as const;
 export const QUEUE_SORTS = ["score", "age", "updated"] as const;
 export const DEFAULT_PAGE_SIZE = 50;
 export const MAX_PAGE_SIZE = 200;
@@ -37,6 +37,7 @@ export interface QueueFilters {
    * - `cleanup`: competing duplicate fix PRs (2+ open PRs fixing the same issue) or low-effort PRs
    */
   review: (typeof QUEUE_REVIEWS)[number] | null;
+  focus: "cleanup" | "fires" | "has-fix" | "stale" | null;
   q: string | null;
   state: "open" | "all";
   includeOutOfScope: boolean;
@@ -57,7 +58,7 @@ function positiveInt(value: string | null, fallback: number, max: number): numbe
 
 /** Params that choose what's listed (not search, sort, paging or the open item). */
 export const FILTER_PARAMS = [
-  "bands", "kind", "area", "hardware", "model", "owner", "assignee", "status", "review", "state", "scope",
+  "bands", "kind", "area", "hardware", "model", "owner", "assignee", "status", "review", "focus", "state", "scope",
 ] as const;
 
 /**
@@ -97,6 +98,8 @@ export function parseQueueFilters(params: URLSearchParams): QueueFilters {
     owner: owner === OWNER_NONE ? OWNER_NONE : owner && isValidLogin(owner) ? owner : null,
     status: isOneOf(QUEUE_STATUSES, status) ? status : "any",
     review: isOneOf(QUEUE_REVIEWS, params.get("review")) ? (params.get("review") as QueueFilters["review"]) : null,
+    focus: isOneOf(["cleanup", "fires", "has-fix", "stale"] as const, params.get("focus"))
+      ? params.get("focus") as QueueFilters["focus"] : null,
     q: text(params.get("q"), 200),
     state: params.get("state") === "all" ? "all" : "open",
     includeOutOfScope: params.get("scope") === "all",
@@ -145,6 +148,7 @@ function literalParams(filters: Partial<QueueFilters>): URLSearchParams {
   if (filters.owner) params.set("owner", filters.owner);
   if (filters.status && filters.status !== "any") params.set("status", filters.status);
   if (filters.review) params.set("review", filters.review);
+  if (filters.focus) params.set("focus", filters.focus);
   if (filters.q) params.set("q", filters.q);
   if (filters.state === "all") params.set("state", "all");
   if (filters.includeOutOfScope) params.set("scope", "all");
