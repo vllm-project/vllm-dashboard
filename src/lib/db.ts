@@ -15,26 +15,36 @@ export function webDatabaseUrl(url: string): string {
   return url;
 }
 
+type WebPostgresOptions = postgres.Options<Record<string, never>> & {
+  // Supported at runtime by postgres.js (src/index.js) but omitted from its .d.ts.
+  max_pipeline?: number;
+};
+
 export function getDb() {
   if (!sql) {
     const url = process.env.DATABASE_URL;
     if (!url) {
       throw new Error("DATABASE_URL is not set");
     }
-    sql = postgres(webDatabaseUrl(url), {
+    const options: WebPostgresOptions = {
       ssl: "require",
       // Supabase shared-pooler URLs use transaction mode in the web app. Named
       // prepared statements are connection-local and can disappear when the
       // pooler hands a later request to a different backend connection.
       prepare: false,
-      // Serverless instances should fail quickly and keep a deliberately small
-      // pool. The dashboard only fans out three PostgreSQL queries at once;
-      // larger per-instance pools amplify connection pressure during bursts.
-      max: 3,
+      // Disable postgres.js query pipelining (default 100): Supavisor
+      // transaction mode (:6543) can desync on pipelined unnamed-prepared
+      // queries, leaving the backend wedged in active/ClientRead forever.
+      max_pipeline: 1,
+      // Keep the per-instance pool small for serverless, while covering the
+      // triage page's concurrent fan-out (/api/triage/stats + items +
+      // maintainers) without queueing behind a single slow query.
+      max: 6,
       connect_timeout: 10,
       idle_timeout: 20,
       max_lifetime: 10 * 60,
-    });
+    };
+    sql = postgres(webDatabaseUrl(url), options);
   }
   return sql;
 }
