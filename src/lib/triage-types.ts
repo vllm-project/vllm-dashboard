@@ -176,6 +176,8 @@ export interface TriageActionRecord {
   note: string | null;
   source: string;
   createdAt: string;
+  /** Set when the actor took it back with Undo; it no longer counts anywhere. */
+  undoneAt?: string | null;
 }
 
 export interface TriageItemDetail {

@@ -1529,3 +1529,83 @@ def test_reconcile_revokes_stale_and_self_pr_and_daily_dm_cap(
     digests = [row for row in outbox(database_url) if row[0].startswith("triage:digest:alice:")]
     assert len(digests) == 1
     assert store.unnotified_assignments("alice") == []
+
+
+def test_undone_actions_are_ignored_everywhere(store: PostgresTriageStore, database_url: str) -> None:
+    """Dashboard Undo sets triage_actions.undone_at (migration 0048) instead of
+    deleting the row: the router, needs_relevance, reminders, feedback and the
+    suppression alert must all treat an undone click as if it never happened."""
+    ingest(store, issue(1601, "DeepSeek startup crash undo"))
+    seed(store, [{"github_login": "a", "rules": {"areas": ["moe"]}, "notify_mode": "digest"}])
+    run_extraction(store, FakeBackend({"DeepSeek": SEVERE}), budget=Budget(), now=NOW, workers=1)
+    RouteHandler(store=store, config=default_config(), clock=FixedClock(NOW),
+                 delivery_mode=DeliveryMode.SHADOW)._rescore(NOW)
+    key = "vllm-project/vllm#1601"
+
+    def candidates() -> dict[str, frozenset[str]]:
+        return {r.item_key: r.excluded for r in store.routing_candidates(limit=10)}
+
+    def set_undone(action: str, undone: bool) -> None:
+        with psycopg.connect(database_url, autocommit=True) as c:
+            c.execute("UPDATE triage_actions SET undone_at = CASE WHEN %s THEN now() END "
+                      "WHERE item_key = %s AND action = %s", (undone, key, action))
+
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("INSERT INTO triage_actions (item_key, actor, action, source, created_at) VALUES "
+                  "(%s, 'a', 'drop', 'dashboard', %s), (%s, 'a', 'not_mine', 'dashboard', %s)",
+                  (key, NOW - timedelta(hours=1), key, NOW - timedelta(hours=1)))
+
+    # Live drop: never routed again, not judged.
+    assert key not in candidates()
+    store.sync_needs_relevance(active_maintainers=["a"])
+    with psycopg.connect(database_url) as c:
+        assert c.execute("SELECT needs_relevance FROM triage_scores WHERE item_key = %s", (key,)).fetchone()[0] is False
+
+    # Undone drop: a candidate again; the live not_mine still excludes "a".
+    set_undone("drop", True)
+    assert candidates() == {key: frozenset({"a"})}
+    store.sync_needs_relevance(active_maintainers=["a"])
+    with psycopg.connect(database_url) as c:
+        assert c.execute("SELECT needs_relevance FROM triage_scores WHERE item_key = %s", (key,)).fetchone()[0] is True
+
+    # Undone not_mine: "a" can get it again and it isn't "declined" feedback.
+    assert [e["item_key"] for e in store.maintainer_feedback("a", now=NOW)["declined"]] == [key]
+    set_undone("not_mine", True)
+    assert candidates() == {key: frozenset()}
+    assert store.maintainer_feedback("a", now=NOW)["declined"] == []
+
+    # Suppression alert counts live drops only.
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("INSERT INTO triage_actions (item_key, actor, action, source, created_at, undone_at) VALUES "
+                  "(%s, 'mallory', 'drop', 'dashboard', %s, NULL), (%s, 'mallory', 'slop', 'dashboard', %s, NULL), "
+                  "(%s, 'mallory', 'drop', 'dashboard', %s, now())",
+                  (key, NOW - timedelta(hours=1), key, NOW - timedelta(hours=1), key, NOW - timedelta(hours=1)))
+    assert store.suppression_since(NOW - timedelta(days=1), threshold=3) == []
+    assert store.suppression_since(NOW - timedelta(days=1), threshold=2) == [("mallory", 1, 1)]
+
+    # Still-waiting reminders skip live drop/slop only.
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_actions SET undone_at = now() WHERE item_key = %s", (key,))
+        c.execute("INSERT INTO triage_assignments (item_key, maintainer, role, status, score_at_assign, "
+                  "assigned_at, notified_at) VALUES (%s, 'a', 'primary', 'open', 80, %s, %s)",
+                  (key, NOW - timedelta(days=4), NOW - timedelta(days=4)))
+    waiting, _ = store.waiting_assignments("a", assigned_before=NOW - timedelta(days=3), limit=5)
+    assert [e.item_key for e in waiting] == [key]
+    set_undone("drop", False)
+    assert store.waiting_assignments("a", assigned_before=NOW - timedelta(days=3), limit=5) == ([], 0)
+
+
+def test_items_with_only_undone_actions_age_out_like_untouched_ones(
+    store: PostgresTriageStore, database_url: str
+) -> None:
+    old = NOW - timedelta(days=400)
+    ingest(store, issue(1701, "old untouched"))
+    key = "vllm-project/vllm#1701"
+    seed(store, [{"github_login": "a"}])
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_items SET gh_created_at = %s WHERE item_key = %s", (old, key))
+        c.execute("INSERT INTO triage_assignments (item_key, maintainer, role, status, score_at_assign) "
+                  "VALUES (%s, 'a', 'primary', 'open', 50)", (key,))
+        c.execute("INSERT INTO triage_actions (item_key, actor, action, source, undone_at) "
+                  "VALUES (%s, 'a', 'drop', 'dashboard', now())", (key,))
+    assert store.expire_out_of_window(NOW - timedelta(days=30)) == (1, 1)
