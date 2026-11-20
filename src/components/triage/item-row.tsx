@@ -43,14 +43,22 @@ import type { TriageQueueItem } from "@/lib/triage-types";
 export const ROW_GRID =
   "grid grid-cols-[auto_minmax(0,1fr)_auto] gap-x-3 md:grid-cols-[7rem_minmax(0,1fr)_12rem_3rem]";
 
-export function ItemListHeader() {
+/** My list: no owner column (it's always the viewer); the item column takes its width. */
+export const ROW_GRID_NO_OWNER =
+  "grid grid-cols-[auto_minmax(0,1fr)_auto] gap-x-3 md:grid-cols-[7rem_minmax(0,1fr)_3rem]";
+
+export function rowGrid(hideOwner = false): string {
+  return hideOwner ? ROW_GRID_NO_OWNER : ROW_GRID;
+}
+
+export function ItemListHeader({ hideOwner = false }: { hideOwner?: boolean }) {
   return (
     <div
-      className={`${ROW_GRID} hidden border-b border-zinc-200 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500 md:grid dark:border-zinc-800 dark:text-zinc-400`}
+      className={`${rowGrid(hideOwner)} hidden border-b border-zinc-200 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-zinc-500 md:grid dark:border-zinc-800 dark:text-zinc-400`}
     >
       <span className="whitespace-nowrap">Priority · Score</span>
       <span>Item</span>
-      <span>Owner</span>
+      {!hideOwner && <span>Owner</span>}
       <span className="text-right">Age</span>
     </div>
   );
@@ -99,22 +107,30 @@ const CI_TONE: Record<CiTone, string> = {
   idle: "text-zinc-500 dark:text-zinc-400",
 };
 
-/** Line 2: cleanup reasons (on Suggested to close), one impact badge, CI when actionable, then plain muted context and "Fixes #N". */
+const DOT = <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>;
+
+/**
+ * Line 2: `status` first (My list: "Needs your ack · ack overdue"), cleanup
+ * reasons (on Suggested to close), one impact badge, CI when actionable, then
+ * plain muted context and "Fixes #N".
+ */
 function DetailLine({
   item,
   shownLinks,
   onOpenKey,
+  status,
 }: {
   item: TriageQueueItem;
   shownLinks: readonly string[];
   onOpenKey?: (itemKey: string) => void;
+  status?: ReactNode;
 }) {
   const cleanup = cleanupReasons(item.cleanup);
   const impact = impactBadge(item);
   const ci = rowCiChip(item.ci);
   const context = contextText(item);
   const links = linkText(item, shownLinks);
-  if (cleanup.length === 0 && !impact && !ci && !context.text && !links) return null;
+  if (!status && cleanup.length === 0 && !impact && !ci && !context.text && !links) return null;
   const parts: ReactNode[] = [];
   if (context.text) {
     parts.push(
@@ -139,8 +155,11 @@ function DetailLine({
       </span>,
     );
   }
+  const afterStatus = cleanup.length > 0 || impact || ci || parts.length > 0;
   return (
     <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+      {status}
+      {status && afterStatus && DOT}
       {cleanup.map((reason, index) => (
         <span
           key={`cleanup-${index}`}
@@ -185,7 +204,7 @@ function DetailLine({
       )}
       {parts.map((part, index) => (
         <Fragment key={index}>
-          {(index > 0 || cleanup.length > 0 || impact || ci) && <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>}
+          {(index > 0 || cleanup.length > 0 || impact || ci) && DOT}
           {part}
         </Fragment>
       ))}
@@ -193,12 +212,14 @@ function DetailLine({
   );
 }
 
-/** Line 2 of a fix PR inside a card: CI when it says something, and whose move it is. */
-function FixPrStatusLine({ item }: { item: TriageQueueItem }) {
+/** Line 2 of a fix PR inside a card: `status` (My list), CI when it says something, and whose move it is. */
+function FixPrStatusLine({ item, status }: { item: TriageQueueItem; status?: ReactNode }) {
   const { ci, move } = fixPrStatus(item);
-  if (!ci && !move) return null;
+  if (!status && !ci && !move) return null;
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] font-semibold">
+      {status && <span className="text-xs font-normal">{status}</span>}
+      {status && (ci || move) && <span aria-hidden="true" className="font-normal text-zinc-300 dark:text-zinc-600">·</span>}
       {ci && (
         <span title={ci.title} className={`tabular-nums ${CI_TONE[ci.tone]}`}>
           {ci.label}
@@ -310,8 +331,9 @@ const CONNECTOR = "bg-zinc-300 dark:bg-zinc-600";
 
 /**
  * One item. The whole row and its title open the drawer; "#123 ↗" after the
- * title goes to GitHub. `footer` (e.g. My list's action buttons) renders
- * under the detail line. `nested`: a fix PR under its issue, indented in the
+ * title goes to GitHub. `status` leads the detail line and `footer` (e.g. My
+ * list's reason and action buttons) renders under it; `compact` keeps the
+ * title to one line. `nested`: a fix PR under its issue, indented in the
  * item column only, joined to it by a thin connector; `connectsDown` carries
  * that line on to the next fix PR. `shownLinks` are group members already on
  * screen, left out of its "Fixes #N" text. `active` marks the row whose
@@ -321,7 +343,8 @@ export function ItemRow({
   item,
   onOpen,
   footer,
-  label,
+  status,
+  compact = false,
   hideOwner = false,
   nested = false,
   connectsDown = false,
@@ -334,7 +357,8 @@ export function ItemRow({
   item: TriageQueueItem;
   onOpen: () => void;
   footer?: ReactNode;
-  label?: ReactNode;
+  status?: ReactNode;
+  compact?: boolean;
   hideOwner?: boolean;
   nested?: boolean;
   connectsDown?: boolean;
@@ -380,7 +404,7 @@ export function ItemRow({
       onClick={onOpen}
     >
       {!card && style.stripe && <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-1 ${style.stripe}`} />}
-      <div className={ROW_GRID}>
+      <div className={rowGrid(hideOwner)}>
         <PriorityCell view={priorityCell(item, card)} />
         <div className="relative min-w-0">
           {/*
@@ -412,28 +436,31 @@ export function ItemRow({
                 event.stopPropagation();
                 onOpen();
               }}
-              title="Open details"
-              className="line-clamp-2 min-w-0 rounded-sm text-left text-sm font-medium leading-snug text-zinc-950 underline-offset-2 hover:underline dark:text-zinc-50"
+              title={compact ? item.title : "Open details"}
+              className={`${compact ? "line-clamp-1" : "line-clamp-2"} min-w-0 rounded-sm text-left text-sm font-medium leading-snug text-zinc-950 underline-offset-2 hover:underline dark:text-zinc-50`}
             >
               {item.title}
             </button>
             {number}
           </div>
-          {label && <div className="mt-1">{label}</div>}
           {/* A fix PR in a card: what's actionable for the PR (its issue row carries impact and context). */}
-          {card && nested ? <FixPrStatusLine item={item} /> : <DetailLine item={item} shownLinks={shownLinks} onOpenKey={onOpenKey} />}
+          {card && nested ? (
+            <FixPrStatusLine item={item} status={status} />
+          ) : (
+            <DetailLine item={item} shownLinks={shownLinks} onOpenKey={onOpenKey} status={status} />
+          )}
           {!hideOwner && (
             <div className="mt-1 md:hidden">
               <Owner item={item} />
             </div>
           )}
           {footer && (
-            <div className="mt-2" onClick={(event) => event.stopPropagation()}>
+            <div className={compact ? "mt-1.5" : "mt-2"} onClick={(event) => event.stopPropagation()}>
               {footer}
             </div>
           )}
         </div>
-        <div className="hidden min-w-0 pt-0.5 md:block">{!hideOwner && <Owner item={item} />}</div>
+        {!hideOwner && <div className="hidden min-w-0 pt-0.5 md:block"><Owner item={item} /></div>}
         <div className="pt-0.5 text-right text-xs tabular-nums text-zinc-500 dark:text-zinc-400" title={item.ghCreatedAt}>
           {formatAge(item.ghCreatedAt)}
         </div>
@@ -455,7 +482,8 @@ export function GroupedRows<T extends TriageQueueItem>({
   onOpen,
   onOpenKey,
   footer,
-  label,
+  status,
+  compact = false,
   hideOwner = false,
   activeKey = null,
 }: {
@@ -464,7 +492,8 @@ export function GroupedRows<T extends TriageQueueItem>({
   onOpen: (item: T) => void;
   onOpenKey?: (itemKey: string) => void;
   footer?: (item: T) => ReactNode;
-  label?: (item: T) => ReactNode;
+  status?: (item: T) => ReactNode;
+  compact?: boolean;
   hideOwner?: boolean;
   /** The item key whose drawer is open. */
   activeKey?: string | null;
@@ -478,7 +507,8 @@ export function GroupedRows<T extends TriageQueueItem>({
       onOpen={() => onOpen(row.item)}
       onOpenKey={onOpenKey}
       footer={footer?.(row.item)}
-      label={label?.(row.item)}
+      status={status?.(row.item)}
+      compact={compact}
       hideOwner={hideOwner}
       shownLinks={row.shownLinks}
       active={row.item.itemKey === activeKey}
@@ -529,19 +559,31 @@ export function PriorityGroupHeader({
   collapsed,
   onToggle,
   note,
+  summary,
 }: {
   band: BandKey;
   count: number;
   collapsed?: boolean;
   onToggle?: () => void;
   note?: string;
+  /** Replaces the count and the band's queue wording (My list: "7 assigned to you"). */
+  summary?: string;
 }) {
   const style = bandStyle(band);
   return (
     <div className="sticky top-[108px] z-10 flex items-center gap-2 border-b border-zinc-200 bg-zinc-50/95 px-4 py-1.5 backdrop-blur lg:top-14 dark:border-zinc-800 dark:bg-zinc-900/95">
       <PriorityBadge band={band} />
-      <span className="text-xs font-semibold tabular-nums text-zinc-800 dark:text-zinc-100">{count}</span>
-      <span className="truncate text-xs text-zinc-500 dark:text-zinc-400">{style.meaning}</span>
+      {summary ? (
+        <span className="truncate text-xs font-medium tabular-nums text-zinc-700 dark:text-zinc-200">
+          <span aria-hidden="true" className="mr-2 text-zinc-300 dark:text-zinc-600">·</span>
+          {summary}
+        </span>
+      ) : (
+        <>
+          <span className="text-xs font-semibold tabular-nums text-zinc-800 dark:text-zinc-100">{count}</span>
+          <span className="truncate text-xs text-zinc-500 dark:text-zinc-400">{style.meaning}</span>
+        </>
+      )}
       {note && <span className="hidden text-[11px] text-zinc-400 sm:inline dark:text-zinc-500">· {note}</span>}
       {onToggle && (
         <button
@@ -559,18 +601,18 @@ export function PriorityGroupHeader({
   );
 }
 
-export function RowSkeleton({ rows = 6 }: { rows?: number }) {
+export function RowSkeleton({ rows = 6, hideOwner = false }: { rows?: number; hideOwner?: boolean }) {
   return (
     <ul aria-hidden="true" className="divide-y divide-zinc-100 dark:divide-zinc-900">
       {Array.from({ length: rows }, (_, index) => (
-        <li key={index} className={`${ROW_GRID} animate-pulse px-4 py-3`}>
+        <li key={index} className={`${rowGrid(hideOwner)} animate-pulse px-4 py-3`}>
           <div className="h-5 w-14 rounded bg-zinc-200 dark:bg-zinc-800" />
           <div className="space-y-2">
             <div className="h-3 w-40 rounded bg-zinc-100 dark:bg-zinc-800/70" />
             <div className="h-4 w-4/5 rounded bg-zinc-200 dark:bg-zinc-800" />
             <div className="h-3 w-56 rounded bg-zinc-100 dark:bg-zinc-800/70" />
           </div>
-          <div className="hidden h-5 w-24 rounded-full bg-zinc-100 md:block dark:bg-zinc-800/70" />
+          {!hideOwner && <div className="hidden h-5 w-24 rounded-full bg-zinc-100 md:block dark:bg-zinc-800/70" />}
           <div className="h-3 w-6 justify-self-end rounded bg-zinc-100 dark:bg-zinc-800/70" />
         </li>
       ))}

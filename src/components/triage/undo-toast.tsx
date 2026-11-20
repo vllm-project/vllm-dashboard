@@ -7,7 +7,7 @@ import { sendJson } from "@/lib/triage-format";
 export const UNDO_TOAST_MS = 5_000;
 
 export interface UndoToastRequest {
-  /** "Marked done", "Dropped: hidden from every maintainer", … */
+  /** "Marked done", "Hidden from every maintainer", … */
   message: string;
   /** The triage_actions row to undo; null shows the message without Undo. */
   actionId: number | null;

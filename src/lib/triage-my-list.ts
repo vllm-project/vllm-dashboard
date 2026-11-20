@@ -1,7 +1,8 @@
+import { formatAge } from "./triage-format";
 import type { TriageQueueItem } from "./triage-types";
 
 export type PlateEntryLike = Pick<TriageQueueItem, "kind" | "state" | "draft" | "waitingOn" | "reviewDecision" | "mergeReady" | "mergeCheckedAt"> & {
-  assignment: { status: string; role?: string; assignedAt?: string };
+  assignment: { status: string; role?: string; assignedAt?: string; reason?: Record<string, unknown> };
 };
 
 export const PLATE_VIEWS = [
@@ -96,4 +97,52 @@ export function matchesPlateFilters(entry: PlateEntryLike, filters: PlateFilters
     && (!filters.status || entry.assignment.status === filters.status)
     && (filters.readiness === "merge" ? readyForMerge(entry, now)
       : filters.readiness === "review" ? readyForReview(entry) : true);
+}
+
+export interface PlateStatus {
+  /** "Needs your ack", "✓ Acked · follow up", "Done", "Closed on GitHub (merged)". */
+  text: string;
+  /** Not acked within 3 days: "ack overdue" follows the text, in amber. */
+  overdue: boolean;
+  /** Shown as a "Backup" tag; primary is the default and goes unsaid. */
+  backup: boolean;
+  /** Tooltip: "Assigned 4d ago", plus how it was acked or why it's flagged. */
+  title: string;
+}
+
+const CLOSED_STATUS: Record<string, string> = {
+  done: "Done",
+  not_mine: "Not mine",
+  reassigned: "Reassigned",
+  // Drop and slop are one thing to users now: hidden for everyone.
+  dropped: "Hidden for everyone",
+  slop: "Hidden for everyone",
+};
+
+/** The status that starts line 2 of a My list row. */
+export function plateStatus(entry: PlateEntryLike, now = Date.now()): PlateStatus {
+  const { status, assignedAt, reason = {} } = entry.assignment;
+  const assigned = assignedAt ? `Assigned ${formatAge(assignedAt, now)} ago` : "";
+  const tip = (...extra: string[]) => [assigned, ...extra].filter(Boolean).join(" · ");
+  const backup = entry.assignment.role === "backup";
+  if (status !== "open" && status !== "acked") {
+    const text = status === "done" && reason.closed_by === "github"
+      ? `Closed on GitHub (${String(reason.item_state ?? "closed")})`
+      : CLOSED_STATUS[status] ?? status.replace("_", " ");
+    return { text, overdue: false, backup, title: tip() };
+  }
+  const next = plateNextAction(entry, now);
+  if (status === "open") {
+    const overdue = overdueAck(entry, now);
+    return { text: next, overdue, backup, title: tip(overdue ? "not acked within 3 days" : "") };
+  }
+  const acked = reason.acked_by === "github_comment" ? "acked when you commented on GitHub" : "";
+  const merge = next === "Ready to merge" ? "fresh observed readiness; confirm on GitHub before merging" : "";
+  const text = next === "Closed on GitHub" ? `✓ Acked · closed on GitHub` : `✓ Acked · ${next.charAt(0).toLowerCase()}${next.slice(1)}`;
+  return { text, overdue: false, backup, title: tip(acked, merge) };
+}
+
+/** The whole status as one string ("Needs your ack · ack overdue · Backup"), for labels and tests. */
+export function plateStatusLabel(status: PlateStatus): string {
+  return [status.text, status.overdue ? "ack overdue" : "", status.backup ? "Backup" : ""].filter(Boolean).join(" · ");
 }
