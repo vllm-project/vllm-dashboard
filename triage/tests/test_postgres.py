@@ -393,12 +393,10 @@ def test_still_waiting_reminders_in_the_digest(store: PostgresTriageStore, datab
     digest(ScheduledCommand("triage_digest", NOW))
     [(delivery_id, _, _, payload)] = outbox(database_url)
     assert delivery_id == f"triage:digest:r:{NOW.date().isoformat()}"
-    texts = [b.get("text", {}).get("text", "") for b in payload["blocks"]]
-    title = texts.index("*⏳ Still waiting (2)*")
-    assert "#608" in "".join(texts[:title]) and "#608" not in "".join(texts[title:])
-    assert "#601" in texts[title + 1] and "assigned 6 days ago" in texts[title + 1]
-    assert "#602" in texts[title + 3] and payload["blocks"][title + 4]["type"] == "actions"
-    assert payload["text"] == "Triage digest: 1 P0, 2 still waiting"
+    items = [b for b in payload["blocks"] if "accessory" in b]
+    assert {b["block_id"] for b in items} == {f"triage:item:vllm-project/vllm#{n}" for n in (601, 602, 608)}
+    assert all("needs your ack" in b["text"]["text"] for b in items)
+    assert payload["text"] == "Triage digest: 3 P0"
     # The new item is marked notified; reminders keep their first notified_at.
     assert notified_at(database_url, fresh) == NOW
     assert notified_at(database_url, oldest) == ago(6) and notified_at(database_url, older) == ago(4)
@@ -408,8 +406,8 @@ def test_still_waiting_reminders_in_the_digest(store: PostgresTriageStore, datab
     digest.clock = FixedClock(tomorrow)
     digest(ScheduledCommand("triage_digest", tomorrow))
     payload = dict((d, p) for d, _, _, p in outbox(database_url))[f"triage:digest:r:{tomorrow.date().isoformat()}"]
-    assert payload["blocks"][1]["text"]["text"].startswith("Hi <@U0000000021> 👋 Nothing new today, but you still have *2 waiting*")
-    assert payload["text"] == "Triage digest: 2 still waiting"
+    assert "Open full list" in payload["blocks"][1]["text"]["text"]
+    assert payload["text"] == "Triage digest: 2 P0"
 
     # Once everything is acked there is nothing to say: no digest.
     with psycopg.connect(database_url, autocommit=True) as c:
@@ -1080,7 +1078,7 @@ def test_the_digest_shows_a_group_as_one_item(store: PostgresTriageStore, databa
     [(_, _, _, payload)] = outbox(database_url)
     items = [b for b in payload["blocks"] if str(b.get("block_id", "")).startswith("triage:item:")]
     assert [b["block_id"] for b in items] == ["triage:item:vllm-project/vllm#830", "triage:item:vllm-project/vllm#832"]
-    assert "↳ fix: <https://github.com/vllm-project/vllm/issues/831|#831 DeepSeek item 831>" in items[0]["text"]["text"]
+    assert "↳ Fix <https://github.com/vllm-project/vllm/issues/831|#831> · ready for review · CI unknown" in items[0]["text"]["text"]
     assert payload["text"] == "Triage digest: 2 P1"
     assert store.unnotified_assignments("d") == []
 
@@ -1609,3 +1607,36 @@ def test_items_with_only_undone_actions_age_out_like_untouched_ones(
         c.execute("INSERT INTO triage_actions (item_key, actor, action, source, undone_at) "
                   "VALUES (%s, 'a', 'drop', 'dashboard', now())", (key,))
     assert store.expire_out_of_window(NOW - timedelta(days=30)) == (1, 1)
+
+
+def test_digest_context_loads_unassigned_fixes_without_notifying_them(store: PostgresTriageStore, database_url: str) -> None:
+    seed(store, [{"github_login": "d", "slack_user_id": "U0000000041", "notify_mode": "digest"}])
+    group_items(store, database_url, [(1800, "issue", "", 60, "route"),
+                                     (1801, "pr", "Fixes #1800", 99, "page"),
+                                     (1802, "pr", "Closes #1800", 55, "route"),
+                                     (1803, "pr", "Related to #1800", 50, "route")])
+    assigned = assign(database_url, 1800, "d", assigned_at=NOW - timedelta(hours=1))
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_items SET draft = true WHERE number = 1801")
+        c.execute("UPDATE triage_items SET state = 'merged' WHERE number = 1802")
+    [entry] = store.unnotified_assignments("d")
+    assert entry.kind == "issue" and entry.state == "open" and entry.assignment_status == "open"
+    assert entry.created_at == NOW - timedelta(hours=2)
+    assert entry.severity["serving_broken"] is True
+    assert entry.assigned_at == NOW - timedelta(hours=1)
+    [enriched] = store.digest_context([entry])
+    assert [(e.item_key, e.draft, e.state) for e in enriched.related_fixes] == [
+        ("vllm-project/vllm#1801", True, "open"), ("vllm-project/vllm#1802", False, "merged")]
+    assert enriched.band == "route"
+    assert all(e.assignment_id == 0 for e in enriched.related_fixes)
+    assert notified_at(database_url, assigned) is None and outbox(database_url) == []
+    assert len(assignments(database_url)) == 1
+    # The same metadata is present for overdue reminders, with their original timestamp.
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_assignments SET assigned_at = %s, notified_at = %s WHERE id = %s",
+                  (NOW - timedelta(days=5), NOW - timedelta(days=5), assigned))
+        c.execute("UPDATE triage_items SET state = 'closed' WHERE number = 1802")
+    waiting, total = store.waiting_assignments("d", assigned_before=NOW - timedelta(days=3), limit=5)
+    assert total == 1 and waiting[0].severity == entry.severity
+    assert waiting[0].created_at == entry.created_at and waiting[0].prepass == entry.prepass
+    assert len(store.digest_context(waiting)[0].related_fixes) == 2

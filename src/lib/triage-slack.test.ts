@@ -157,3 +157,23 @@ test("Vietnamese confirmation for maintainers with language: vi", () => {
   // Everyone else stays in English.
   assert.match(JSON.stringify(blocksAfterAction(blocks, key, "ack", "khluu", null, new Date(0))[1]), /Acked by \*khluu\*/);
 });
+
+test("compact digest clicks update metadata without changing titles, fixes or other groups", () => {
+  const key = "vllm-project/vllm#68575";
+  for (const [initial, ackedLabel, doneLabel] of [["needs your ack", "acked", "done"], ["chờ bạn nhận", "đã nhận", "đã hoàn thành"]]) {
+    const title = "*<https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2368575|needs your ack in a title>*";
+    const meta = "<https://github.com/vllm-project/vllm/issues/68575|#68575> · wrong output · 33h · ";
+    const fix = "↳ Fix <https://github.com/vllm-project/vllm/pull/68597|#68597> · ready for review · CI ✓";
+    const other = { type: "section", block_id: "triage:item:vllm-project/vllm#2", text: { type: "mrkdwn", text: meta + initial } };
+    const blocks = [{ type: "section", block_id: `triage:item:${key}`,
+      text: { type: "mrkdwn", text: `${title}\n${meta}${initial}\n${fix}` },
+      accessory: { type: "overflow", options: [{ value: `ack|${key}` }, { value: `not_mine|${key}` }, { value: "open", url: "https://ci.vllm.ai/triage" }] },
+    }, other];
+    const acked = blocksAfterAction(blocks, key, "ack", "robert", null, new Date(0));
+    assert.equal((acked[0].text as { text: string }).text, `${title}\n${meta}${ackedLabel}\n${fix}`);
+    assert.deepEqual(acked[2], other);
+    const done = blocksAfterAction(acked, key, "done", "robert", null, new Date(0));
+    assert.equal((done[0].text as { text: string }).text, `${title}\n${meta}${doneLabel}\n${fix}`);
+    assert.equal(done.filter((b) => b.block_id === `triage:result:${key}`).length, 1);
+  }
+});

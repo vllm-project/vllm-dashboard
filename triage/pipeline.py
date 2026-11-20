@@ -830,6 +830,8 @@ class DigestHandler:
             )
             if not entries and not waiting:
                 continue
+            enriched = self.store.digest_context(entries + waiting)
+            entries, waiting = enriched[:len(entries)], enriched[len(entries):]
             # Reminders are not re-marked: notified_at stays the first send.
             self.store.commit_digest(
                 maintainer_digest(

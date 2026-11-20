@@ -334,22 +334,33 @@ Every route run, before routing (`store.follow_github`):
 | **Team digest** | 15:00 UTC | `TRIAGE_DIGEST_CHANNEL` (none if unset): top 30 new P0/P1 of the day, plus the drop/slop warning |
 
 - Nothing is sent for `notify_mode: "off"` or without `slack_user_id`. A
-  digest lists at most 20 new items. A day with nothing new and nothing
-  waiting sends no digest.
-- **Groups.** A digest or P0 DM shows an issue with its fix PRs as one entry
-  ("↳ fix: #N title"), at the band of its most urgent member. Its buttons act
-  on the issue, which also covers the fix PRs (see Routing). "Still waiting"
-  skips an issue whose fix PR has merged.
-- **CI.** PR lines carry a short CI fragment (e.g. "CI: not started", "2
-  running", "1 failed · only on this PR").
-- **Buttons.** DMs have Ack / Not mine / Reassign / Open in dashboard. Slack
-  posts clicks to `https://ci.vllm.ai/api/triage/slack/interactions`. The
-  route checks `SLACK_SIGNING_SECRET` (and rejects requests older than 5
-  minutes), maps the Slack user to a maintainer by `slack_user_id`, and only
-  lets the assignee act. See
-  [docs/triage-dashboard.md](../docs/triage-dashboard.md#slack-buttons).
-- **Language.** `language: vi` switches the bot's wording to Vietnamese and
-  uses `reason_local`. Only `en` and `vi` exist.
+  day with nothing new and nothing waiting sends no digest.
+- **Compact digests.** New assignments and overdue reminders share priority
+  sections. At most five groups are shown, with at most three per priority;
+  overflow counts link to the full list, also linked at the top. Item titles
+  open triage; `#number` opens GitHub. A quiet line shows the extracted symptom,
+  item age (not assignment age), and acknowledgement status.
+- **Groups.** An issue and its assigned fix PRs form one entry, at the band of
+  its most urgent assigned member. Digests also show linked fixes that are
+  unassigned, drafts, closed or merged, as context only: they do not change
+  routing, notification eligibility or the group's priority. Up to three fix
+  PRs share a line with their review/merge state and CI; additional fixes link
+  to the issue. "Still waiting" skips issues whose fix PR has merged.
+- **CI.** Digests show a result only when the CI record matches the observed
+  PR head; otherwise they say "CI unknown". Closed and merged PRs omit CI.
+  "Ready to merge" requires a readiness check within the last hour. Statuses
+  describe the stored snapshot at send time, not live-updating GitHub state.
+- **Actions.** Each digest group has one ⋯ menu: Ack / Not mine / Open in
+  dashboard. Ack becomes Done and updates the status line. Actions cover the
+  issue and fix PRs assigned to the clicker, not unassigned contextual fixes.
+  Immediate DMs retain Ack / Not mine / Reassign / Open buttons and "why you".
+  Slack posts clicks to `https://ci.vllm.ai/api/triage/slack/interactions`.
+  The route checks `SLACK_SIGNING_SECRET` (rejecting requests older than five
+  minutes), maps the Slack user to a maintainer, and only lets the assignee act.
+  See [docs/triage-dashboard.md](../docs/triage-dashboard.md#slack-buttons).
+- **Language.** `language: vi` translates the bot's labels, statuses and age
+  units. Titles stay as written. Immediate DMs also use `reason_local`.
+  Only `en` and `vi` exist.
 - **Delivery mode: the kill switch.** Messages are delivered only when
   **both** switches are on:
   1. the worker env has `TRIAGE_SLACK_ENABLED=1` (from the alerting worker's

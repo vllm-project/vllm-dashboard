@@ -10,7 +10,7 @@ from alerting.ports import DeliveryMode
 from triage.config import default_config
 from triage.groups import Member, component, group_reason, partner_map
 from triage.model import Item, Maintainer
-from triage.notify import DIGEST_MAX_ITEMS, describe_reason, group_entries, maintainer_digest, page_dm, team_digest
+from triage.notify import DIGEST_MAX_PER_BAND, describe_reason, group_entries, maintainer_digest, page_dm, team_digest
 from triage.prepass import compute_prepass, fixes_issues
 from triage.routing import RoutingContext, group_owner
 from triage.store import DigestEntry
@@ -113,17 +113,17 @@ def test_digest_shows_a_group_as_one_item_with_one_set_of_buttons() -> None:
     issue = entry(65385, "issue", 76, "page", matched=["relevance:high (like #61343)"])
     fix = entry(67812, "pr", 52, fixes=(65385,), matched=["fixes #65385"])
     other = entry(70000, "issue", 50)
-    for lang, word in (("en", "↳ fix:"), ("vi", "↳ bản sửa:")):
+    for lang, word in (("en", "↳ Fix"), ("vi", "↳ Bản sửa")):
         payload = maintainer_digest(maintainer="gau-nernst", maintainer_slack="U1", entries=[issue, fix, other],
                                     day=NOW, mode=DeliveryMode.SHADOW, lang=lang, reassign_to=["b"]).payload
         items = [b for b in payload["blocks"] if str(b.get("block_id", "")).startswith("triage:item:")]
         actions = [b for b in payload["blocks"] if b["type"] == "actions"]
         assert [b["block_id"] for b in items] == ["triage:item:vllm-project/vllm#65385", "triage:item:vllm-project/vllm#70000"]
-        assert [b["block_id"] for b in actions] == ["triage:actions:vllm-project/vllm#65385",
-                                                    "triage:actions:vllm-project/vllm#70000"]
+        assert not actions
+        assert items[0]["accessory"]["options"][0]["value"] == "ack|vllm-project/vllm#65385"
         text = items[0]["text"]["text"]
-        assert text.split("\n")[1] == f"{word} <{GH}pull/67812|#67812 title 67812>"  # title never translated
-        assert text.count("*Why you:*" if lang == "en" else "*Vì sao là bạn:*") == 1
+        assert text.split("\n")[2].startswith(f"{word} <{GH}pull/67812|#67812> · ")
+        assert "ci.vllm.ai/triage?item=" in text
         assert "65385, which you own" not in text and "mục bạn đang phụ trách" not in text
     # Counts are in groups: one P0 (the issue's group) and one P1.
     assert payload["text"] == "Digest triage: 1 P0, 1 P1"
@@ -136,9 +136,9 @@ def test_digest_max_items_counts_groups_and_fits_50_blocks() -> None:
     payload = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=entries, day=NOW,
                                 mode=DeliveryMode.SHADOW, reassign_to=["y"]).payload
     assert len(payload["blocks"]) <= 50
-    assert sum(1 for b in payload["blocks"] if b["type"] == "actions") == DIGEST_MAX_ITEMS
-    assert "Today you have *30 P1*" in payload["blocks"][1]["text"]["text"]
-    assert "…and 10 more" in payload["blocks"][-3]["elements"][0]["text"]
+    assert sum("accessory" in b for b in payload["blocks"]) == DIGEST_MAX_PER_BAND
+    assert "30 P1" in payload["blocks"][1]["text"]["text"]
+    assert "…and 27 more" in payload["blocks"][-2]["elements"][0]["text"]
 
 
 def test_reminders_fold_into_groups_too() -> None:
@@ -150,9 +150,9 @@ def test_reminders_fold_into_groups_too() -> None:
     payload = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=[], day=NOW, mode=DeliveryMode.SHADOW,
                                 waiting=waiting, waiting_total=2).payload
     texts = [b.get("text", {}).get("text", "") for b in payload["blocks"]]
-    assert "*⏳ Still waiting (1)*" in texts
-    assert any(t.endswith(f"\n↳ fix: <{GH}pull/2|#2 fix one>") for t in texts)
-    assert sum(1 for b in payload["blocks"] if b["type"] == "actions") == 1
+    assert payload["text"] == "Triage digest: 1 P1"
+    assert any(f"\n↳ Fix <{GH}pull/2|#2> · check PR status · CI unknown" in t for t in texts)
+    assert sum("accessory" in b for b in payload["blocks"]) == 1
 
 
 def test_page_dm_and_team_digest_show_the_group() -> None:
