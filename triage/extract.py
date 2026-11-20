@@ -59,6 +59,7 @@ class ExtractionTask:
     files: list[dict[str, Any]]
     prepass: dict[str, Any]
     content_hash: str
+    diff_excerpt: str = ""
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,8 @@ def render_prompt(task: ExtractionTask) -> str:
     ]
     if task.kind == "pr":
         parts.append(f"<changed_files>\n{escape(files + more)}\n</changed_files>")
+        if task.diff_excerpt.strip():
+            parts.append(f"<diff>\n{escape(task.diff_excerpt)}\n</diff>")
     if task.comments.strip():
         parts.append(f"<comments>\n{escape(task.comments)}\n</comments>")
     parts.append("</item>")

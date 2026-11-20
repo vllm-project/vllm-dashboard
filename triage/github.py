@@ -22,6 +22,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from triage.diff import RAW_DIFF_READ_LIMIT
 from triage.model import FileChange, Item
 
 API = "https://api.github.com"
@@ -87,6 +88,10 @@ class IngestClient(Protocol):
 
     def pr_statuses(self, repo: str, numbers: list[int]) -> dict[int, PrStatus]:
         """Current status of open PRs; empty unless reads_pr_status."""
+        ...
+
+    def pull_diff(self, repo: str, number: int) -> str:
+        """Raw unified diff for a PR (capped at RAW_DIFF_READ_LIMIT bytes), or ''."""
         ...
 
 
@@ -244,6 +249,11 @@ class GitHubClient:
     def pr_statuses(self, repo: str, numbers: list[int]) -> dict[int, PrStatus]:
         return {}
 
+    def pull_diff(self, repo: str, number: int) -> str:
+        return fetch_pull_diff(
+            repo, number, token=self._token, timeout=self._timeout, min_remaining=self._min_remaining
+        )
+
     def comment_records(self, repo: str, number: int) -> list[CommentRecord]:
         """(login, created_at, text as stored) for the first MAX_COMMENTS comments."""
         batch = self._get(f"/repos/{repo}/issues/{number}/comments", {"per_page": MAX_COMMENTS}) or []
@@ -257,6 +267,56 @@ class GitHubClient:
 
     def comments(self, repo: str, number: int) -> list[str]:
         return [text for _, _, text in self.comment_records(repo, number)]
+
+
+def fetch_pull_diff(
+    repo: str,
+    number: int,
+    *,
+    token: str,
+    timeout: float = 30.0,
+    min_remaining: int = 200,
+    max_bytes: int = RAW_DIFF_READ_LIMIT,
+) -> str:
+    """Fetch a PR's unified diff via REST (capped at `max_bytes`).
+
+    Returns '' on 404/406/422 (e.g. GitHub's diff-too-large 406) so giant PRs
+    never break ingest.
+    """
+    url = f"{API}/repos/{repo}/pulls/{number}"
+    request = Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3.diff",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    for attempt in range(4):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                remaining = int(response.headers.get("X-RateLimit-Remaining", "5000"))
+                raw: bytes = response.read(max_bytes)
+                if remaining < min_remaining:
+                    reset = int(response.headers.get("X-RateLimit-Reset", "0"))
+                    raise GitHubError(
+                        f"GitHub rate limit nearly exhausted ({remaining} left, resets {reset})"
+                    )
+                return raw.decode("utf-8", errors="replace")
+        except HTTPError as exc:
+            if exc.code in (502, 503, 504) and attempt < 3:
+                time.sleep(2 ** attempt)
+                continue
+            if exc.code in (404, 406, 422):
+                return ""
+            raise GitHubError(f"GET /repos/{repo}/pulls/{number} (diff): HTTP {exc.code}") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            if attempt < 3:
+                time.sleep(2 ** attempt)
+                continue
+            raise GitHubError(f"GET /repos/{repo}/pulls/{number} (diff): {getattr(exc, 'reason', exc)}") from exc
+    raise GitHubError(f"GET /repos/{repo}/pulls/{number} (diff): retries exhausted")
 
 
 def item_from_raw(repo: str, raw: dict[str, Any]) -> Item:

@@ -19,6 +19,7 @@ from alerting.ports import NotificationIntent
 from alerting.postgres import PostgresAlertStore
 
 from triage.ci import MAIN_RECENT_DAYS, MainJobs
+from triage.diff import DIFF_LIMIT
 from triage.extract import ExtractionTask, LLMResult
 from triage.facets import routing_facets_fingerprint
 from triage.groups import Member
@@ -85,6 +86,8 @@ class StoredItemState:
     prepass: dict[str, Any]
     # The PR's stored CI summary (triage_pr_ci, see triage/ci.py), if any.
     ci: dict[str, Any] | None = None
+    diff_excerpt: str = ""
+    diff_head_sha: str | None = None
 
 
 @dataclass(frozen=True)
@@ -192,11 +195,15 @@ class PostgresTriageStore(PostgresAlertStore):
         with self._connection_factory() as c:
             row = c.execute(
                 f"""SELECT content_hash, comment_count, gh_updated_at, files, comments_excerpt, prepass,
-                          {_CI_JSON}
+                          {_CI_JSON}, diff_excerpt, diff_head_sha
                    FROM triage_items i WHERE item_key = %s""",
                 (item_key,),
             ).fetchone()
-        return StoredItemState(row[0], row[1], row[2], list(row[3]), row[4], dict(row[5]), row[6]) if row else None
+        return (
+            StoredItemState(row[0], row[1], row[2], list(row[3]), row[4], dict(row[5]), row[6], row[7] or "", row[8])
+            if row
+            else None
+        )
 
     def upsert_item(
         self,
@@ -209,6 +216,8 @@ class PostgresTriageStore(PostgresAlertStore):
         comments_excerpt: str,
         now: datetime | None = None,
         reextract_cooldown: timedelta = timedelta(0),
+        diff_excerpt: str = "",
+        diff_head_sha: str | None = None,
     ) -> None:
         files = [
             {"path": f.path, "additions": f.additions, "deletions": f.deletions}
@@ -242,15 +251,18 @@ class PostgresTriageStore(PostgresAlertStore):
                 """
                 INSERT INTO triage_items (
                     item_key, repo, number, kind, title, body_excerpt, comments_excerpt,
+                    diff_excerpt, diff_head_sha,
                     author, author_association, state, draft, html_url, labels, files,
                     reactions, comment_count, gh_created_at, gh_updated_at, gh_closed_at,
                     prepass, prepass_priority, content_hash, in_scope, extraction_status
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s,%s,%s,
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s,%s,%s,
                           %s::jsonb,%s,%s,%s, CASE WHEN %s THEN 'pending' ELSE 'skipped' END)
                 ON CONFLICT (item_key) DO UPDATE SET
                     title = EXCLUDED.title,
                     body_excerpt = EXCLUDED.body_excerpt,
                     comments_excerpt = EXCLUDED.comments_excerpt,
+                    diff_excerpt = EXCLUDED.diff_excerpt,
+                    diff_head_sha = EXCLUDED.diff_head_sha,
                     author_association = EXCLUDED.author_association,
                     state = EXCLUDED.state,
                     draft = EXCLUDED.draft,
@@ -279,6 +291,7 @@ class PostgresTriageStore(PostgresAlertStore):
                 (
                     item.key, item.repo, item.number, item.kind, item.title,
                     item.body[:BODY_LIMIT], comments_excerpt[:COMMENTS_LIMIT],
+                    diff_excerpt[:DIFF_LIMIT], diff_head_sha,
                     item.author, item.author_association, item.state, item.draft,
                     item.html_url, json.dumps(item.labels), json.dumps(files),
                     item.reactions, item.comment_count, item.created_at, item.updated_at,
@@ -309,7 +322,8 @@ class PostgresTriageStore(PostgresAlertStore):
                         LIMIT %s
                         FOR UPDATE SKIP LOCKED)
                     RETURNING item_key, kind, title, body_excerpt, comments_excerpt,
-                              author_association, state, labels, files, prepass, content_hash
+                              author_association, state, labels, files, prepass, content_hash,
+                              diff_excerpt
                     """,
                     (lease_until, max_attempts, now, limit),
                 ).fetchall()
@@ -317,7 +331,7 @@ class PostgresTriageStore(PostgresAlertStore):
             ExtractionTask(
                 item_key=r[0], kind=r[1], title=r[2], body=r[3], comments=r[4],
                 author_association=r[5], state=r[6], labels=list(r[7]), files=list(r[8]),
-                prepass=dict(r[9]), content_hash=r[10],
+                prepass=dict(r[9]), content_hash=r[10], diff_excerpt=r[11] or "",
             )
             for r in rows
         ]

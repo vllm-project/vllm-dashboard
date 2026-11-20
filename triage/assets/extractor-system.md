@@ -59,7 +59,11 @@ Fill every field of the JSON schema:
   scheduler, attention, sampling, core kernels), size by changed lines (xs
   <10, s <50, m <250, l <1000, xl >=1000), has_tests, low_effort (generic
   boilerplate description, no evidence it was run, unrelated or cosmetic
-  churn, or obviously machine-generated without understanding).
+  churn, or obviously machine-generated without understanding). When a `<diff>`
+  excerpt is provided, inspect the actual code hunks (not just the PR
+  description) to judge `hot_path`, `has_tests`, `low_effort`, and
+  `slop_signals` (such as code that contradicts the description, dead/cosmetic
+  churn, or hallucinated APIs).
 - slop_signals: short tags for low-quality signals, e.g.
   "generic_ai_description", "no_testing", "unrelated_changes",
   "duplicate_of_existing", "prompt_injection". Empty if none.

@@ -101,6 +101,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> Any:
         transport = FakeGraphQL(handler)
         monkeypatch.setattr(github_graphql, "urlopen", transport)
         monkeypatch.setattr("triage.github_graphql.time.sleep", lambda s: None)
+        monkeypatch.setattr(github_graphql, "fetch_pull_diff", lambda *a, **kw: "")
         return transport
     return install
 

@@ -14,6 +14,7 @@ from typing import Any
 
 from triage.ci import ci_waits_on_author, pr_only_job_names
 from triage.config import TriageConfig
+from triage.diff import DIFF_LIMIT
 from triage.model import MAINTAINER_ASSOCIATIONS, Item
 
 BODY_LIMIT = 20_000
@@ -132,7 +133,7 @@ def filter_comment_records(records: list[tuple[str, Any, str]]) -> list[tuple[st
 
 
 def core_content_hash(item: Item) -> str:
-    """Hash of title, body and changed files only (no comments)."""
+    """Hash of title, body, changed files, and PR diff excerpt (no comments)."""
     digest = hashlib.sha256()
     for part in (item.title, item.body[:BODY_LIMIT]):
         digest.update(part.encode())
@@ -140,6 +141,9 @@ def core_content_hash(item: Item) -> str:
     for change in item.files[:MAX_FILES]:
         digest.update(change.path.encode())
         digest.update(b"\n")
+    if item.diff_excerpt:
+        digest.update(b"\0diff\0")
+        digest.update(item.diff_excerpt[:DIFF_LIMIT].encode())
     return digest.hexdigest()[:32]
 
 
@@ -152,6 +156,9 @@ def content_hash(item: Item) -> str:
     for change in item.files[:MAX_FILES]:
         digest.update(change.path.encode())
         digest.update(b"\n")
+    if item.diff_excerpt:
+        digest.update(b"\0diff\0")
+        digest.update(item.diff_excerpt[:DIFF_LIMIT].encode())
     return digest.hexdigest()[:32]
 
 
