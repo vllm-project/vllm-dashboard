@@ -107,6 +107,7 @@ def host(scans: Scans, name: str = "gpu-node-7", **fields: Any) -> HostFaultObse
         docker_error=fields.get("docker_error"),
         fabric_ok=fields.get("fabric_ok", True),
         fabric_error=fields.get("fabric_error"),
+        live_gpus=fields.get("live_gpus"),
     )
 
 
@@ -353,6 +354,88 @@ def test_a_missing_reading_neither_advances_nor_resets_the_streak() -> None:
     stale = host(scans, gpu_query_hung=True, reported_at=scans.reading_at(61))
     assert scans.run(host_faults=[stale]) == []
     assert rules(scans.run(host_faults=[host(scans, gpu_query_hung=True)])) == [
+        ("gpu-node-7", "gpu_hang")
+    ]
+
+
+def baseline(scans: Scans, name: str, gpus: int) -> None:
+    """Sets the host's GPU-count baseline, as the GPU-count alert keeps it."""
+    scans.states[("gpu_count", f"gpu-count:{name}")] = InfraSubjectState(
+        "gpu_count", f"gpu-count:{name}", details={"baseline_gpus": gpus}
+    )
+
+
+def k8s_hang(scans: Scans, live: int | None) -> list[QuarantineDecision]:
+    return scans.run(
+        host_faults=[
+            host(scans, "k8s-node-1", gpu_query_hung=True, live_gpus=live)
+        ]
+    )
+
+
+def test_a_k8s_hang_waits_while_every_gpu_still_answers_dcgm() -> None:
+    # nvidia-smi blocked behind another process's driver teardown
+    # while DCGM kept reading all 8 GPUs: no streak, however long.
+    scans = Scans()
+    baseline(scans, "k8s-node-1", 8)
+    for _ in range(6):
+        assert k8s_hang(scans, live=8) == []
+    assert k8s_hang(scans, live=7) == []
+    assert rules(k8s_hang(scans, live=7)) == [("k8s-node-1", "gpu_hang")]
+
+
+def test_a_live_dcgm_reading_neither_advances_nor_resets_the_streak() -> None:
+    scans = Scans()
+    baseline(scans, "k8s-node-1", 8)
+    assert k8s_hang(scans, live=0) == []
+    assert k8s_hang(scans, live=8) == []
+    assert rules(k8s_hang(scans, live=None)) == [("k8s-node-1", "gpu_hang")]
+
+
+def test_a_passing_check_on_a_live_node_still_resets_the_streak() -> None:
+    scans = Scans()
+    baseline(scans, "k8s-node-1", 8)
+    assert k8s_hang(scans, live=0) == []
+    ok = host(scans, "k8s-node-1", gpu_query_hung=False, live_gpus=8)
+    assert scans.run(host_faults=[ok]) == []
+    assert k8s_hang(scans, live=0) == []
+
+
+def test_a_k8s_hang_counts_without_a_gpu_count_baseline() -> None:
+    for gpus in (None, 0):
+        scans = Scans()
+        if gpus is not None:
+            baseline(scans, "k8s-node-1", gpus)
+        assert k8s_hang(scans, live=8) == []
+        assert rules(k8s_hang(scans, live=8)) == [("k8s-node-1", "gpu_hang")]
+
+
+def test_a_lost_gpu_keeps_counting_against_the_baseline() -> None:
+    # The node now advertises 7, but the baseline remembers 8: seven live
+    # GPUs do not hide a hang.
+    scans = Scans()
+    baseline(scans, "k8s-node-1", 8)
+    assert k8s_hang(scans, live=7) == []
+    assert rules(k8s_hang(scans, live=7)) == [("k8s-node-1", "gpu_hang")]
+
+
+def test_more_live_gpus_than_the_baseline_still_counts_as_answering() -> None:
+    scans = Scans()
+    baseline(scans, "k8s-node-1", 8)
+    assert k8s_hang(scans, live=9) == []
+    assert k8s_hang(scans, live=9) == []
+
+
+def test_an_h200_hang_ignores_dcgm_liveness() -> None:
+    # The H200 reporter's GPU readings come from the same nvidia-smi.
+    scans = Scans()
+    baseline(scans, "gpu-node-7", 8)
+
+    def hung() -> HostFaultObservation:
+        return host(scans, gpu_query_hung=True, live_gpus=8)
+
+    assert scans.run(host_faults=[hung()]) == []
+    assert rules(scans.run(host_faults=[hung()])) == [
         ("gpu-node-7", "gpu_hang")
     ]
 
