@@ -9,7 +9,12 @@ from types import TracebackType
 from typing import Any, Literal
 
 from alerting.commands import ScheduledCommand
-from alerting.infra import DCGM_LIVE_WINDOW, InfraScanHandler
+from alerting.infra import (
+    DCGM_LIVE_WINDOW,
+    HANG_UNBROKEN,
+    READING_MAX_AGE,
+    InfraScanHandler,
+)
 from alerting.memory import FixedClock, RecordingSlackPort
 from alerting.postgres import PostgresAlertStore
 from alerting.runtime import AlertingRuntime, ProcessStatus
@@ -451,11 +456,11 @@ def test_host_faults_read_the_fabric_health_columns() -> None:
             return Result(
                 rows=[
                     ("k8s-node-1", False, None, None, START, None, None, False,
-                     error, 7),
+                     error, 7, START),
                     ("k8s-node-2", False, None, None, START, None, None, True,
-                     None, 8),
+                     None, 8, None),
                     ("gpu-node-7", False, None, None, START, True, None, None,
-                     None, None),
+                     None, None, None),
                 ]
             )
 
@@ -469,6 +474,9 @@ def test_host_faults_read_the_fabric_health_columns() -> None:
         (None, None),
     ]
     assert [r.live_gpus for r in readings] == [7, 8, None]
+    assert [r.last_answered_at for r in readings] == [START, None, None]
     [(sql, params)] = seen
-    assert params == (DCGM_LIVE_WINDOW,)
+    assert params == (DCGM_LIVE_WINDOW, HANG_UNBROKEN + READING_MAX_AGE)
+    assert "AND gpu_query_hung IS FALSE" in sql
+    assert "max(reported_at) AS last_answered_at" in sql
     assert "count(DISTINCT power_draw_w) > 1" in sql

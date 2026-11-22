@@ -108,6 +108,7 @@ def host(scans: Scans, name: str = "gpu-node-7", **fields: Any) -> HostFaultObse
         fabric_ok=fields.get("fabric_ok", True),
         fabric_error=fields.get("fabric_error"),
         live_gpus=fields.get("live_gpus"),
+        last_answered_at=fields.get("last_answered_at"),
     )
 
 
@@ -438,6 +439,90 @@ def test_an_h200_hang_ignores_dcgm_liveness() -> None:
     assert rules(scans.run(host_faults=[hung()])) == [
         ("gpu-node-7", "gpu_hang")
     ]
+
+
+def h200_hang(
+    scans: Scans, answered_ago: float | None = None
+) -> list[QuarantineDecision]:
+    """A hung reading; the last answered query `answered_ago` s before it."""
+    reading_at = scans.reading_at()
+    answered = (
+        None if answered_ago is None
+        else reading_at - timedelta(seconds=answered_ago)
+    )
+    return scans.run(
+        host_faults=[host(scans, gpu_query_hung=True, last_answered_at=answered)]
+    )
+
+
+def test_a_stall_alternating_hung_and_answered_never_trips() -> None:
+    # Each scan's latest reading hung, but a query answered in between.
+    scans = Scans()
+    for _ in range(6):
+        assert h200_hang(scans, answered_ago=150) == []
+
+
+def test_a_hang_with_no_answer_for_15_minutes_trips_on_the_second_scan() -> None:
+    scans = Scans()
+    assert h200_hang(scans, answered_ago=900) == []
+    assert rules(h200_hang(scans, answered_ago=1200)) == [("gpu-node-7", "gpu_hang")]
+
+
+def test_a_hang_with_no_answer_in_the_lookup_trips() -> None:
+    scans = Scans()
+    assert h200_hang(scans) == []
+    assert rules(h200_hang(scans)) == [("gpu-node-7", "gpu_hang")]
+
+
+def test_an_answer_just_under_15_minutes_ago_is_a_pass() -> None:
+    scans = Scans()
+    assert h200_hang(scans) == []
+    assert h200_hang(scans, answered_ago=899) == []
+    assert h200_hang(scans) == []
+    assert rules(h200_hang(scans)) == [("gpu-node-7", "gpu_hang")]
+
+
+def test_an_answer_a_scan_skipped_as_stale_still_counts() -> None:
+    # 10:00 counts a hang; at 10:05 the newest reading is an answer from
+    # 10:03:50, too old for the scan; at 10:10 only hangs are fresh.
+    scans = Scans()
+    first = scans.now
+    assert h200_hang(scans) == []
+    answer = first + timedelta(minutes=3, seconds=50)
+    stale = host(scans, gpu_query_hung=False, reported_at=answer)
+    assert scans.run(host_faults=[stale]) == []
+    hung = host(scans, gpu_query_hung=True, last_answered_at=answer)
+    assert scans.run(host_faults=[hung]) == []
+
+
+def test_an_answer_between_missed_scans_still_counts() -> None:
+    scans = Scans()
+    assert h200_hang(scans) == []
+    scans.now += timedelta(minutes=10)  # two scans never ran
+    assert h200_hang(scans, answered_ago=780) == []
+
+
+def test_an_answer_breaks_the_streak_even_when_the_latest_was_not_read() -> None:
+    scans = Scans()
+    assert h200_hang(scans) == []
+    unread = host(scans, gpu_query_hung=None, last_answered_at=scans.reading_at(90))
+    assert scans.run(host_faults=[unread]) == []
+    assert h200_hang(scans) == []
+    assert rules(h200_hang(scans)) == [("gpu-node-7", "gpu_hang")]
+
+
+def test_an_answer_resets_a_k8s_streak_before_the_dcgm_hold() -> None:
+    # The answer resets the streak; DCGM's hold alone would only keep it.
+    scans = Scans()
+    baseline(scans, "k8s-node-1", 8)
+    assert k8s_hang(scans, live=0) == []
+    held = host(
+        scans, "k8s-node-1", gpu_query_hung=True, live_gpus=8,
+        last_answered_at=scans.reading_at(150),
+    )
+    assert scans.run(host_faults=[held]) == []
+    assert k8s_hang(scans, live=0) == []
+    assert rules(k8s_hang(scans, live=0)) == [("k8s-node-1", "gpu_hang")]
 
 
 def test_a_passing_check_resets_the_streak() -> None:
