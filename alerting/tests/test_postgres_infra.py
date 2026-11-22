@@ -9,7 +9,12 @@ from types import TracebackType
 from typing import Any, Literal
 
 from alerting.commands import ScheduledCommand
-from alerting.infra import InfraScanHandler
+from alerting.infra import (
+    DCGM_LIVE_WINDOW,
+    HANG_UNBROKEN,
+    READING_MAX_AGE,
+    InfraScanHandler,
+)
 from alerting.memory import FixedClock, RecordingSlackPort
 from alerting.postgres import PostgresAlertStore
 from alerting.runtime import AlertingRuntime, ProcessStatus
@@ -121,7 +126,8 @@ class FakePostgresConnection:
             (
                 "SELECT DISTINCT ON (hostname, gpu_index) hostname, gpu_index, "
                 "recovery_action",
-                "SELECT DISTINCT ON (hostname) hostname, gpu_query_hung",
+                "WITH latest AS ( SELECT DISTINCT ON (hostname) hostname, "
+                "gpu_query_hung",
                 "SELECT hostname, bus_id, xid, at FROM gpu_xid_events",
                 "SELECT DISTINCT hostname, queue FROM buildkite_agent_snapshots",
                 "SELECT newest.hostname, queue FROM unnest",
@@ -442,14 +448,19 @@ def test_recent_gpu_hosts_reads_the_rollup_over_the_whole_window() -> None:
 
 def test_host_faults_read_the_fabric_health_columns() -> None:
     error = "GPU 0-7 fabric state In Progress"
+    seen: list[tuple[str, tuple[Any, ...]]] = []
 
     class HostConnection(FakePostgresConnection):
         def execute(self, sql: str, params: tuple[Any, ...] = ()) -> Result:
+            seen.append((sql, params))
             return Result(
                 rows=[
-                    ("k8s-node-1", False, None, None, START, None, None, False, error),
-                    ("k8s-node-2", False, None, None, START, None, None, True, None),
-                    ("gpu-node-7", False, None, None, START, True, None, None, None),
+                    ("k8s-node-1", False, None, None, START, None, None, False,
+                     error, 7, START),
+                    ("k8s-node-2", False, None, None, START, None, None, True,
+                     None, 8, None),
+                    ("gpu-node-7", False, None, None, START, True, None, None,
+                     None, None, None),
                 ]
             )
 
@@ -462,3 +473,10 @@ def test_host_faults_read_the_fabric_health_columns() -> None:
         # Not read is None, never a pass.
         (None, None),
     ]
+    assert [r.live_gpus for r in readings] == [7, 8, None]
+    assert [r.last_answered_at for r in readings] == [START, None, None]
+    [(sql, params)] = seen
+    assert params == (DCGM_LIVE_WINDOW, HANG_UNBROKEN + READING_MAX_AGE)
+    assert "AND gpu_query_hung IS FALSE" in sql
+    assert "max(reported_at) AS last_answered_at" in sql
+    assert "count(DISTINCT power_draw_w) > 1" in sql
