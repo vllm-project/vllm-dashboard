@@ -1,5 +1,5 @@
-# Impact scoring. Every change here bumps `version`; the router re-scores all
-# open items when the version changes, without any new LLM calls.
+# Queue ranking plus incident priority. Every change here bumps `version`;
+# the router re-scores open items. New incident fields require re-extraction.
 #
 #   score = severity x reach  +  additive factors, clamped at 0
 #
@@ -7,11 +7,10 @@
 # a popular model with default flags on H100 is worth far more than the same
 # symptom on an unusual setup, and a feature request on a popular model is
 # not urgent just because the model is popular.
-version: "2026-11-18.1"
+version: "2026-11-20.2"
 
-# Only issues and PRs opened within this many days are triaged (labelled,
-# scored, routed). Older ones are recorded but skipped, and items leave the
-# queue as they age past it. Not part of the score, so no version bump needed.
+# Normal intake window. Open P0 incidents and their P0 fixes remain in scope
+# beyond it. Not part of the score, so no version bump needed.
 scope:
   max_age_days: 30
 
@@ -19,6 +18,10 @@ thresholds:
   page: 70     # routed + immediate Slack DM (once Slack is enabled)
   route: 40    # routed + daily digest
   watch: 20    # dashboard only
+
+# P0 is established by triage/incidents.py from explicit impact, exposure,
+# current-user, verification, and mitigation evidence. Unknowns stay below P0.
+# Points rank ordinary work; hardware, popularity, and readiness cannot page.
 
 # The largest one applies (a crash that breaks serving is not double counted).
 # Security is not scaled by reach.
@@ -31,8 +34,8 @@ severity:
   memory_regression: 18
   perf_regression_per_10pct: 9
   perf_regression_cap: 40
-  # A PR is not the incident itself; it inherits part of the severity of the
-  # bug it fixes (plus pr.fixes_issue when the issue is in the queue).
+  # A standalone PR gets partial severity; a linked fix instead inherits
+  # its issue impact unchanged by draft/quality penalties.
   pr_fraction: 0.5
   # Issue types whose severity flags count (feature requests and RFCs that
   # mention a symptom are not incidents).
@@ -72,13 +75,13 @@ social:
   cap: 15
 
 pr:
-  # A PR inherits this fraction of the best score among open issues it fixes.
-  fixes_issue_fraction: 0.6
-  hot_path: 6
-  has_tests: 2
+  # Replaces (never adds to) the PR's own impact score. Only fresh in-scope issues.
+  fixes_issue_fraction: 1.0
+  hot_path: 0
+  has_tests: 0
   low_effort: -25
   draft: -15
-  size: {xs: 2, s: 2, m: 0, l: -2, xl: -4}
+  size: {xs: 0, s: 0, m: 0, l: -2, xl: -4}
 
 # Only LLM-reported slop signals score; deterministic prepass hints (e.g. an
 # empty test plan) are shown on the dashboard but are too noisy to score.

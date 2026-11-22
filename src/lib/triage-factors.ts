@@ -66,6 +66,7 @@ const MODEL_TIER_WORDS: Record<string, string> = {
   unknown: "model unknown",
 };
 const HARDWARE_TIER_WORDS: Record<string, string> = {
+  cpu: "CPU backend",
   tier1: "top-tier GPU",
   tier2: "common hardware",
   other: "niche hardware",
@@ -213,6 +214,10 @@ export function describeFactor(factor: string, detail?: string | null, points = 
       if (rest[0] === "size") return out("pr", PR_SIZES[rest[1]] ?? "Change size", null);
       return out("pr", cleanCode(factor));
     }
+    case "policy":
+      if (tail === "p0_incident") return out("evidence", "P0: critical active incident");
+      if (tail === "needs_verification") return out("evidence", "Needs incident verification");
+      return out("penalty", "Below P0: incident criteria not met");
     case "slop": {
       const tags = (detail ?? "").split(",").map((tag) => tag.trim()).filter(Boolean).map(humanizeTag);
       return out("penalty", tags.length ? `Low-quality signals: ${tags.join(", ")}` : "Low-quality signals", null);

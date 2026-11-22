@@ -1,5 +1,7 @@
 "use client";
 
+import { IncidentAssessment } from "@/components/triage/incident-assessment";
+import { showIncidentCard } from "@/lib/triage-incidents";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR from "swr";
@@ -685,6 +687,15 @@ export function ItemDrawer({
                   </div>
                 )}
                 {facets.summary && <p className="text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">{facets.summary}</p>}
+                {data.score?.breakdown.some((entry) => entry.factor === "pr.fixes_issue") ? (
+                  <p className="text-xs text-zinc-500">Priority follows the linked incident. Draft state and CI do not lower incident urgency.</p>
+                ) : (
+                  <IncidentAssessment
+                    incident={facets.incident}
+                    type={facets.type ?? ""}
+                    security={Boolean(facets.severity?.security)}
+                  />
+                )}
                 <GroupPanel kind={data.item.kind} links={data.item.kind === "pr" ? data.fixes : data.fixedBy} />
 
                 <div className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
@@ -875,6 +886,12 @@ export function ItemDrawer({
                       </p>
                     )}
                   </div>
+                  {facets.incident && !showIncidentCard(facets.type ?? "", facets.incident, Boolean(facets.severity?.security)) && (
+                    <div className="border-t border-zinc-100 pt-3 dark:border-zinc-800">
+                      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Incident assessment</p>
+                      <IncidentAssessment incident={facets.incident} type={facets.type ?? ""} alwaysShow />
+                    </div>
+                  )}
                   <div className="border-t border-zinc-100 pt-3 dark:border-zinc-800">
                     <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Prepass signals</p>
                     <QuickSignals prepass={data.item.prepass} />

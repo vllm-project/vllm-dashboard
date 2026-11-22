@@ -13,6 +13,7 @@ from fnmatch import fnmatch
 from typing import Any
 
 from triage.config import TriageConfig
+from triage.incidents import needs_verification, p0_ineligibility
 from triage.model import Band, Score, ScoreFactor
 
 _BANDS: tuple[Band, ...] = ("page", "route", "watch")
@@ -150,14 +151,16 @@ def score_item(
     if kind == "pr":
         pr_w = weights["pr"]
         pr = facets.get("pr") or {}
-        fixes = set(pr.get("fixes_issues") or []) | set(prepass.get("linked_issues") or [])
+        fixes = set(pr.get("fixes_issues") or []) | set(prepass.get("fixes_issues") or [])
         best = max(
             ((n, s) for n, s in (linked_issue_scores or {}).items() if n in fixes),
             key=lambda pair: pair[1],
             default=None,
         )
         if best is not None:
+            factors.clear()  # The incident score replaces the PR score, not another bonus.
             add("pr.fixes_issue", best[1] * pr_w["fixes_issue_fraction"], f"#{best[0]} scored {best[1]}")
+            return _finish(factors, config)  # Readiness never changes incident priority.
         if pr.get("hot_path"):
             add("pr.hot_path", pr_w["hot_path"])
         if pr.get("has_tests"):
@@ -174,6 +177,20 @@ def score_item(
         slop_w = weights["slop"]
         add("slop", max(slop_w["cap"], slop_w["per_signal"] * len(signals)), ", ".join(signals[:4]))
 
+    reason = p0_ineligibility(facets)
+    total = sum(f.points for f in factors)
+    page = weights["thresholds"]["page"]
+    if reason is None:
+        # Keep a zero-point explanation when arithmetic already exceeds 70.
+        explanation = (facets["incident"].get("reason")
+                       or "Critical active incident supported by impact, exposure and mitigation evidence")
+        factors.append(ScoreFactor("policy.p0_incident", max(0, page - total), explanation))
+    elif total >= page:
+        add("policy.p0_cap", page - 1 - total, reason)
+    elif needs_verification(facets):
+        # Credible serious reports with missing facts must remain visible for review.
+        factors.append(ScoreFactor("policy.needs_verification",
+                                   max(0, weights["thresholds"]["route"] - total), reason))
     return _finish(factors, config)
 
 

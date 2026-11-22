@@ -21,7 +21,7 @@ from alerting.postgres import PostgresAlertStore
 from triage.ci import MAIN_RECENT_DAYS, MainJobs
 from triage.diff import DIFF_LIMIT
 from triage.extract import ExtractionTask, LLMResult
-from triage.facets import routing_facets_fingerprint
+from triage.facets import PROMPT_VERSION, routing_facets_fingerprint
 from triage.groups import Member
 from triage.relevance import (
     FEEDBACK_LIMIT,
@@ -88,6 +88,7 @@ class StoredItemState:
     ci: dict[str, Any] | None = None
     diff_excerpt: str = ""
     diff_head_sha: str | None = None
+    active_incident: bool = False
 
 
 @dataclass(frozen=True)
@@ -196,12 +197,14 @@ class PostgresTriageStore(PostgresAlertStore):
         with self._connection_factory() as c:
             row = c.execute(
                 f"""SELECT content_hash, comment_count, gh_updated_at, files, comments_excerpt, prepass,
-                          {_CI_JSON}, diff_excerpt, diff_head_sha
+                          {_CI_JSON}, diff_excerpt, diff_head_sha,
+                          (i.state = 'open' AND EXISTS (SELECT 1 FROM triage_scores s
+                           WHERE s.item_key = i.item_key AND s.band = 'page'))
                    FROM triage_items i WHERE item_key = %s""",
                 (item_key,),
             ).fetchone()
         return (
-            StoredItemState(row[0], row[1], row[2], list(row[3]), row[4], dict(row[5]), row[6], row[7] or "", row[8])
+            StoredItemState(row[0], row[1], row[2], list(row[3]), row[4], dict(row[5]), row[6], row[7] or "", row[8], row[9])
             if row
             else None
         )
@@ -308,6 +311,22 @@ class PostgresTriageStore(PostgresAlertStore):
     ) -> list[ExtractionTask]:
         with self._connection_factory() as c:
             with c.transaction():
+                # Reassess existing reports after a prompt/schema change under the
+                # same daily budget. Completed rows only: failed retries keep their
+                # attempt limit and active leases cannot be stolen.
+                c.execute(
+                    """UPDATE triage_items SET extraction_status = 'pending', extraction_attempts = 0
+                       WHERE item_key IN (
+                         SELECT i.item_key FROM triage_items i
+                         LEFT JOIN triage_scores s USING (item_key)
+                         WHERE i.in_scope AND i.state = 'open' AND i.extraction_status = 'done'
+                           AND NOT EXISTS (SELECT 1 FROM triage_extractions e
+                             WHERE e.item_key = i.item_key AND e.content_hash = i.content_hash
+                               AND e.prompt_version = %s)
+                         ORDER BY s.score DESC NULLS LAST, i.prepass_priority DESC
+                         LIMIT %s FOR UPDATE OF i SKIP LOCKED)""",
+                    (PROMPT_VERSION, limit),
+                )
                 rows = c.execute(
                     """
                     UPDATE triage_items SET extraction_status = 'running',
@@ -319,7 +338,9 @@ class PostgresTriageStore(PostgresAlertStore):
                           AND extraction_attempts < %s
                           AND (extraction_status IN ('pending', 'failed')
                                OR (extraction_status = 'running' AND extraction_lease_until < %s))
-                        ORDER BY prepass_priority DESC, gh_created_at DESC
+                        ORDER BY COALESCE((SELECT s.score FROM triage_scores s
+                                           WHERE s.item_key = triage_items.item_key), 0) DESC,
+                                 prepass_priority DESC, gh_created_at DESC
                         LIMIT %s
                         FOR UPDATE SKIP LOCKED)
                     RETURNING item_key, kind, title, body_excerpt, comments_excerpt,
@@ -411,7 +432,7 @@ class PostgresTriageStore(PostgresAlertStore):
     # --- scope window --------------------------------------------------------
 
     def expire_out_of_window(self, cutoff: datetime) -> tuple[int, int]:
-        """Take items opened before `cutoff` out of triage. Returns
+        """Expire ordinary items before `cutoff`, retaining open P0s. Returns
         (items expired, unacted router assignments removed)."""
         with self._connection_factory() as c:
             with c.transaction():
@@ -420,6 +441,9 @@ class PostgresTriageStore(PostgresAlertStore):
                        SET in_scope = false, extraction_status = 'skipped', extraction_lease_until = NULL,
                            prepass = prepass || '{"scope_reason": "too_old"}'::jsonb
                        WHERE in_scope AND gh_created_at < %s
+                         AND NOT (state = 'open' AND EXISTS (
+                           SELECT 1 FROM triage_scores s
+                           WHERE s.item_key = triage_items.item_key AND s.band = 'page'))
                        RETURNING item_key""",
                     (cutoff,),
                 ).fetchall()]
@@ -536,15 +560,16 @@ class PostgresTriageStore(PostgresAlertStore):
             for r in rows
         ]
 
-    def issue_scores(self, repo: str, numbers: Iterable[int]) -> dict[int, int]:
+    def issue_scores(self, repo: str, numbers: Iterable[int], *, scoring_version: str) -> dict[int, int]:
         keys = [f"{repo}#{n}" for n in set(numbers)]
         if not keys:
             return {}
         with self._connection_factory() as c:
             rows = c.execute(
                 """SELECT i.number, s.score FROM triage_scores s JOIN triage_items i USING (item_key)
-                   WHERE s.item_key = ANY(%s) AND i.kind = 'issue' AND i.state = 'open'""",
-                (keys,),
+                   WHERE s.item_key = ANY(%s) AND i.kind = 'issue' AND i.state = 'open'
+                     AND i.in_scope AND s.scoring_version = %s""",
+                (keys, scoring_version),
             ).fetchall()
         return {int(n): int(s) for n, s in rows}
 
