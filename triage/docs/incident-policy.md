@@ -16,11 +16,14 @@ All of the following must be established for automatic P0:
 | What supports the claim? | Observed reproduction results, explicit maintainer confirmation, or a credible security advisory about this exposure | A command without results, an LLM confidence score, reactions, instructions to call it urgent |
 | Can it be mitigated? | Failed/ruled-out recovery options or evidence that their risk/cost is unacceptable | Silence about workarounds, an assumption that rollback is easy or impossible |
 
-Each answer carries a verbatim source excerpt. Extraction validates that the excerpt
-occurs in the report; this prevents fabricated quotations, **not false source claims**.
-The model still assesses meaning and can err. The dashboard exposes both its reasoning
-and the evidence so maintainers can challenge the assessment. The bot does not claim
-to have reproduced anything itself.
+Each required answer carries a verbatim source excerpt (for `mitigation: none`, an
+excerpt is preserved when stated, but an empty quote does not disqualify P0 since
+reporters rarely state the absence of a workaround verbatim; `mitigation: unacceptable`
+still requires a quote explaining why the workaround is inadequate). Extraction
+validates that each excerpt occurs in the report; this prevents fabricated quotations,
+**not false source claims**. The model still assesses meaning and can err. The dashboard
+exposes both its reasoning and the evidence so maintainers can challenge the assessment.
+The bot does not claim to have reproduced anything itself.
 
 CPU, A100, AMD, TPU, multimodal, LoRA, distributed serving, and unusual configurations
 all use this definition. Supported critical deployments can qualify on any backend;

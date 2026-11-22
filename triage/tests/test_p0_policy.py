@@ -59,13 +59,31 @@ def test_each_missing_criterion_prevents_p0_even_with_popularity(changes):
     assert result.score == 69
 
 
-@pytest.mark.parametrize("key", EVIDENCE_KEYS)
-def test_each_criterion_requires_an_excerpt(key):
+@pytest.mark.parametrize("key", [k for k in EVIDENCE_KEYS if k != "mitigation"])
+def test_each_required_criterion_requires_an_excerpt(key):
     incident = deepcopy(INCIDENT)
     incident["evidence"][key] = ""
     result = score(defect(incident=incident))
     assert result.band == "route"
     assert key in result.breakdown[-1].detail
+
+
+def test_mitigation_excerpt_required_for_unacceptable_but_optional_for_none():
+    no_quote_none = deepcopy(INCIDENT)
+    no_quote_none["mitigation"] = "none"
+    no_quote_none["evidence"]["mitigation"] = ""
+    assert score(defect(incident=no_quote_none)).band == "page"
+
+    no_quote_unacceptable = deepcopy(INCIDENT)
+    no_quote_unacceptable["mitigation"] = "unacceptable"
+    no_quote_unacceptable["evidence"]["mitigation"] = ""
+    result = score(defect(incident=no_quote_unacceptable))
+    assert result.band == "route"
+    assert "mitigation" in result.breakdown[-1].detail
+
+    with_quote_unacceptable = deepcopy(INCIDENT)
+    with_quote_unacceptable["mitigation"] = "unacceptable"
+    assert score(defect(incident=with_quote_unacceptable)).band == "page"
 
 
 def test_legacy_popular_default_repro_is_insufficient():

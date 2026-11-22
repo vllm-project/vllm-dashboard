@@ -138,3 +138,16 @@ test("low-ranked but potentially critical reports need verification", () => {
   assert.equal(result.score, 40);
   assert.equal(result.factors.at(-1)?.factor, "policy.needs_verification");
 });
+
+test("mitigation: none allows empty quote while unacceptable requires one, and non-P0 drawer card stays hidden", async () => {
+  const { p0Ineligibility, showIncidentCard } = await import("./triage-incidents");
+  const base = WORKED_EXAMPLE.incident!;
+  assert.equal(p0Ineligibility("bug", { ...base, mitigation: "none", evidence: { ...base.evidence, mitigation: "" } }), null);
+  assert.match(
+    p0Ineligibility("bug", { ...base, mitigation: "unacceptable", evidence: { ...base.evidence, mitigation: "" } }) ?? "",
+    /mitigation/,
+  );
+  assert.equal(showIncidentCard("bug", base), true);
+  assert.equal(showIncidentCard("bug", { ...base, impact: "limited", release_blocker: null }), false);
+  assert.equal(showIncidentCard("bug", { ...base, impact: "limited", release_blocker: true }), true);
+});

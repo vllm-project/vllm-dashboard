@@ -76,7 +76,11 @@ def p0_ineligibility(facets: Mapping[str, Any]) -> str | None:
         return "A security advisory cannot establish an unrelated service incident"
     if incident["mitigation"] not in ("none", "unacceptable"):
         return "P0 requires evidence that a safe, practical mitigation is unavailable or inadequate"
-    missing = [key for key in EVIDENCE_KEYS if not incident["evidence"][key]]
+    required_keys = [
+        key for key in EVIDENCE_KEYS
+        if key != "mitigation" or incident["mitigation"] == "unacceptable"
+    ]
+    missing = [key for key in required_keys if not incident["evidence"][key]]
     if missing:
         return "P0 evidence missing: " + ", ".join(missing)
     return None

@@ -1,7 +1,23 @@
-import { INCIDENT_EVIDENCE_KEYS, p0Ineligibility, type TriageIncident } from "@/lib/triage-incidents";
+import {
+  INCIDENT_EVIDENCE_KEYS,
+  p0Ineligibility,
+  showIncidentCard,
+  type TriageIncident,
+} from "@/lib/triage-incidents";
 
-export function IncidentAssessment({ incident, type }: { incident?: TriageIncident; type: string }) {
+export function IncidentAssessment({
+  incident,
+  type,
+  security = false,
+  alwaysShow = false,
+}: {
+  incident?: TriageIncident;
+  type: string;
+  security?: boolean;
+  alwaysShow?: boolean;
+}) {
   if (!incident) return null;
+  if (!alwaysShow && !showIncidentCard(type, incident, security)) return null;
   const reason = p0Ineligibility(type, incident);
   const excerpts = INCIDENT_EVIDENCE_KEYS.filter((key) => typeof incident.evidence?.[key] === "string" && incident.evidence[key].trim());
   if (incident.impact === "unknown" && !incident.reason && !excerpts.length && !incident.release_blocker) return null;

@@ -30,7 +30,8 @@ export function p0Ineligibility(type: string, incident?: TriageIncident): string
     return "A security advisory cannot establish an unrelated service incident";
   if (!["none", "unacceptable"].includes(i.mitigation ?? ""))
     return "P0 requires evidence that a safe, practical mitigation is unavailable or inadequate";
-  const missing = INCIDENT_EVIDENCE_KEYS.filter((key) => {
+  const required = INCIDENT_EVIDENCE_KEYS.filter((key) => key !== "mitigation" || i.mitigation === "unacceptable");
+  const missing = required.filter((key) => {
     const quote = i.evidence?.[key];
     return typeof quote !== "string" || !quote.trim();
   });
@@ -40,4 +41,14 @@ export function p0Ineligibility(type: string, incident?: TriageIncident): string
 export function needsIncidentVerification(type: string, incident?: TriageIncident, security = false): boolean {
   return DEFECTS.includes(type) && (CRITICAL.includes(incident?.impact ?? "") || security) &&
     !["mitigated", "resolved"].includes(incident?.status ?? "");
+}
+
+/** Top-of-drawer card only for P0, critical reports needing verification, or release blockers. */
+export function showIncidentCard(type: string, incident?: TriageIncident, security = false): boolean {
+  if (!incident) return false;
+  return (
+    p0Ineligibility(type, incident) === null ||
+    needsIncidentVerification(type, incident, security) ||
+    incident.release_blocker === true
+  );
 }
