@@ -32,7 +32,8 @@ class FakeKube:
     def node_json(self, n):
         s = self.nodes[n]
         return {"metadata": {"name": n, "resourceVersion": str(self.rv[n]),
-                             "annotations": dict(s.get("annotations", {}))},
+                             "annotations": dict(s.get("annotations", {})),
+                             "labels": dict(s.get("labels", {}))},
                 "spec": {"unschedulable": s["unschedulable"],
                          "taints": list(s["taints"])},
                 "status": {"capacity": {
@@ -387,6 +388,39 @@ def test_cordon_by_a_person_mid_run_is_never_marked_ours(run):
     assert run(kube, resolve) == 0
     assert kube.nodes["n1"]["unschedulable"] is True  # the person's cordon
     assert "pre-existing cordon" in resolve.posts[0][1]["observed"]["note"]
+
+
+# A GPU-sharing (HAMi) node advertises every card 10 times and refuses a Pod
+# that skipped HAMi's scheduler, so its check goes through HAMi for whole cards.
+HAMI = {"gpu": "on", "nvidia.com/gpu.count": "8"}
+
+
+def hami_node(labels=HAMI, shares="80"):
+    return dict(node(True, True), labels=dict(labels),
+                capacity=shares, allocatable=shares)
+
+
+def test_return_check_on_a_hami_node_asks_hami_for_every_whole_card(run):
+    # Split 20 ways: the card count comes from the label, not the split.
+    kube = FakeKube({"n1": hami_node(shares="160")})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert dash.posts[0][1]["state"] == "verifying"
+    (pod,) = kube.created
+    assert pod["metadata"]["labels"] == {"app": "vllm-quarantine-verify",
+                                         "vllm.ci/gpu-sharing": "hami"}
+    assert "nodeName" not in pod["spec"]
+    assert pod["spec"]["nodeSelector"] == {"kubernetes.io/hostname": "n1"}
+    assert pod["spec"]["tolerations"] == [{"operator": "Exists"}]
+    assert pod["spec"]["containers"][0]["resources"] == {
+        "limits": {"nvidia.com/gpu": "8"}}
+
+
+def test_hami_node_without_a_gpu_count_label_divides_the_shares(run):
+    kube = FakeKube({"n1": hami_node({"gpu": "on"})})
+    assert run(kube, FakeDashboard([want("n1", "resolving")])) == 0
+    assert kube.created[0]["spec"]["containers"][0]["resources"] == {
+        "limits": {"nvidia.com/gpu": "8"}}
 
 
 def test_resolve_runs_the_return_check_before_returning(run):

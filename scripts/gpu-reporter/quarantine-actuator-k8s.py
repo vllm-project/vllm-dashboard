@@ -181,13 +181,26 @@ def verify_pod(node, resolve_requested_at=None):
                 "labels": {"app": "vllm-quarantine-verify"}}
     if resolve_requested_at:
         metadata["annotations"] = {RESOLVE_MARK: resolve_requested_at}
+    # nodeName skips the scheduler, so our cordon and taint don't keep it
+    # off; the toleration covers the kubelet's own checks.
+    placement = {"nodeName": name}
+    labels = node["metadata"].get("labels") or {}
+    # HAMi's device plugin runs only on gpu=on nodes (its nvidiaNodeSelector).
+    # It advertises each card 10 times and refuses a Pod its scheduler did not
+    # place, so the check goes through HAMi: its opt-in label, the node by
+    # selector, and every physical card whole (no gpumem).
+    if labels.get("gpu") == "on":
+        metadata["labels"]["vllm.ci/gpu-sharing"] = "hami"
+        placement = {"nodeSelector": {"kubernetes.io/hostname": name}}
+        # GPU feature discovery's count is the physical cards; 10 is HAMi's
+        # default split.
+        gpus = labels.get("nvidia.com/gpu.count") or str(
+            int(node["status"]["capacity"][GPU_RESOURCE]) // 10)
     return {
         "apiVersion": "v1", "kind": "Pod",
         "metadata": metadata,
         "spec": {
-            # nodeName skips the scheduler, so our cordon and taint don't
-            # keep it off; the toleration covers the kubelet's own checks.
-            "nodeName": name, "restartPolicy": "Never",
+            **placement, "restartPolicy": "Never",
             "automountServiceAccountToken": False,
             "runtimeClassName": "nvidia",
             "tolerations": [{"operator": "Exists"}],
@@ -325,8 +338,10 @@ class Actuator:
             if "NotFound" not in str(e):
                 raise
             # nodeName skips the scheduler, so the kubelet fails the pod at
-            # once if a GPU is still held or unhealthy: wait out the CI pods,
-            # and treat a GPU the device plugin dropped as a failed check.
+            # once if a GPU is still held or unhealthy (on a HAMi node the
+            # pod waits Pending instead, until VERIFY_TIMEOUT): wait out the
+            # CI pods, and treat a GPU the device plugin dropped as a failed
+            # check.
             # The wait is posted as 'out' every run, naming the jobs, so the
             # dashboard can say which one holds the node.
             pods = ci_pods(name)
