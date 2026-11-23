@@ -138,7 +138,7 @@ def test_digest_max_items_counts_groups_and_fits_50_blocks() -> None:
     assert len(payload["blocks"]) <= 50
     assert sum(1 for b in payload["blocks"] if b["type"] == "actions") == DIGEST_MAX_ITEMS
     assert "Today you have *30 P1*" in payload["blocks"][1]["text"]["text"]
-    assert "…and 10 more" in payload["blocks"][-3]["elements"][0]["text"]
+    assert f"…and {30 - DIGEST_MAX_ITEMS} more" in payload["blocks"][-3]["elements"][0]["text"]
 
 
 def test_reminders_fold_into_groups_too() -> None:

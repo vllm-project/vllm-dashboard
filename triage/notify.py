@@ -396,11 +396,12 @@ def page_dm(
 
 
 # Each digest item (or issue + fix PR group) is two blocks (line + buttons);
-# Slack allows 50 per message. DIGEST_MAX_ITEMS counts groups.
+# Slack allows 50 per message. Keep the daily DM focused on at most 5 items
+# total (new items first, then waiting reminders) with a link to My list for the rest.
 SLACK_MAX_BLOCKS = 50
-DIGEST_MAX_ITEMS = 20
+DIGEST_MAX_ITEMS = 5
 # "Still waiting" reminders: open, un-acked items assigned at least this long
-# ago, oldest first, at most this many (also two blocks each).
+# ago, oldest first, filling any slots remaining under DIGEST_MAX_ITEMS.
 WAITING_AFTER_DAYS = 3
 WAITING_MAX_ITEMS = 5
 
@@ -456,8 +457,10 @@ def maintainer_digest(
     waiting_groups = group_entries(unique)
     # Reminders folded into a group are one item, and so one fewer to count.
     waiting_total = max(waiting_total - (len(unique) - len(waiting_groups)), 0)
-    reminders = waiting_groups[:WAITING_MAX_ITEMS]
-    waiting_total = max(waiting_total, len(reminders))
+    shown = min(len(groups), DIGEST_MAX_ITEMS)
+    reminder_slots = min(WAITING_MAX_ITEMS, max(0, DIGEST_MAX_ITEMS - shown))
+    reminders = waiting_groups[:reminder_slots]
+    waiting_total = max(waiting_total, len(waiting_groups))
     me = f"{DASHBOARD}/me"
 
     date = f"{day.day}/{day.month}" if lang == "vi" else f"{day:%b} {day.day}"
@@ -480,9 +483,9 @@ def maintainer_digest(
 
     def new_items(n: int) -> list[dict[str, Any]]:
         blocks: list[dict[str, Any]] = []
-        shown = groups[:n]
+        shown_groups = groups[:n]
         for band in ("page", "route", "watch", "ignore"):
-            in_band = [(m, f) for m, f in shown if group_band(m, f) == band]
+            in_band = [(m, f) for m, f in shown_groups if group_band(m, f) == band]
             if not in_band:
                 continue
             key = f"group_{band}"
@@ -509,11 +512,13 @@ def maintainer_digest(
         if waiting_total > len(reminders):
             tail.append({"type": "context", "elements": [{"type": "mrkdwn",
                          "text": _t(lang, "waiting_more", m=waiting_total - len(reminders), url=me)}]})
+    elif waiting_total > 0:
+        tail.append({"type": "context", "elements": [{"type": "mrkdwn",
+                     "text": _t(lang, "waiting_more", m=waiting_total, url=me)}]})
     tail.append({"type": "divider"})
     tail.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _t(
         lang, "digest_footer", url=me, file=MAINTAINER_FILE.format(login=quote(maintainer)))}]})
 
-    shown = min(len(groups), DIGEST_MAX_ITEMS)
     body = new_items(shown)
     while shown > 0 and len(head) + len(body) + len(tail) > SLACK_MAX_BLOCKS:
         shown -= 1
