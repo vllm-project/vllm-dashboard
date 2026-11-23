@@ -12,11 +12,23 @@ notes: |
   caches, with page residency, prefill staging and host pools, for
   GLM-5.3-Flash, Kimi K3.1 and DeepSeek models. Also attention backends: MLA,
   FlashMLA, FlashAttention (FA4, upstream syncs), FlashInfer sparse MLA and
-  FlashInfer upgrades, KV block sizes, KV layout and block-size interactions
-  between attention backends and the NIXL / offload connectors, and the
-  extensible KV cache with HiSparse.
+  FlashInfer upgrades, attention-backend KV block sizes and layouts, and
+  the extensible KV cache with HiSparse. My NIXL transfer-geometry and
+  transferable-cache-group work supports HiSparse integration; it is not
+  blanket ownership of NIXL or offload connectors.
   Send me HiSparse bugs, sparse or MLA attention backend crashes and wrong
   outputs, and FlashAttention or FlashInfer attention regressions.
-  Don't send me connector protocol, scheduling or stall bugs that don't involve
-  attention layout or HiSparse, ROCm or XPU attention backends, DSA indexer
-  top-k kernels outside HiSparse, or batch invariance.
+  For connector issues, require an identified HiSparse integration problem,
+  an attention-backend implementation bug, or a concrete regression from
+  a change I authored. Generic NIXL cache registration, transfer-region
+  partitioning, descriptor geometry, and mixed-group block-size failures
+  belong with connector maintainers by default. Merely mentioning KV
+  layout, block size, FlashInfer, or a file I previously changed is not
+  enough to route those issues to me.
+  Routing feedback: I marked #63997 (Gemma 4 NixlConnector startup failure:
+  "KV cache view cannot be partitioned into NIXL regions") as not mine.
+  Treat similar generic connector-registration failures as negative
+  routing evidence, without excluding actual HiSparse integration bugs.
+  Don't send me connector protocol, scheduling or stall bugs outside the
+  cases above, ROCm or XPU attention backends, DSA indexer top-k kernels
+  outside HiSparse, or batch invariance.
