@@ -416,11 +416,19 @@ def test_return_check_on_a_hami_node_asks_hami_for_every_whole_card(run):
         "limits": {"nvidia.com/gpu": "8"}}
 
 
-def test_hami_node_without_a_gpu_count_label_divides_the_shares(run):
-    kube = FakeKube({"n1": hami_node({"gpu": "on"})})
-    assert run(kube, FakeDashboard([want("n1", "resolving")])) == 0
-    assert kube.created[0]["spec"]["containers"][0]["resources"] == {
-        "limits": {"nvidia.com/gpu": "8"}}
+@pytest.mark.parametrize("labels", [{"gpu": "on"},
+                                    {"gpu": "on", "nvidia.com/gpu.count": "0"},
+                                    {"gpu": "on", "nvidia.com/gpu.count": "x"}])
+def test_hami_node_without_a_valid_card_count_fails_its_check(run, labels):
+    # Split 5 ways: guessing from capacity would check only some cards.
+    kube = FakeKube({"n1": hami_node(labels, shares="40")})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert kube.created == []
+    assert dash.posts == [("n1", {"alertId": 7, "state": "verify_failed",
+                                  "observed": {"note": "a GPU-sharing node "
+                                               "without a valid "
+                                               "nvidia.com/gpu.count label"}})]
 
 
 def test_resolve_runs_the_return_check_before_returning(run):
@@ -734,3 +742,11 @@ def test_the_admission_policy_admits_both_return_check_pods():
     no_placement = dict(shared["spec"])
     del no_placement["nodeSelector"]
     assert not admitted({**shared, "spec": no_placement})
+
+
+def test_a_one_card_hami_node_is_checked_on_its_card(run):
+    kube = FakeKube({"n1": hami_node({"gpu": "on", "nvidia.com/gpu.count": "1"},
+                                     shares="10")})
+    assert run(kube, FakeDashboard([want("n1", "resolving")])) == 0
+    assert kube.created[0]["spec"]["containers"][0]["resources"] == {
+        "limits": {"nvidia.com/gpu": "1"}}
