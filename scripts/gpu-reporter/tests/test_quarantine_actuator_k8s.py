@@ -695,3 +695,42 @@ def test_kubectl_passes_input_and_returns_stdout(run, monkeypatch):
     assert calls == [(["kubectl", "create", "-f", "-"], {
         "capture_output": True, "text": True, "input": "{}",
         "timeout": run.mod.KUBECTL_TIMEOUT})]
+
+
+def admitted(pod):
+    """Whether the namespace's ValidatingAdmissionPolicy admits the pod.
+
+    Evaluates the policy's own CEL from the RBAC manifest; needs cel-python
+    and PyYAML, so it is skipped where they are not installed.
+    """
+    celpy = pytest.importorskip("celpy")
+    yaml = pytest.importorskip("yaml")
+    from conftest import SCRIPTS_DIR
+    docs = yaml.safe_load_all(
+        (SCRIPTS_DIR / "quarantine-actuator-k8s-rbac.yaml").read_text())
+    (policy,) = [d for d in docs if d and d["kind"] == "ValidatingAdmissionPolicy"]
+    env = celpy.Environment()
+    return all(
+        bool(env.program(env.compile(v["expression"])).evaluate(
+            {"object": celpy.json_to_cel(pod)}))
+        for v in policy["spec"]["validations"])
+
+
+def test_the_admission_policy_admits_both_return_check_pods():
+    mod = load_module("quarantine_actuator_k8s", "quarantine-actuator-k8s.py")
+    kube = FakeKube({"dgxb200-x": node(True, True),
+                     "inf-4x8h100-x": hami_node()})
+    plain = mod.verify_pod(json.loads(kube("get", "node", "dgxb200-x")))
+    shared = mod.verify_pod(json.loads(kube("get", "node", "inf-4x8h100-x")))
+    assert admitted(plain)
+    assert admitted(shared)
+    # After HAMi's scheduler binds it, the pod carries both fields.
+    assert admitted({**shared, "spec": {**shared["spec"],
+                                        "nodeName": "inf-4x8h100-x"}})
+    # Still only GPU nodes, either way.
+    assert not admitted({**plain, "spec": {**plain["spec"], "nodeName": "cpu-1"}})
+    assert not admitted({**shared, "spec": {
+        **shared["spec"], "nodeSelector": {"kubernetes.io/hostname": "cpu-1"}}})
+    no_placement = dict(shared["spec"])
+    del no_placement["nodeSelector"]
+    assert not admitted({**shared, "spec": no_placement})

@@ -144,10 +144,16 @@ spec:
         operations: ["CREATE", "UPDATE"]
         resources: ["pods"]
   validations:
+    # Pinned by nodeName, or, on a GPU-sharing (HAMi) node whose scheduler
+    # must place it, by a hostname nodeSelector; GPU nodes only either way.
     - expression: >-
-        has(object.spec.nodeName) &&
-        (object.spec.nodeName.startsWith('inf-4x8h100-') ||
-          object.spec.nodeName.startsWith('dgxb200-')) &&
+        ((has(object.spec.nodeName) &&
+          (object.spec.nodeName.startsWith('inf-4x8h100-') ||
+            object.spec.nodeName.startsWith('dgxb200-'))) ||
+         (!has(object.spec.nodeName) && has(object.spec.nodeSelector) &&
+          'kubernetes.io/hostname' in object.spec.nodeSelector &&
+          (object.spec.nodeSelector['kubernetes.io/hostname'].startsWith('inf-4x8h100-') ||
+            object.spec.nodeSelector['kubernetes.io/hostname'].startsWith('dgxb200-')))) &&
         size(object.spec.containers) == 1 &&
         !has(object.spec.initContainers) &&
         !has(object.spec.ephemeralContainers) &&
