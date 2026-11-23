@@ -754,7 +754,7 @@ def test_digest_caps_items_to_fit_slacks_block_limit() -> None:
     assert payload["blocks"][1]["text"]["text"] == (
         "Hi <@U1> 👋 Today you have *30 P1* for when you have time. <https://ci.vllm.ai/triage/me|📋 Open your list>")
     assert payload["blocks"][-1]["type"] == "context"  # the footer survives the cap
-    assert "…and 10 more on <https://ci.vllm.ai/triage/me|My list>." in payload["blocks"][-3]["elements"][0]["text"]
+    assert f"…and {30 - DIGEST_MAX_ITEMS} more on <https://ci.vllm.ai/triage/me|My list>." in payload["blocks"][-3]["elements"][0]["text"]
 
 
 def _entries(n: int, band: str = "route", start: int = 1, assigned_at: datetime | None = None) -> list[DigestEntry]:
@@ -809,7 +809,8 @@ def test_still_waiting_section_fits_slacks_block_limit() -> None:
     from triage.notify import DIGEST_MAX_ITEMS, SLACK_MAX_BLOCKS, WAITING_MAX_ITEMS, maintainer_digest
 
     day = datetime(2026, 11, 18, 9, tzinfo=timezone.utc)
-    # Worst case: new items in all four bands, a full reminder list and more waiting.
+    # Full new list + waiting reminders: capped at DIGEST_MAX_ITEMS (5) total,
+    # with both overflow counts linking to My list.
     entries = (_entries(10, "page") + _entries(10, "route", 11) + _entries(5, "watch", 21)
                + _entries(5, "ignore", 26))
     waiting = _entries(8, "route", 100, assigned_at=day - timedelta(days=4))
@@ -820,20 +821,32 @@ def test_still_waiting_section_fits_slacks_block_limit() -> None:
     assert len(blocks) <= SLACK_MAX_BLOCKS
     ids = [b["block_id"] for b in blocks if "block_id" in b]
     assert len(ids) == len(set(ids))
-    texts = [b.get("text", {}).get("text", "") for b in blocks]
-    title = texts.index("*⏳ Still waiting (12)*")
-    reminders = [t for t in texts[title + 1:] if "#10" in t]
-    assert len(reminders) == WAITING_MAX_ITEMS and all("assigned 4 days ago" in t for t in reminders)
-    assert sum(1 for b in blocks if b["type"] == "actions") < DIGEST_MAX_ITEMS + WAITING_MAX_ITEMS
-    shown_new = sum(1 for b in blocks[:title] if b["type"] == "actions")
+    assert sum(1 for b in blocks if b["type"] == "actions") == DIGEST_MAX_ITEMS
     contexts = [b["elements"][0]["text"] for b in blocks if b["type"] == "context"]
-    assert f"…and {len(entries) - shown_new} more on <https://ci.vllm.ai/triage/me|My list>." in contexts
-    assert "…and 7 more waiting on <https://ci.vllm.ai/triage/me|My list>." in contexts
+    assert f"…and {len(entries) - DIGEST_MAX_ITEMS} more on <https://ci.vllm.ai/triage/me|My list>." in contexts
+    assert "…and 12 more waiting on <https://ci.vllm.ai/triage/me|My list>." in contexts
     assert blocks[-1]["type"] == "context" and "Change what you get" in blocks[-1]["elements"][0]["text"]
-    # Reminder buttons are the digest's: Ack / Not mine / Reassign.
-    reminder_actions = blocks[title + 2]
+
+    # When fewer than DIGEST_MAX_ITEMS new items arrive, waiting reminders fill the remaining slots.
+    mixed = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=_entries(2, "page"), day=day,
+                              mode=DeliveryMode.SHADOW, reassign_to=["y"], waiting=waiting,
+                              waiting_total=12).payload["blocks"]
+    assert sum(1 for b in mixed if b["type"] == "actions") == DIGEST_MAX_ITEMS
+    mixed_texts = [b.get("text", {}).get("text", "") for b in mixed]
+    title = mixed_texts.index("*⏳ Still waiting (12)*")
+    reminders = [t for t in mixed_texts[title + 1:] if "#10" in t]
+    assert len(reminders) == DIGEST_MAX_ITEMS - 2 and all("assigned 4 days ago" in t for t in reminders)
+    mixed_contexts = [b["elements"][0]["text"] for b in mixed if b["type"] == "context"]
+    assert f"…and {12 - (DIGEST_MAX_ITEMS - 2)} more waiting on <https://ci.vllm.ai/triage/me|My list>." in mixed_contexts
+    reminder_actions = mixed[title + 2]
     assert reminder_actions["block_id"] == "triage:actions:vllm-project/vllm#100"
     assert [e["action_id"] for e in reminder_actions["elements"]] == ["triage:ack", "triage:not_mine", "triage:reassign"]
+
+    # Waiting-only digest gets up to WAITING_MAX_ITEMS (5) reminders.
+    wait_only = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=[], day=day,
+                                  mode=DeliveryMode.SHADOW, reassign_to=["y"], waiting=waiting,
+                                  waiting_total=12).payload["blocks"]
+    assert sum(1 for b in wait_only if b["type"] == "actions") == WAITING_MAX_ITEMS and len(wait_only) <= SLACK_MAX_BLOCKS
 
     # Without reminders the new items keep their full DIGEST_MAX_ITEMS.
     plain = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=_entries(30), day=day,
