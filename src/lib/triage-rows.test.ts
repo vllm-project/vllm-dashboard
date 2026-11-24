@@ -3,6 +3,7 @@ import test from "node:test";
 import type { TriageCi } from "./triage-ci";
 import { nestGroups, rowOrder } from "./triage-groups";
 import {
+  activityNote,
   cleanupReasons,
   contextText,
   fixLabelText,
@@ -12,11 +13,13 @@ import {
   fixPrStatus,
   kindHeading,
   kindTag,
+  prEffortText,
   priorityCell,
   linkText,
   listRows,
   rowCiChip,
   scoreParts,
+  unownedHint,
   worstSymptom,
 } from "./triage-rows";
 import type { TriageLinkedItem, TriageQueueItem } from "./triage-types";
@@ -114,13 +117,15 @@ test("CI only when actionable", () => {
   assert.match(failed.title, /^CI: /);
 });
 
-test("context is one plain line: hardware · model · area, then +N", () => {
+test("context lists model, then area, then hardware; rows show one plus +N", () => {
   const line = contextText({ hardware: ["CPU_x86"], models: ["DeepSeek-V4-Flash"], areas: ["cpu"] });
-  assert.deepEqual(line, { text: "CPU x86 · DeepSeek-V4-Flash · cpu", more: 0, hidden: [] });
-  const long = contextText({ hardware: ["B200", "H100"], models: ["Qwen3-235B"], areas: ["moe", "kv_cache"] });
-  assert.equal(long.text, "B200 · H100 · Qwen3-235B");
-  assert.equal(long.more, 2);
-  assert.deepEqual(long.hidden, ["moe", "kv cache"]);
+  assert.deepEqual(line, { text: "DeepSeek-V4-Flash · cpu · CPU x86", more: 0, hidden: [] });
+  const row = contextText({ hardware: ["B200", "H100"], models: ["Qwen3-235B"], areas: ["moe", "kv_cache"] }, 1);
+  assert.equal(row.text, "Qwen3-235B");
+  assert.equal(row.more, 4);
+  assert.deepEqual(row.hidden, ["moe", "kv cache", "B200", "H100"]);
+  // No model: the area comes first.
+  assert.equal(contextText({ hardware: ["H100"], models: [], areas: ["frontend_api"] }, 1).text, "frontend api");
   assert.equal(contextText({ hardware: [], models: [], areas: ["moe", "MoE"] }).text, "moe");
   assert.equal(contextText({ hardware: [], models: [], areas: [] }).text, "");
 });
@@ -253,4 +258,34 @@ test("cleanupReasons explains competing PRs, low effort, and slop signals", () =
   assert.equal(reasons[1].label, "Low effort");
   assert.equal(reasons[2].label, "Slop: AI boilerplate +1");
   assert.match(reasons[2].title, /no tests/);
+});
+
+test("prEffortText shows only reviewer-relevant flags; the tooltip has every fact", () => {
+  assert.equal(prEffortText({ kind: "issue", prSize: "s", hasTests: true }), null);
+  // A normal PR (small, with tests, by a maintainer) shows nothing on the row.
+  assert.equal(prEffortText({ kind: "pr", prSize: "s", hasTests: true, isMaintainer: true }), null);
+  assert.equal(prEffortText({ kind: "pr", prSize: "m", hasTests: true }), null);
+  assert.equal(prEffortText({ kind: "pr", prSize: "s", hasTests: false }), null); // small PRs needn't have tests
+  const flagged = prEffortText({ kind: "pr", prSize: "xl", hasTests: false, firstTime: true });
+  assert.equal(flagged?.text, "very large PR · no tests · first-time contributor");
+  assert.match(flagged?.title ?? "", /^Very large PR\. Size by lines changed: tiny <10/);
+  assert.match(flagged?.title ?? "", /The author's first PR to vLLM/);
+  assert.equal(prEffortText({ kind: "pr", prSize: "s", hasTests: true, firstTime: true })?.text, "first-time contributor");
+});
+
+test("unownedHint distills verbose router summaries into 2-word hints", () => {
+  assert.equal(unownedHint(null), null);
+  assert.equal(unownedHint("Nobody is a match: everyone judged is low or none.")?.label, "no match");
+  assert.equal(unownedHint("Its only match can't take it right now.")?.label, "at capacity");
+  assert.equal(unownedHint("Assigned on GitHub to alice, who is not in the list.")?.label, "assigned on GitHub");
+});
+
+test("activityNote flags fresh updates on older items only", () => {
+  const now = Date.parse("2026-11-20T12:00:00Z");
+  // Old item updated 2h ago → show activity note
+  assert.equal(activityNote("2026-11-10T12:00:00Z", "2026-11-20T10:00:00Z", now)?.label, "updated 2h ago");
+  // Brand new item updated 1h ago → redundant, omit
+  assert.equal(activityNote("2026-11-20T09:00:00Z", "2026-11-20T11:00:00Z", now), null);
+  // Old item not updated recently → omit
+  assert.equal(activityNote("2026-11-10T12:00:00Z", "2026-11-15T12:00:00Z", now), null);
 });

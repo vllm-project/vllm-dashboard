@@ -409,7 +409,6 @@ def page_dm(
 # Bound visual length, not just Slack's 50-block API limit.
 SLACK_MAX_BLOCKS = 50
 DIGEST_MAX_ITEMS = 5
-DIGEST_MAX_PER_BAND = 3
 DIGEST_MAX_FIXES = 3
 WAITING_AFTER_DAYS = 3
 WAITING_MAX_ITEMS = 5
@@ -503,8 +502,8 @@ def maintainer_digest(
     waiting: list[DigestEntry] | None = None, waiting_total: int = 0,
 ) -> NotificationIntent:
     """A compact, priority-grouped digest. Titles open triage, numbers open
-    GitHub, and one menu acts on each issue/fix group. All P0 groups are
-    shown; lower priorities retain the compact budget and overflow links.
+    GitHub, and one menu acts on each issue/fix group. At most five groups
+    are shown across all priorities, with overflow linked to the full list.
     New assignments and overdue unacked reminders share the same layout.
     Context-only fixes never become notifications or change a group's band.
     """
@@ -529,9 +528,9 @@ def maintainer_digest(
         label = BAND_LABELS[band]
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text":
                        "*" + " ".join(p for p in (_BAND_ICON.get(band, ""), label) if p) + "*"}})
-        shown = in_band if band == "page" else in_band[:min(remaining, DIGEST_MAX_PER_BAND)]
+        shown = in_band[:remaining]
         blocks.extend(_digest_section(m, f, day, lang) for m, f in shown)
-        remaining -= min(len(shown), DIGEST_MAX_PER_BAND)
+        remaining -= len(shown)
         if len(shown) < len(in_band):
             blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text":
                 _t(lang, "more_band", n=len(in_band) - len(shown), band=label, url=me)}]})
@@ -552,8 +551,10 @@ def maintainer_digest(
 
 
 def split_digest(notification: NotificationIntent) -> list[NotificationIntent]:
-    """Keep every P0 when a digest outgrows Slack. Reserve room for the
-    confirmation block each item can gain after a menu action."""
+    """Defensive splitting for older/custom payloads that outgrow Slack.
+
+    Normal top-five digests fit in one message, including menu confirmations.
+    """
     blocks = notification.payload["blocks"]
     limit = SLACK_MAX_BLOCKS // 2
     if len(blocks) <= limit:

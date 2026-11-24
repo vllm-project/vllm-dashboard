@@ -86,7 +86,7 @@ def test_impact_is_short_single_line_and_cannot_ping() -> None:
     assert len(next(b for b in render([ISSUE]) if "accessory" in b)["text"]["text"].split("\n")) == 2
 
 
-def test_all_p0_groups_are_visible_and_large_digests_continue() -> None:
+def test_top_five_cap_includes_p0_and_large_queues_do_not_create_more_messages() -> None:
     from triage.notify import split_digest
 
     entries = [replace(ISSUE, item_key=f"vllm-project/vllm#{n}") for n in range(60)]
@@ -94,14 +94,28 @@ def test_all_p0_groups_are_visible_and_large_digests_continue() -> None:
     notification = maintainer_digest(maintainer="r", maintainer_slack="U1", entries=entries,
                                     day=NOW, mode=DeliveryMode.SHADOW)
     parts = split_digest(notification)
-    assert len(parts) > 1 and parts[0].delivery_id == notification.delivery_id
+    assert len(parts) == 1 and parts[0].delivery_id == notification.delivery_id
     assert len({p.delivery_id for p in parts}) == len(parts)
     items = [b["block_id"] for p in parts for b in p.payload["blocks"] if "accessory" in b]
-    assert set(items) == {f"triage:item:vllm-project/vllm#{n}" for n in range(62)}
+    assert set(items) == {f"triage:item:vllm-project/vllm#{n}" for n in range(5)}
     assert len(items) == len(set(items))
-    assert "more P0" not in str([p.payload for p in parts])
-    assert "8 more P1" in str([p.payload for p in parts])
+    assert "55 more P0" in str([p.payload for p in parts])
+    assert "10 more P1" in str([p.payload for p in parts])
     for part in parts:
         blocks = part.payload["blocks"]
         assert len(blocks) + sum("accessory" in b for b in blocks) <= 50
         assert "Open full list" in blocks[1]["text"]["text"]
+
+
+def test_total_five_budget_shared_by_priority_and_reminders() -> None:
+    entries = [replace(ISSUE, item_key=f"vllm-project/vllm#{n}", score=90-n) for n in range(2)]
+    waiting = [replace(ISSUE, item_key=f"vllm-project/vllm#{n}", band="route", score=70-n)
+               for n in range(2, 9)]
+    payload = maintainer_digest(maintainer="r", maintainer_slack="U1", entries=entries,
+                                waiting=waiting, waiting_total=7, day=NOW, mode=DeliveryMode.SHADOW).payload
+    items = [b for b in payload["blocks"] if b.get("block_id", "").startswith("triage:item:")]
+    assert [b["block_id"] for b in items] == [f"triage:item:vllm-project/vllm#{n}" for n in range(5)]
+    assert "4 more P1" in str(payload)
+    assert "Open full list" in payload["blocks"][1]["text"]["text"]
+    assert not any(b["type"] == "actions" for b in payload["blocks"])
+    assert "Why you" not in str(payload) and "Today you have" not in str(payload)

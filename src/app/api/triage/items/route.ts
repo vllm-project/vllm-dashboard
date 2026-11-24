@@ -9,7 +9,7 @@ export async function GET(request: Request) {
   if (!("login" in guard)) return guard;
   try {
     const filters = parseQueueFilters(new URL(request.url).searchParams);
-    return triageJson(await listQueue(filters));
+    return triageJson(await listQueue(filters, guard.login));
   } catch (error) {
     return triageDbError(error, "queue query");
   }

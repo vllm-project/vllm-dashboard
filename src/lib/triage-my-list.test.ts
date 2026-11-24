@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   inPlateView, matchesPlateFilters, overdueAck, parsePlateFilters,
-  plateFilterParams, plateNextAction, readyForMerge, readyForReview,
+  plateFilterParams, plateNextAction, plateStatus, plateStatusLabel, readyForMerge, readyForReview,
   type PlateEntryLike,
 } from "./triage-my-list";
 
@@ -79,4 +79,36 @@ test("view counts and results apply the same role, type, and acknowledgement fil
   assert.equal(matchesPlateFilters(entry({ assignment: { status: "open", role: "backup" } }), filters, NOW), true);
   assert.equal(matchesPlateFilters(entry(), filters, NOW), false);
   assert.equal(matchesPlateFilters(entry({ kind: "issue", assignment: { status: "open", role: "backup" } }), filters, NOW), false);
+});
+
+test("status line: needs ack, overdue, backup, and the assigned age in the tooltip", () => {
+  const fresh = entry({ assignment: { status: "open", role: "primary", assignedAt: "2026-11-19T12:00:00Z" } });
+  const status = plateStatus(fresh, NOW);
+  assert.equal(plateStatusLabel(status), "Needs your ack");
+  assert.equal(status.title, "Assigned 24h ago");
+
+  const late = plateStatus(entry({ assignment: { status: "open", role: "backup", assignedAt: "2026-11-16T12:00:00Z" } }), NOW);
+  assert.equal(plateStatusLabel(late), "Needs your ack · ack overdue · Backup");
+  assert.equal(late.text, "Needs your ack");
+  assert.match(late.title, /^Assigned 4d ago/);
+});
+
+test("status line: acked items say what's next, never 'Primary'", () => {
+  const issue = plateStatus(entry({ kind: "issue", waitingOn: null }), NOW);
+  assert.equal(plateStatusLabel(issue), "✓ Acked · follow up");
+  assert.equal(plateStatusLabel(plateStatus(entry(), NOW)), "✓ Acked · ready for review");
+  assert.equal(plateStatusLabel(plateStatus(entry({ waitingOn: "author" }), NOW)), "✓ Acked · waiting on author");
+  const viaGithub = plateStatus(entry({ assignment: { status: "acked", role: "primary", assignedAt: "2026-11-16T12:00:00Z", reason: { acked_by: "github_comment" } } }), NOW);
+  assert.match(viaGithub.title, /commented on GitHub/);
+  assert.doesNotMatch(plateStatusLabel(viaGithub), /Primary/);
+});
+
+test("status line: closed assignments; drop and slop both read as hidden", () => {
+  const closed = (status: string, reason: Record<string, unknown> = {}) =>
+    plateStatusLabel(plateStatus(entry({ assignment: { status, role: "primary", reason } }), NOW));
+  assert.equal(closed("done"), "Done");
+  assert.equal(closed("done", { closed_by: "github", item_state: "merged" }), "Closed on GitHub (merged)");
+  assert.equal(closed("dropped"), "Hidden for everyone");
+  assert.equal(closed("slop"), "Hidden for everyone");
+  assert.equal(closed("not_mine"), "Not mine");
 });

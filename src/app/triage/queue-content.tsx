@@ -18,11 +18,11 @@ import {
 } from "@/components/triage/item-row";
 import { groupBand, nestGroups, rowOrder } from "@/lib/triage-groups";
 import { listPosition, stepItem } from "@/lib/triage-keys";
-import { QUEUE_PRESETS, focusFilters, queueViewDescription, activeFilterCount, activePreset, parseQueueLocation, presetFilters, type QueuePresetId } from "@/lib/triage-presets";
+import { QUEUE_PRESETS, focusFilters, emptyStateCopy, queueViewDescription, activeFilterCount, activePreset, parseQueueLocation, presetFilters, type QueuePresetId } from "@/lib/triage-presets";
 import { useTriageLogin } from "@/components/triage/use-triage-session";
 import { useCollapsedBands } from "@/lib/use-collapsed-bands";
 import { useLocationHash } from "@/lib/use-location-hash";
-import { itemFromLocation, percent, triageFetcher } from "@/lib/triage-format";
+import { itemFromLocation, percent, sendJson, triageFetcher } from "@/lib/triage-format";
 import { OWNER_NONE, queueFiltersToParams, type QueueFilters } from "@/lib/triage-query";
 import {
   BAND_ORDER,
@@ -33,7 +33,7 @@ import {
   type BandKey,
 } from "@/lib/triage-style";
 import { pipelineHealth, type HealthTone } from "@/lib/triage-health";
-import type { TriageQueueResponse, TriageStats } from "@/lib/triage-types";
+import type { TriageQueueItem, TriageQueueResponse, TriageStats } from "@/lib/triage-types";
 import { TRIAGE_AREAS, TRIAGE_HARDWARE } from "@/lib/triage-vocab";
 
 const CONTROL =
@@ -348,54 +348,39 @@ function Toggle({ on, label, onClick }: { on: boolean; label: string; onClick: (
   );
 }
 
-/** The landing view ("Needs triage", no search): what Reset goes back to. */
+/** The landing view ("Needs triage", no search, all areas): what Reset goes back to. */
 function isDefaultFilters(filters: QueueFilters): boolean {
-  return activePreset(filters) === "needs-triage" && !filters.q;
+  return activePreset(filters) === "needs-triage" && !filters.q && !filters.mine;
 }
 
+/** Priority bands shown in the calm status bar above the queue (P3 lives in System stats). */
+const HEADER_BANDS: readonly BandKey[] = ["page", "route", "watch"];
+
 /**
- * One slim line over the queue: pipeline health, open items per priority
- * (each a filter shortcut), unowned P0/P1, new today. When labelling or
- * judging falls behind, the full health strip opens under it by itself;
- * the operator panels sit behind "System stats". Rendered only once stats
- * have loaded and only when there's something to say: never a grey
- * placeholder that might not fill (e.g. when /api/triage/stats fails).
+ * One calm line over the queue: P0 / P1 / P2 counts (each a filter shortcut)
+ * and how many P0 items have no owner yet. Operator pipeline health, P3, and
+ * 7-day volume sit strictly behind the collapsed "System stats" toggle.
  */
 function StatusLine({
   stats,
   statsOpen,
   onToggleStats,
   onPickBand,
-  onPickUnowned,
+  onPickUnownedP0,
 }: {
   stats: TriageStats | undefined;
   statsOpen: boolean;
   onToggleStats: () => void;
   onPickBand: (band: BandKey) => void;
-  onPickUnowned: () => void;
+  onPickUnownedP0: () => void;
 }) {
-  const now = useMinuteClock();
   if (!stats) return null;
-  const view = stats.health ? pipelineHealth(stats.health, now) : null;
-  const unowned = stats.unowned ?? 0;
-  const hasP0Unowned = (stats.unownedPage ?? 0) > 0;
-  const bands = BAND_ORDER.filter((band) => (stats.bandCounts?.[band] ?? 0) > 0);
-  if (!view && bands.length === 0 && unowned === 0 && !stats.newToday) return null;
+  const unownedP0 = stats.unownedPage ?? 0;
+  const bands = HEADER_BANDS.filter((band) => (stats.bandCounts?.[band] ?? 0) > 0);
+  if (bands.length === 0 && unownedP0 === 0) return null;
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
-      {view && (
-        <>
-          <span
-            className={`inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 font-medium ${HEALTH_CHIP[view.tone]}`}
-            title="Labelling and relevance judging run every 10 minutes on the extractor host."
-          >
-            <span aria-hidden="true" className={`h-2 w-2 rounded-full ${HEALTH_DOT[view.tone]}`} />
-            Pipeline {HEALTH_WORD[view.tone]}
-          </span>
-          <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>
-        </>
-      )}
-      <span className="inline-flex flex-wrap items-center gap-x-1.5" role="group" aria-label="Open items by priority">
+      <span className="inline-flex flex-wrap items-center gap-x-2" role="group" aria-label="Open P0–P2 items">
         {bands.map((band) => (
           <button
             key={band}
@@ -411,21 +396,17 @@ function StatusLine({
       <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>
       <button
         type="button"
-        onClick={onPickUnowned}
-        disabled={unowned === 0}
-        title={`P0/P1 items with no owner: ${stats.unownedPage} are P0, ${stats.pageUnacked} P0 not acked. Click to filter.`}
+        onClick={onPickUnownedP0}
+        disabled={unownedP0 === 0}
+        title={`${unownedP0} P0 items with no owner (${stats.pageUnacked} P0 not acked). Click to filter.`}
         className={`dashboard-control rounded px-1.5 py-0.5 tabular-nums enabled:hover:underline ${
-          unowned > 0
-            ? hasP0Unowned
-              ? "bg-red-50 font-semibold text-red-800 ring-1 ring-inset ring-red-300 dark:bg-red-500/10 dark:text-red-200 dark:ring-red-500/40"
-              : "bg-amber-50 font-semibold text-amber-900 ring-1 ring-inset ring-amber-300 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/40"
-            : ""
+          unownedP0 > 0
+            ? "bg-red-50 font-semibold text-red-800 ring-1 ring-inset ring-red-300 dark:bg-red-500/10 dark:text-red-200 dark:ring-red-500/40"
+            : "text-zinc-500 dark:text-zinc-400"
         }`}
       >
-        {unowned} P0/P1 unowned
+        {unownedP0} P0 unowned
       </button>
-      <span aria-hidden="true" className="text-zinc-300 dark:text-zinc-600">·</span>
-      <span className="tabular-nums">{stats.newToday} new today</span>
       <button
         type="button"
         onClick={onToggleStats}
@@ -442,13 +423,16 @@ function StatusLine({
   );
 }
 
-/** Whether the pipeline needs attention, for opening its full strip automatically. */
-function pipelineNeedsAttention(stats: TriageStats | undefined, now: number): boolean {
-  return !!stats?.health && pipelineHealth(stats.health, now).tone !== "ok";
-}
-
-/** One-click views (triage-presets.ts); the active one is pressed. */
-function PresetBar({ active, onPick }: { active: QueuePresetId | null; onPick: (id: QueuePresetId) => void }) {
+/** One-click views (triage-presets.ts); the active one is pressed, with live counts when loaded. */
+function PresetBar({
+  active,
+  counts,
+  onPick,
+}: {
+  active: QueuePresetId | null;
+  counts?: TriageStats["presetCounts"];
+  onPick: (id: QueuePresetId) => void;
+}) {
   return (
     <div
       role="group"
@@ -457,6 +441,7 @@ function PresetBar({ active, onPick }: { active: QueuePresetId | null; onPick: (
     >
       {QUEUE_PRESETS.map((preset, index) => {
         const on = active === preset.id;
+        const count = counts?.[preset.id];
         return (
           <button
             key={preset.id}
@@ -473,10 +458,68 @@ function PresetBar({ active, onPick }: { active: QueuePresetId | null; onPick: (
             }`}
           >
             {preset.label}
+            {typeof count === "number" && (
+              <span
+                className={`ml-1 text-[11px] tabular-nums ${
+                  on ? "text-zinc-300 dark:text-zinc-600" : "text-zinc-400 dark:text-zinc-500"
+                }`}
+              >
+                {count}
+              </span>
+            )}
           </button>
         );
       })}
     </div>
+  );
+}
+
+/** One-click Take (unowned) or Ack (viewer's unacked item) directly on a Queue row. */
+function RowQuickAction({
+  item,
+  viewer,
+  onDone,
+}: {
+  item: TriageQueueItem;
+  viewer: string | null;
+  onDone: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  if (!viewer || item.state !== "open") return null;
+  const mineOpen = item.assignments.find(
+    (a) => a.maintainer.toLowerCase() === viewer.toLowerCase() && a.status === "open",
+  );
+  const canTake = item.assignments.length === 0;
+  if (!mineOpen && !canTake) return null;
+  const label = mineOpen ? "Ack" : "Take";
+  const title = mineOpen ? "Acknowledge this assignment" : "Claim this item as primary owner";
+
+  async function run() {
+    setBusy(true);
+    try {
+      await sendJson("/api/triage/actions", "POST", {
+        itemKey: item.itemKey,
+        action: "ack",
+        assignmentId: mineOpen?.id ?? null,
+      });
+      onDone();
+    } catch {
+      // Errors can be investigated in the drawer; keep the row calm.
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      title={title}
+      onClick={() => void run()}
+      className="dashboard-control inline-flex h-5 items-center rounded border border-zinc-300 bg-white px-1.5 text-[11px] font-medium text-zinc-700 hover:border-zinc-900 hover:bg-zinc-900 hover:text-white disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-zinc-100 dark:hover:bg-zinc-100 dark:hover:text-zinc-900"
+    >
+      {busy ? "…" : label}
+    </button>
   );
 }
 
@@ -654,8 +697,6 @@ function Queue() {
   const grouped = filters.sort === "score";
   const pageSize = grouped && !searchParams.get("pageSize") ? GROUPED_PAGE_SIZE : filters.pageSize;
   const apiParams = queueFiltersToParams({ ...filters, pageSize }).toString();
-  const now = useMinuteClock();
-
   const { data, error, isLoading, mutate } = useSWR<TriageQueueResponse>(
     `/api/triage/items${apiParams ? `?${apiParams}` : ""}`,
     triageFetcher,
@@ -674,6 +715,11 @@ function Queue() {
   );
   const isCollapsed = (band: BandKey) => collapsedBands.includes(band);
   const [statsOpen, setStatsOpen] = useState(false);
+  const { data: healthStats } = useSWR<TriageStats>(
+    statsOpen ? "/api/triage/stats?health=1" : null,
+    triageFetcher,
+    { refreshInterval: 120_000 },
+  );
   useEffect(() => {
     try {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- read once after mount; storage isn't available during SSR
@@ -763,7 +809,6 @@ function Queue() {
   const prevKey = openItem ? stepItem(order, openItem, -1) : null;
   const nextKey = openItem ? stepItem(order, openItem, 1) : null;
   const preset = activePreset(filters);
-  const needsAttention = pipelineNeedsAttention(stats, now);
 
   return (
     <div className="space-y-3">
@@ -775,14 +820,14 @@ function Queue() {
           if (band === "ignore") expandGroup("ignore");
           update({ bands: [band], status: "any" });
         }}
-        onPickUnowned={() => update({ bands: ["page", "route"], owner: OWNER_NONE, status: "any" })}
+        onPickUnownedP0={() => update({ bands: ["page"], owner: OWNER_NONE, status: "any" })}
       />
-      {(needsAttention || statsOpen) && <PipelineHealthStrip stats={stats} />}
       <SuppressionWarning stats={stats} />
       {statsOpen && stats && (
-        <div id="triage-system-stats">
+        <div id="triage-system-stats" className="space-y-2">
+          <PipelineHealthStrip stats={healthStats ?? stats} />
           <StatStrip
-            stats={stats}
+            stats={healthStats ?? stats}
             onPickBand={(band) => {
               if (band === "ignore") expandGroup("ignore");
               update({ bands: [band], status: "any" });
@@ -800,8 +845,27 @@ function Queue() {
       <div className="overflow-clip rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex flex-wrap items-center gap-1.5 border-b border-zinc-200 bg-zinc-50/60 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900/40">
           <div className="scrollbar-hidden -mx-1 max-w-full overflow-x-auto px-1">
-            <PresetBar active={preset} onPick={pickPreset} />
+            <PresetBar active={preset} counts={stats?.presetCounts} onPick={pickPreset} />
           </div>
+          {((stats?.viewer?.areas.length ?? 0) > 0 || (stats?.viewer?.hardware.length ?? 0) > 0 || filters.mine) && (
+            <button
+              type="button"
+              aria-pressed={filters.mine}
+              onClick={() => update({ mine: !filters.mine })}
+              title={
+                stats?.viewer
+                  ? `Scope to your areas/hardware: ${[...stats.viewer.areas, ...stats.viewer.hardware].join(", ") || "none configured"}`
+                  : "Scope to your configured areas and hardware"
+              }
+              className={`dashboard-control inline-flex h-8 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border px-2 text-xs font-medium ${
+                filters.mine
+                  ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                  : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              }`}
+            >
+              My areas
+            </button>
+          )}
           <form
             role="search"
             className="relative min-w-[7.5rem] flex-[1_1_8rem]"
@@ -864,19 +928,29 @@ function Queue() {
           </p>
         )}
         <div aria-busy={stale || undefined} className={stale ? "pointer-events-none select-none opacity-40 transition-opacity" : "transition-opacity"}>
-        {data && data.items.length === 0 && (
-          <EmptyState
-            title={isDefaultFilters(filters) ? "Nothing needs triage right now" : "No items match these filters"}
-            detail={isDefaultFilters(filters) ? "New issues and PRs show up here a few minutes after they are opened." : undefined}
-            action={
-              !isDefaultFilters(filters) && (
-                <button type="button" onClick={clearFilters} className={`${CONTROL} mt-1 font-medium`}>
-                  Reset filters
-                </button>
-              )
-            }
-          />
-        )}
+        {data && data.items.length === 0 && (() => {
+          const empty = emptyStateCopy(filters);
+          return (
+            <EmptyState
+              title={empty.title}
+              detail={empty.detail}
+              action={
+                !isDefaultFilters(filters) && (
+                  <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+                    {filters.mine && (
+                      <button type="button" onClick={() => update({ mine: false })} className={`${CONTROL} font-medium`}>
+                        Show all areas
+                      </button>
+                    )}
+                    <button type="button" onClick={clearFilters} className={`${CONTROL} font-medium`}>
+                      Reset filters
+                    </button>
+                  </div>
+                )
+              }
+            />
+          );
+        })()}
         {data && data.items.length > 0 && grouped &&
           groups.map((group) => {
             const collapsed = isCollapsed(group.band);
@@ -891,7 +965,23 @@ function Queue() {
                 />
                 {!collapsed && (
                   <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
-                    <GroupedRows rows={group.items} rowKey={(item) => item.itemKey} activeKey={openItem} onOpen={(item) => openRow(item.itemKey)} onOpenKey={openRow} />
+                    <GroupedRows
+                      rows={group.items}
+                      rowKey={(item) => item.itemKey}
+                      activeKey={openItem}
+                      onOpen={(item) => openRow(item.itemKey)}
+                      onOpenKey={openRow}
+                      quickAction={(item) => (
+                        <RowQuickAction
+                          item={item}
+                          viewer={viewer}
+                          onDone={() => {
+                            void mutate();
+                            void mutateStats();
+                          }}
+                        />
+                      )}
+                    />
                   </ul>
                 )}
               </section>
@@ -899,7 +989,23 @@ function Queue() {
           })}
         {data && data.items.length > 0 && !grouped && (
           <ul className="divide-y divide-zinc-100 dark:divide-zinc-900">
-            <GroupedRows rows={rows} rowKey={(item) => item.itemKey} activeKey={openItem} onOpen={(item) => openRow(item.itemKey)} onOpenKey={openRow} />
+            <GroupedRows
+              rows={rows}
+              rowKey={(item) => item.itemKey}
+              activeKey={openItem}
+              onOpen={(item) => openRow(item.itemKey)}
+              onOpenKey={openRow}
+              quickAction={(item) => (
+                <RowQuickAction
+                  item={item}
+                  viewer={viewer}
+                  onDone={() => {
+                    void mutate();
+                    void mutateStats();
+                  }}
+                />
+              )}
+            />
           </ul>
         )}
         </div>

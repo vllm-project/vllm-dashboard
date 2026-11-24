@@ -824,7 +824,7 @@ def test_routing_waits_for_new_maintainers_only_for_the_grace(store: PostgresTri
     class Judge:
         def complete(self, *, system: str, prompt: str, schema: dict[str, Any]) -> LLMResult:
             return LLMResult(output={"judgments": [
-                {"github_login": "gau-nernst", "relevance": "medium", "evidence_prs": [61343], "reason": "FP8"},
+                {"github_login": "gau-nernst", "relevance": "high", "evidence_prs": [61343], "reason": "FP8"},
                 {"github_login": "amd-person", "relevance": "none", "evidence_prs": [], "reason": ""},
             ]}, model="fake")
 
@@ -843,7 +843,7 @@ def test_routing_waits_for_new_maintainers_only_for_the_grace(store: PostgresTri
     route(ScheduledCommand("triage_route", clock.value))
     with psycopg.connect(database_url) as c:
         rows = c.execute("SELECT maintainer, reason->'matched' FROM triage_assignments").fetchall()
-    assert rows == [("gau-nernst", ["relevance:medium (like #61343)"])]
+    assert rows == [("gau-nernst", ["relevance:high (like #61343)"])]
 
 
 def test_routable_since_is_kept_in_band_and_cleared_outside(store: PostgresTriageStore, database_url: str) -> None:
@@ -1502,7 +1502,7 @@ def test_reconcile_revokes_stale_and_self_pr_and_daily_dm_cap(
             "WHERE item_key = 'vllm-project/vllm#3002' ORDER BY id"
         ).fetchall()
     assert a3001 == [("alice", "reassigned", "self-authored PR")]
-    assert a3002[0] == ("alice", "reassigned", "relevance dropped to none")
+    assert a3002[0] == ("alice", "reassigned", "relevance below high: none")
     assert ("bob", "open", None) in a3002
 
     # 2. Daily immediate Slack DM cap: 7 routed P1 items for alice -> 5 immediate DMs + 2 in daily digest.
@@ -1654,3 +1654,39 @@ def test_digest_continuations_are_queued_once_together(store: PostgresTriageStor
     assert {row[0] for row in outbox(database_url)} == {p.delivery_id for p in parts}
     assert not store.commit_digest(parts[0], [], now=NOW, continuations=parts[1:])
     assert len(outbox(database_url)) == len(parts)
+
+
+def test_medium_reconciliation_preserves_ack_manual_and_direct_signals(store: PostgresTriageStore, database_url: str) -> None:
+    from triage.relevance import Judgment, RelevanceTask
+    from triage.store import NewAssignment
+
+    seed(store, [{"github_login": "m"}, {"github_login": "rule", "rules": {"areas": ["moe"]}}])
+    route = group_items(store, database_url, [(n, "issue", "", 80, "page") for n in range(4100, 4108)])
+    for login in ("m", "rule"):
+        store.save_profile(login, [], now=NOW)
+    profiles = {p.login: p for p in store.maintainer_profiles()}
+    for n in range(4100, 4108):
+        login = "rule" if n == 4106 else "m"
+        key = f"vllm-project/vllm#{n}"
+        state = store.item_state(key)
+        assert state is not None
+        store.commit_assignments(key, 80, [NewAssignment(login, "primary", {}, None)], now=NOW)
+        store.save_relevance(RelevanceTask(key, "issue", "test", SEVERE, state.content_hash, [login]),
+                             [Judgment(login, "high" if n == 4107 else "medium", [], "test")],
+                             profiles=profiles, model="fake", now=NOW)
+    with psycopg.connect(database_url, autocommit=True) as c:
+        c.execute("UPDATE triage_items SET prepass = prepass || %s::jsonb WHERE number = 4101",
+                  (json.dumps({"commenters": ["m"]}),))
+        c.execute("UPDATE triage_assignments SET status = 'acked' WHERE item_key = 'vllm-project/vllm#4102'")
+        c.execute("UPDATE triage_assignments SET assigned_by = 'khluu' WHERE item_key = 'vllm-project/vllm#4103'")
+        c.execute("UPDATE triage_items SET prepass = prepass || %s::jsonb WHERE number = 4104",
+                  (json.dumps({"gh_assignees": ["m"]}),))
+        c.execute("UPDATE triage_items SET prepass = prepass || %s::jsonb WHERE number = 4105",
+                  (json.dumps({"referenced_pr_authors": {"123": "m"}}),))
+    by_login = {m.github_login: m for m in store.active_maintainers()}
+    assert route._reconcile_stale_assignments(by_login, NOW) == 2
+    assert route._reconcile_stale_assignments(by_login, NOW) == 0
+    with psycopg.connect(database_url) as c:
+        rows = c.execute("SELECT item_key, status, reason->>'revoked_reason' FROM triage_assignments ORDER BY item_key").fetchall()
+    assert [row[1] for row in rows] == ["reassigned", "reassigned", "acked", "open", "open", "open", "open", "open"]
+    assert all(row[2] == "relevance below high: medium" for row in rows[:2])

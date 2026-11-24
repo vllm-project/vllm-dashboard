@@ -461,7 +461,7 @@ class RouteHandler:
     def _reconcile_stale_assignments(self, by_login: dict[str, Maintainer], now: datetime) -> int:
         """Revoke open (un-acked) router-created assignments that are no longer
         valid: self-authored PRs, inactive maintainers, hard-excluded items, or
-        items whose current relevance dropped to `low`/`none` without strong
+        items whose current relevance dropped to `medium`/`low`/`none` without strong
         involvement or an explicit rule match."""
         if not hasattr(self.store, "open_router_assignments") or not hasattr(self.store, "revoke_assignments"):
             return 0
@@ -481,8 +481,8 @@ class RouteHandler:
                 continue
             judged = ctx.relevance.get(login) or {}
             level = judged.get("relevance")
-            if level in ("none", "low") and not strong_inv and not match_rules(maintainer.rules, ctx):
-                revocations.append((assignment_id, f"relevance dropped to {level}"))
+            if level in ("medium", "none", "low") and not strong_inv and not match_rules(maintainer.rules, ctx):
+                revocations.append((assignment_id, f"relevance below high: {level}"))
         revoked = self.store.revoke_assignments(revocations, now=now)
         if revoked:
             log.info("triage: revoked %d stale open router assignment(s)", revoked)
@@ -511,7 +511,7 @@ class RouteHandler:
         routed: set[str] = set()
         partial: dict[str, set[str]] = {}  # item -> maintainers still unjudged, past the grace
         # Pass 1 gives every clear match (involved / high) its slot across the
-        # whole queue; pass 2 lets "medium" and rule matches use what is left.
+        # whole queue; pass 2 lets explicit rule matches use what is left.
         for strong_only in (True, False):
             for row in rows:
                 if row.item_key not in routed:
@@ -592,7 +592,7 @@ class RouteHandler:
         # so an early rule match doesn't pre-empt the right person. Wait only
         # for RELEVANCE_GRACE, though: after that, route among those judged.
         # A missing judgement is never a match (choose_owners only routes on
-        # "high"/"medium" judgements that exist), so an unjudged maintainer
+        # "high" judgements that exist), so an unjudged maintainer
         # can still get the item through involvement or their own rules, but
         # never through relevance.
         people = {str(c).lower() for c in row.prepass.get("commenters") or []}

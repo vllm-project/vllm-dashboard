@@ -139,3 +139,16 @@ test("quick views round-trip and reset owner/status constraints", async () => {
   assert.equal(parse("review=merge").review, "merge");
   assert.equal(parse("review=blocked").review, "blocked");
 });
+
+test("My areas toggle survives preset switches and emptyStateCopy explains empty views", async () => {
+  const { emptyStateCopy } = await import("./triage-presets");
+  const scoped = parse("mine=1");
+  assert.equal(scoped.mine, true);
+  assert.equal(activePreset(scoped), "needs-triage");
+  const switched = presetFilters("review", scoped);
+  assert.equal(switched.mine, true);
+  assert.equal(switched.review, "ready");
+  assert.match(emptyStateCopy(parse("review=merge")).title, /ready to merge/i);
+  assert.match(emptyStateCopy(parse("review=cleanup")).title, /duplicate or low-effort/i);
+  assert.match(emptyStateCopy(scoped).title, /your areas/i);
+});

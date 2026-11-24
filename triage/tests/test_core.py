@@ -315,12 +315,12 @@ def test_a_clear_match_p0_is_not_blocked_by_capacity() -> None:
         return [o.maintainer.github_login for o in choose_owners(
             c, [full], load={"full": 2}, excluded=set(), today=date(2026, 11, 12))]
     assert owners("high") == ["full"]                    # old P0, clear match: still theirs
-    assert owners("medium") == []                        # weaker match waits for capacity
+    assert owners("medium") == []                        # medium does not qualify
     assert owners("high", band="route", score=60) == []  # P1s always respect capacity
     # Strong involvement overrides capacity, even when relevance is low; a passing comment does not.
     assert owners("low", prepass={"referenced_pr_authors": {"61343": "full"}}) == ["full"]
     assert owners("low", prepass={"commenters": ["full"]}) == []
-    assert owners("medium", prepass={"commenters": ["full"]}) == ["full"]
+    assert owners("medium", prepass={"commenters": ["full"]}) == []
 
 
 def test_self_authored_pr_is_never_routed_to_author() -> None:
@@ -334,7 +334,7 @@ def test_self_authored_pr_is_never_routed_to_author() -> None:
         facets=facets(areas=["frontend_api"]),
         prepass={"commenters": ["alice"], "gh_assignees": ["alice"]},
         files=[],
-        relevance={"alice": {"relevance": "high", "evidence_prs": [100]}, "bob": {"relevance": "medium"}},
+        relevance={"alice": {"relevance": "high", "evidence_prs": [100]}, "bob": {"relevance": "high"}},
         author="Alice",
     )
     owners = choose_owners(ctx, [alice, bob], load={}, excluded=set(), today=date(2026, 11, 20))
@@ -369,7 +369,7 @@ def test_commented_alone_does_not_override_low_or_exclude() -> None:
         item_key="r#200", kind="pr", title="Fix b12x scale", score=63, band="route",
         facets=facets(areas=["moe"], hardware=["RTX"]),
         prepass={"commenters": ["alice"]}, files=[],
-        relevance={"alice": {"relevance": "low"}, "bob": {"relevance": "medium"}},
+        relevance={"alice": {"relevance": "low"}, "bob": {"relevance": "high"}},
         author="contrib",
     )
     owners = choose_owners(ctx_low, [alice, bob], load={}, excluded=set(), today=date(2026, 11, 20))
@@ -731,7 +731,7 @@ def test_digest_caps_items_to_fit_slacks_block_limit() -> None:
 
     from alerting.ports import DeliveryMode
 
-    from triage.notify import DIGEST_MAX_PER_BAND, maintainer_digest
+    from triage.notify import DIGEST_MAX_ITEMS, maintainer_digest
     from triage.store import DigestEntry
 
     entries = [DigestEntry(i, f"vllm-project/vllm#{i}", "t", f"https://github.com/vllm-project/vllm/issues/{i}",
@@ -740,10 +740,10 @@ def test_digest_caps_items_to_fit_slacks_block_limit() -> None:
                                 day=datetime(2026, 11, 18, tzinfo=timezone.utc), mode=DeliveryMode.SHADOW,
                                 reassign_to=["y"]).payload
     assert len(payload["blocks"]) <= 50
-    assert sum("accessory" in b for b in payload["blocks"]) == DIGEST_MAX_PER_BAND
+    assert sum("accessory" in b for b in payload["blocks"]) == DIGEST_MAX_ITEMS
     assert payload["text"] == "Triage digest: 30 P1"
     assert payload["blocks"][-1]["type"] == "context"
-    assert "…and 27 more P1" in payload["blocks"][-2]["elements"][0]["text"]
+    assert "…and 25 more P1" in payload["blocks"][-2]["elements"][0]["text"]
 
 
 def _entries(n: int, band: str = "route", start: int = 1, assigned_at: datetime | None = None) -> list[DigestEntry]:
@@ -795,7 +795,7 @@ def test_still_waiting_section_fits_slacks_block_limit() -> None:
 
     from alerting.ports import DeliveryMode
 
-    from triage.notify import DIGEST_MAX_PER_BAND, SLACK_MAX_BLOCKS, maintainer_digest
+    from triage.notify import DIGEST_MAX_ITEMS, SLACK_MAX_BLOCKS, maintainer_digest
 
     day = datetime(2026, 11, 18, 9, tzinfo=timezone.utc)
     # Worst case: new items in all four bands, a full reminder list and more waiting.
@@ -809,15 +809,15 @@ def test_still_waiting_section_fits_slacks_block_limit() -> None:
     assert len(blocks) <= SLACK_MAX_BLOCKS
     ids = [b["block_id"] for b in blocks if "block_id" in b]
     assert len(ids) == len(set(ids))
-    assert sum("accessory" in b for b in blocks) == 12
+    assert sum("accessory" in b for b in blocks) == DIGEST_MAX_ITEMS
     contexts = [b["elements"][0]["text"] for b in blocks if b["type"] == "context"]
-    assert not any("more P0" in t for t in contexts)
-    assert any("16 more P1" in t for t in contexts)
+    assert any("5 more P0" in t for t in contexts)
+    assert any("18 more P1" in t for t in contexts)
     assert any("4 more overdue items" in t for t in contexts)
     assert "Preferences" in contexts[-1]
     plain = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=_entries(30), day=day,
                               mode=DeliveryMode.SHADOW).payload["blocks"]
-    assert sum("accessory" in b for b in plain) == DIGEST_MAX_PER_BAND
+    assert sum("accessory" in b for b in plain) == DIGEST_MAX_ITEMS
 
 
 def test_reminder_never_repeats_an_item_already_in_the_new_list() -> None:

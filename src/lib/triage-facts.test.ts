@@ -52,8 +52,8 @@ test("PR facts: only the positive parts, the full line behind show all", () => {
   assert.equal(bare.present, false);
   assert.equal(bare.fullText, "no linked issue · no tests");
   const mixed = llmFacts({ pr: { size: "s", has_tests: false, low_effort: true } }).find((f) => f.key === "pr")!;
-  assert.equal(mixed.text, "S size · looks low-effort");
-  assert.equal(mixed.fullText, "no linked issue · S size · no tests · looks low-effort");
+  assert.equal(mixed.text, "small PR · looks low-effort");
+  assert.equal(mixed.fullText, "no linked issue · small PR · no tests · looks low-effort");
 });
 
 test("a slowdown and slop signals count as positive", () => {

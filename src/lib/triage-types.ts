@@ -169,6 +169,16 @@ export interface TriageQueueItem {
   fixedBy: TriageLinkedItem[];
   /** Open PRs: CI of the head commit (triage_pr_ci); null/absent when not tracked. */
   ci?: TriageCi | null;
+  /** PRs: t-shirt diff size from extraction (s / m / l / xl). */
+  prSize?: string | null;
+  /** PRs: whether extraction saw tests in the diff. */
+  hasTests?: boolean | null;
+  /** Author is a known vLLM maintainer (`prepass.is_maintainer`). */
+  isMaintainer?: boolean;
+  /** First-time contributor (`prepass.first_time`). */
+  firstTime?: boolean;
+  /** Persisted short router explanation when unowned (`triage_scores.unowned_reason.summary`). */
+  unownedReason?: string | null;
   /** Suggested to close reasons (only populated when the cleanup view is active). */
   cleanup?: TriageCleanupInfo | null;
 }
@@ -310,8 +320,17 @@ export interface TriageStats {
    * burst can hide real problems (a compromised or careless account).
    */
   suppression: { threshold: number; actors: { actor: string; drops: number; slops: number }[] };
-  /** Raw pipeline-health signals; `pipelineHealth` in triage-health.ts grades them. */
-  health: TriagePipelineHealth;
+  /** Raw pipeline-health signals; only populated when `?health=1` is requested (System stats). */
+  health?: TriagePipelineHealth | null;
+  /** Live counts for each of the 6 queue preset tabs. */
+  presetCounts?: Record<"needs-triage" | "not-acked" | "review" | "merge" | "cleanup" | "all", number>;
+  /** Signed-in maintainer's plate counts and configured areas/hardware (for "My areas" and My list badge). */
+  viewer?: {
+    myOpen: number;
+    myUnacked: number;
+    areas: string[];
+    hardware: string[];
+  } | null;
 }
 
 export interface TriagePipelineHealth {

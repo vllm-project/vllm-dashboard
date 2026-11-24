@@ -1,5 +1,6 @@
 import { ciLine, type CiTone, type TriageCi } from "@/lib/triage-ci";
 import { humanizeTag } from "@/lib/triage-factors";
+import { formatAge } from "@/lib/triage-format";
 import { groupBand, type NestedRow } from "@/lib/triage-groups";
 import { severityFlags, type SeverityFlag } from "@/lib/triage-style";
 import type { TriageCleanupInfo, TriageFacets, TriageQueueItem } from "@/lib/triage-types";
@@ -128,6 +129,88 @@ export function cleanupReasons(cleanup: TriageCleanupInfo | null | undefined): C
   return out;
 }
 
+/**
+ * Compact scan-friendly review-effort summary for PR rows: diff size, whether
+ * tests are included, and maintainer / first-time author signal.
+ */
+/** PR size bucket (Claude's estimate from lines changed) in plain words. */
+export const PR_SIZE_WORDS: Record<string, string> = {
+  XS: "tiny PR",
+  S: "small PR",
+  M: "medium PR",
+  L: "large PR",
+  XL: "very large PR",
+};
+export const PR_SIZE_HELP = "Size by lines changed: tiny <10, small <50, medium <250, large <1,000, very large 1,000+";
+
+export function prEffortText(
+  item: Pick<TriageQueueItem, "kind" | "prSize" | "hasTests" | "isMaintainer" | "firstTime">,
+): { text: string; title: string } | null {
+  if (item.kind !== "pr") return null;
+  // The row shows only flags that change what a reviewer does: a first-time
+  // author, a large/very large diff, or no tests on a medium+ diff. Normal PRs
+  // (small/medium, with tests, by a regular contributor) show nothing; the
+  // tooltip always has every fact.
+  const flags: string[] = [];
+  const details: string[] = [];
+  const size = item.prSize?.trim().toUpperCase();
+  if (size && size in PR_SIZE_WORDS) {
+    const words = PR_SIZE_WORDS[size];
+    if (size === "L" || size === "XL") flags.push(words);
+    details.push(`${words[0].toUpperCase()}${words.slice(1)}. ${PR_SIZE_HELP}`);
+  }
+  if (item.hasTests === true) {
+    details.push("The diff adds or changes tests");
+  } else if (item.hasTests === false && (size === "M" || size === "L" || size === "XL")) {
+    flags.push("no tests");
+    details.push("No tests in the diff (flagged for medium or larger PRs)");
+  }
+  if (item.isMaintainer) {
+    details.push("The author is a vLLM maintainer");
+  } else if (item.firstTime) {
+    flags.push("first-time contributor");
+    details.push("The author's first PR to vLLM");
+  }
+  if (flags.length === 0) return null;
+  return { text: flags.join(" · "), title: details.join("\n") };
+}
+
+/** Distills `triage_scores.unowned_reason.summary` into a 2-word hint for the Owner column. */
+export function unownedHint(reason: string | null | undefined): { label: string; title: string } | null {
+  const summary = reason?.trim();
+  if (!summary) return null;
+  const lower = summary.toLowerCase();
+  if (lower.includes("nobody is a match")) return { label: "no match", title: summary };
+  if (lower.includes("can't take it right now")) return { label: "at capacity", title: summary };
+  if (lower.includes("assigned on github")) return { label: "assigned on GitHub", title: summary };
+  if (lower.includes("waiting") || lower.includes("not judged") || lower.includes("pending")) {
+    return { label: "waiting for a match", title: summary };
+  }
+  return { label: "no clear owner", title: summary };
+}
+
+/**
+ * Fresh-activity sub-label for the Age column: shown only when an item is over
+ * 2 days old but had activity within the last 24 hours, so active PRs don't
+ * look abandoned.
+ */
+export function activityNote(
+  ghCreatedAt: string,
+  ghUpdatedAt: string,
+  now: number = Date.now(),
+): { label: string; title: string } | null {
+  const created = Date.parse(ghCreatedAt);
+  const updated = Date.parse(ghUpdatedAt);
+  if (!Number.isFinite(created) || !Number.isFinite(updated)) return null;
+  const createdAge = now - created;
+  const updatedAge = now - updated;
+  if (createdAge < 48 * 3600_000 || updatedAge >= 24 * 3600_000 || updated - created < 12 * 3600_000) {
+    return null;
+  }
+  const age = formatAge(ghUpdatedAt, now);
+  return { label: `updated ${age} ago`, title: `Last activity on GitHub ${age} ago` };
+}
+
 // --- context line -------------------------------------------------------------
 
 /** "CPU_x86" → "CPU x86", "kv_cache" → "kv cache". */
@@ -147,7 +230,8 @@ export function contextText(
   const seen = new Set<string>();
   const values: string[] = [];
   // Model names stay as written ("DeepSeek-V4-Flash"); tags read as words ("CPU_x86" → "CPU x86").
-  const all = [...item.hardware.map(plain), ...item.models.map((m) => m.trim()), ...item.areas.map(plain)];
+  // Most useful for "is this mine?" first: model, then area, then hardware.
+  const all = [...item.models.map((m) => m.trim()), ...item.areas.map(plain), ...item.hardware.map(plain)];
   for (const value of all) {
     const key = value.toLowerCase();
     if (!value || seen.has(key)) continue;

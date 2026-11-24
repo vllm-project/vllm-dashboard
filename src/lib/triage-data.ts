@@ -98,6 +98,7 @@ interface QueueRow {
   gh_updated_at: Date;
   score: number | null;
   band: string | null;
+  unowned_reason?: { summary?: unknown } | null;
   facets: TriageFacets | null;
   prepass: TriagePrepass | null;
   assignments: TriageAssignmentSummary[] | null;
@@ -150,6 +151,14 @@ function toQueueItem(row: QueueRow): TriageQueueItem {
     reviewDecision: row.prepass?.review_decision ?? null,
     mergeReady: row.prepass?.merge_ready === true,
     mergeCheckedAt: row.prepass?.merge_checked_at ?? null,
+    prSize: typeof facets.pr?.size === "string" ? facets.pr.size : null,
+    hasTests: typeof facets.pr?.has_tests === "boolean" ? facets.pr.has_tests : null,
+    isMaintainer: row.prepass?.is_maintainer === true,
+    firstTime: row.prepass?.first_time === true,
+    unownedReason:
+      row.unowned_reason && typeof row.unowned_reason === "object" && typeof row.unowned_reason.summary === "string"
+        ? row.unowned_reason.summary
+        : null,
     fixes: [],
     fixedBy: [],
   };
@@ -256,7 +265,7 @@ function queueSelect(db: Db) {
   return db`
     SELECT i.item_key, i.repo, i.number, i.kind, i.title, i.html_url, i.author,
            i.state, i.draft, i.gh_created_at, i.gh_updated_at, i.prepass,
-           s.score, s.band, e.facets,
+           s.score, s.band, s.unowned_reason, e.facets,
            COALESCE((
              SELECT jsonb_agg(jsonb_build_object(
                       'id', a.id, 'maintainer', a.maintainer,
@@ -360,9 +369,19 @@ function latestExtractionJoin(db: Db) {
   `;
 }
 
-export async function listQueue(filters: QueueFilters): Promise<TriageQueueResponse> {
+export async function listQueue(filters: QueueFilters, viewerLogin?: string): Promise<TriageQueueResponse> {
   if (triageDevFixturesEnabled()) return fixtureQueue(filters);
   const db = getDb();
+  let viewerScope: { areas: string[]; hardware: string[] } | null = null;
+  if (filters.mine && viewerLogin) {
+    const [m] = await db<{ rules: TriageRules | null }[]>`
+      SELECT rules FROM triage_maintainers WHERE lower(github_login) = lower(${viewerLogin}) LIMIT 1
+    `;
+    viewerScope = {
+      areas: strings(m?.rules?.areas),
+      hardware: strings(m?.rules?.hardware),
+    };
+  }
   const realBands = filters.bands.filter((band) => band !== "unscored");
   const includeUnscored = filters.bands.includes("unscored");
   const bandFilter = db`AND (${
@@ -371,6 +390,28 @@ export async function listQueue(filters: QueueFilters): Promise<TriageQueueRespo
   // db.json, not JSON.stringify: a plain string parameter cast to ::jsonb
   // arrives as a JSON *string* scalar under prepare:false, so @> never matches.
   const json = (value: unknown) => db.json(value as never);
+  const mineFilter = filters.mine
+    ? viewerScope && (viewerScope.areas.length > 0 || viewerScope.hardware.length > 0)
+      ? db`AND (${
+          viewerScope.areas.length > 0
+            ? db`EXISTS (
+                   SELECT 1 FROM jsonb_array_elements_text(
+                     (CASE WHEN jsonb_typeof(e.facets->'areas') = 'array' THEN e.facets->'areas' ELSE '[]'::jsonb END)
+                     || (CASE WHEN jsonb_typeof(i.prepass->'areas') = 'array' THEN i.prepass->'areas' ELSE '[]'::jsonb END)
+                   ) AS a(val) WHERE a.val IN ${db(viewerScope.areas)}
+                 )`
+            : db`false`
+        } OR ${
+          viewerScope.hardware.length > 0
+            ? db`EXISTS (
+                   SELECT 1 FROM jsonb_array_elements_text(
+                     CASE WHEN jsonb_typeof(e.facets->'hardware') = 'array' THEN e.facets->'hardware' ELSE '[]'::jsonb END
+                   ) AS h(val) WHERE h.val IN ${db(viewerScope.hardware)}
+                 )`
+            : db`false`
+        })`
+      : db`AND false`
+    : db``;
 
   const where = db`
     WHERE true
@@ -402,6 +443,7 @@ export async function listQueue(filters: QueueFilters): Promise<TriageQueueRespo
         : db``}
     ${statusFilter(db, filters.status)}
     ${queueViewWhere(db, filters)}
+    ${mineFilter}
     ${filters.q
       ? db`AND (i.title ILIKE ${"%" + escapeLike(filters.q) + "%"}
                OR e.facets->>'summary' ILIKE ${"%" + escapeLike(filters.q) + "%"}
@@ -1065,12 +1107,15 @@ export function suppressionThreshold(env: Record<string, string | undefined> = p
   return Number.isInteger(value) && value > 0 ? value : 10;
 }
 
-export async function getStats(): Promise<TriageStats> {
+export async function getStats(
+  viewerLogin?: string,
+  options: { includeHealth?: boolean } = {},
+): Promise<TriageStats> {
   if (triageDevFixturesEnabled()) return fixtureStats();
   const db = getDb();
   const threshold = suppressionThreshold();
   const undoable = await hasUndoneColumn(db);
-  const [[row], bands, suppressors, health] = await Promise.all([
+  const [[row], bands, suppressors, health, [cleanupRow], viewerRows] = await Promise.all([
     db<
       {
         ingested_24h: string;
@@ -1080,6 +1125,9 @@ export async function getStats(): Promise<TriageStats> {
         page_unacked: string;
         unowned: string;
         unowned_page: string;
+        not_acked: string;
+        ready_review: string;
+        ready_merge: string;
         assigned_7d: string;
         not_mine_7d: string;
       }[]
@@ -1105,6 +1153,20 @@ export async function getStats(): Promise<TriageStats> {
           WHERE s.band = 'page' AND i.state = 'open' AND i.in_scope
             AND NOT EXISTS (SELECT 1 FROM triage_assignments a
                             WHERE a.item_key = s.item_key AND a.status IN ('open', 'acked'))) AS unowned_page,
+        (SELECT count(*) FROM triage_items i
+          WHERE i.in_scope AND i.state = 'open'
+            AND EXISTS (SELECT 1 FROM triage_assignments a
+                        WHERE a.item_key = i.item_key AND a.status = 'open')) AS not_acked,
+        (SELECT count(*) FROM triage_items i LEFT JOIN triage_scores s ON s.item_key = i.item_key
+          WHERE i.in_scope AND i.state = 'open' AND i.kind = 'pr' AND NOT i.draft
+            AND s.band IN ('page', 'route', 'watch')
+            AND i.prepass->>'waiting_on' = 'reviewer'
+            AND COALESCE(i.prepass->>'review_decision', '') <> 'APPROVED') AS ready_review,
+        (SELECT count(*) FROM triage_items i
+          WHERE i.in_scope AND i.state = 'open' AND i.kind = 'pr' AND NOT i.draft
+            AND i.prepass->>'waiting_on' = 'reviewer'
+            AND i.prepass->>'merge_ready' = 'true'
+            AND (i.prepass->>'merge_checked_at')::timestamptz > now() - interval '1 hour') AS ready_merge,
         (SELECT count(*) FROM triage_assignments
           WHERE assigned_at > now() - interval '7 days') AS assigned_7d,
         (SELECT count(*) FROM triage_actions
@@ -1129,13 +1191,33 @@ export async function getStats(): Promise<TriageStats> {
       HAVING count(*) >= ${threshold}
       ORDER BY count(*) DESC
     `,
-    getPipelineHealth(db),
+    options.includeHealth ? getPipelineHealth(db) : Promise.resolve(null),
+    db<{ n: string }[]>`
+      ${queueFocusCte(db, "cleanup")}
+      SELECT count(*) AS n
+      FROM triage_items i
+      ${latestExtractionJoin(db)}
+      WHERE i.in_scope ${queueViewWhere(db, { review: "cleanup", focus: null })}
+    `,
+    viewerLogin
+      ? db<{ my_open: string; my_unacked: string; rules: TriageRules | null }[]>`
+          SELECT
+            (SELECT count(*) FROM triage_assignments a JOIN triage_items i ON i.item_key = a.item_key
+              WHERE lower(a.maintainer) = lower(${viewerLogin}) AND a.status IN ('open', 'acked') AND i.state = 'open') AS my_open,
+            (SELECT count(*) FROM triage_assignments a JOIN triage_items i ON i.item_key = a.item_key
+              WHERE lower(a.maintainer) = lower(${viewerLogin}) AND a.status = 'open' AND i.state = 'open') AS my_unacked,
+            (SELECT m.rules FROM triage_maintainers m
+              WHERE lower(m.github_login) = lower(${viewerLogin}) LIMIT 1) AS rules
+        `
+      : Promise.resolve([]),
   ]);
   const bandCounts: TriageStats["bandCounts"] = { page: 0, route: 0, watch: 0, ignore: 0, unscored: 0 };
   for (const { band, n } of bands) {
     const key = band === "page" || band === "route" || band === "watch" || band === "ignore" ? band : "unscored";
     bandCounts[key] += Number(n);
   }
+  const allOpen = bandCounts.page + bandCounts.route + bandCounts.watch + bandCounts.ignore + bandCounts.unscored;
+  const viewerRow = viewerRows[0];
   return {
     bandCounts,
     unowned: Number(row.unowned),
@@ -1152,6 +1234,22 @@ export async function getStats(): Promise<TriageStats> {
       actors: suppressors.map((r) => ({ actor: r.actor, drops: Number(r.drops), slops: Number(r.slops) })),
     },
     health,
+    presetCounts: {
+      "needs-triage": Number(row.unowned),
+      "not-acked": Number(row.not_acked),
+      review: Number(row.ready_review),
+      merge: Number(row.ready_merge),
+      cleanup: Number(cleanupRow?.n ?? 0),
+      all: allOpen,
+    },
+    viewer: viewerRow
+      ? {
+          myOpen: Number(viewerRow.my_open),
+          myUnacked: Number(viewerRow.my_unacked),
+          areas: strings(viewerRow.rules?.areas),
+          hardware: strings(viewerRow.rules?.hardware),
+        }
+      : null,
   };
 }
 

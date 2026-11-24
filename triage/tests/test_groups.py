@@ -10,7 +10,7 @@ from alerting.ports import DeliveryMode
 from triage.config import default_config
 from triage.groups import Member, component, group_reason, partner_map
 from triage.model import Item, Maintainer
-from triage.notify import DIGEST_MAX_PER_BAND, describe_reason, group_entries, maintainer_digest, page_dm, team_digest
+from triage.notify import DIGEST_MAX_ITEMS, describe_reason, group_entries, maintainer_digest, page_dm, team_digest
 from triage.prepass import compute_prepass, fixes_issues
 from triage.routing import RoutingContext, group_owner
 from triage.store import DigestEntry
@@ -136,9 +136,9 @@ def test_digest_max_items_counts_groups_and_fits_50_blocks() -> None:
     payload = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=entries, day=NOW,
                                 mode=DeliveryMode.SHADOW, reassign_to=["y"]).payload
     assert len(payload["blocks"]) <= 50
-    assert sum("accessory" in b for b in payload["blocks"]) == DIGEST_MAX_PER_BAND
+    assert sum("accessory" in b for b in payload["blocks"]) == DIGEST_MAX_ITEMS
     assert "30 P1" in payload["blocks"][1]["text"]["text"]
-    assert "…and 27 more" in payload["blocks"][-2]["elements"][0]["text"]
+    assert "…and 25 more" in payload["blocks"][-2]["elements"][0]["text"]
 
 
 def test_reminders_fold_into_groups_too() -> None:
