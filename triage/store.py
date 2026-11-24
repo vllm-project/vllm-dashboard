@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from datetime import datetime, timedelta
 from typing import Any
@@ -152,7 +152,7 @@ class DigestEntry:
     matched: list[str]
     # Claude's one-line "why you" in the maintainer's language ("" for English).
     why_local: str = ""
-    # Set on "still waiting" reminders (waiting_assignments) only.
+    # Assignment time, distinct from the item age shown in digests.
     assigned_at: datetime | None = None
     kind: str = ""
     # For a PR: the issue keys it fixes (triage/groups.py), so a digest can
@@ -160,6 +160,15 @@ class DigestEntry:
     fixes: tuple[str, ...] = ()
     # PRs: the head commit's CI summary (triage_pr_ci row), if known.
     ci: dict[str, Any] | None = None
+    created_at: datetime | None = None
+    state: str = "open"
+    draft: bool = False
+    assignment_status: str = "open"
+    prepass: dict[str, Any] = dataclass_field(default_factory=dict)
+    severity: dict[str, Any] = dataclass_field(default_factory=dict)
+    item_type: str = ""
+    # Context only: these PRs need not be assigned to the digest recipient.
+    related_fixes: tuple[DigestEntry, ...] = ()
 
 
 class PostgresTriageStore(PostgresAlertStore):
@@ -1033,7 +1042,9 @@ class PostgresTriageStore(PostgresAlertStore):
             rows = c.execute(
                 f"""SELECT a.id, i.item_key, i.title, i.html_url, s.score, s.band,
                           COALESCE(e.facets->>'summary', ''), a.reason, COALESCE(r.reason_local, ''),
-                          i.kind, {_fixes_of('i', 'e.facets')}, {_CI_JSON}
+                          i.kind, {_fixes_of('i', 'e.facets')}, {_CI_JSON},
+                          i.gh_created_at, i.state, i.draft, a.status, i.prepass,
+                          e.facets->'severity', e.facets->>'type', a.assigned_at
                    FROM triage_assignments a
                    JOIN triage_items i USING (item_key)
                    JOIN triage_scores s USING (item_key)
@@ -1046,7 +1057,9 @@ class PostgresTriageStore(PostgresAlertStore):
             ).fetchall()
         return [
             DigestEntry(r[0], r[1], r[2], r[3], r[4], r[5], r[6], list((r[7] or {}).get("matched", [])), r[8],
-                        kind=r[9], fixes=tuple(r[10]), ci=r[11])
+                        kind=r[9], fixes=tuple(r[10]), ci=r[11], created_at=r[12], state=r[13],
+                        draft=r[14], assignment_status=r[15], prepass=r[16] or {},
+                        severity=r[17] or {}, item_type=r[18] or "", assigned_at=r[19])
             for r in rows
         ]
 
@@ -1063,7 +1076,9 @@ class PostgresTriageStore(PostgresAlertStore):
             rows = c.execute(
                 f"""SELECT a.id, i.item_key, i.title, i.html_url, s.score, s.band,
                           COALESCE(e.facets->>'summary', ''), a.reason, COALESCE(r.reason_local, ''),
-                          a.assigned_at, count(*) OVER (), i.kind, {_fixes_of('i', 'e.facets')}, {_CI_JSON}
+                          a.assigned_at, count(*) OVER (), i.kind, {_fixes_of('i', 'e.facets')}, {_CI_JSON},
+                          i.gh_created_at, i.state, i.draft, a.status, i.prepass,
+                          e.facets->'severity', e.facets->>'type'
                    FROM triage_assignments a
                    JOIN triage_items i USING (item_key)
                    JOIN triage_scores s USING (item_key)
@@ -1082,10 +1097,41 @@ class PostgresTriageStore(PostgresAlertStore):
             ).fetchall()
         entries = [
             DigestEntry(r[0], r[1], r[2], r[3], r[4], r[5], r[6], list((r[7] or {}).get("matched", [])), r[8],
-                        assigned_at=r[9], kind=r[11], fixes=tuple(r[12]), ci=r[13])
+                        assigned_at=r[9], kind=r[11], fixes=tuple(r[12]), ci=r[13],
+                        created_at=r[14], state=r[15], draft=r[16], assignment_status=r[17],
+                        prepass=r[18] or {}, severity=r[19] or {}, item_type=r[20] or "")
             for r in rows
         ]
         return entries, int(rows[0][10]) if rows else 0
+
+    def digest_context(self, entries: list[DigestEntry]) -> list[DigestEntry]:
+        """Attach linked fixes, including drafts and closed PRs, without
+        assigning or notifying them. One query for both new items and reminders."""
+        keys = [e.item_key for e in entries if e.kind == "issue"]
+        if not keys:
+            return entries
+        with self._connection_factory() as c:
+            rows = c.execute(
+                f"""SELECT i.item_key, i.title, i.html_url, COALESCE(s.score, 0),
+                           COALESCE(s.band, 'ignore'), i.state, i.draft, i.prepass,
+                           {_fixes_of('i', 'e.facets')}, {_CI_JSON}
+                    FROM triage_items i
+                    LEFT JOIN triage_scores s USING (item_key)
+                    LEFT JOIN LATERAL (SELECT facets FROM triage_extractions x
+                                      WHERE x.item_key = i.item_key
+                                      ORDER BY x.created_at DESC, x.id DESC LIMIT 1) e ON true
+                    WHERE i.kind = 'pr' AND {_fixes_of('i', 'e.facets')} && %s::text[]
+                    ORDER BY s.score DESC NULLS LAST, i.number""",
+                (keys,),
+            ).fetchall()
+        by_issue: dict[str, list[DigestEntry]] = {key: [] for key in keys}
+        for r in rows:
+            fix = DigestEntry(0, r[0], r[1], r[2], r[3], r[4], "", [], kind="pr",
+                              state=r[5], draft=r[6], prepass=r[7] or {}, fixes=tuple(r[8]), ci=r[9])
+            for key in fix.fixes:
+                if key in by_issue:
+                    by_issue[key].append(fix)
+        return [replace(e, related_fixes=tuple(by_issue.get(e.item_key, []))) for e in entries]
 
     def top_new_items(self, *, since: datetime, limit: int) -> list[tuple[DigestEntry, list[str]]]:
         with self._connection_factory() as c:
@@ -1118,7 +1164,8 @@ class PostgresTriageStore(PostgresAlertStore):
         return [(r[0], int(r[1]), int(r[2])) for r in rows]
 
     def commit_digest(
-        self, notification: NotificationIntent, assignment_ids: list[int], *, now: datetime
+        self, notification: NotificationIntent, assignment_ids: list[int], *, now: datetime,
+        continuations: list[NotificationIntent] | None = None,
     ) -> bool:
         """Queue a digest and mark `assignment_ids` notified, once per
         delivery_id. If that digest is already in the outbox (the hourly
@@ -1134,6 +1181,8 @@ class PostgresTriageStore(PostgresAlertStore):
                 ).fetchone():
                     return False
                 self._enqueue(c, notification, next_attempt_at=now)
+                for part in continuations or []:
+                    self._enqueue(c, part, next_attempt_at=now)
                 if assignment_ids:
                     c.execute(
                         "UPDATE triage_assignments SET notified_at = %s WHERE id = ANY(%s)",

@@ -9,6 +9,7 @@ non-vLLM links.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import datetime
 from urllib.parse import quote
 from typing import Any
@@ -50,6 +51,26 @@ def _pr_links(text: str) -> str:
 # summaries are never translated.
 STRINGS: dict[str, dict[str, str]] = {
     "en": {
+        "digest_top": "<{url}|Open full list →> · {counts}",
+        "compact_footer": "Use ⋯ to acknowledge or pass on an item · <{file}|Preferences>",
+        "more_band": "…and {n} more {band} · <{url}|Open full list>",
+        "more_waiting": "…and {n} more overdue items · <{url}|Open full list>",
+        "more_fixes": "…and {n} more fix PRs · <{url}|View issue>",
+        "compact_fix": "↳ Fix {ref}",
+        "ci_passed": "✅ CI passed",
+        "done": "Done",
+        "age_minutes": "{n}m",
+        "age_hours": "{n}h",
+        "age_days": "{n}d",
+        "age_weeks": "{n}w",
+        "symptom_serving_broken": "🔴 serving broken",
+        "symptom_crash": "💥 crash",
+        "symptom_wrong_output": "⚠️ wrong output",
+        "symptom_security": "🔒 security",
+        "symptom_hang": "⏳ hang",
+        "symptom_regression": "📉 regression",
+        "symptom_perf": "📉 performance regression",
+        "symptom_memory": "📈 memory regression",
         "authored": "you wrote #{n}, which this item names",
         "gh_assigned": "it is assigned to you on GitHub",
         "commented": "you already commented on it",
@@ -72,21 +93,6 @@ STRINGS: dict[str, dict[str, str]] = {
         "route_backup": "Triage: you are backup on a P1 item",
         "digest_header": "📬 Daily triage digest · {date}",
         "digest_text": "Triage digest: {counts}",
-        "digest_hello": "Hi <@{slack}> 👋 Today you have {parts}. <{url}|📋 Open your list>",
-        "hello_page": "*{n} P0* to look at soon",
-        "hello_route": "*{n} P1* for when you have time",
-        "hello_join": " and ",
-        "group_page": "🚨 P0: look soon ({n})",
-        "group_route": "🔶 P1: when you have time ({n})",
-        "digest_more": "…and {m} more on <{url}|My list>.",
-        "digest_footer": "Press *Ack* to take an item, or *Not mine* to pass it on. "
-                         "Everything is on <{url}|My list> · <{file}|Change what you get>",
-        "digest_hello_waiting": "Hi <@{slack}> 👋 Nothing new today, but you still have *{n} waiting* "
-                                "from earlier days. <{url}|📋 Open your list>",
-        "text_waiting": "{n} still waiting",
-        "waiting_title": "⏳ Still waiting ({n})",
-        "waiting_age": "assigned {d} days ago",
-        "waiting_more": "…and {m} more waiting on <{url}|My list>.",
         "ci_not_started": "CI: not started",
         "ci_canceled": "CI: canceled",
         "ci_running": "{n} running",
@@ -96,6 +102,26 @@ STRINGS: dict[str, dict[str, str]] = {
         "ci_none_main": "only on this PR",
     },
     "vi": {
+        "digest_top": "<{url}|Mở toàn bộ danh sách →> · {counts}",
+        "compact_footer": "Dùng ⋯ để nhận hoặc chuyển mục · <{file}|Tùy chỉnh>",
+        "more_band": "…và {n} mục {band} khác · <{url}|Mở toàn bộ danh sách>",
+        "more_waiting": "…và {n} mục quá hạn khác · <{url}|Mở toàn bộ danh sách>",
+        "more_fixes": "…và {n} PR sửa lỗi khác · <{url}|Xem issue>",
+        "compact_fix": "↳ Bản sửa {ref}",
+        "ci_passed": "✅ CI đạt",
+        "done": "Hoàn thành",
+        "age_minutes": "{n} phút",
+        "age_hours": "{n} giờ",
+        "age_days": "{n} ngày",
+        "age_weeks": "{n} tuần",
+        "symptom_serving_broken": "🔴 không phục vụ được",
+        "symptom_crash": "💥 bị crash",
+        "symptom_wrong_output": "⚠️ kết quả sai",
+        "symptom_security": "🔒 bảo mật",
+        "symptom_hang": "⏳ bị treo",
+        "symptom_regression": "📉 lỗi hồi quy",
+        "symptom_perf": "📉 giảm hiệu năng",
+        "symptom_memory": "📈 tăng bộ nhớ",
         "authored": "bạn đã viết #{n}, PR được nhắc tới trong mục này",
         "gh_assigned": "mục này được giao cho bạn trên GitHub",
         "commented": "bạn đã bình luận trong mục này",
@@ -118,21 +144,6 @@ STRINGS: dict[str, dict[str, str]] = {
         "route_backup": "Triage: bạn là người dự phòng cho một P1",
         "digest_header": "📬 Digest triage hằng ngày · {date}",
         "digest_text": "Digest triage: {counts}",
-        "digest_hello": "Chào <@{slack}> 👋 Hôm nay bạn có {parts} nhé. <{url}|📋 Mở danh sách của bạn>",
-        "hello_page": "*{n} P0* cần xem sớm",
-        "hello_route": "*{n} P1* xem khi rảnh",
-        "hello_join": " và ",
-        "group_page": "🚨 P0: cần xem sớm ({n})",
-        "group_route": "🔶 P1: xem khi rảnh ({n})",
-        "digest_more": "…và {m} mục khác trong <{url}|My list>.",
-        "digest_footer": "Bấm *Nhận việc* nếu bạn nhận, hoặc *Không phải của tôi* để chuyển cho người khác. "
-                         "Tất cả ở <{url}|My list> · <{file}|Đổi mảng nhận việc>",
-        "digest_hello_waiting": "Chào <@{slack}> 👋 Hôm nay không có mục mới, nhưng vẫn còn *{n} mục* "
-                                "từ mấy hôm trước đang chờ bạn nhé. <{url}|📋 Mở danh sách của bạn>",
-        "text_waiting": "{n} mục đang chờ",
-        "waiting_title": "⏳ Vẫn đang chờ bạn ({n})",
-        "waiting_age": "đã giao {d} ngày trước",
-        "waiting_more": "…và {m} mục đang chờ khác trong <{url}|My list>.",
         "ci_not_started": "CI: chưa chạy",
         "ci_canceled": "CI: đã hủy",
         "ci_running": "{n} đang chạy",
@@ -395,28 +406,94 @@ def page_dm(
     )
 
 
-# Each digest item (or issue + fix PR group) is two blocks (line + buttons);
-# Slack allows 50 per message. DIGEST_MAX_ITEMS counts groups.
+# Bound visual length, not just Slack's 50-block API limit.
 SLACK_MAX_BLOCKS = 50
-DIGEST_MAX_ITEMS = 20
-# "Still waiting" reminders: open, un-acked items assigned at least this long
-# ago, oldest first, at most this many (also two blocks each).
+DIGEST_MAX_ITEMS = 5
+DIGEST_MAX_FIXES = 3
 WAITING_AFTER_DAYS = 3
 WAITING_MAX_ITEMS = 5
 
 
-def _waiting_line(entry: DigestEntry, now: datetime, lang: str, fixes: list[DigestEntry] | None = None) -> str:
-    """One compact reminder line: level, bold linked title, how long ago
-    (then its group's fix PRs)."""
+def _age(entry: DigestEntry, now: datetime, lang: str) -> str:
+    if entry.created_at is None:
+        return ""
+    seconds = max(0, int((now - entry.created_at).total_seconds()))
+    if seconds < 3600:
+        return _t(lang, "age_minutes", n=seconds // 60)
+    if seconds < 48 * 3600:
+        return _t(lang, "age_hours", n=seconds // 3600)
+    if seconds < 14 * 86400:
+        return _t(lang, "age_days", n=seconds // 86400)
+    return _t(lang, "age_weeks", n=seconds // (7 * 86400))
+
+
+def _symptom(entry: DigestEntry, lang: str) -> str:
+    # Same precedence as the dashboard's worstSymptom.
+    for key in ("serving_broken", "crash", "wrong_output", "security", "hang"):
+        if entry.severity.get(key) is True:
+            return _t(lang, "symptom_" + key)
+    if entry.item_type in ("regression", "perf_regression"):
+        return _t(lang, "symptom_regression")
+    if entry.severity.get("perf_regression_pct"):
+        return _t(lang, "symptom_perf")
+    if entry.severity.get("memory_regression") is True:
+        return _t(lang, "symptom_memory")
+    return ""
+
+
+def _compact_ci(entry: DigestEntry, lang: str) -> str:
+    """Only advertise a confirmed pass for this open PR's observed head."""
+    ci = entry.ci or {}
+    head = entry.prepass.get("head_sha")
+    if (entry.state == "open" and head and ci.get("head_sha") == head
+            and ci.get("state") == "passed"):
+        return _t(lang, "ci_passed")
+    return ""
+
+
+def _digest_section(
+    entry: DigestEntry, fixes: list[DigestEntry], now: datetime, lang: str,
+) -> dict[str, Any]:
+    # The title opens triage; only the plain number opens GitHub.
     number = entry.item_key.rsplit("#", 1)[-1]
-    band = group_band(entry, fixes or [])
-    level = f"{_BAND_ICON.get(band, '')} *{BAND_LABELS.get(band, '')}* ".lstrip()
-    line = f"{level}*{_link(entry.html_url, f'#{number} {entry.title}')}*"
-    if entry.assigned_at is not None:
-        line += f" · _{_t(lang, 'waiting_age', d=max(0, (now - entry.assigned_at).days))}_"
-    if entry.ci:
-        line += f" · {ci_fragment(entry.ci, lang)}"
-    return "\n".join([line, *_fix_lines(fixes or [], lang)])
+    metadata = [_link(entry.html_url, f"#{number}"), _symptom(entry, lang), _age(entry, now, lang)]
+    if entry.kind == "pr":
+        metadata.append(_compact_ci(entry, lang))
+    lines = [f"• *{_link(_item_url(entry.item_key), entry.title)}*", " · ".join(p for p in metadata if p)]
+    # Use the extracted summary, not an invented impact claim. Keep one quiet line.
+    impact = " ".join(entry.summary.split())
+    if len(impact) > 180:
+        impact = impact[:177].rsplit(" ", 1)[0].rstrip(".,;:") + "…"
+    if impact:
+        lines.append(f"_{safe_slack_mrkdwn(impact)}_")
+    # Context can include a merged or unassigned fix that isn't a notification.
+    linked = {f.item_key: f for f in fixes}
+    linked.update({f.item_key: f for f in entry.related_fixes})
+    fix_entries = list(linked.values())
+    parts = []
+    for fix in fix_entries[:DIGEST_MAX_FIXES]:
+        ref = _link(fix.html_url, "#" + fix.item_key.rsplit("#", 1)[-1])
+        parts.append(" · ".join(p for p in [
+            _t(lang, "compact_fix", ref=ref), _compact_ci(fix, lang),
+        ] if p))
+    if parts:
+        lines.append("   ·   ".join(parts))
+    if len(fix_entries) > DIGEST_MAX_FIXES:
+        lines.append(_t(lang, "more_fixes", n=len(fix_entries) - DIGEST_MAX_FIXES, url=_item_url(entry.item_key)))
+    options: list[dict[str, Any]] = []
+    if entry.state == "open" and entry.assignment_status in ("open", "acked"):
+        action = "ack" if entry.assignment_status == "open" else "done"
+        options += [
+            {"text": {"type": "plain_text", "text": _t(lang, action)}, "value": f"{action}|{entry.item_key}"},
+            {"text": {"type": "plain_text", "text": _t(lang, "not_mine")}, "value": f"not_mine|{entry.item_key}"},
+        ]
+    options.append({"text": {"type": "plain_text", "text": _t(lang, "open")}, "value": "open",
+                    "url": _item_url(entry.item_key)})
+    return {
+        "type": "section", "block_id": f"triage:item:{entry.item_key}",
+        "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+        "accessory": {"type": "overflow", "action_id": "triage:menu", "options": options},
+    }
 
 
 def maintainer_digest(
@@ -424,115 +501,80 @@ def maintainer_digest(
     lang: str = "en", reassign_to: list[str] | None = None,
     waiting: list[DigestEntry] | None = None, waiting_total: int = 0,
 ) -> NotificationIntent:
-    """The daily DM, laid out to scan in Slack:
-
-      header      "📬 Daily triage digest · Nov 18" (the date tells days apart)
-      hello       counts per level, so you know the size before scrolling
-      ── P0 (n) / ── P1 (n), each group behind a divider
-        bold linked title, then a bold "Why you:" line
-        [Ack] [Not mine] [Reassign ▾]   (the title already opens GitHub)
-      ── ⏳ Still waiting (n)   older items nobody has acked, oldest first
-        level, bold linked title · assigned N days ago
-        [Ack] [Not mine] [Reassign ▾]
-      footer      My list and the maintainer's own file
-
-    `day` is the maintainer's local time now: it dates the header and the
-    delivery id (one digest per maintainer per local day). No summaries or
-    per-line P-levels in the new-item groups (the group says it). Titles are
-    never translated. An issue and its fix PRs (triage/groups.py) are one
-    item: the issue's line, a "↳ fix:" line per PR, one set of buttons (for
-    the issue; the dashboard applies the click to the PRs too) and one
-    "Why you". Counts and limits are in such items. Everything fits Slack's
-    50-block limit: reminders are capped at WAITING_MAX_ITEMS and new items
-    at DIGEST_MAX_ITEMS, fewer when reminders need the room (the rest are
-    counted in "…and N more")."""
-    groups = group_entries(entries)
-    new_keys = {e.item_key for e in entries}
-    unique: list[DigestEntry] = []
-    for e in waiting or []:
-        # A block_id may appear only once per message.
-        if e.item_key not in new_keys and all(e.item_key != r.item_key for r in unique):
-            unique.append(e)
-    waiting_groups = group_entries(unique)
-    # Reminders folded into a group are one item, and so one fewer to count.
-    waiting_total = max(waiting_total - (len(unique) - len(waiting_groups)), 0)
-    reminders = waiting_groups[:WAITING_MAX_ITEMS]
-    waiting_total = max(waiting_total, len(reminders))
-    me = f"{DASHBOARD}/me"
-
+    """A compact, priority-grouped digest. Titles open triage, numbers open
+    GitHub, and one menu acts on each issue/fix group. At most five groups
+    are shown across all priorities, with overflow linked to the full list.
+    New assignments and overdue unacked reminders share the same layout.
+    Context-only fixes never become notifications or change a group's band.
+    """
+    unique = {e.item_key: e for e in entries}
+    for entry in waiting or []:
+        unique.setdefault(entry.item_key, entry)
+    groups = group_entries(sorted(unique.values(), key=lambda e: -e.score))
+    me = f"{DASHBOARD}/me?view=all"
     date = f"{day.day}/{day.month}" if lang == "vi" else f"{day:%b} {day.day}"
-    header = _t(lang, "digest_header", date=date)
-    counts = {band: sum(1 for m, f in groups if group_band(m, f) == band) for band in ("page", "route")}
-    hello_parts = [_t(lang, f"hello_{band}", n=n) for band, n in counts.items() if n]
-    if entries:
-        hello = _t(lang, "digest_hello", slack=maintainer_slack, url=me,
-                   parts=_t(lang, "hello_join").join(hello_parts) or str(len(groups)))
-    else:
-        hello = _t(lang, "digest_hello_waiting", slack=maintainer_slack, url=me, n=waiting_total)
-    text_parts = [f"{n} {BAND_LABELS[b]}" for b, n in counts.items() if n]
-    if waiting_total:
-        text_parts.append(_t(lang, "text_waiting", n=waiting_total))
-    text = _t(lang, "digest_text", counts=", ".join(text_parts))
-    head: list[dict[str, Any]] = [
-        {"type": "header", "text": {"type": "plain_text", "text": header[:150]}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": hello}},
+    counts = {band: sum(group_band(m, f) == band for m, f in groups) for band in _BAND_RANK}
+    summary = ", ".join(f"{n} {BAND_LABELS[b]}" for b, n in counts.items() if n)
+    blocks: list[dict[str, Any]] = [
+        {"type": "header", "text": {"type": "plain_text", "text": _t(lang, "digest_header", date=date)}},
+        {"type": "section", "text": {"type": "mrkdwn", "text":
+            _t(lang, "digest_top", url=me, counts=summary)}},
     ]
-
-    def new_items(n: int) -> list[dict[str, Any]]:
-        blocks: list[dict[str, Any]] = []
-        shown = groups[:n]
-        for band in ("page", "route", "watch", "ignore"):
-            in_band = [(m, f) for m, f in shown if group_band(m, f) == band]
-            if not in_band:
-                continue
-            key = f"group_{band}"
-            title = _t(lang, key, n=counts.get(band, len(in_band))) if key in STRINGS["en"] else BAND_LABELS.get(band, band)
-            blocks.append({"type": "divider"})
-            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*{title}*"}})
-            for main, fixes in in_band:
-                blocks.append(_item_section(main, menu=False, lang=lang, summary=False, level=False, fixes=fixes))
-                blocks.append(_actions(main, reassign_to or [], lang, open_button=False))
-        if len(groups) > n:
-            blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
-                           "text": _t(lang, "digest_more", m=len(groups) - n, url=me)}]})
-        return blocks
-
-    tail: list[dict[str, Any]] = []
-    if reminders:
-        tail.append({"type": "divider"})
-        tail.append({"type": "section", "text": {"type": "mrkdwn",
-                     "text": f"*{_t(lang, 'waiting_title', n=waiting_total)}*"}})
-        for e, fixes in reminders:
-            tail.append({"type": "section", "block_id": f"triage:item:{e.item_key}",
-                         "text": {"type": "mrkdwn", "text": _waiting_line(e, day, lang, fixes)[:2900]}})
-            tail.append(_actions(e, reassign_to or [], lang, open_button=False))
-        if waiting_total > len(reminders):
-            tail.append({"type": "context", "elements": [{"type": "mrkdwn",
-                         "text": _t(lang, "waiting_more", m=waiting_total - len(reminders), url=me)}]})
-    tail.append({"type": "divider"})
-    tail.append({"type": "context", "elements": [{"type": "mrkdwn", "text": _t(
-        lang, "digest_footer", url=me, file=MAINTAINER_FILE.format(login=quote(maintainer)))}]})
-
-    shown = min(len(groups), DIGEST_MAX_ITEMS)
-    body = new_items(shown)
-    while shown > 0 and len(head) + len(body) + len(tail) > SLACK_MAX_BLOCKS:
-        shown -= 1
-        body = new_items(shown)
-    blocks = head + body + tail
+    remaining = DIGEST_MAX_ITEMS
+    for band in _BAND_RANK:
+        in_band = [(m, f) for m, f in groups if group_band(m, f) == band]
+        if not in_band:
+            continue
+        label = BAND_LABELS[band]
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text":
+                       "*" + " ".join(p for p in (_BAND_ICON.get(band, ""), label) if p) + "*"}})
+        shown = in_band[:remaining]
+        blocks.extend(_digest_section(m, f, day, lang) for m, f in shown)
+        remaining -= len(shown)
+        if len(shown) < len(in_band):
+            blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text":
+                _t(lang, "more_band", n=len(in_band) - len(shown), band=label, url=me)}]})
+    # The store bounds the reminder query. Do not silently drop its unseen tail.
+    extra_waiting = max(0, waiting_total - len({e.item_key for e in waiting or []}))
+    if extra_waiting:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text":
+            _t(lang, "more_waiting", n=extra_waiting, url=me)}]})
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text":
+        _t(lang, "compact_footer", file=MAINTAINER_FILE.format(login=quote(maintainer)))}]})
     return NotificationIntent(
         delivery_id=f"triage:digest:{maintainer}:{day.date().isoformat()}",
-        alert_ref=f"digest:{maintainer}",
-        alert_path=AlertPath.TRIAGE,
-        delivery_mode=mode,
-        destination_mode=DestinationMode.BOT_TOKEN,
-        destination=maintainer_slack,
-        payload={
-            "text": text,
-            "blocks": blocks[:SLACK_MAX_BLOCKS],
-            "unfurl_links": False,
-            "unfurl_media": False,
-        },
+        alert_ref=f"digest:{maintainer}", alert_path=AlertPath.TRIAGE, delivery_mode=mode,
+        destination_mode=DestinationMode.BOT_TOKEN, destination=maintainer_slack,
+        payload={"text": _t(lang, "digest_text", counts=summary), "blocks": blocks,
+                 "unfurl_links": False, "unfurl_media": False},
     )
+
+
+def split_digest(notification: NotificationIntent) -> list[NotificationIntent]:
+    """Defensive splitting for older/custom payloads that outgrow Slack.
+
+    Normal top-five digests fit in one message, including menu confirmations.
+    """
+    blocks = notification.payload["blocks"]
+    limit = SLACK_MAX_BLOCKS // 2
+    if len(blocks) <= limit:
+        return [notification]
+    pages: list[list[dict[str, Any]]] = []
+    page = list(blocks[:2])
+    heading: dict[str, Any] | None = None
+    for block in blocks[2:]:
+        is_heading = block.get("type") == "section" and "block_id" not in block
+        if len(page) >= limit:
+            pages.append(page)
+            page = list(blocks[:2])
+            if heading is not None and not is_heading:
+                page.append(heading)
+        page.append(block)
+        if is_heading:
+            heading = block
+    pages.append(page)
+    return [replace(notification, delivery_id=notification.delivery_id + (f":part:{i + 1}" if i else ""),
+                    payload={**notification.payload, "blocks": page}) for i, page in enumerate(pages)]
 
 
 def team_digest(

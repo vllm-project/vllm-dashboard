@@ -657,12 +657,9 @@ def test_dm_buttons_and_digest_menus_carry_the_item() -> None:
 
     digest = maintainer_digest(maintainer="khluu", maintainer_slack="U0000000001", entries=[entry],
                                day=datetime(2026, 11, 18, tzinfo=timezone.utc), mode=DeliveryMode.SHADOW).payload
-    # header, hello, divider, "P0" group title, the item line, then its buttons
-    assert digest["blocks"][4]["block_id"] == f"triage:item:{key}" and "accessory" not in digest["blocks"][4]
-    buttons = digest["blocks"][5]
-    assert buttons["block_id"] == f"triage:actions:{key}"
-    # The title already links to GitHub, so the digest skips the dashboard button.
-    assert [e["action_id"] for e in buttons["elements"]] == ["triage:ack", "triage:not_mine"]
+    section = next(b for b in digest["blocks"] if b.get("block_id") == f"triage:item:{key}")
+    assert [o["value"] for o in section["accessory"]["options"]] == [f"ack|{key}", f"not_mine|{key}", "open"]
+    assert not any(b["type"] == "actions" for b in digest["blocks"])
     assert actions["elements"][3]["url"] == "https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2348071"
     assert describe_reason("commented") == "you already commented on it"
     assert describe_reason("relevance:high") == "judged high from your recent work"
@@ -715,24 +712,18 @@ def test_vietnamese_digest_is_friendly_grouped_and_keeps_titles() -> None:
                                 lang="vi").payload
     blocks = payload["blocks"]
     texts = [b.get("text", {}).get("text", "") for b in blocks]
-    assert [b["type"] for b in blocks] == ["header", "section", "divider", "section", "section", "actions",
-                                           "divider", "section", "section", "actions", "divider", "context"]
     assert texts[0] == "📬 Digest triage hằng ngày · 18/11"
-    assert texts[1] == ("Chào <@U0B02RR385Q> 👋 Hôm nay bạn có *1 P0* cần xem sớm và *1 P1* xem khi rảnh nhé. "
-                        "<https://ci.vllm.ai/triage/me|📋 Mở danh sách của bạn>")
-    assert payload["text"] == "Digest triage: 1 P0, 1 P1"  # what the phone notification shows
-    assert texts[3] == "*🚨 P0: cần xem sớm (1)*" and texts[7] == "*🔶 P1: xem khi rảnh (1)*"
-    assert [e["text"]["text"] for e in blocks[5]["elements"] if e["type"] == "button"] == [
-        "Nhận việc", "Không phải của tôi"]
-    # Bold title untouched, no P-level prefix (the group says it), no score, no summary;
-    # Claude's Vietnamese reason under a bold label, with linked PRs.
-    assert texts[4].startswith("*<https://github.com/vllm-project/vllm/pull/66694|#66694 [Bugfix] Restore exact division in per-token-group FP8 quantization>*\n")
-    assert "99" not in texts[4] and "English summary" not in texts[4] and "🚨" not in texts[4]
-    assert "\n*Vì sao là bạn:* PR này revert <https://github.com/vllm-project/vllm/pull/61343|#61343> của bạn" in texts[4]
-    # No Vietnamese line from Claude: involvement in Vietnamese, then the coded reason.
-    assert "*Vì sao là bạn:* bạn đã bình luận trong mục này; được đánh giá cao" in texts[8]
-    footer = blocks[-1]["elements"][0]["text"]
-    assert "triage/config/maintainers/gau-nernst.yaml|Đổi mảng nhận việc>" in footer
+    assert "https://ci.vllm.ai/triage/me?view=all|Mở toàn bộ danh sách" in texts[1]
+    assert payload["text"] == "Digest triage: 1 P0, 1 P1"
+    items = [b for b in blocks if "accessory" in b]
+    assert len(items) == 2
+    assert [o["text"]["text"] for o in items[0]["accessory"]["options"]] == [
+        "Nhận việc", "Không phải của tôi", "Mở trên dashboard"]
+    text = items[0]["text"]["text"]
+    assert text.startswith("• *<https://ci.vllm.ai/triage?item=vllm-project%2Fvllm%2366694|[Bugfix] Restore exact division")
+    assert "<https://github.com/vllm-project/vllm/pull/66694|#66694>" in text
+    assert "chờ bạn nhận" not in text and "_an English summary_" in text
+    assert "triage/config/maintainers/gau-nernst.yaml|Tùy chỉnh>" in blocks[-1]["elements"][0]["text"]
 
 
 def test_digest_caps_items_to_fit_slacks_block_limit() -> None:
@@ -749,12 +740,10 @@ def test_digest_caps_items_to_fit_slacks_block_limit() -> None:
                                 day=datetime(2026, 11, 18, tzinfo=timezone.utc), mode=DeliveryMode.SHADOW,
                                 reassign_to=["y"]).payload
     assert len(payload["blocks"]) <= 50
-    assert sum(1 for b in payload["blocks"] if b.get("type") == "actions") == DIGEST_MAX_ITEMS
-    assert payload["blocks"][0]["text"]["text"] == "📬 Daily triage digest · Nov 18"
-    assert payload["blocks"][1]["text"]["text"] == (
-        "Hi <@U1> 👋 Today you have *30 P1* for when you have time. <https://ci.vllm.ai/triage/me|📋 Open your list>")
-    assert payload["blocks"][-1]["type"] == "context"  # the footer survives the cap
-    assert "…and 10 more on <https://ci.vllm.ai/triage/me|My list>." in payload["blocks"][-3]["elements"][0]["text"]
+    assert sum("accessory" in b for b in payload["blocks"]) == DIGEST_MAX_ITEMS
+    assert payload["text"] == "Triage digest: 30 P1"
+    assert payload["blocks"][-1]["type"] == "context"
+    assert "…and 25 more P1" in payload["blocks"][-2]["elements"][0]["text"]
 
 
 def _entries(n: int, band: str = "route", start: int = 1, assigned_at: datetime | None = None) -> list[DigestEntry]:
@@ -806,7 +795,7 @@ def test_still_waiting_section_fits_slacks_block_limit() -> None:
 
     from alerting.ports import DeliveryMode
 
-    from triage.notify import DIGEST_MAX_ITEMS, SLACK_MAX_BLOCKS, WAITING_MAX_ITEMS, maintainer_digest
+    from triage.notify import DIGEST_MAX_ITEMS, SLACK_MAX_BLOCKS, maintainer_digest
 
     day = datetime(2026, 11, 18, 9, tzinfo=timezone.utc)
     # Worst case: new items in all four bands, a full reminder list and more waiting.
@@ -820,25 +809,15 @@ def test_still_waiting_section_fits_slacks_block_limit() -> None:
     assert len(blocks) <= SLACK_MAX_BLOCKS
     ids = [b["block_id"] for b in blocks if "block_id" in b]
     assert len(ids) == len(set(ids))
-    texts = [b.get("text", {}).get("text", "") for b in blocks]
-    title = texts.index("*⏳ Still waiting (12)*")
-    reminders = [t for t in texts[title + 1:] if "#10" in t]
-    assert len(reminders) == WAITING_MAX_ITEMS and all("assigned 4 days ago" in t for t in reminders)
-    assert sum(1 for b in blocks if b["type"] == "actions") < DIGEST_MAX_ITEMS + WAITING_MAX_ITEMS
-    shown_new = sum(1 for b in blocks[:title] if b["type"] == "actions")
+    assert sum("accessory" in b for b in blocks) == DIGEST_MAX_ITEMS
     contexts = [b["elements"][0]["text"] for b in blocks if b["type"] == "context"]
-    assert f"…and {len(entries) - shown_new} more on <https://ci.vllm.ai/triage/me|My list>." in contexts
-    assert "…and 7 more waiting on <https://ci.vllm.ai/triage/me|My list>." in contexts
-    assert blocks[-1]["type"] == "context" and "Change what you get" in blocks[-1]["elements"][0]["text"]
-    # Reminder buttons are the digest's: Ack / Not mine / Reassign.
-    reminder_actions = blocks[title + 2]
-    assert reminder_actions["block_id"] == "triage:actions:vllm-project/vllm#100"
-    assert [e["action_id"] for e in reminder_actions["elements"]] == ["triage:ack", "triage:not_mine", "triage:reassign"]
-
-    # Without reminders the new items keep their full DIGEST_MAX_ITEMS.
+    assert any("5 more P0" in t for t in contexts)
+    assert any("18 more P1" in t for t in contexts)
+    assert any("4 more overdue items" in t for t in contexts)
+    assert "Preferences" in contexts[-1]
     plain = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=_entries(30), day=day,
-                              mode=DeliveryMode.SHADOW, reassign_to=["y"]).payload["blocks"]
-    assert sum(1 for b in plain if b["type"] == "actions") == DIGEST_MAX_ITEMS and len(plain) <= SLACK_MAX_BLOCKS
+                              mode=DeliveryMode.SHADOW).payload["blocks"]
+    assert sum("accessory" in b for b in plain) == DIGEST_MAX_ITEMS
 
 
 def test_reminder_never_repeats_an_item_already_in_the_new_list() -> None:
@@ -853,8 +832,7 @@ def test_reminder_never_repeats_an_item_already_in_the_new_list() -> None:
     payload = maintainer_digest(maintainer="x", maintainer_slack="U1", entries=_entries(1), day=day,
                                 mode=DeliveryMode.SHADOW, waiting=waiting + waiting[1:], waiting_total=2).payload
     ids = [b["block_id"] for b in payload["blocks"] if "block_id" in b]
-    assert ids == ["triage:item:vllm-project/vllm#1", "triage:actions:vllm-project/vllm#1",
-                   "triage:item:vllm-project/vllm#2", "triage:actions:vllm-project/vllm#2"]
+    assert ids == ["triage:item:vllm-project/vllm#1", "triage:item:vllm-project/vllm#2"]
 
 
 def test_vietnamese_reminder_only_digest() -> None:
@@ -869,23 +847,17 @@ def test_vietnamese_reminder_only_digest() -> None:
     day = datetime(2026, 11, 19, 9, tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
     old = DigestEntry(7, "vllm-project/vllm#65385", "GDN prefill wrong results",
                       "https://github.com/vllm-project/vllm/issues/65385", 76, "page", "s",
-                      ["relevance:high"], "", assigned_at=(day - timedelta(days=5, hours=2)).astimezone(timezone.utc))
+                      ["relevance:high"], "", assigned_at=(day - timedelta(days=5, hours=2)).astimezone(timezone.utc),
+                      created_at=day - timedelta(days=14))
     payload = maintainer_digest(maintainer="gau-nernst", maintainer_slack="U0B02RR385Q", entries=[], day=day,
                                 mode=DeliveryMode.SHADOW, lang="vi", reassign_to=["khluu"],
                                 waiting=[old], waiting_total=1).payload
     blocks = payload["blocks"]
-    assert [b["type"] for b in blocks] == ["header", "section", "divider", "section", "section", "actions",
-                                           "divider", "context"]
-    assert blocks[1]["text"]["text"] == (
-        "Chào <@U0B02RR385Q> 👋 Hôm nay không có mục mới, nhưng vẫn còn *1 mục* từ mấy hôm trước đang chờ bạn nhé. "
-        "<https://ci.vllm.ai/triage/me|📋 Mở danh sách của bạn>")
-    assert blocks[3]["text"]["text"] == "*⏳ Vẫn đang chờ bạn (1)*"
-    assert blocks[4]["text"]["text"] == (
-        ":rotating_light: *P0* *<https://github.com/vllm-project/vllm/issues/65385|#65385 GDN prefill wrong results>*"
-        " · _đã giao 5 ngày trước_")
-    assert [e["text"]["text"] for e in blocks[5]["elements"] if e["type"] == "button"] == [
-        "Nhận việc", "Không phải của tôi"]
-    assert payload["text"] == "Digest triage: 1 mục đang chờ"
+    items = [b for b in blocks if "accessory" in b]
+    assert len(items) == 1
+    assert "2 tuần" in items[0]["text"]["text"]
+    assert payload["text"] == "Digest triage: 1 P0"
+    assert "Mở toàn bộ danh sách" in blocks[1]["text"]["text"]
     # Every Vietnamese string has an English twin and the same placeholders.
     import string
 
