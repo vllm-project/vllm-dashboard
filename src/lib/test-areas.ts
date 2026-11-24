@@ -37,9 +37,15 @@ export interface TestStep {
    * the step and the block both set it; an exact one only reads its own.
    */
   amdMirrorAutomaticShard?: boolean;
-  /** The AMD mirror's `parallelism` (a legacy mirror has the step's). */
+  /**
+   * The AMD mirror's `parallelism`: an exact one's own; a legacy one's own,
+   * else the step's.
+   */
   amdMirrorParallelism?: number;
-  /** The AMD mirror's `num_nodes` (a legacy mirror has the step's). */
+  /**
+   * The AMD mirror's `num_nodes`: an exact one's own; a legacy one's own, else
+   * the step's.
+   */
   amdMirrorNumNodes?: number;
   /** `num_nodes`; the generator never shards a multi-node step. */
   numNodes?: number;
@@ -426,11 +432,15 @@ export function parseTestStep(value: unknown): TestStep | null {
           : !exact && isSoftFailValue(step.soft_fail);
       if (amdSoftFail) parsed.amdMirrorSoftFail = true;
       if (block.automatic_shard === true) parsed.amdMirrorAutomaticShard = true;
-      const amdParallelism = exact ? block.parallelism : step.parallelism;
+      // A legacy mirror's own value wins over the step's
+      // (buildkite_step.py: amd.get("parallelism", parent.parallelism)).
+      const amdParallelism = exact
+        ? block.parallelism
+        : (block.parallelism ?? step.parallelism);
       if (typeof amdParallelism === "number") {
         parsed.amdMirrorParallelism = amdParallelism;
       }
-      const amdNumNodes = exact ? block.num_nodes : step.num_nodes;
+      const amdNumNodes = exact ? block.num_nodes : (block.num_nodes ?? step.num_nodes);
       if (typeof amdNumNodes === "number") parsed.amdMirrorNumNodes = amdNumNodes;
     }
   }

@@ -296,3 +296,40 @@ steps:
   );
   assert.equal(amd.status, "flagged-not-run");
 });
+
+test("a legacy mirror's own parallelism and num_nodes win over the step's", () => {
+  const [own, inherited] = parseTestArea(
+    parseBuildkiteYaml(`
+group: G
+steps:
+- label: ":nvidia: (H100) T"
+  key: t
+  device: h100
+  parallelism: 4
+  num_nodes: 2
+  num_devices: 2
+  commands:
+    - a
+  mirror:
+    amd:
+      device: mi300_2
+      parallelism: 1
+      num_nodes: 1
+- label: ":nvidia: (H100) U"
+  key: u
+  device: h100
+  parallelism: 4
+  num_nodes: 2
+  num_devices: 2
+  commands:
+    - a
+  mirror:
+    amd:
+      device: mi300_2
+`),
+  )!.steps;
+  assert.equal(own.amdMirrorParallelism, 1);
+  assert.equal(own.amdMirrorNumNodes, 1);
+  assert.equal(inherited.amdMirrorParallelism, 4);
+  assert.equal(inherited.amdMirrorNumNodes, 2);
+});
