@@ -18,12 +18,16 @@ jobs that have no step on one of the two platforms.
 
 Jobs come from `.buildkite/test_areas/*.yaml` on `vllm-project/vllm` `main`,
 read with the parity loader (`gpu-parity-source.ts`) and its vendor rules
-(`classifyStep`). Each NVIDIA or AMD GPU step is one job. CPU and other
-hardware steps are left out and counted.
+(`classifyStep`). Both step forms are read: a `devices:` step is compiled the
+way the generator compiles it (see [gpu-parity.md](gpu-parity.md#source)), so
+its first NVIDIA job carries its `amd-<key>` AMD job as a mirror and every
+other job is a step of its own. Each NVIDIA or AMD GPU step is one job. CPU
+and other hardware steps are left out and counted.
 
 Scope is decided in this order:
 
-1. An NVIDIA step with a `mirror.amd` block is **common** and runs on both.
+1. An NVIDIA step with an AMD mirror (a `mirror.amd` block, or the AMD device
+   keyed `amd-<key>` of a `devices:` step) is **common** and runs on both.
    Nothing overrides a declared mirror.
 2. A rule for the step's `key` (or label, when it has no key) in
    `STEP_RULES`.
@@ -32,8 +36,8 @@ Scope is decided in this order:
 4. A label pattern in `LABEL_RULES`, matched only against steps on that
    pattern's vendor (e.g. `FlashInfer` on an NVIDIA step, `AITER` on an AMD
    step).
-5. Otherwise the job is **unclassified**, and the page asks for a mirror or a
-   rule.
+5. Otherwise the job is **unclassified**, and the page asks for an AMD device
+   or a rule.
 
 All rules live in `src/lib/platform-scope-rules.ts`, each with the reason the
 job is single-platform or why a common job is missing on one side. Changing a
@@ -60,7 +64,7 @@ At `vllm-project/vllm` `efe12305f0` (2026-11-12), 280 GPU jobs:
 | NVIDIA only | 17 | 6 |
 | ROCm only | 16 | 16 |
 
-227 of the common jobs are NVIDIA steps with a `mirror.amd` block. The rest
+227 of the common jobs were NVIDIA steps with a `mirror.amd` block. The rest
 are classified by rule; see the rules file for each job and its evidence.
 
 ## API
@@ -80,6 +84,7 @@ them to old commits would mislabel renamed steps.
 ## Code
 
 - `src/lib/platform-scope-rules.ts`: the classification rules.
+- `src/lib/buildkite-devices.ts`: compiles `devices:` steps.
 - `src/lib/platform-scope.ts`: pure classification and counting, tested in
   `platform-scope.test.ts`.
 - `src/lib/platform-scope-source.ts`, `src/app/api/platforms/route.ts`.

@@ -97,6 +97,7 @@ test("optional matcher flags optional steps, their shards, and AMD mirrors", () 
           optional: true,
           amdMirrorLabel:
             ":amd: (MI300) Multimodal Models (Extended Generation 1)",
+          amdMirrorOptional: true,
         },
         {
           label: ":nvidia: (H200 MIG 35GB) Multimodal Models (Extended Generation 2) Shard %N",
@@ -191,7 +192,7 @@ test("soft-fail matcher flags soft_fail steps and shards, not plain AMD mirrors"
 
   assert.equal(isSoftFailJob("Ray Dependency Compatibility Check", matcher), true);
   assert.equal(isSoftFailJob("Plugin Tests Shard 3", matcher), true);
-  // The mirror only counts when it sets soft_fail itself.
+  // The matcher reads the mirror's parsed flag, not the step's.
   assert.equal(isSoftFailJob(":amd: Ray Dependency Compatibility Check", matcher), false);
   assert.equal(isSoftFailJob(":amd: Kernels", matcher), true);
   assert.equal(isSoftFailJob("Kernels", matcher), false);

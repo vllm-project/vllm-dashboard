@@ -6,7 +6,7 @@
 > clients.
 
 The Parity page answered one question: of the gating test jobs
-vLLM runs on NVIDIA GPUs and includes in AMD parity, how many declare an AMD mirror?
+vLLM runs on NVIDIA GPUs and includes in AMD parity, how many also run on AMD?
 The page shows gating jobs only, with no all-jobs scope selector.
 
 ## Source
@@ -17,10 +17,28 @@ Everything is read from `.buildkite/test_areas/*.yaml` on
 Buildkite job history. Counts depend on the YAML and the dashboard's label
 exclusion rules below.
 
-Each file is one test area (`group`) with a list of `steps`. For every step:
+Each file is one test area (`group`) with a list of `steps`. A step is
+written in one of two forms, and the dashboard reads both:
 
-- **Vendor** comes from `device` first, using the generator's `DeviceType`
-  names (`h100`, `h200_35gb`, `l4`, `b200-k8s`, `a100`, `gh200`, `dgx-spark`
+- **`devices:`** (current): the step names its hardware only as the keys of a
+  `devices:` map, one job per device, plus more jobs on a device under its
+  `variants:`; `same_as` copies an earlier device of the same vendor. The
+  dashboard compiles it exactly as the generator does
+  (`src/lib/buildkite-devices.ts`, a port of ci-infra's `step_vendors.py` and
+  its device registry): the first non-AMD job is a step, the AMD job keyed
+  `amd-<key>` is that step's mirror (marked `_exact`: it inherits nothing from
+  the step), and every other job (a second NVIDIA device, a variant, an
+  AMD-only or CPU test) is a step of its own. Labels and keys come from the
+  registry: `:nvidia: (H100) V1 Attention`, `[Nightly]` from `optional: true`,
+  `amd-<key>` for the first AMD device and `<key>-<key_tag>` for a further
+  one. A step that does not compile is logged and left out.
+- **Legacy** `device:` + `mirror.amd`: one NVIDIA (or CPU, AMD) step, whose
+  `mirror.amd` block the generator emits as an `amd-<key>` step.
+
+Each compiled or legacy step is then one job:
+
+- **Vendor** comes from `device` first (a `devices:` job's device key),
+  using the generator's `DeviceType` names (`h100`, `h200_35gb`, `l4`, `b200-k8s`, `a100`, `gh200`, `dgx-spark`
   are NVIDIA; `cpu-*`, `intel_cpu`, `amd_cpu`, `zen5` are CPU; `mi###_N` is
   AMD), then from the label shortcode (`:nvidia:`, `:amd:`, `:computer:`).
   Files written before mid-2026 often had neither; the generator sent those
@@ -30,11 +48,13 @@ Each file is one test area (`group`) with a list of `steps`. For every step:
   comparable across the format change. A device the generator does not know,
   with no shortcode to fall back on, is reported under `skipped.unknown`
   rather than dropped silently.
-- **Mirrored** means the step declares a `mirror.amd` block. The generator
-  emits that block as an `amd-<key>` step on the AMD device it names.
+- **Mirrored** means the step has an AMD job: a `mirror.amd` block, or the
+  AMD device of a `devices:` step keyed `amd-<key>`. The generator emits it as
+  an `amd-<key>` step on that AMD device.
 - **Gating**, for this view, means `optional` is absent or false. A step with
   `soft_fail: true` remains included, although its failure does not fail the
-  build. A mirror inherits both flags unless its block overrides them.
+  build. A legacy mirror inherits both flags unless its block overrides
+  them; the AMD job of a `devices:` step has only its own.
   `soft_fail` and `autorun_on_main` are shown as badges but do not change this
   classification.
 
@@ -65,7 +85,7 @@ snapshot measure the same population.
 For any set of eligible NVIDIA jobs:
 
 ```
-coverage = jobs with a mirror.amd block / eligible NVIDIA jobs
+coverage = jobs with an AMD job (mirror) / eligible NVIDIA jobs
 ```
 
 The page displays `gating` counts using the definition above. An optional or
@@ -80,7 +100,8 @@ The APIs retain `all`, `gating` and `nonGating` snapshot counts, plus `all` and
 
 - `GET /api/parity` returns `{ source, summary, groups, jobs, excluded, skipped }`.
   `source` names the commit the snapshot was read at. `jobs` lists every eligible
-  NVIDIA job with its device, shard count, flags, and mirror (or `null`).
+  NVIDIA job with its device, GPU count (an AMD device always has its
+  pool's, e.g. 4 for `mi355_4`), shard count, flags, and mirror (or `null`).
   `excluded` contains `{ job, reason }` for each NVIDIA job removed by a label
   exclusion, preserving its source metadata for inspection.
   Cached one hour at the origin and served stale from the CDN for a day.
@@ -99,6 +120,8 @@ the API rate limit is exhausted, and never cache the error.
 
 ## Code
 
+- `src/lib/buildkite-devices.ts` — compiles `devices:` steps (registry, keys,
+  labels, `same_as`, variants), tested in `buildkite-devices.test.ts`.
 - `src/lib/gpu-parity.ts` — pure classification and counting, unit tested in
   `gpu-parity.test.ts`.
 - `src/lib/gpu-parity-source.ts` — GitHub reads, blob cache, weekly sampling.

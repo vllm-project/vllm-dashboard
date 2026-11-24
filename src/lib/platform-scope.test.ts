@@ -151,7 +151,7 @@ test("classifies each GPU step as common, NVIDIA-only, ROCm-only or unclassified
   );
 
   const stale = new Map(snapshot.staleRules.map((rule) => [rule.id, rule.problem]));
-  assert.match(stale.get("pp-equivalence-4-gpus") ?? "", /now declares a mirror/);
+  assert.match(stale.get("pp-equivalence-4-gpus") ?? "", /now has an AMD mirror/);
   assert.match(stale.get("lm-eval-humming-l4") ?? "", /No GPU step/);
   assert.equal(stale.has("minimax-m3-mega-moe-test-b200"), false);
 });

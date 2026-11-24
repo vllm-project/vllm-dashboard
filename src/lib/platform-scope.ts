@@ -2,9 +2,11 @@
  * Platform scope of vLLM's CI jobs: which jobs are on the common path that
  * both NVIDIA and AMD run, and which are NVIDIA-only or ROCm-only.
  *
- * Reads the same parsed `.buildkite/test_areas` files as the old parity view.
- * Every NVIDIA or AMD GPU step becomes one job. An NVIDIA step with a
- * `mirror.amd` block runs on both platforms and is common. Every other step
+ * Reads the same parsed `.buildkite/test_areas` files as the old parity view,
+ * with `devices:` steps compiled into the legacy shape (buildkite-devices.ts).
+ * Every NVIDIA or AMD GPU step becomes one job. An NVIDIA step with an AMD
+ * mirror (a `mirror.amd` block, or its `devices:` AMD job keyed `amd-<key>`)
+ * runs on both platforms and is common. Every other step
  * takes its scope from `platform-scope-rules.ts`: a rule for its key, then a
  * rule for its file, then a label pattern. A step none of them cover is
  * "unclassified". CPU and other-hardware steps are left out.
@@ -248,14 +250,15 @@ export function computePlatformScope(
       if (STEP_RULES[id]) {
         staleRules.push({
           id,
-          problem: "Step now declares a mirror.amd block; its rule is unused.",
+          problem:
+            "Step now has an AMD mirror (mirror.amd or an AMD device); its rule is unused.",
         });
       }
       jobs.push({
         ...base,
         scope: "common",
         source: "mirror",
-        reason: "Declares a mirror.amd block.",
+        reason: "Runs on AMD too (mirror.amd or an AMD device).",
         nvidia: own,
         amd: {
           label: parsed.mirror.label,
@@ -278,7 +281,7 @@ export function computePlatformScope(
         source: "none",
         reason:
           vendor === "nvidia"
-            ? "No mirror.amd block and no platform rule."
+            ? "No AMD mirror (mirror.amd or AMD device) and no platform rule."
             : "AMD-only step with no platform rule.",
         nvidia: vendor === "nvidia" ? own : null,
         amd: vendor === "amd" ? own : null,

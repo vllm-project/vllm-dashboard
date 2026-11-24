@@ -345,8 +345,10 @@ export default function PlatformsPage() {
               {data.source.repo}/{data.source.directory}
             </a>{" "}
             are on the common path that both NVIDIA and AMD should run, and which
-            belong to one platform. Jobs with a <code className="font-mono text-xs">mirror.amd</code>{" "}
-            block are common; everything else is classified in{" "}
+            belong to one platform. Jobs with an AMD mirror (a{" "}
+            <code className="font-mono text-xs">mirror.amd</code> block, or an AMD device under{" "}
+            <code className="font-mono text-xs">devices:</code>) are common; everything else is
+            classified in{" "}
             <a href={RULES_URL} target="_blank" rel="noreferrer" className={linkClass}>
               platform-scope-rules.ts
             </a>
@@ -401,7 +403,7 @@ export default function PlatformsPage() {
             <p>
               <span className="font-medium">{summary.unclassified} unclassified</span>{" "}
               job{summary.unclassified === 1 ? "" : "s"}: no AMD mirror and no platform
-              rule. Add an AMD mirror if the job is common, or a rule in{" "}
+              rule. Add an AMD device to the step if the job is common, or a rule in{" "}
               <a href={RULES_URL} target="_blank" rel="noreferrer" className="underline">
                 platform-scope-rules.ts
               </a>{" "}
