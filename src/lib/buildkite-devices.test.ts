@@ -225,7 +225,8 @@ source_file_dependencies:
         "v1-attention-pinned-extended",
         ":nvidia: (H100) [Nightly] V1 Attention [extended]",
       ],
-      ["attention-renamed", ":nvidia: (H100) Attention Renamed"],
+      // `label:` replaces the title only; the ` [<name>]` stays.
+      ["attention-renamed", ":nvidia: (H100) Attention Renamed [renamed]"],
     ],
   );
   assert.deepEqual(jobs[1].fields.commands, ["pytest -v -s --runslow v1/attention"]);

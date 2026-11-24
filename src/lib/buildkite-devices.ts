@@ -41,7 +41,8 @@
  *     same vendor, minus its key, label and variants; written fields replace
  *     the copied ones, except that dependencies add and `env` merges;
  *   - a variant starts from its device's resolved job, minus key and label:
- *     dependencies add, anything else it writes replaces;
+ *     dependencies add, anything else it writes replaces; its `label:`
+ *     replaces the title, and ` [<name>]` is always appended;
  *   - the registry adds the image step, the label's icon, tag and
  *     `[Nightly]` (from `optional: true`), the `amd-` key prefix, and for AMD
  *     `dind: false` and the pool's GPU count.
@@ -60,6 +61,12 @@
  *
  * Not ported: E9 (flow-style lists), which needs the yaml's nodes and does not
  * change what a step compiles to, and the generator's "did you mean" hints.
+ * Neither are the loader's checks in step.py, which reject a whole pipeline
+ * rather than compile a step: the Step model's (`concurrency` with
+ * `concurrency_group`, `num_nodes` with `num_devices`), a GitHub status or key
+ * that two jobs in any files share, and a job file that is not a map of
+ * `steps:`. This port compiles what step_vendors.expand_document compiles; a
+ * reader shows what such a file would have run instead of failing.
  */
 
 export type Vendor = "nvidia" | "amd" | "cpu";
@@ -530,9 +537,12 @@ export function resolveStep(raw: unknown, groupDependsOn?: unknown): DeviceJob[]
       const variantWhere = `${deviceWhere}, variant ${name}`;
       checkMachine(info, device, body, variantWhere);
       const variantFields = variantFieldsOf(deviceJob.fields, body, variantWhere);
-      const variantTitle = Object.hasOwn(body, "label")
-        ? checkedTitle(body.label, variantWhere)
-        : `${deviceTitle} [${name}]`;
+      // `label:` replaces the title only; the ` [<name>]` that tells the
+      // variant from its device job stays.
+      const variantTitle =
+        (Object.hasOwn(body, "label")
+          ? checkedTitle(body.label, variantWhere)
+          : deviceTitle) + ` [${name}]`;
       jobs.push({
         key: (body.key as string | undefined) || `${deviceJob.key}-${name}`,
         device,
@@ -563,7 +573,7 @@ export function resolveStep(raw: unknown, groupDependsOn?: unknown): DeviceJob[]
   return jobs;
 }
 
-/** `<icon> (<TAG>) [Nightly ]<title>`. */
+/** `<icon> (<TAG>) [Nightly ]<title>`; a variant's title ends in ` [<name>]`. */
 export function jobLabel(info: DeviceInfo, title: string, fields: Fields): string {
   const nightly = fields.optional ? "[Nightly] " : "";
   return `${VENDOR_ICONS[info.vendor]} (${info.tag}) ${nightly}${title}`;
