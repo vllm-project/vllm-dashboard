@@ -352,10 +352,12 @@ def query_fault_fields():
 
 
 def parse_dcgm_discovery(text):
-    """Parse GPU instances, compute-instance count and GPU-row presence once.
+    """Parse compute instances, their count and GPU-row presence once.
 
-    DCGM numbers GPUs in nvidia-smi index order, so I <gpu>/<gi> maps to the
-    nvidia-smi index used by the rest of the report.
+    Returns ({compute-instance entity ID: GPU index}, compute-instance count,
+    whether any GPU row was seen). DCGM numbers GPUs in nvidia-smi index
+    order, so CI <gpu>/<gi>/<ci> maps to the nvidia-smi index used by the
+    rest of the report.
     """
     instances = {}
     mig_slices = 0
@@ -363,7 +365,7 @@ def parse_dcgm_discovery(text):
     for line in text.splitlines():
         if re.match(r"\|\s*GPU \d+\s", line):
             saw_gpu_row = True
-        instance = re.match(r"\|\s*-> I (\d+)/\d+\s.*\(EntityID: (\d+)\)", line)
+        instance = re.match(r"\|\s*-> CI (\d+)/\d+/\d+\s.*\(EntityID: (\d+)\)", line)
         if instance:
             instances[int(instance.group(2))] = int(instance.group(1))
         if re.match(r"\|\s*-> CI \d+/\d+/\d+", line):
@@ -372,7 +374,7 @@ def parse_dcgm_discovery(text):
 
 
 def parse_mig_util(text, instances):
-    """`dcgmi dmon` GPU-instance rows -> {GPU index: utilization %}.
+    """`dcgmi dmon` compute-instance rows -> {GPU index: utilization %}.
 
     NVML has no utilization under MIG, so a GPU's figure is the mean of its
     slices' graphics-engine activity (DCGM field 1001): 100% means every
@@ -386,7 +388,7 @@ def parse_mig_util(text, instances):
     samples = {}
     for line in text.splitlines():
         parts = line.split()
-        if len(parts) < 3 or parts[0] != "GPU-I" or parts[2] == "N/A":
+        if len(parts) < 3 or parts[0] != "GPU-CI" or parts[2] == "N/A":
             continue
         samples.setdefault(int(parts[1]), []).append(float(parts[2]))
     per_gpu = {}
@@ -422,7 +424,12 @@ def query_mig_util():
         raise RuntimeError("DCGM discovery output has no GPU rows")
     if not instances:
         return {}, mig_slices
-    ids = ",".join(f"i:{entity}" for entity in sorted(instances))
+    # Compute instances, not GPU instances: DCGM 4.7 samples a GPU instance
+    # through nvmlGpmMigSampleGet, which driver 595 answers "not supported",
+    # so a freshly started hostengine reads every GPU-instance field as N/A.
+    # A compute instance is sampled through its MIG device handle, which
+    # works; with one per slice (1g profiles) it measures the whole slice.
+    ids = ",".join(f"c:{entity}" for entity in sorted(instances))
     # Fields 1001-1005 together: watching 1001 alone stayed N/A on a GPU
     # instance. Three samples: the first is often N/A while the watch warms
     # up, and each one takes seconds on a host with dozens of slices.
