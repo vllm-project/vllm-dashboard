@@ -333,3 +333,81 @@ steps:
   assert.equal(inherited.amdMirrorParallelism, 4);
   assert.equal(inherited.amdMirrorNumNodes, 2);
 });
+
+test("a variant on both vendors is mirrored, as the same pair written legacy", () => {
+  const legacy = `
+group: A
+depends_on:
+  - image-build
+steps:
+- label: ":nvidia: (H100) T"
+  key: t
+  device: h100
+  commands:
+    - pytest x
+  mirror:
+    amd:
+      device: mi355_1
+      label: ":amd: (MI355) T"
+- label: ":nvidia: (H100) T [eager]"
+  key: t-eager
+  device: h100
+  env:
+    EAGER: "1"
+  commands:
+    - pytest x
+  mirror:
+    amd:
+      device: mi355_1
+      label: ":amd: (MI355) T [eager]"
+`;
+  const devices = `
+group: A
+depends_on:
+  - image-build
+steps:
+- label: T
+  key: t
+  devices:
+    h100:
+      variants:
+        eager:
+          env:
+            EAGER: "1"
+    mi355_1:
+      variants:
+        eager:
+          env:
+            EAGER: "1"
+  commands:
+    - pytest x
+`;
+  const parity = computeParity(files(devices));
+  assert.deepEqual(
+    parity.jobs.map((job) => [job.key, job.mirror?.label ?? null]),
+    [
+      ["t", ":amd: (MI355) T"],
+      ["t-eager", ":amd: (MI355) T [eager]"],
+    ],
+  );
+  assert.equal(parity.skipped.amdJobs, 0);
+  assert.deepEqual(parity, computeParity(files(legacy)));
+
+  const scope = computePlatformScope(files(devices));
+  assert.deepEqual(
+    scope.jobs.map((job) => [job.key, job.scope, job.amd?.key ?? null]),
+    [
+      ["t", "common", "amd-t"],
+      ["t-eager", "common", "amd-t-eager"],
+    ],
+  );
+  assert.deepEqual(scope, computePlatformScope(files(legacy)));
+
+  const devicesArea = area(devices);
+  const legacyArea = area(legacy);
+  assert.deepEqual(withoutForm(devicesArea), legacyArea);
+  assert.deepEqual(
+    classifyShardingJobs([devicesArea], []),
+    classifyShardingJobs([legacyArea], []),
+  );
+});

@@ -23,15 +23,23 @@ written in one of two forms, and the dashboard reads both:
 - **`devices:`** (current): the step names its hardware only as the keys of a
   `devices:` map, one job per device, plus more jobs on a device under its
   `variants:`; `same_as` copies an earlier device of the same vendor. The
-  dashboard compiles it exactly as the generator does
-  (`src/lib/buildkite-devices.ts`, a port of ci-infra's `step_vendors.py` and
-  its device registry): the first non-AMD job is a step, the AMD job keyed
-  `amd-<key>` is that step's mirror (marked `_exact`: it inherits nothing from
-  the step), and every other job (a second NVIDIA device, a variant, an
-  AMD-only or CPU test) is a step of its own. Labels and keys come from the
-  registry: `:nvidia: (H100) V1 Attention`, `[Nightly]` from `optional: true`,
-  `amd-<key>` for the first AMD device and `<key>-<key_tag>` for a further
-  one. A step that does not compile is logged and left out.
+  dashboard compiles it as the generator does (`src/lib/buildkite-devices.ts`,
+  a port of ci-infra's `step_vendors.py` and its device registry), then pairs
+  AMD jobs: each non-AMD job keyed `<K>` is a step, the step's AMD job keyed
+  `amd-<K>` is its mirror (marked `_exact`: it inherits nothing from the
+  step), and every other job (an unpaired NVIDIA device or variant, an
+  AMD-only or CPU test) is a step of its own. The generator itself pairs only
+  the first non-AMD job; a variant on both vendors (`<K>-eager` and
+  `amd-<K>-eager`) runs the same jobs either way, and the dashboard counts it
+  as mirrored, as it would the same pair written in the legacy form. Labels
+  and keys come from the registry: `:nvidia: (H100) V1 Attention`,
+  `[Nightly]` from `optional: true`, a variant's ` [<name>]` after the title
+  (a variant's `label:` replaces only the title). With `<key>` the step's
+  `key`, the first non-AMD device is keyed `<key>`, other non-AMD devices
+  `<key>-<key_tag>`, the first AMD device `amd-<key>`, other AMD devices
+  `amd-<key>-<key_tag>`, and a variant `<its device job's key>-<name>`; a
+  `key:` on a device or variant is used as written. A step that does not
+  compile is logged and left out.
 - **Legacy** `device:` + `mirror.amd`: one NVIDIA (or CPU, AMD) step, whose
   `mirror.amd` block the generator emits as an `amd-<key>` step.
 
@@ -48,9 +56,10 @@ Each compiled or legacy step is then one job:
   comparable across the format change. A device the generator does not know,
   with no shortcode to fall back on, is reported under `skipped.unknown`
   rather than dropped silently.
-- **Mirrored** means the step has an AMD job: a `mirror.amd` block, or the
-  AMD device of a `devices:` step keyed `amd-<key>`. The generator emits it as
-  an `amd-<key>` step on that AMD device.
+- **Mirrored** means the NVIDIA job keyed `<K>` has an AMD job keyed
+  `amd-<K>`: its `mirror.amd` block, or the AMD device or variant of the same
+  `devices:` step with that key. The generator emits it as an `amd-<K>` step
+  on that AMD device.
 - **Gating**, for this view, means `optional` is absent or false. A step with
   `soft_fail: true` remains included, although its failure does not fail the
   build. A legacy mirror inherits both flags unless its block overrides

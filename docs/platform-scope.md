@@ -19,15 +19,16 @@ jobs that have no step on one of the two platforms.
 Jobs come from `.buildkite/test_areas/*.yaml` on `vllm-project/vllm` `main`,
 read with the parity loader (`gpu-parity-source.ts`) and its vendor rules
 (`classifyStep`). Both step forms are read: a `devices:` step is compiled the
-way the generator compiles it (see [gpu-parity.md](gpu-parity.md#source)), so
-its first NVIDIA job carries its `amd-<key>` AMD job as a mirror and every
-other job is a step of its own. Each NVIDIA or AMD GPU step is one job. CPU
+way the generator compiles it (see [gpu-parity.md](gpu-parity.md#source)), and
+each NVIDIA job keyed `<K>` carries the step's `amd-<K>` AMD job, if any, as a
+mirror; every other job is a step of its own. Each NVIDIA or AMD GPU step is one job. CPU
 and other hardware steps are left out and counted.
 
 Scope is decided in this order:
 
-1. An NVIDIA step with an AMD mirror (a `mirror.amd` block, or the AMD device
-   keyed `amd-<key>` of a `devices:` step) is **common** and runs on both.
+1. An NVIDIA step keyed `<K>` with an AMD mirror (a `mirror.amd` block, or
+   the AMD job keyed `amd-<K>` of the same `devices:` step) is **common** and
+   runs on both.
    Nothing overrides a declared mirror.
 2. A rule for the step's `key` (or label, when it has no key) in
    `STEP_RULES`.

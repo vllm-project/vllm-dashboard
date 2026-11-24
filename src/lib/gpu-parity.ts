@@ -6,10 +6,11 @@
  * declare a `mirror.amd` block that the pipeline generator
  * (vllm-project/ci-infra) turns into an `amd-<key>` step on AMD hardware, or
  * one job of a step's `devices:` map. A `devices:` step is compiled the way the
- * generator compiles it (buildkite-devices.ts): its first non-AMD job becomes a
- * step whose exact `mirror.amd` is its AMD job keyed `amd-<key>`, and every
- * other job (more devices, variants, AMD-only and CPU jobs) a step of its
- * own. This module reads those parsed YAML files and counts,
+ * generator compiles it (buildkite-devices.ts), with AMD jobs paired: every
+ * non-AMD job K whose step also has an AMD job keyed `amd-<K>` (the first
+ * device, or a variant on both vendors) becomes a step with that AMD job as
+ * its exact `mirror.amd`, and every other job (more devices, unpaired
+ * variants, AMD-only and CPU jobs) a step of its own. This module reads those parsed YAML files and counts,
  * per test area and overall, how many NVIDIA jobs are eligible for AMD parity
  * and how many of them have an AMD mirror. Known NVIDIA-specific job families
  * without a declared AMD mirror are excluded by label. Each YAML step is
@@ -129,7 +130,9 @@ export function parseTestAreaFile(
     return null;
   }
   if (!Array.isArray(candidate.steps)) return null;
-  const steps = expandSteps(candidate.steps, candidate.depends_on).filter(
+  const steps = expandSteps(candidate.steps, candidate.depends_on, undefined, {
+    pairAmdJobs: true,
+  }).filter(
     (step): step is Record<string, unknown> =>
       !!step &&
       typeof step === "object" &&

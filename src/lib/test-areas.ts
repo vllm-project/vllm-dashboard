@@ -5,8 +5,9 @@ import { githubHeaders } from "./github";
 
 /**
  * One job of a test-area YAML step. A `devices:` step is compiled first
- * (buildkite-devices.ts): its first non-AMD job is a step whose `mirror.amd` is
- * the AMD job keyed `amd-<key>`, and every other job is a step of its own.
+ * (buildkite-devices.ts): each non-AMD job K is a step whose `mirror.amd` is
+ * the step's AMD job keyed `amd-<K>`, if it has one, and every other job is a
+ * step of its own.
  */
 export interface TestStep {
   label: string;
@@ -459,7 +460,9 @@ export function parseTestArea(value: unknown): TestArea | null {
   }
   if (!Array.isArray(candidate.steps)) return null;
 
-  const steps = expandSteps(candidate.steps, candidate.depends_on)
+  const steps = expandSteps(candidate.steps, candidate.depends_on, undefined, {
+    pairAmdJobs: true,
+  })
     .map(parseTestStep)
     .filter((step): step is TestStep => step !== null);
   if (steps.length === 0) return null;

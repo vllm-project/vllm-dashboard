@@ -189,6 +189,53 @@ devices:
   assert.deepEqual(compiled[3].commands, ["c"]);
 });
 
+test("pairAmdJobs pairs every non-AMD job K with the step's amd-K job", () => {
+  const raw = step(`
+label: T
+key: t
+devices:
+  h100:
+    variants:
+      eager:
+        env:
+          EAGER: "1"
+      slow:
+        env:
+          SLOW: "1"
+  b200:
+    key: t-blackwell
+  mi355_1:
+    variants:
+      eager:
+        env:
+          EAGER: "1"
+  mi300_1:
+    key: amd-t-blackwell
+commands:
+  - pytest x
+`);
+  const shape = (compiled: Record<string, unknown>[]) =>
+    compiled.map((entry) => [
+      entry.key,
+      (entry.mirror as { amd?: { label?: string } } | undefined)?.amd?.label ?? null,
+    ]);
+  // The generator's shape: only the first non-AMD job has a mirror.
+  assert.deepEqual(shape(compileDeviceStep(raw)), [
+    ["t", ":amd: (MI355) T"],
+    ["t-eager", null],
+    ["t-slow", null],
+    ["t-blackwell", null],
+    ["amd-t-eager", null],
+    ["amd-t-blackwell", null],
+  ]);
+  assert.deepEqual(shape(compileDeviceStep(raw, undefined, { pairAmdJobs: true })), [
+    ["t", ":amd: (MI355) T"],
+    ["t-eager", ":amd: (MI355) T [eager]"],
+    ["t-slow", null],
+    ["t-blackwell", ":amd: (MI300) T"],
+  ]);
+});
+
 test("variants replace what they name, add deps, and may pin a key or label", () => {
   const jobs = resolveStep(
     step(`

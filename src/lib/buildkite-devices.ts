@@ -59,6 +59,12 @@
  * Steps without `devices:` (the legacy `device` + `mirror` form) are returned
  * as they are.
  *
+ * That is the generator's shape. The readers ask for `pairAmdJobs`, which also
+ * folds the AMD job keyed `amd-<K>` into any other non-AMD job K of the same
+ * step (a variant on both vendors, or a pinned key), the way the legacy form
+ * writes that pair as a step and its mirror. Buildkite runs the same jobs
+ * either way; only which NVIDIA job an AMD job counts for changes.
+ *
  * Not ported: E9 (flow-style lists), which needs the yaml's nodes and does not
  * change what a step compiles to, and the generator's "did you mean" hints.
  * Neither are the loader's checks in step.py, which reject a whole pipeline
@@ -384,12 +390,13 @@ export function expandSteps(
   rawSteps: readonly unknown[],
   groupDependsOn?: unknown,
   onError: (error: DeviceStepError, raw: unknown) => void = logStepError,
+  options: CompileOptions = {},
 ): unknown[] {
   const expanded: unknown[] = [];
   for (const raw of rawSteps) {
     try {
       if (isDeviceStep(raw)) {
-        expanded.push(...compileDeviceStep(raw, groupDependsOn));
+        expanded.push(...compileDeviceStep(raw, groupDependsOn, options));
       } else {
         checkWrittenStep(raw);
         expanded.push(raw);
@@ -406,32 +413,47 @@ function logStepError(error: DeviceStepError): void {
   console.error(`Skipping a Buildkite step that does not compile: ${error.message}`);
 }
 
+export interface CompileOptions {
+  /**
+   * Also make the AMD job keyed `amd-<K>` the exact mirror of every other
+   * non-AMD job K of the step, not only of the first one. Not the generator's
+   * shape (it uploads such a pair as two steps), but the same jobs.
+   */
+  pairAmdJobs?: boolean;
+}
+
 /** The step dicts of one `devices:` step, in the step + `mirror.amd` shape. */
 export function compileDeviceStep(
   raw: Fields,
   groupDependsOn?: unknown,
+  options: CompileOptions = {},
 ): Fields[] {
   const jobs = resolveStep(raw, groupDependsOn);
   const passed: Fields = {};
   for (const name of PASSED_THROUGH_FIELDS) {
     if (Object.hasOwn(raw, name)) passed[name] = raw[name];
   }
-  const candidates = jobs.filter(
-    (job) => job.info.vendor !== "amd" && job.variant === null,
-  );
+  const nonAmdJobs = jobs.filter((job) => job.info.vendor !== "amd");
+  const candidates = nonAmdJobs.filter((job) => job.variant === null);
   const primary =
     candidates.find((job) => job.key === raw.key) ?? candidates[0] ?? null;
-  const mirror = primary
-    ? (jobs.find(
-        (job) => job.info.vendor === "amd" && job.key === `amd-${primary.key}`,
-      ) ?? null)
-    : null;
+  const amdJobs = new Map(
+    jobs.filter((job) => job.info.vendor === "amd").map((job) => [job.key, job]),
+  );
+  // Keys are unique within a step (E8), so an AMD job pairs with one job.
+  const mirrors = new Map<DeviceJob, DeviceJob>();
+  for (const job of options.pairAmdJobs ? nonAmdJobs : primary ? [primary] : []) {
+    const mirror = amdJobs.get(`amd-${job.key}`);
+    if (mirror) mirrors.set(job, mirror);
+  }
+  const paired = new Set(mirrors.values());
 
   const compiled: Fields[] = [];
   for (const job of jobs) {
-    if (job === mirror) continue;
+    if (paired.has(job)) continue;
     const step: Fields = { ...clone(passed), ...jobStepFields(job) };
-    if (job === primary && mirror) {
+    const mirror = mirrors.get(job);
+    if (mirror) {
       const block: Fields = {};
       for (const [name, value] of Object.entries(jobStepFields(mirror))) {
         if (MIRROR_FIELDS.has(name) || name === "device") block[name] = value;
