@@ -510,11 +510,11 @@ FM_NOT_PRESENT = (
     "returned from status @ mem_multicast_fabric.c:3039")
 
 
-# PROBE_SCRIPT output captured from an H100 device-plugin pod.
+# PROBE_SCRIPT output captured from a device-plugin pod (2026-11-18).
 PROBE_OUTPUT = "\n".join([
-    "github 0 660  ",
-    "registry 1 5180 wget: server returned error: HTTP/1.1 401 Unauthorized ",
-    "pypi 0 5260 ",
+    "registry 0 100 HTTP/1.1 401 Unauthorized",
+    "pypi 0 100 HTTP/1.1 200 OK",
+    "github 0 410 HTTP/1.1 200 OK",
 ])
 
 
@@ -689,15 +689,19 @@ def test_nvidia_smi_exec_past_the_hang_timeout_is_a_hang(reporter_k8s,
 
 def test_parse_probe_output(reporter_k8s):
     assert reporter_k8s.parse_probe_output(PROBE_OUTPUT) == [
-        {"target": "github", "ok": True, "error": None, "latency_ms": 660},
-        {"target": "registry", "ok": True, "error": None, "latency_ms": 5180},
-        {"target": "pypi", "ok": True, "error": None, "latency_ms": 5260},
+        {"target": "github", "ok": True, "error": None, "latency_ms": 410},
+        {"target": "registry", "ok": True, "error": None, "latency_ms": 100},
+        {"target": "pypi", "ok": True, "error": None, "latency_ms": 100},
     ]
+    # Failure lines as the plugin image's openssl prints them.
     down = "\n".join([
-        "pypi 1 10 wget: can't connect to remote host (1.2.3.4): "
-        "Connection refused ",
-        "github 1 5010 wget: bad address 'github.com' ",
-        "registry 143 11000  ",
+        "github 1 100 40F701379E7C0000:error:10080002:BIO routines:"
+        "BIO_lookup_ex:system lib:../crypto/bio/bio_addr.c:767:"
+        "Name or service not known",
+        "registry 143 11000 timed out",
+        "pypi 1 100 40B7A7E8367B0000:error:8000006F:system library:"
+        "BIO_connect:Connection refused:../crypto/bio/bio_sock2.c:183:"
+        "calling connect()",
     ])
     assert [(p["target"], p["ok"], p["error"], p["latency_ms"])
             for p in reporter_k8s.parse_probe_output(down)] == [
@@ -707,16 +711,109 @@ def test_parse_probe_output(reporter_k8s):
     ]
 
 
+def test_probe_error_kinds(reporter_k8s):
+    kind = reporter_k8s.probe_error_kind
+    assert kind(0, "HTTP/1.1 401 Unauthorized") is None
+    assert kind(1, "405769E08D7C0000:error:0A00010B:SSL routines:"
+                   "tls_validate_record_header:wrong version number") == "tls"
+    # A DNS failure also says connect:errno; the lookup decides it.
+    assert kind(1, "error:10080002:BIO routines:BIO_lookup_ex:system lib "
+                   "connect:errno=2") == "dns"
+    assert kind(1, "connect:errno=113") == "connect"
+    assert kind(143, "") == "timeout"
+    assert kind(1, "") == "other"
+    # A page saying "not found" is still an answer; only 127 is no tool.
+    assert kind(0, "HTTP/1.1 404 Not Found") is None
+
+
 def test_probe_output_without_every_target_is_no_reading(reporter_k8s):
     import pytest
 
     with pytest.raises(RuntimeError, match="registry"):
         reporter_k8s.parse_probe_output("github 0 1 \npypi 0 1 ")
-    # A plugin image without wget can't say anything about the network.
-    with pytest.raises(RuntimeError, match="missing"):
+    # A line with no output field at all still parses.
+    assert [p["ok"] for p in reporter_k8s.parse_probe_output(
+        "github 0 1\nregistry 0 1\npypi 143 1")] == [True, True, False]
+    # A plugin image without openssl can't say anything about the network.
+    with pytest.raises(RuntimeError, match="^probe tool missing: sh: openssl"):
         reporter_k8s.parse_probe_output("\n".join(
-            f"{t} 127 0 sh: wget: not found" for t, _ in
+            f"{t} 127 0 sh: openssl: not found" for t, _ in
             reporter_k8s.NETWORK_PROBES))
+    # A line with no output field reports no made-up output.
+    with pytest.raises(RuntimeError, match="^probe tool missing: $"):
+        reporter_k8s.parse_probe_output("github 127 0")
+
+
+def test_read_network_probes_gives_up_after_the_probe_timeout(
+        reporter_k8s, monkeypatch):
+    sent = {}
+
+    def fake_kubectl(*args, timeout=10):
+        sent["script"], sent["timeout"] = args[-1], timeout
+        return PROBE_OUTPUT
+
+    monkeypatch.setattr(reporter_k8s, "kubectl", fake_kubectl)
+    assert len(reporter_k8s.read_network_probes("plugin-pod")) == 3
+    # Gives up 11 s in (centiseconds), inside the 15 s exec timeout.
+    assert "+ 1100 ))" in sent["script"]
+    assert sent["timeout"] == 15
+
+
+FAKE_OPENSSL = """#!/bin/sh
+# Stands in for the plugin image's openssl: the host picks the behaviour.
+for a in "$@"; do case $a in *:443) host=${a%:443} ;; esac; done
+case $host in
+  ok.test) cat > "$FAKE_LOG"; echo "Connecting to 1.2.3.4" >&2
+           echo "HTTP/1.1 401 Unauthorized"; echo "Date: today" ;;
+  bad.test) echo "Connecting to 1.2.3.4" >&2
+            echo "x:error:0A00010B:SSL routines:wrong version number" >&2
+            exit 1 ;;
+  hang.test) exec sleep 30 ;;
+esac
+"""
+
+
+@pytest.mark.skipif(not Path("/proc/uptime").exists(),
+                    reason="the probe clock is Linux /proc/uptime")
+def test_probe_script_end_to_end(reporter_k8s, tmp_path):
+    """The script's own logic, run by sh against a fake openssl.
+
+    Leaving no orphans can only be checked in the real image; this pins the
+    output format, the request it sends and the kill on timeout.
+    """
+    import os
+    import subprocess
+
+    fake = tmp_path / "openssl"
+    fake.write_text(FAKE_OPENSSL)
+    fake.chmod(0o755)
+    # 10x slower than asked, as on a loaded node: the deadline is wall
+    # time, so the 0.5 s limit must still hold.
+    usleep = tmp_path / "usleep"
+    usleep.write_text("#!/bin/sh\nsleep 0.1\n")
+    usleep.chmod(0o755)
+    targets = "ok=https://ok.test/v2/ bad=https://bad.test hang=https://hang.test"
+    script = reporter_k8s.PROBE_SCRIPT % (50, targets)
+    started = time.monotonic()
+    out = subprocess.run(
+        ["sh", "-c", script], capture_output=True, text=True, timeout=20,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}",
+             "FAKE_LOG": str(tmp_path / "request")},
+    ).stdout
+    elapsed = time.monotonic() - started
+    lines = {line.split(" ")[0]: line for line in out.splitlines()}
+    assert lines["ok"].split(" ", 3)[1] == "0"
+    assert lines["ok"].endswith(" HTTP/1.1 401 Unauthorized")
+    assert lines["bad"].split(" ", 3)[1] == "1"
+    assert lines["bad"].endswith("SSL routines:wrong version number")
+    assert lines["hang"].split(" ", 3)[1] == "143"
+    assert lines["hang"].endswith(" timed out")
+    assert elapsed < 2  # 50 slow ticks would be 5 s
+    assert (tmp_path / "request").read_bytes() == (
+        b"HEAD /v2/ HTTP/1.0\r\nHost: ok.test\r\n\r\n")
+    assert [p["error"] for p in reporter_k8s.parse_probe_output(
+        out.replace("ok ", "github ").replace("bad ", "registry ")
+        .replace("hang ", "pypi "))] == [None, "tls", "timeout"]
 
 
 def test_parse_fabric_output(reporter_k8s):

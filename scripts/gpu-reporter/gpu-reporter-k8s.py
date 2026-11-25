@@ -24,7 +24,7 @@ independently to null; null means "missing reading", never a passing value.
 The same nvidia-smi exec is the GPU-hang check: nvidia-smi erroring or the
 exec not returning within GPU_HANG_TIMEOUT is gpu_query_hung=true, an
 explicit failing value. A second exec probes NETWORK_PROBES with the plugin
-image's busybox wget. A third reads GPU fabric health (FABRIC_SCRIPT). The
+image's openssl. A third reads GPU fabric health (FABRIC_SCRIPT). The
 execs start for every node at once, before the per-node loop, so a hung node
 costs the run one timeout, not one per node.
 
@@ -308,31 +308,52 @@ def read_smi(pod):
     return parse_smi_gpus(out), False, None
 
 
-# Each probe prints "<target> <wget exit code> <ms> <wget stderr>". busybox
-# date has no %N, so the clock is /proc/uptime in centiseconds.
+# Each probe prints "<target> <code> <ms> <first telling output line>", code
+# 0 for an HTTP answer, 143 timed out, 127 no openssl, else 1. busybox date
+# has no %%N, so the clock is /proc/uptime in centiseconds.
+# The plugin container's PID 1 never reaps orphans, so every process here
+# must be a child of this shell: busybox `timeout` (a daemonized watchdog)
+# and `wget` (an unwaited openssl helper) each left a zombie per probe,
+# ~400k per node by 2026-11. openssl s_client is the call wget made.
 PROBE_SCRIPT = """
 cs() { read u _ < /proc/uptime; echo "${u%%.*}${u#*.}"; }
+probe() {
+  u=${1#https://}; a=${u%%%%/*}; q=${u#"$a"}
+  printf 'HEAD %%s HTTP/1.0\\r\\nHost: %%s\\r\\n\\r\\n' "${q:-/}" "$a" |
+    openssl s_client -quiet -connect "$a:443" -servername "$a" 2>&1 &
+  p=$!; read u _ < /proc/uptime; d=$(( ${u%%.*}${u#*.} + %d ))
+  while jobs > /dev/null; kill -0 $p 2> /dev/null; do
+    read u _ < /proc/uptime
+    if [ ${u%%.*}${u#*.} -ge $d ]; then
+      kill $p; wait $p; echo "timed out"; break
+    fi
+    usleep 10000
+  done
+}
 for t in %s; do
-  ( s=$(cs); e=$(timeout %d wget -q -T %d --spider "${t#*=}" 2>&1); r=$?
-    echo "${t%%%%=*} $r $(( ($(cs) - s) * 10 )) $(echo "$e" | tr '\\n' ' ')" ) &
+  ( s=$(cs); e=$(probe "${t#*=}")
+    case $e in *HTTP/*) r=0 ;; *"timed out"*) r=143 ;; *"not found"*) r=127 ;;
+      *) r=1 ;; esac
+    l=$(echo "$e" | grep -m 1 -E 'HTTP/|error|timed out|not found' | tr -d '\\r')
+    echo "${t%%%%=*} $r $(( ($(cs) - s) * 10 )) $l" ) &
 done
 wait
 """
 
 
-def wget_error_kind(code, stderr):
-    """busybox wget exit code + stderr -> None (reached) or an error kind."""
-    if code == 0 or "server returned error" in stderr:
+def probe_error_kind(code, output):
+    """PROBE_SCRIPT code + output line -> None (reached) or an error kind."""
+    if code == 0:
         return None  # any HTTP answer, a registry's 401 included
-    if code == 127 or "not found" in stderr:
-        raise RuntimeError(f"probe tool missing: {stderr.strip()}")
-    if code == 143 or "timed out" in stderr:
+    if code == 127:
+        raise RuntimeError(f"probe tool missing: {output.strip()}")
+    if code == 143:
         return "timeout"
-    if "bad address" in stderr:
+    if "BIO_lookup" in output:
         return "dns"
-    if "TLS" in stderr or "ssl" in stderr.lower():
+    if "SSL routines" in output:
         return "tls"
-    if "can't connect" in stderr or "Connection" in stderr:
+    if "BIO_connect" in output or "connect:errno" in output:
         return "connect"
     return "other"
 
@@ -347,7 +368,7 @@ def parse_probe_output(text):
         parts = line.split(" ", 3)
         if len(parts) < 3 or not (parts[1].isdigit() and parts[2].isdigit()):
             continue
-        kind = wget_error_kind(int(parts[1]), parts[3] if len(parts) > 3 else "")
+        kind = probe_error_kind(int(parts[1]), parts[3] if len(parts) > 3 else "")
         by_target[parts[0]] = {
             "target": parts[0], "ok": kind is None, "error": kind,
             "latency_ms": int(parts[2]) if kind is None else None,
@@ -360,8 +381,9 @@ def parse_probe_output(text):
 
 def read_network_probes(pod):
     targets = " ".join(shlex.quote(f"{t}={url}") for t, url in NETWORK_PROBES)
-    script = PROBE_SCRIPT % (targets, NETWORK_PROBE_TIMEOUT + 1,
-                             NETWORK_PROBE_TIMEOUT)
+    # Deadline in centiseconds, 1 s past the probe timeout and inside the
+    # exec timeout.
+    script = PROBE_SCRIPT % ((NETWORK_PROBE_TIMEOUT + 1) * 100, targets)
     return parse_probe_output(kubectl(
         "exec", "-n", DCGM_NS, pod, "-c", PLUGIN_CONTAINER, "--",
         "sh", "-c", script, timeout=NETWORK_PROBE_TIMEOUT + 5,
