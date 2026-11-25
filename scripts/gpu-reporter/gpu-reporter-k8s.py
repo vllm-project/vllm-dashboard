@@ -16,7 +16,9 @@ server proxy:
 Driver fault signals come from each node's NVIDIA device-plugin pod:
 `kubectl exec nvidia-smi` (recovery action, row-remap failure, uncorrectable
 ECC) and the host's kernel journal since the last read (Xid events, through
-`chroot /host journalctl` in the same pod). Each reading fails
+`chroot /host journalctl` in the same pod). A node with the operator's plugin
+turned off (a HAMi GPU-sharing node) has no such pod; there the reads run in
+the gpu-driver-reader-daemonset.yaml pod instead. Each reading fails
 independently to null; null means "missing reading", never a passing value.
 
 The same nvidia-smi exec is the GPU-hang check: nvidia-smi erroring or the
@@ -43,6 +45,9 @@ Environment variables:
   DCGM_EXPORTER_PORT       - Metrics port (default: 9400)
   DEVICE_PLUGIN_LABEL      - Device-plugin pod selector, same namespace as the
                              exporter (default: app=nvidia-device-plugin-daemonset)
+  DRIVER_READER_LABEL      - Selector of gpu-driver-reader-daemonset.yaml's pods,
+                             used on nodes without a device-plugin pod
+                             (default: app=gpu-driver-reader)
   GPU_REPORT_DISK_INTERVAL - Seconds between cAdvisor disk scrapes (default: 300)
   GPU_REPORT_DISK_STATE    - Disk-scrape state file
                              (default: /var/lib/gpu-reporter/k8s-disk-state.json,
@@ -68,6 +73,10 @@ DCGM_PORT = os.environ.get("DCGM_EXPORTER_PORT", "9400")
 PLUGIN_LABEL = os.environ.get("DEVICE_PLUGIN_LABEL",
                               "app=nvidia-device-plugin-daemonset")
 PLUGIN_CONTAINER = "nvidia-device-plugin"
+# Where the operator's device plugin is turned off (HAMi replaces it), our
+# gpu-driver-reader-daemonset.yaml pod serves the same reads: same namespace,
+# same container name.
+READER_LABEL = os.environ.get("DRIVER_READER_LABEL", "app=gpu-driver-reader")
 # Readings are keyed by uuid: it joins them to DCGM's UUID label.
 SMI_FIELDS = ("uuid,pci.bus_id,gpu_recovery_action,remapped_rows.failure,"
               "ecc.errors.uncorrected.volatile.total")
@@ -232,8 +241,16 @@ def get_pod_ips():
 
 
 def get_plugin_pods():
-    """Device-plugin pods as {node name: pod name}."""
-    return pods_by_node(PLUGIN_LABEL, ".metadata.name")
+    """Pods to exec the driver reads in, as {node name: pod name}: the
+    device-plugin pod, else the node's driver-reader pod."""
+    pods = pods_by_node(PLUGIN_LABEL, ".metadata.name")
+    try:
+        readers = pods_by_node(READER_LABEL, ".metadata.name")
+    except Exception as e:
+        print(f"ERROR: failed to list driver-reader pods: {e}",
+              file=sys.stderr)
+        readers = {}
+    return {**readers, **pods}
 
 
 def _smi_text(v):

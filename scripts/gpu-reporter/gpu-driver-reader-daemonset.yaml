@@ -1,0 +1,60 @@
+# Driver-read pod for nodes where the GPU Operator's device plugin is turned
+# off (label nvidia.com/gpu.deploy.device-plugin=false), as on a HAMi GPU
+# sharing node. gpu-reporter-k8s.py execs nvidia-smi, the network probe, the
+# fabric check and `chroot /host journalctl` in the operator's plugin pod; on
+# such a node that pod does not exist, so it uses this one instead
+# (DRIVER_READER_LABEL). Same namespace and container name as the plugin pod,
+# so the reporter's existing RBAC and exec calls cover it.
+#
+# The image is the GPU Operator's device-plugin image: the reporter's commands
+# already run in it. Use the tag the cluster's operator runs, so the node has
+# it cached:
+#   kubectl -n gpu-operator get ds nvidia-device-plugin-daemonset \
+#     -o jsonpath='{.spec.template.spec.containers[0].image}'
+# Apply once per cluster: kubectl apply -f gpu-driver-reader-daemonset.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gpu-driver-reader
+  namespace: gpu-operator
+  labels:
+    app: gpu-driver-reader
+spec:
+  selector:
+    matchLabels:
+      app: gpu-driver-reader
+  template:
+    metadata:
+      labels:
+        app: gpu-driver-reader
+    spec:
+      nodeSelector:
+        nvidia.com/gpu.deploy.device-plugin: "false"
+      tolerations:
+        - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}
+        # Quarantine taints the node NoSchedule; the reader must still come
+        # back after a restart, since it is how the rules see the node.
+        - {key: vllm.ci/quarantine, operator: Exists, effect: NoSchedule}
+      priorityClassName: system-node-critical
+      # Same as the plugin pod: the nvidia runtime adds nvidia-smi and the
+      # GPUs to a privileged container that asks for all of them.
+      runtimeClassName: nvidia
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: nvidia-device-plugin
+          image: nvcr.io/nvidia/k8s-device-plugin:v0.19.3
+          command: ["/bin/sh", "-c", "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done"]
+          securityContext:
+            privileged: true
+          env:
+            - {name: NVIDIA_VISIBLE_DEVICES, value: all}
+            - {name: NVIDIA_DRIVER_CAPABILITIES, value: all}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: host-root, mountPath: /host, readOnly: true, mountPropagation: HostToContainer}
+      volumes:
+        - name: host-root
+          hostPath: {path: /}

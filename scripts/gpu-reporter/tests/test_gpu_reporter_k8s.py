@@ -920,3 +920,61 @@ def test_parse_dcgm_metrics_missing_utilization_is_null(reporter_k8s):
                       if not line.startswith("DCGM_FI_DEV_GPU_UTIL"))
     gpu = reporter_k8s.parse_metrics(no_util)["inf-4x8h100-1"][0]
     assert gpu["gpu_util"] is None
+
+
+def _pods_by_label(listing):
+    """fake kubectl for `get pods -l <label>`: listing maps label -> output."""
+    def fake_kubectl(*args, timeout=10):
+        label = args[args.index("-l") + 1]
+        # The node mapping must come from the pod names.
+        assert "{.metadata.name} {.spec.nodeName}" in args[-1]
+        result = listing[label]
+        if isinstance(result, Exception):
+            raise result
+        return result
+    return fake_kubectl
+
+
+def test_plugin_pods_fall_back_to_the_driver_reader(reporter_k8s, monkeypatch):
+    # A HAMi node has no operator device-plugin pod; the operator's pod wins
+    # wherever both exist.
+    monkeypatch.setattr(reporter_k8s, "kubectl", _pods_by_label({
+        reporter_k8s.PLUGIN_LABEL: "plugin-a node-a\n",
+        reporter_k8s.READER_LABEL: "reader-b node-b\nreader-a node-a\n",
+    }))
+    assert reporter_k8s.get_plugin_pods() == {
+        "node-a": "plugin-a", "node-b": "reader-b"}
+
+
+def test_driver_reader_listing_failure_keeps_plugin_pods(reporter_k8s,
+                                                          monkeypatch, capsys):
+    monkeypatch.setattr(reporter_k8s, "kubectl", _pods_by_label({
+        reporter_k8s.PLUGIN_LABEL: "plugin-a node-a\n",
+        reporter_k8s.READER_LABEL: RuntimeError("forbidden"),
+    }))
+    assert reporter_k8s.get_plugin_pods() == {"node-a": "plugin-a"}
+    assert (capsys.readouterr().err
+            == "ERROR: failed to list driver-reader pods: forbidden\n")
+
+
+def test_driver_reader_label_comes_from_the_environment(monkeypatch):
+    from conftest import load_module
+
+    monkeypatch.setenv("DRIVER_READER_LABEL", "app=my-reader")
+    module = load_module("gpu_reporter_k8s_env", "gpu-reporter-k8s.py")
+    assert module.READER_LABEL == "app=my-reader"
+
+
+def test_driver_reader_daemonset_matches_what_the_reporter_execs(reporter_k8s):
+    # The reporter finds the pod by READER_LABEL in DCGM_NS and execs into
+    # PLUGIN_CONTAINER, so the manifest must use the same three values.
+    text = (Path(reporter_k8s.__file__).parent
+            / "gpu-driver-reader-daemonset.yaml").read_text()
+    key, value = reporter_k8s.READER_LABEL.split("=")
+    assert f"{key}: {value}" in text
+    assert f"namespace: {reporter_k8s.DCGM_NS}" in text
+    assert f"name: {reporter_k8s.PLUGIN_CONTAINER}" in text
+    # Only where the operator's plugin is off, and through our quarantine.
+    assert 'nvidia.com/gpu.deploy.device-plugin: "false"' in text
+    assert "key: vllm.ci/quarantine" in text
+    assert "mountPath: /host" in text
