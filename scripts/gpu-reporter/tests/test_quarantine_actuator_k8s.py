@@ -32,7 +32,8 @@ class FakeKube:
     def node_json(self, n):
         s = self.nodes[n]
         return {"metadata": {"name": n, "resourceVersion": str(self.rv[n]),
-                             "annotations": dict(s.get("annotations", {}))},
+                             "annotations": dict(s.get("annotations", {})),
+                             "labels": dict(s.get("labels", {}))},
                 "spec": {"unschedulable": s["unschedulable"],
                          "taints": list(s["taints"])},
                 "status": {"capacity": {
@@ -389,6 +390,47 @@ def test_cordon_by_a_person_mid_run_is_never_marked_ours(run):
     assert "pre-existing cordon" in resolve.posts[0][1]["observed"]["note"]
 
 
+# A GPU-sharing (HAMi) node advertises every card 10 times and refuses a Pod
+# that skipped HAMi's scheduler, so its check goes through HAMi for whole cards.
+HAMI = {"gpu": "on", "nvidia.com/gpu.count": "8"}
+
+
+def hami_node(labels=HAMI, shares="80"):
+    return dict(node(True, True), labels=dict(labels),
+                capacity=shares, allocatable=shares)
+
+
+def test_return_check_on_a_hami_node_asks_hami_for_every_whole_card(run):
+    # Split 20 ways: the card count comes from the label, not the split.
+    kube = FakeKube({"n1": hami_node(shares="160")})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert dash.posts[0][1]["state"] == "verifying"
+    (pod,) = kube.created
+    assert pod["metadata"]["labels"] == {"app": "vllm-quarantine-verify",
+                                         "vllm.ci/gpu-sharing": "hami"}
+    assert "nodeName" not in pod["spec"]
+    assert pod["spec"]["nodeSelector"] == {"kubernetes.io/hostname": "n1"}
+    assert pod["spec"]["tolerations"] == [{"operator": "Exists"}]
+    assert pod["spec"]["containers"][0]["resources"] == {
+        "limits": {"nvidia.com/gpu": "8"}}
+
+
+@pytest.mark.parametrize("labels", [{"gpu": "on"},
+                                    {"gpu": "on", "nvidia.com/gpu.count": "0"},
+                                    {"gpu": "on", "nvidia.com/gpu.count": "x"}])
+def test_hami_node_without_a_valid_card_count_fails_its_check(run, labels):
+    # Split 5 ways: guessing from capacity would check only some cards.
+    kube = FakeKube({"n1": hami_node(labels, shares="40")})
+    dash = FakeDashboard([want("n1", "resolving")])
+    assert run(kube, dash) == 0
+    assert kube.created == []
+    assert dash.posts == [("n1", {"alertId": 7, "state": "verify_failed",
+                                  "observed": {"note": "a GPU-sharing node "
+                                               "without a valid "
+                                               "nvidia.com/gpu.count label"}})]
+
+
 def test_resolve_runs_the_return_check_before_returning(run):
     kube = FakeKube({"n1": node(True, True)})
     dash = FakeDashboard([want("n1", "resolving")])
@@ -661,3 +703,50 @@ def test_kubectl_passes_input_and_returns_stdout(run, monkeypatch):
     assert calls == [(["kubectl", "create", "-f", "-"], {
         "capture_output": True, "text": True, "input": "{}",
         "timeout": run.mod.KUBECTL_TIMEOUT})]
+
+
+def admitted(pod):
+    """Whether the namespace's ValidatingAdmissionPolicy admits the pod.
+
+    Evaluates the policy's own CEL from the RBAC manifest; needs cel-python
+    and PyYAML, so it is skipped where they are not installed.
+    """
+    celpy = pytest.importorskip("celpy")
+    yaml = pytest.importorskip("yaml")
+    from conftest import SCRIPTS_DIR
+    docs = yaml.safe_load_all(
+        (SCRIPTS_DIR / "quarantine-actuator-k8s-rbac.yaml").read_text())
+    (policy,) = [d for d in docs if d and d["kind"] == "ValidatingAdmissionPolicy"]
+    env = celpy.Environment()
+    return all(
+        bool(env.program(env.compile(v["expression"])).evaluate(
+            {"object": celpy.json_to_cel(pod)}))
+        for v in policy["spec"]["validations"])
+
+
+def test_the_admission_policy_admits_both_return_check_pods():
+    mod = load_module("quarantine_actuator_k8s", "quarantine-actuator-k8s.py")
+    kube = FakeKube({"dgxb200-x": node(True, True),
+                     "inf-4x8h100-x": hami_node()})
+    plain = mod.verify_pod(json.loads(kube("get", "node", "dgxb200-x")))
+    shared = mod.verify_pod(json.loads(kube("get", "node", "inf-4x8h100-x")))
+    assert admitted(plain)
+    assert admitted(shared)
+    # After HAMi's scheduler binds it, the pod carries both fields.
+    assert admitted({**shared, "spec": {**shared["spec"],
+                                        "nodeName": "inf-4x8h100-x"}})
+    # Still only GPU nodes, either way.
+    assert not admitted({**plain, "spec": {**plain["spec"], "nodeName": "cpu-1"}})
+    assert not admitted({**shared, "spec": {
+        **shared["spec"], "nodeSelector": {"kubernetes.io/hostname": "cpu-1"}}})
+    no_placement = dict(shared["spec"])
+    del no_placement["nodeSelector"]
+    assert not admitted({**shared, "spec": no_placement})
+
+
+def test_a_one_card_hami_node_is_checked_on_its_card(run):
+    kube = FakeKube({"n1": hami_node({"gpu": "on", "nvidia.com/gpu.count": "1"},
+                                     shares="10")})
+    assert run(kube, FakeDashboard([want("n1", "resolving")])) == 0
+    assert kube.created[0]["spec"]["containers"][0]["resources"] == {
+        "limits": {"nvidia.com/gpu": "1"}}

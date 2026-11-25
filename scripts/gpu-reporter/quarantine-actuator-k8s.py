@@ -173,6 +173,19 @@ def verify_pod_name(node_name):
 RESOLVE_MARK = "vllm-quarantine/resolve-requested-at"
 
 
+def hami_cards(node):
+    """A GPU-sharing (HAMi) node's physical card count; '' when it has no
+    valid count, None on any other node."""
+    labels = node["metadata"].get("labels") or {}
+    # HAMi's device plugin runs only on gpu=on nodes (its nvidiaNodeSelector).
+    if labels.get("gpu") != "on":
+        return None
+    # GPU feature discovery counts physical cards. Capacity is cards times
+    # HAMi's split, which is configurable, so it can't give the count.
+    count = labels.get("nvidia.com/gpu.count", "")
+    return count if count.isdigit() and int(count) > 0 else ""
+
+
 def verify_pod(node, resolve_requested_at=None):
     """The return-check pod: pinned to the node, holding all its GPUs."""
     name = node["metadata"]["name"]
@@ -181,13 +194,22 @@ def verify_pod(node, resolve_requested_at=None):
                 "labels": {"app": "vllm-quarantine-verify"}}
     if resolve_requested_at:
         metadata["annotations"] = {RESOLVE_MARK: resolve_requested_at}
+    # nodeName skips the scheduler, so our cordon and taint don't keep it
+    # off; the toleration covers the kubelet's own checks.
+    placement = {"nodeName": name}
+    # HAMi advertises each card several times and refuses a Pod its scheduler
+    # did not place, so the check goes through HAMi: its opt-in label, the
+    # node by selector, and every physical card whole (no gpumem).
+    cards = hami_cards(node)
+    if cards is not None:
+        metadata["labels"]["vllm.ci/gpu-sharing"] = "hami"
+        placement = {"nodeSelector": {"kubernetes.io/hostname": name}}
+        gpus = cards
     return {
         "apiVersion": "v1", "kind": "Pod",
         "metadata": metadata,
         "spec": {
-            # nodeName skips the scheduler, so our cordon and taint don't
-            # keep it off; the toleration covers the kubelet's own checks.
-            "nodeName": name, "restartPolicy": "Never",
+            **placement, "restartPolicy": "Never",
             "automountServiceAccountToken": False,
             "runtimeClassName": "nvidia",
             "tolerations": [{"operator": "Exists"}],
@@ -325,8 +347,10 @@ class Actuator:
             if "NotFound" not in str(e):
                 raise
             # nodeName skips the scheduler, so the kubelet fails the pod at
-            # once if a GPU is still held or unhealthy: wait out the CI pods,
-            # and treat a GPU the device plugin dropped as a failed check.
+            # once if a GPU is still held or unhealthy (on a HAMi node the
+            # pod waits Pending instead, until VERIFY_TIMEOUT): wait out the
+            # CI pods, and treat a GPU the device plugin dropped as a failed
+            # check.
             # The wait is posted as 'out' every run, naming the jobs, so the
             # dashboard can say which one holds the node.
             pods = ci_pods(name)
@@ -340,9 +364,12 @@ class Actuator:
             status = node["status"]
             usable = status.get("allocatable", {}).get(GPU_RESOURCE, "0")
             total = status.get("capacity", {}).get(GPU_RESOURCE, "0")
-            if total == "0" or usable != total:
+            if total == "0" or usable != total or hami_cards(node) == "":
                 note = ("the node advertises no GPUs" if total == "0"
-                        else f"only {usable} of {total} GPUs are usable")
+                        else f"only {usable} of {total} GPUs are usable"
+                        if usable != total
+                        else "a GPU-sharing node without a valid "
+                             "nvidia.com/gpu.count label")
                 print(f"  {name}: return check failed: {note}")
                 self.post(name, want["alertId"], "verify_failed", {"note": note})
                 return False
