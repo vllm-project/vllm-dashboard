@@ -68,6 +68,13 @@ from automated analysis and never overwrite it. Every update names the exact
 `lastFailure.buildkiteJobId` it describes, so a later failure makes the older
 update visibly stale instead of silently moving it to a new revision.
 
+An intermittent failure can open and auto-resolve several episodes in a day,
+so none stays under the default Open filter. The **Recurring** filter groups
+the loaded episodes (open and resolved, last 30 days) by job key and lists
+each job with two or more episodes, with its episode count and total failures;
+expanding a row shows its episodes. Episode rows in the other views carry the
+same episode-count badge. This is display-only: episode lifecycle is unchanged.
+
 The update endpoint requires `Authorization: Bearer $ALERT_AGENT_TOKEN` and an
 idempotency key unique to the logical update. It returns `201` for a new row and
 `200` with `duplicate: true` for an identical retry. Reusing a key for different
