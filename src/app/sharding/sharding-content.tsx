@@ -214,8 +214,8 @@ export default function ShardingContent() {
           >
             .buildkite/test_areas
           </a>{" "}
-          sets <code>automatic_shard: true</code> (an AMD mirror also needs
-          its own). The pipeline generator then splits it into{" "}
+          sets <code>automatic_shard: true</code> (a legacy AMD mirror also
+          needs its own; each job of a <code>devices:</code> step has its own). The pipeline generator then splits it into{" "}
           <code>Shard N/M</code> jobs planned from recent test timings. It
           leaves a flagged job whole when it is multi-node, runs in
           docker-in-docker, or has test commands that are not all plain

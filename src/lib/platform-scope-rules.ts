@@ -1,11 +1,12 @@
 /**
  * Which platform(s) each vLLM CI job is meant to run on.
  *
- * `.buildkite/test_areas` says where a job runs today (its `device`, and
- * whether it declares a `mirror.amd` block), but not where it *should* run.
- * These rules record that intent for the jobs the YAML cannot settle on its
- * own: NVIDIA steps without an AMD mirror and AMD-only steps. A step with a
- * `mirror.amd` block always runs on both and needs no rule.
+ * `.buildkite/test_areas` says where a job runs today (its `device` and
+ * `mirror.amd` block, or the keys of its `devices:` map), but not where it
+ * *should* run. These rules record that intent for the jobs the YAML cannot
+ * settle on its own: NVIDIA steps without an AMD mirror and AMD-only steps. A
+ * step with an AMD mirror (`mirror.amd`, or an AMD device keyed `amd-<key>`)
+ * always runs on both and needs no rule.
  *
  * Rules are keyed by the step's `key` (or its label when it has no key).
  * Each reason should name the evidence: the CUDA- or ROCm-only library,

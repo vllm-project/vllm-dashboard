@@ -1,10 +1,16 @@
 /**
  * NVIDIA-to-AMD gating parity for vLLM's CI.
  *
- * Every test job in `.buildkite/test_areas/*.yaml` on vllm-project/vllm is a
- * step with a `device`. NVIDIA steps may declare a `mirror.amd` block, which
- * the pipeline generator (vllm-project/ci-infra) turns into an `amd-<key>`
- * step on AMD hardware. This module reads those parsed YAML files and counts,
+ * Every test job in `.buildkite/test_areas/*.yaml` on vllm-project/vllm is
+ * either a step with a `device` (the legacy form), where NVIDIA steps may
+ * declare a `mirror.amd` block that the pipeline generator
+ * (vllm-project/ci-infra) turns into an `amd-<key>` step on AMD hardware, or
+ * one job of a step's `devices:` map. A `devices:` step is compiled the way the
+ * generator compiles it (buildkite-devices.ts), with AMD jobs paired: every
+ * non-AMD job K whose step also has an AMD job keyed `amd-<K>` (the first
+ * device, or a variant on both vendors) becomes a step with that AMD job as
+ * its exact `mirror.amd`, and every other job (more devices, unpaired
+ * variants, AMD-only and CPU jobs) a step of its own. This module reads those parsed YAML files and counts,
  * per test area and overall, how many NVIDIA jobs are eligible for AMD parity
  * and how many of them have an AMD mirror. Known NVIDIA-specific job families
  * without a declared AMD mirror are excluded by label. Each YAML step is
@@ -13,9 +19,12 @@
  *
  * For this view, "gating" means `optional` is not true. `soft_fail` does not
  * affect inclusion, but is reported separately because it changes whether a
- * failure blocks the build. The AMD mirror inherits both flags from its NVIDIA
- * parent unless its block overrides them, matching the pipeline generator.
+ * failure blocks the build. A legacy AMD mirror inherits both flags from its
+ * NVIDIA parent unless its block overrides them; an exact one (a `devices:`
+ * AMD job) has only its own, matching the pipeline generator.
  */
+
+import { deviceInfo, EXACT_MIRROR, expandSteps } from "./buildkite-devices";
 
 export type DeviceVendor = "nvidia" | "amd" | "cpu" | "other" | "unknown";
 
@@ -112,12 +121,18 @@ export function parseTestAreaFile(
   document: unknown,
 ): TestAreaFile | null {
   if (!document || typeof document !== "object") return null;
-  const candidate = document as { group?: unknown; steps?: unknown };
+  const candidate = document as {
+    group?: unknown;
+    steps?: unknown;
+    depends_on?: unknown;
+  };
   if (typeof candidate.group !== "string" || !candidate.group.trim()) {
     return null;
   }
   if (!Array.isArray(candidate.steps)) return null;
-  const steps = candidate.steps.filter(
+  const steps = expandSteps(candidate.steps, candidate.depends_on, undefined, {
+    pairAmdJobs: true,
+  }).filter(
     (step): step is Record<string, unknown> =>
       !!step &&
       typeof step === "object" &&
@@ -238,10 +253,16 @@ function parseMirror(
   const amd = (mirror as { amd?: unknown }).amd;
   if (!amd || typeof amd !== "object") return null;
   const block = amd as Record<string, unknown>;
+  // A mirror compiled from a `devices:` step is the whole AMD job.
+  const exact = block[EXACT_MIRROR] === true;
   const optional =
-    typeof block.optional === "boolean" ? block.optional : parentOptional;
+    typeof block.optional === "boolean"
+      ? block.optional
+      : !exact && parentOptional;
   const softFail =
-    typeof block.soft_fail === "boolean" ? block.soft_fail : parentSoftFail;
+    typeof block.soft_fail === "boolean"
+      ? block.soft_fail
+      : !exact && parentSoftFail;
   return {
     label:
       asNullableString(block.label) ?? `AMD: ${String(step.label).trim()}`,
@@ -250,6 +271,18 @@ function parseMirror(
     softFail,
     gating: !optional,
   };
+}
+
+/**
+ * GPUs per job. An AMD device always runs on its pool's count (the generator
+ * rejects any other), whatever the step says; other devices read
+ * `num_devices` (legacy: `num_gpus`).
+ */
+function numDevicesOf(step: Record<string, unknown>): number {
+  const info =
+    typeof step.device === "string" ? deviceInfo(step.device.trim()) : undefined;
+  if (info?.vendor === "amd" && info.gpus) return info.gpus;
+  return asPositiveInteger(step.num_devices ?? step.num_gpus, 1);
 }
 
 export function parityJobFromStep(
@@ -264,10 +297,7 @@ export function parityJobFromStep(
     group: file.group,
     file: file.path,
     device: asNullableString(step.device),
-    numDevices: asPositiveInteger(
-      step.num_devices ?? step.num_gpus,
-      1,
-    ),
+    numDevices: numDevicesOf(step),
     numNodes: asPositiveInteger(step.num_nodes, 1),
     parallelism: asPositiveInteger(step.parallelism, 1),
     optional,

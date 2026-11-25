@@ -2,8 +2,9 @@ import type { ObservedStep } from "@/lib/automatic-sharding-query";
 import type { TestArea } from "@/lib/test-areas";
 
 // How far vLLM CI has moved onto runtime sharding (`automatic_shard: true`,
-// see job-shards.ts). A CI job here is one step of the test-area YAML on main,
-// or that step's AMD mirror: each runs as its own Buildkite job (or shards).
+// see job-shards.ts). A CI job here is one step of the test-area YAML on main
+// (each job of a `devices:` step, see buildkite-devices.ts), or that step's
+// AMD mirror: each runs as its own Buildkite job (or shards).
 
 /** The windows, in days, the report can look back over. */
 export const SHARDING_WINDOWS = [7, 14, 30] as const;
@@ -109,13 +110,19 @@ export function classifyShardingJobs(
         multiNode,
       );
       if (step.amdMirrorLabel) {
+        // A legacy mirror shards only when the step and the block both opt
+        // in; an exact one (a `devices:` AMD job) reads only its own flag.
+        const mirrorFlagged =
+          (step.amdMirrorExact === true || step.automaticShard === true) &&
+          step.amdMirrorAutomaticShard === true;
         add(
           step.amdMirrorLabel,
           area.group,
           true,
-          step.automaticShard === true && step.amdMirrorAutomaticShard === true,
-          step.amdMirrorLabel.includes("%N") || (step.parallelism ?? 1) > 1,
-          multiNode,
+          mirrorFlagged,
+          step.amdMirrorLabel.includes("%N") ||
+            (step.amdMirrorParallelism ?? 1) > 1,
+          (step.amdMirrorNumNodes ?? 1) >= 2,
         );
       }
     }

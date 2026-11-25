@@ -1,7 +1,14 @@
 import yaml from "js-yaml";
 
+import { EXACT_MIRROR, expandSteps } from "./buildkite-devices";
 import { githubHeaders } from "./github";
 
+/**
+ * One job of a test-area YAML step. A `devices:` step is compiled first
+ * (buildkite-devices.ts): each non-AMD job K is a step whose `mirror.amd` is
+ * the step's AMD job keyed `amd-<K>`, if it has one, and every other job is a
+ * step of its own.
+ */
 export interface TestStep {
   label: string;
   parallelism?: number;
@@ -9,12 +16,38 @@ export interface TestStep {
   softFail?: boolean;
   /** AMD mirror label (`mirror.amd.label`), which runs in the same ci pipeline. */
   amdMirrorLabel?: string;
-  /** The AMD mirror's own `soft_fail`; the mirror does not inherit the step's. */
+  /**
+   * The AMD mirror was compiled from a `devices:` step: its block is the whole
+   * AMD job and inherits nothing from the step.
+   */
+  amdMirrorExact?: boolean;
+  /**
+   * The AMD mirror is `optional`: its block's value, else (legacy form only)
+   * the step's, as the generator decides it.
+   */
+  amdMirrorOptional?: boolean;
+  /**
+   * The AMD mirror is `soft_fail`: its block's value, else (legacy form only)
+   * the step's, as the generator decides it.
+   */
   amdMirrorSoftFail?: boolean;
   /** `automatic_shard: true`: the generator may split it into runtime shards. */
   automaticShard?: boolean;
-  /** The AMD mirror's own `automatic_shard`; it shards only when both are set. */
+  /**
+   * The AMD mirror's own `automatic_shard`. A legacy mirror shards only when
+   * the step and the block both set it; an exact one only reads its own.
+   */
   amdMirrorAutomaticShard?: boolean;
+  /**
+   * The AMD mirror's `parallelism`: an exact one's own; a legacy one's own,
+   * else the step's.
+   */
+  amdMirrorParallelism?: number;
+  /**
+   * The AMD mirror's `num_nodes`: an exact one's own; a legacy one's own, else
+   * the step's.
+   */
+  amdMirrorNumNodes?: number;
   /** `num_nodes`; the generator never shards a multi-node step. */
   numNodes?: number;
 }
@@ -273,19 +306,22 @@ function toShardPattern(label: string): RegExp {
 }
 
 /**
- * Collect the names of every step marked `optional: true`, including the AMD
- * mirror labels that run alongside them in the ci pipeline. `%N` shard labels
- * become anchored patterns so a rendered shard name matches.
+ * Collect the names of every step marked `optional: true`, and every AMD
+ * mirror that is optional (a legacy mirror inherits the step's `optional`
+ * unless its block sets one; a `devices:` AMD job has its own). `%N` shard
+ * labels become anchored patterns so a rendered shard name matches.
  */
 export function buildOptionalJobMatcher(areas: TestArea[]): OptionalJobMatcher {
-  return buildJobNameMatcher(areas, (step) =>
-    step.optional === true ? [step.label, step.amdMirrorLabel] : [],
-  );
+  return buildJobNameMatcher(areas, (step) => [
+    step.optional === true ? step.label : undefined,
+    step.amdMirrorOptional === true ? step.amdMirrorLabel : undefined,
+  ]);
 }
 
 /**
- * Collect the names of every step marked `soft_fail`. Unlike `optional`, an
- * AMD mirror only counts when the mirror itself sets `soft_fail`.
+ * Collect the names of every step marked `soft_fail`, and every AMD mirror
+ * that is soft-fail (a legacy mirror inherits the step's unless its block sets
+ * one; a `devices:` AMD job has its own).
  */
 export function buildSoftFailJobMatcher(areas: TestArea[]): SoftFailJobMatcher {
   return buildJobNameMatcher(areas, (step) => [
@@ -382,32 +418,51 @@ export function parseTestStep(value: unknown): TestStep | null {
   if (mirror && typeof mirror === "object") {
     const amd = (mirror as { amd?: unknown }).amd;
     if (amd && typeof amd === "object") {
-      const {
-        label: amdLabel,
-        soft_fail: amdSoftFail,
-        automatic_shard: amdAutomaticShard,
-      } = amd as {
-        label?: unknown;
-        soft_fail?: unknown;
-        automatic_shard?: unknown;
-      };
-      if (typeof amdLabel === "string") parsed.amdMirrorLabel = amdLabel;
-      if (isSoftFailValue(amdSoftFail)) parsed.amdMirrorSoftFail = true;
-      if (amdAutomaticShard === true) parsed.amdMirrorAutomaticShard = true;
+      const block = amd as Record<string, unknown>;
+      const exact = block[EXACT_MIRROR] === true;
+      if (typeof block.label === "string") parsed.amdMirrorLabel = block.label;
+      if (exact) parsed.amdMirrorExact = true;
+      const amdOptional =
+        typeof block.optional === "boolean"
+          ? block.optional
+          : !exact && step.optional === true;
+      if (amdOptional) parsed.amdMirrorOptional = true;
+      const amdSoftFail =
+        block.soft_fail !== undefined
+          ? isSoftFailValue(block.soft_fail)
+          : !exact && isSoftFailValue(step.soft_fail);
+      if (amdSoftFail) parsed.amdMirrorSoftFail = true;
+      if (block.automatic_shard === true) parsed.amdMirrorAutomaticShard = true;
+      // A legacy mirror's own value wins over the step's
+      // (buildkite_step.py: amd.get("parallelism", parent.parallelism)).
+      const amdParallelism = exact
+        ? block.parallelism
+        : (block.parallelism ?? step.parallelism);
+      if (typeof amdParallelism === "number") {
+        parsed.amdMirrorParallelism = amdParallelism;
+      }
+      const amdNumNodes = exact ? block.num_nodes : (block.num_nodes ?? step.num_nodes);
+      if (typeof amdNumNodes === "number") parsed.amdMirrorNumNodes = amdNumNodes;
     }
   }
   return parsed;
 }
 
-function parseTestArea(value: unknown): TestArea | null {
+export function parseTestArea(value: unknown): TestArea | null {
   if (!value || typeof value !== "object") return null;
-  const candidate = value as { group?: unknown; steps?: unknown };
+  const candidate = value as {
+    group?: unknown;
+    steps?: unknown;
+    depends_on?: unknown;
+  };
   if (typeof candidate.group !== "string" || !candidate.group.trim()) {
     return null;
   }
   if (!Array.isArray(candidate.steps)) return null;
 
-  const steps = candidate.steps
+  const steps = expandSteps(candidate.steps, candidate.depends_on, undefined, {
+    pairAmdJobs: true,
+  })
     .map(parseTestStep)
     .filter((step): step is TestStep => step !== null);
   if (steps.length === 0) return null;
