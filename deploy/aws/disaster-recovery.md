@@ -85,6 +85,10 @@ bucket is retained but the new instance role cannot read it. Effects:
   initial checkpoint. No database edits needed. The first report may classify
   ongoing failures as new for one comparison.
 
+- **Heartbeat alarms** come back with the stack, but the SNS topic is new:
+  pass `HeartbeatAlertEmail` again and click the confirmation link again, or
+  the alarms have no subscriber.
+
 ## Verifying health after recovery
 
 ```bash
@@ -92,10 +96,19 @@ systemctl list-timers 'alerting-*' --no-pager
 ```
 
 All timers (control, fast-ci, full-ci, retention, main-ci) should be active
-with future trigger times. Execution status is in Postgres:
+with future trigger times. `install.sh` never enables
+`alerting-h200-pauser.timer`; if the H200 quarantine path is in use, enable
+it by hand (`systemctl enable --now alerting-h200-pauser.timer`), or its
+heartbeat alarm stays in ALARM. Execution status is in Postgres:
 
 ```sql
 SELECT command_type, status, last_error, updated_at
 FROM alerting_automation_executions
 ORDER BY updated_at DESC LIMIT 10;
 ```
+
+The heartbeat alarms (`<stack-name>-heartbeat-*`) should read OK within about
+25 minutes of the timers resuming (fast-ci is the slowest: 15-minute cadence
+plus up to 10 minutes of run time). If the old stack's worker is still up
+while the new one boots, its heartbeats hold the new stack's alarms at OK:
+stop the old worker's timers before trusting them.

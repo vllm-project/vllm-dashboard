@@ -1,0 +1,26 @@
+[Unit]
+Description=Put an off-worker CloudWatch heartbeat for alerting job %i
+
+[Service]
+Type=oneshot
+User=alerting
+Group=alerting
+ExecStart=/opt/alerting/bin/emit-heartbeat %i
+# The aws CLI needs a writable HOME and this sandbox has none (the failure
+# notifier's first deploy died to exactly this); PrivateTmp provides /tmp.
+Environment=HOME=/tmp
+# The only bound on the emit (the CLI retries run inside it).
+TimeoutStartSec=30s
+StandardOutput=null
+# Not inherited from StandardOutput: a heartbeat that fails silently is worse
+# than no heartbeat. Its stderr carries no secrets.
+StandardError=journal
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictSUIDSGID=true
+LockPersonality=true
+# No failure chaining here: a dead heartbeat is not the job failing, and the
+# off-worker alarm is the thing that notices missing heartbeats.

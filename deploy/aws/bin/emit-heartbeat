@@ -1,0 +1,20 @@
+#!/bin/bash
+# Put one CloudWatch heartbeat datapoint for a job that just succeeded.
+# Runs as its own oneshot unit from the job unit's OnSuccess=, so it fires
+# only after a successful run and never shares the job unit's start timeout.
+# It uses the instance role and nothing from the worker secret, so a worker
+# that cannot load its secret stops emitting, and the off-worker alarm
+# (alerting-worker.yaml) notices.
+set -euo pipefail
+
+job=${1:?usage: emit-heartbeat <job>}
+
+# Bounded by the unit's TimeoutStartSec=30s. Default retries stay on: a
+# killed slow attempt drops one datapoint, which every window's margin
+# absorbs, and one throttled call must not drop a datapoint from a job that
+# emits only twice per window.
+exec aws --cli-connect-timeout 5 --cli-read-timeout 4 cloudwatch put-metric-data \
+  --namespace VllmAlerting \
+  --metric-name Heartbeat \
+  --dimensions "Job=${job}" \
+  --value 1
