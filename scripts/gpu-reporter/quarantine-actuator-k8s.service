@@ -1,5 +1,8 @@
 [Unit]
 Description=Apply vLLM CI quarantine decisions to the nodes of this cluster
+# The off-host heartbeat chains in the drop-in
+# quarantine-actuator-k8s.service.d/heartbeat.conf, not here, so reinstalling
+# this file never resets a live actuator's command line.
 
 [Service]
 Type=oneshot

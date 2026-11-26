@@ -1,0 +1,100 @@
+"""The control-plane actuator heartbeat: unit chaining, its credential
+file's shape, and the deployment recipe.
+
+The emitter script itself and the CloudWatch alarms are covered in
+deploy/aws/tests/test_alerting_worker_infrastructure.py.
+"""
+
+from pathlib import Path
+
+SCRIPTS_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = SCRIPTS_DIR.parents[1]
+
+
+def read(relative_path: str) -> str:
+    return (SCRIPTS_DIR / relative_path).read_text()
+
+
+def test_actuator_emits_heartbeat_only_after_a_successful_run() -> None:
+    """The heartbeat is its own oneshot unit chained from a drop-in on the
+    actuator's OnSuccess=: it runs only after a successful run, and outside
+    the actuator's TimeoutSec, so a slow CloudWatch call can never fail a
+    poll. The chain lives in a drop-in, never in the unit file itself:
+    reinstalling the unit (whose ExecStart pins --dry-run) must touch
+    neither the chain nor a live actuator's command line."""
+    service = read("quarantine-actuator-k8s.service")
+    dropin = read("quarantine-actuator-k8s.service.d/heartbeat.conf")
+
+    assert "ExecStartPost=" not in service
+    assert "OnSuccess=" not in service
+    assert "SuccessExitStatus" not in service
+    assert "OnSuccess=quarantine-actuator-heartbeat.service" in dropin
+    # A completed poll with per-node errors exits 3, still a success, so one
+    # broken node cannot silence the heartbeat and page with the wrong cause
+    # (the worker's notices carry a stage still awaiting confirmation). Only
+    # a poll that never finished — the desired set unreachable — exits 1. Not
+    # exit 2: Python itself exits 2 when the script can't be read and
+    # argparse exits 2 on a bad flag, and those must never count as success.
+    assert "SuccessExitStatus=3" in dropin
+    assert "SuccessExitStatus=2" not in dropin
+
+    unit = read("quarantine-actuator-heartbeat.service")
+    assert "Type=oneshot" in unit
+    assert "ExecStart=/opt/gpu-reporter/emit-heartbeat ${HEARTBEAT_JOB}" in unit
+    # The aws CLI needs a writable HOME; the sandbox has none. The worker's
+    # failure notifier died to exactly this on its first deploy.
+    assert "Environment=HOME=/tmp" in unit
+    assert "TimeoutStartSec=30s" in unit
+    # A dead heartbeat is not the actuator failing; the off-host alarm
+    # notices it, and there is no failure notifier on a control plane.
+    assert "OnFailure=" not in unit
+    # Its stderr goes to the journal, not to /dev/null.
+    assert "StandardError=journal" in unit
+    # systemd reads EnvironmentFile as PID 1, so the credential file stays
+    # root-only 0600 while the CLI runs unprivileged.
+    assert "DynamicUser=yes" in unit
+    assert "User=root" not in unit
+
+
+def test_heartbeat_credentials_are_per_control_plane_not_the_reporter_secret() -> None:
+    """The heartbeat unit reads only its own credential file. Loading the
+    reporter env would pull GPU_REPORT_SECRET into a process that doesn't
+    need it and would couple the alarm path to the secret it must survive."""
+    unit = read("quarantine-actuator-heartbeat.service")
+
+    assert "EnvironmentFile=/etc/gpu-reporter/heartbeat-aws.env" in unit
+    assert "gpu-reporter-k8s.env" not in unit
+    assert "GPU_REPORT_SECRET" not in unit
+    # The cluster's job name comes from the credential file, so the same
+    # unit file serves both control planes.
+    assert "${HEARTBEAT_JOB}" in unit
+
+
+def test_heartbeat_env_example_documents_every_required_value() -> None:
+    example = read("heartbeat-aws.env.example")
+
+    for variable in (
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_DEFAULT_REGION",
+        "HEARTBEAT_JOB",
+    ):
+        assert f"{variable}=" in example
+    # The job name must stay in step with the actuator's own cluster name.
+    assert "quarantine-actuator-" in example
+    assert "QUARANTINE_CLUSTER" in example
+    # Installed root-only, like the reporter env it sits beside.
+    assert "0600" in example
+
+
+def test_deployment_recipe_is_documented_without_echoing_secrets() -> None:
+    doc = (REPO_ROOT / "alerting/docs/infra.md").read_text()
+
+    assert "quarantine-actuator-heartbeat" in doc
+    assert "cloudwatch:PutMetricData" in doc
+    # The recipe reads the secret key with echo off, and the only place the
+    # value appears is the printf that writes the env file.
+    assert "read -r -s" in doc
+    for leak in ('echo "$secret"', "echo ${secret}", "echo $secret"):
+        assert leak not in doc
+    assert doc.count('"$secret"') == 1  # the printf, nothing else
