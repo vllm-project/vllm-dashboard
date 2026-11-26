@@ -96,6 +96,8 @@ function metricLabel(metric: string): string {
   return info.unit ? `${info.name} (${info.unit})` : info.name;
 }
 
+const DASHES = ["solid", "dot", "dash", "dashdot"];
+
 const COLORS = [
   "#818cf8", "#fb923c", "#34d399", "#f87171",
   "#a78bfa", "#22d3ee", "#f472b6", "#fbbf24",
@@ -132,7 +134,7 @@ function TrendChart({
   points: TrendPoint[];
   metric: string;
   stat: Stat;
-  colorMap: Record<string, string>;
+  colorMap: Record<string, { color: string; dash: string }>;
 }) {
   const dark = useDarkMode();
   const col = metricColumn(metric, stat);
@@ -153,13 +155,13 @@ function TrendChart({
       const rows = [...groups.get(series)!].sort((a, b) =>
         a.date < b.date ? -1 : a.date > b.date ? 1 : a.image < b.image ? -1 : 1
       );
-      const color = colorMap[series];
+      const { color, dash } = colorMap[series];
       result.push({
         x: rows.map((r) => r.date),
         y: rows.map((r) => r[col]),
         mode: "lines+markers",
         name: series,
-        line: { color, width: 2, shape: "linear" },
+        line: { color, dash, width: 2, shape: "linear" },
         marker: {
           color,
           size: 7,
@@ -310,7 +312,7 @@ export default function PerfTrendsPage() {
             device: r.device,
             tp: parseInt(r.tp, 10),
             conc: parseInt(r.conc, 10),
-            series: `${r.device} · TP${r.tp} · c${r.conc}`,
+            series: `${r.device} · TP${r.tp} · c${r.conc} · ${r.isl}/${r.osl}`,
             tput_per_gpu: parseFloat(r.tput_per_gpu),
             output_tput_per_gpu: parseFloat(r.output_tput_per_gpu),
             mean_ttft: parseFloat(r.mean_ttft),
@@ -367,9 +369,12 @@ export default function PerfTrendsPage() {
   );
 
   const colorMap = useMemo(() => {
-    const map: Record<string, string> = {};
+    const map: Record<string, { color: string; dash: string }> = {};
     seriesKeys.forEach((key, i) => {
-      map[key] = COLORS[i % COLORS.length];
+      map[key] = {
+        color: COLORS[i % COLORS.length],
+        dash: DASHES[Math.floor(i / COLORS.length) % DASHES.length],
+      };
     });
     return map;
   }, [seriesKeys]);
